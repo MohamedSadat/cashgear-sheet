@@ -1,0 +1,29 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Pinned tools and generated WASM bindings
+.tools/
+packages/engine-client/src/pkg/
+
+# Test workbooks are fetched or private, never committed
+tests/workbooks/
+tests/private/
+
+# Test and benchmark output
+test-results/
+playwright-report/
+bench/results/
+coverage/
+
+# Local files
+.env
+.env.*
+*.log
+~$*
+.DS_Store
+Thumbs.db
