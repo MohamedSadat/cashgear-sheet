@@ -1,0 +1,255 @@
+// Launches the release desktop build, attaches Playwright to its WebView2 over CDP
+// and checks the same things the browser specs check: the pattern in both themes,
+// a CashGear control, cross-origin isolation and shared memory. It also checks the
+// native command, the window's own theme, and that the choice survives a restart.
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { chromium, expect } from '@playwright/test';
+import { checkPattern, controlColor } from '../tests/e2e/pattern.mjs';
+import { root } from './lib.mjs';
+
+const appVersion = JSON.parse(
+  await readFile(join(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+).version;
+
+if (process.platform !== 'win32') throw new Error('Desktop smoke currently targets Windows.');
+const runtimeKeys = [
+  'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+  'HKLM\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+  'HKCU\\Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+];
+const runtimeVersion = runtimeKeys
+  .map(
+    (key) =>
+      spawnSync('reg', ['query', key, '/v', 'pv'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      }).stdout?.match(/REG_SZ\s+([\d.]+)/)?.[1],
+  )
+  .find((version) => version && version !== '0.0.0.0');
+if (!runtimeVersion)
+  throw new Error('WebView2 Runtime is missing. Run scripts/setup-webview2.ps1 first.');
+console.log('WebView2 Runtime: ' + runtimeVersion);
+
+const listener = createServer();
+await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+const port = listener.address().port;
+await new Promise((resolve) => listener.close(resolve));
+const profilePrefix = join(tmpdir(), 'cgs-webview2-smoke-');
+const profile = await mkdtemp(profilePrefix);
+const browserArguments =
+  '--remote-debugging-port=' + port + ' --remote-debugging-address=127.0.0.1';
+// Elevated WebView2 hosts ignore environment browser arguments. Use the documented
+// HKLM override only on disposable GitHub-hosted runners, scoped to our executable.
+// https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/security#for-an-elevated-host-app-use-appropriate-override-flags
+const policyKey = 'HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments';
+const policyName = 'cgs-desktop.exe';
+const hostedRunner =
+  process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
+let previousPolicy;
+function reg(args) {
+  return spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
+}
+if (hostedRunner) {
+  const existing = reg(['query', policyKey, '/v', policyName, '/reg:64']);
+  if (existing.status === 0) {
+    previousPolicy = existing.stdout.match(/REG_SZ\s+(.+)/)?.[1];
+    if (previousPolicy === undefined) throw new Error('Unexpected existing WebView2 test policy');
+  }
+  const added = reg([
+    'add',
+    policyKey,
+    '/v',
+    policyName,
+    '/t',
+    'REG_SZ',
+    '/d',
+    browserArguments,
+    '/f',
+    '/reg:64',
+  ]);
+  if (added.status !== 0)
+    throw new Error('Could not configure WebView2 test policy: ' + added.stderr);
+}
+
+/** What the app's CSP refused, from the console of every launch. The smoke fails on any. */
+const policyViolations = [];
+
+/** Starts the desktop app and attaches to its WebView2. Launches share the profile. */
+async function launch() {
+  const child = spawn(join(root, 'target/release/cgs-desktop.exe'), [], {
+    cwd: root,
+    windowsHide: true,
+    env: {
+      ...process.env,
+      WEBVIEW2_USER_DATA_FOLDER: profile,
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments,
+    },
+    stdio: 'inherit',
+  });
+  let launchError;
+  child.on('error', (error) => {
+    launchError = error;
+  });
+  const endpoint = 'http://127.0.0.1:' + port;
+  const deadline = Date.now() + 45000;
+  while (true) {
+    if (launchError) throw launchError;
+    if (child.exitCode !== null)
+      throw new Error('Desktop exited before debugging was ready: ' + child.exitCode);
+    try {
+      const response = await fetch(endpoint + '/json/version', {
+        signal: AbortSignal.timeout(1000),
+      });
+      if (response.ok) break;
+    } catch {
+      /* Wait for WebView2 to create its debugging endpoint. */
+    }
+    if (Date.now() > deadline) throw new Error('WebView2 debugging endpoint timed out');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  const browser = await chromium.connectOverCDP(endpoint);
+  const context = browser.contexts()[0];
+  const page = context.pages()[0] ?? (await context.waitForEvent('page'));
+  // Page errors show in the smoke's output, so a failure says what went wrong inside.
+  page.on('pageerror', (error) => console.error('Page error: ' + error.message));
+  page.on('console', (message) => {
+    if (message.type() !== 'error') return;
+    const { url, lineNumber } = message.location();
+    console.error('Console error: ' + message.text() + (url ? ` (${url}:${lineNumber})` : ''));
+    if (message.text().includes('Content Security Policy')) policyViolations.push(message.text());
+  });
+  return { child, browser, page };
+}
+
+/** Kills the app and waits for WebView2's processes to let go of the profile. */
+async function kill(app) {
+  const exited = new Promise((resolve) => app.child.once('exit', resolve));
+  app.child.kill();
+  await exited;
+  await app.browser.close().catch(() => {});
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    try {
+      await fetch('http://127.0.0.1:' + port + '/json/version', {
+        signal: AbortSignal.timeout(500),
+      });
+    } catch {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+/** The theme the window itself has, as Tauri reports it. */
+const windowTheme = (page) =>
+  page.evaluate(() => window.__TAURI_INTERNALS__.invoke('plugin:window|theme', { label: 'main' }));
+const systemTheme = (page) =>
+  page.evaluate(() => (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+
+async function expectWindowTheme(page, theme) {
+  await expect.poll(() => windowTheme(page), { timeout: 10000 }).toBe(theme);
+}
+
+let app;
+try {
+  app = await launch();
+  let page = app.page;
+  await expect(page.getByTestId('engine-status')).toHaveText('Engine ready', { timeout: 30000 });
+  if (!(await page.evaluate(() => crossOriginIsolated)))
+    throw new Error('Desktop is not cross-origin isolated');
+  await expect(page.getByTestId('shared-memory')).toHaveText('Shared memory OK');
+  await expect(page.getByTestId('host-info')).toHaveText(`Desktop ${appVersion} · windows x86_64`);
+  await expect(page.getByRole('radiogroup', { name: 'Theme' })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'System' })).toBeChecked();
+  // Playwright doesn't list workers that started before it attached, but the page
+  // records the scripts it loaded. WebView2 never loads a worker started by a worker,
+  // so the tiles drawn below also prove the tile worker started from the page.
+  const scripts = await page.evaluate(() =>
+    performance.getEntriesByType('resource').map((entry) => entry.name),
+  );
+  for (const script of ['engine-worker', 'tile-worker'])
+    if (!scripts.some((url) => url.includes(script)))
+      throw new Error(`The ${script} did not load: ${scripts.join(', ')}`);
+
+  await mkdir(join(root, 'bench/results'), { recursive: true });
+  const results = { runtimeVersion, browser: app.browser.version(), url: page.url() };
+
+  // A fresh profile follows the system.
+  const system = await systemTheme(page);
+  const followed = await checkPattern(page, system);
+  await expectWindowTheme(page, system);
+  results.system = { theme: system, tiles: followed.tiles, scale: followed.scale };
+
+  const controls = {};
+  for (const theme of ['light', 'dark']) {
+    await page.getByRole('radio', { name: theme === 'light' ? 'Light' : 'Dark' }).click();
+    const { image } = await checkPattern(page, theme);
+    await expectWindowTheme(page, theme);
+    controls[theme] = await controlColor(page);
+    await writeFile(join(root, `bench/results/desktop-${theme}.png`), image);
+    await page.screenshot({ path: join(root, `bench/results/desktop-${theme}-page.png`) });
+  }
+  if (controls.light === controls.dark)
+    throw new Error('The CashGear control did not change with the theme: ' + controls.light);
+  results.controlColors = controls;
+
+  // The last choice, dark, survives a restart: the page and the window both start in it.
+  await kill(app);
+  app = await launch();
+  page = app.page;
+  await expect(page.getByTestId('engine-status')).toHaveText('Engine ready', { timeout: 30000 });
+  await expect(page.getByRole('radio', { name: 'Dark' })).toBeChecked();
+  await checkPattern(page, 'dark');
+  await expectWindowTheme(page, 'dark');
+  results.remembered = 'dark';
+
+  // Back to the system: the window lets go of its override too.
+  await page.getByRole('radio', { name: 'System' }).click();
+  await expect.poll(() => windowTheme(page), { timeout: 10000 }).toBe(system);
+  await checkPattern(page, system);
+  results.backToSystem = system;
+
+  if (policyViolations.length)
+    throw new Error('The CSP refused: ' + [...new Set(policyViolations)].join(' | '));
+  await writeFile(
+    join(root, 'bench/results/desktop-smoke.json'),
+    JSON.stringify(results, null, 2) + '\n',
+  );
+  console.log(JSON.stringify(results, null, 2));
+} finally {
+  await app?.browser.close().catch((error) => {
+    console.error('Could not close the desktop browser: ' + error.message);
+    process.exitCode = 1;
+  });
+  app?.child.kill();
+  if (hostedRunner) {
+    const restored = reg(
+      previousPolicy === undefined
+        ? ['delete', policyKey, '/v', policyName, '/f', '/reg:64']
+        : [
+            'add',
+            policyKey,
+            '/v',
+            policyName,
+            '/t',
+            'REG_SZ',
+            '/d',
+            previousPolicy,
+            '/f',
+            '/reg:64',
+          ],
+    );
+    if (restored.status !== 0) {
+      console.error('Could not restore WebView2 test policy: ' + restored.stderr);
+      process.exitCode = 1;
+    }
+  }
+  if (profile.startsWith(profilePrefix))
+    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(
+      (error) => console.warn('Temporary folder cleanup: ' + error.message),
+    );
+}

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "apps/desktop/src-tauri"]
+# Plain `cargo build` skips the Tauri shell; `--workspace` includes it.
 default-members = [
   "crates/cgs-model",
   "crates/cgs-calc",
