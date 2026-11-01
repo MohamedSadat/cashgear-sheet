@@ -6,9 +6,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Pinned tools and generated WASM bindings
+# Pinned tools and generated code
 .tools/
 packages/engine-client/src/pkg/
+apps/desktop/src-tauri/gen/
 
 # Test workbooks are fetched or private, never committed
 tests/workbooks/
@@ -21,6 +22,7 @@ bench/results/
 coverage/
 
 # Local files
+.claude/launch.json
 .env
 .env.*
 *.log
