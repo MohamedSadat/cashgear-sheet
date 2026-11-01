@@ -76,17 +76,20 @@ cashgear-sheet/
 
 ```rust
 trait CalcEngine {
+  fn begin_load(&mut self, b: &BookInfo) -> Result<()>;              // sheets, names, tables
   fn load_batch(&mut self, c: &SheetCells) -> Result<()>;            // with cached values
+  fn finish_load(&mut self) -> Result<()>;                           // calculates nothing
   fn set_cells(&mut self, e: &[CellEdit]) -> Result<Vec<CellEdit>>;  // returns pre-images
   fn structural(&mut self, op: &StructuralOp) -> Result<StructuralUndo>;
-  fn calc_slice(&mut self, ms: u32, first: &[Rect]) -> Result<CalcProgress>;
+  fn recalc_all(&mut self) -> Result<()>;                            // Ctrl+Alt+F9
+  fn calc_slice(&mut self, ms: u32, first: &[SheetRect]) -> Result<CalcProgress>;
   fn take_changed(&mut self) -> Vec<SheetRect>;
   fn read_block(&self, r: SheetRect, out: &mut dyn CellSink);
   fn formula_text(&self, at: CellRef) -> Option<String>;
 }
 ```
 
-Neither engine can yield during a calculation in browser WASM today. `calc_slice` therefore runs chunked evaluations, visible cells first, and Phase 1 proves it works.
+Neither published engine could yield during a calculation in browser WASM. Phase 1 added evaluation that stops and carries on to both engines' forks, and `calc_slice` runs it with visible cells first. One formula, one cycle or one schedule build still can't be divided, so a slice can run over its budget by as much as the slowest of those.
 
 **Grid data path**
 - Binary `ViewBlock` tiles of 64 rows by 16 columns (24-byte cells plus a UTF-8 heap) are transferred, not sent as JSON. Stale tiles stay visible during recalculation.

@@ -88,3 +88,28 @@ Every answer and default, with its date. Newest section last.
 | --- | --- | --- |
 | Excel COM and downloaded files | COM opens only generated workbooks and your private ones, read-only, with macros and external links off. Downloaded public files are only parsed and compared against their stored `<v>` | Public files are untrusted, and the accuracy test doesn't need Excel to open them |
 | Timing noise | Measure while the PC is in normal use and repeat noisy runs, rather than asking you to keep it idle | Timing is only needed at the end of the phase |
+| Whose stored values count | A file must have `fileVersion appName="xl"` with a `rupBuild`, and not be set to manual calculation or recalculate on load | Other writers store zeros or nothing |
+| Values that can't be reproduced | `NOW`, `TODAY`, `RAND`, `RANDBETWEEN`, `RANDARRAY`, `INFO`, `CELL`, external references, data tables and outside data (`CUBE*`, `RTD`, `WEBSERVICE`, `GETPIVOTDATA`, `STOCKHISTORY`, `IMPORTDATA`) load as their stored value and aren't scored | What reads them still sees what Excel saw. `OFFSET` and `INDIRECT` are scored, because their inputs fix their value |
+| Loading for the comparison | One neutral xlsx reader for both engines, not their importers | Phase 2's reader feeds the engine the same way, and an importer that keeps saved spills can match without calculating |
+| Documents and function test suites | Reported separately, split by file name in `bench/report.mjs` | The target pools both, and they behave very differently. The split is a judgement |
+| Structural test | 200 episodes of 5 random edits per seed, on a generated seed with no macros or arrays, for 2 seeds. Formula text compares without spacing or `#REF!` spelling | One divergence can't taint other episodes |
+| WASM stack for the bench | 8 MB for both engines | The default 1 MB is tight for deep chains. Phase 2 sets the shipped value |
+| `CalcEngine` additions | `begin_load`, `finish_load`, `recalc_all`, and `first` is `&[SheetRect]` | Names and tables must exist before cells, and Ctrl+Alt+F9 needs a way in |
+| Forks | `MohamedSadat/formualizer` branch `cashgear/0.13.0` at `7efd060`, and `MohamedSadat/IronCalc` branch `cashgear/0.9.1` at `c91da93`, pinned in the root `Cargo.toml` and allowed in `deny.toml` | `main` must build from public code, and the adapters need the patches. The loser's pin and adapter go when you decide |
+
+**Waiting for your decision: which engine, and what happens to the accuracy target**
+
+Neither engine reaches 99.5%, so by the phase's rule this stops here. Full results are in [phase1-report.md](phase1-report.md).
+
+| | Formualizer | IronCalc |
+| --- | --- | --- |
+| All Excel-saved files, 10% cap (target 99.5%) | 86.05% | 94.67% |
+| Real documents, 10% cap | 98.22% | 98.51% |
+| Slice p99 (target 50 ms) | 13.9 ms | 99.9 ms |
+| Structural edits matching Excel | 2,000 of 2,000 | 484 of 2,000 |
+| A later edit on 1,000,000 formulas, p99 | 1.3 ms | 1,297 ms |
+| 10,000 lookups or 6,000 aggregates | Seconds at most | Over 5 minutes |
+| Corrupts data on row insert | No | Yes: text that looks numeric turns into numbers |
+| WASM, gzipped | 2.21 MB | 0.62 MB |
+
+Recommendation: Formualizer. Its misses are mostly specific functions, which can be fixed one at a time on the fork. IronCalc's are in how it works: no dependency graph, scanning lookups, and structural edits that corrupt data.

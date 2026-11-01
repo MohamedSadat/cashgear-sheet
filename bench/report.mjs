@@ -105,76 +105,78 @@ for (const input of inputs) {
   if (failed.length) lines.push('Failures: ' + JSON.stringify(reasons));
   lines.push('');
   const real = rows.filter((row) => row.source !== 'generated');
-  const sets = [
-    summarize(real, 'All Excel-saved public files'),
-    summarize(
-      real.filter((row) => !row.engineFixture),
-      'Without either engine’s own fixtures',
-    ),
-    summarize(
-      real.filter((row) => !row.engineFixture && !conformance(row.path)),
-      'Documents (without fixtures or function test suites)',
-    ),
-    summarize(
-      real.filter((row) => !row.engineFixture && conformance(row.path)),
-      'Function test suites (without fixtures)',
-    ),
-    ...(rows.some((row) => row.source === 'private')
-      ? [
-          summarize(
-            rows.filter((row) => row.source === 'private'),
-            'Private workbooks',
-          ),
-        ]
-      : []),
-    ...[...new Set(real.map((row) => row.source))].sort().map((source) =>
+  if (real.length) {
+    const sets = [
+      summarize(real, 'All Excel-saved public files'),
       summarize(
-        real.filter((row) => row.source === source),
-        '  ' + source,
+        real.filter((row) => !row.engineFixture),
+        'Without either engine’s own fixtures',
       ),
-    ),
-  ];
-  lines.push(
-    '| Set | Files | Formula cells | Match (pooled) | Match (10% cap) | Wrong value | Wrong type | Unsupported | Near zero | All cells match |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-  );
-  for (const set of sets) {
+      summarize(
+        real.filter((row) => !row.engineFixture && !conformance(row.path)),
+        'Documents (without fixtures or function test suites)',
+      ),
+      summarize(
+        real.filter((row) => !row.engineFixture && conformance(row.path)),
+        'Function test suites (without fixtures)',
+      ),
+      ...(rows.some((row) => row.source === 'private')
+        ? [
+            summarize(
+              rows.filter((row) => row.source === 'private'),
+              'Private workbooks',
+            ),
+          ]
+        : []),
+      ...[...new Set(real.map((row) => row.source))].sort().map((source) =>
+        summarize(
+          real.filter((row) => row.source === source),
+          '  ' + source,
+        ),
+      ),
+    ];
     lines.push(
-      `| ${set.label} | ${set.files} | ${set.scored} | ${pct(set.matched, set.scored)} | ${(100 * set.capped).toFixed(3)}% | ${set.wrong} | ${set.type} | ${set.unsupported} | ${set.near} | ${set.perfect} |`,
+      '| Set | Files | Formula cells | Match (pooled) | Match (10% cap) | Wrong value | Wrong type | Unsupported | Near zero | All cells match |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     );
-  }
-  lines.push('');
-
-  const functions = {};
-  for (const row of real.filter(usable)) {
-    for (const [name, score] of Object.entries(row.score.byFunction)) {
-      const entry = (functions[name] ??= { cells: 0, matched: 0, unsupported: 0, files: 0 });
-      entry.cells += score.cells;
-      entry.matched += score.matched;
-      entry.unsupported += score.unsupported;
-      entry.files += 1;
+    for (const set of sets) {
+      lines.push(
+        `| ${set.label} | ${set.files} | ${set.scored} | ${pct(set.matched, set.scored)} | ${(100 * set.capped).toFixed(3)}% | ${set.wrong} | ${set.type} | ${set.unsupported} | ${set.near} | ${set.perfect} |`,
+      );
     }
-  }
-  const names = Object.keys(functions).sort(
-    (a, b) =>
-      functions[b].cells - functions[b].matched - (functions[a].cells - functions[a].matched) ||
-      functions[b].cells - functions[a].cells,
-  );
-  lines.push(
-    `### Per function (${names.length} functions, misses first)`,
-    '',
-    'A cell counts for every function in its formula, so a miss can belong to another function in the same formula or to a precedent.',
-    '',
-    '| Function | Files | Cells | Matched | Match | Unsupported |',
-    '| --- | --- | --- | --- | --- | --- |',
-  );
-  for (const name of names) {
-    const entry = functions[name];
-    lines.push(
-      `| ${name} | ${entry.files} | ${entry.cells} | ${entry.matched} | ${pct(entry.matched, entry.cells)} | ${entry.unsupported} |`,
+    lines.push('');
+
+    const functions = {};
+    for (const row of real.filter(usable)) {
+      for (const [name, score] of Object.entries(row.score.byFunction)) {
+        const entry = (functions[name] ??= { cells: 0, matched: 0, unsupported: 0, files: 0 });
+        entry.cells += score.cells;
+        entry.matched += score.matched;
+        entry.unsupported += score.unsupported;
+        entry.files += 1;
+      }
+    }
+    const names = Object.keys(functions).sort(
+      (a, b) =>
+        functions[b].cells - functions[b].matched - (functions[a].cells - functions[a].matched) ||
+        functions[b].cells - functions[a].cells,
     );
+    lines.push(
+      `### Per function (${names.length} functions, misses first)`,
+      '',
+      'A cell counts for every function in its formula, so a miss can belong to another function in the same formula or to a precedent.',
+      '',
+      '| Function | Files | Cells | Matched | Match | Unsupported |',
+      '| --- | --- | --- | --- | --- | --- |',
+    );
+    for (const name of names) {
+      const entry = functions[name];
+      lines.push(
+        `| ${name} | ${entry.files} | ${entry.cells} | ${entry.matched} | ${pct(entry.matched, entry.cells)} | ${entry.unsupported} |`,
+      );
+    }
+    lines.push('');
   }
-  lines.push('');
 
   const slices = [];
   for (const row of rows.filter((candidate) => candidate.ok)) {
