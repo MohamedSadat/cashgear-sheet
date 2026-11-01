@@ -1,0 +1,72 @@
+/* Tokens some CG components read without defining (menus fall back to dark text otherwise). */
+:root {
+  --cg-color-text: var(--cg-text);
+  --cg-color-text-muted: var(--cg-text-secondary);
+  --cg-color-text-disabled: var(--cg-disabled-text);
+  --cg-color-surface: var(--cg-surface);
+  --cg-color-surface-hover: var(--cg-hover);
+  --cg-color-surface-muted: var(--cg-surface-subtle);
+  --cg-color-surface-raised: var(--cg-surface-raised);
+  --cg-color-surface-subtle: var(--cg-surface-subtle);
+  --cg-color-border: var(--cg-border);
+  --cg-color-danger: var(--cg-danger-text);
+  --cg-color-focus: var(--cg-accent);
+  --cg-color-on-primary: #fff;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--cg-page-bg);
+  color: var(--cg-text);
+  font-family: var(--cg-font-family);
+  font-size: var(--cg-font-size-sm);
+}
+
+.cgs-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+}
+
+.cgs-header,
+.cgs-status {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-4);
+  padding: var(--cg-space-2) var(--cg-space-4);
+  background: var(--cg-surface-subtle);
+}
+
+.cgs-header {
+  justify-content: space-between;
+  border-block-end: var(--cg-border-style);
+}
+
+.cgs-status {
+  border-block-start: var(--cg-border-style);
+  color: var(--cg-text-secondary);
+}
+
+.cgs-title {
+  margin: 0;
+  font-size: var(--cg-font-size-md);
+  font-weight: var(--cg-font-weight-medium);
+}
+
+.cgs-grid {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cgs-sheet-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}

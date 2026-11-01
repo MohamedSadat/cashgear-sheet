@@ -1,0 +1,24 @@
+{
+  "name": "@cgs/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cashgear/ui": "github:MohamedSadat/CashGear.React.UI#96d249949de69c777a95314e0796a4cc803b4f2f",
+    "@cgs/engine-client": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "react": "19.3.1",
+    "vite": "8.3.5"
+  }
+}
