@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>CashGear Sheet bake-off</title>
+<script>
+  window.runWorkbook = (options, timeoutMs) =>
+    new Promise((resolve) => {
+      const worker = new Worker('/chrome/worker.js', { type: 'module' });
+      const timer = setTimeout(() => {
+        worker.terminate();
+        resolve({ ok: false, error: 'timeout' });
+      }, timeoutMs);
+      worker.onmessage = ({ data }) => {
+        clearTimeout(timer);
+        worker.terminate();
+        resolve(data);
+      };
+      worker.onerror = (event) => {
+        clearTimeout(timer);
+        worker.terminate();
+        resolve({ ok: false, error: 'worker: ' + event.message });
+      };
+      worker.postMessage(options);
+    });
+</script>

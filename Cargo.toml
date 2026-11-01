@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "apps/desktop/src-tauri", "bench/harness"]
+members = ["crates/*", "apps/desktop/src-tauri", "bench/harness", "bench/size-probe"]
 # Plain `cargo build` skips the Tauri shell; `--workspace` includes it.
 default-members = [
   "crates/cgs-model",
@@ -27,6 +27,17 @@ serde = { version = "1", features = ["derive"] }
 cgs-model = { path = "crates/cgs-model" }
 cgs-engine = { path = "crates/cgs-engine" }
 cgs-native = { path = "crates/cgs-native" }
+
+# The engines with the Phase 1 patches, each at an exact commit of a fork. See
+# docs/decisions.md. A new upstream release is taken by rebasing the fork on it.
+[patch.crates-io]
+formualizer-common = { git = "https://github.com/MohamedSadat/formualizer", rev = "fd6e3e7b0b36eca501ec7d637710361c99e6868c" }
+formualizer-eval = { git = "https://github.com/MohamedSadat/formualizer", rev = "fd6e3e7b0b36eca501ec7d637710361c99e6868c" }
+formualizer-macros = { git = "https://github.com/MohamedSadat/formualizer", rev = "fd6e3e7b0b36eca501ec7d637710361c99e6868c" }
+formualizer-parse = { git = "https://github.com/MohamedSadat/formualizer", rev = "fd6e3e7b0b36eca501ec7d637710361c99e6868c" }
+formualizer-workbook = { git = "https://github.com/MohamedSadat/formualizer", rev = "fd6e3e7b0b36eca501ec7d637710361c99e6868c" }
+ironcalc = { git = "https://github.com/MohamedSadat/IronCalc", rev = "c91da932ddf8c1db11076f3e2830efdfb7a1e724" }
+ironcalc_base = { git = "https://github.com/MohamedSadat/IronCalc", rev = "c91da932ddf8c1db11076f3e2830efdfb7a1e724" }
 
 [profile.release]
 opt-level = 3

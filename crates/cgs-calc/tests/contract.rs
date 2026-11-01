@@ -198,6 +198,106 @@ fn an_edit_right_after_loading_recalculates_dependents() {
 }
 
 #[test]
+fn slices_finish_and_visible_cells_can_come_first() {
+    for (name, mut engine) in engines() {
+        let mut sheet = vec![(1, 1, num(1.0))];
+        for row in 2..2000 {
+            sheet.push((row, 1, formula(&format!("A{}+1", row - 1), 0.0)));
+        }
+        load(engine.as_mut(), &info(), &[sheet, Vec::new()]);
+        engine.recalc_all().unwrap();
+        let visible = SheetRect {
+            sheet: 0,
+            rect: Rect {
+                top: 1000,
+                left: 1,
+                bottom: 1000,
+                right: 1,
+            },
+        };
+        // A very short budget forces many calls, and nothing may be lost between them.
+        let mut calls = 0;
+        loop {
+            calls += 1;
+            let first = if calls == 1 {
+                vec![visible]
+            } else {
+                Vec::new()
+            };
+            if engine.calc_slice(0, &first).unwrap() == CalcProgress::Done {
+                break;
+            }
+            assert!(calls < 100_000, "{name} never finished");
+            if calls == 1 {
+                let mut out = Grid::default();
+                engine.read_block(visible, &mut out);
+                assert_eq!(
+                    out.0[&(1000, 1)],
+                    CalcValue::Number(1000.0),
+                    "{name} visible first"
+                );
+            }
+        }
+        assert_eq!(
+            at(engine.as_ref(), 0, 40, 1),
+            CalcValue::Number(40.0),
+            "{name}"
+        );
+        let mut out = Grid::default();
+        engine.read_block(
+            SheetRect {
+                sheet: 0,
+                rect: Rect {
+                    top: 1999,
+                    left: 1,
+                    bottom: 1999,
+                    right: 1,
+                },
+            },
+            &mut out,
+        );
+        assert_eq!(out.0[&(1999, 1)], CalcValue::Number(1999.0), "{name}");
+    }
+}
+
+#[test]
+fn an_edit_recalculates_only_dependents_after_a_cached_load() {
+    for (name, mut engine) in engines() {
+        // B1's cached value is wrong on purpose. Formualizer must keep it, because
+        // nothing it depends on changed. IronCalc recalculates everything on any edit.
+        let sheet = vec![
+            (1, 1, num(2.0)),
+            (1, 2, formula("A1*10", 999.0)),
+            (2, 1, num(3.0)),
+            (2, 2, formula("A2*10", 30.0)),
+        ];
+        load(engine.as_mut(), &info(), &[sheet, Vec::new()]);
+        engine
+            .set_cells(&[CellEdit {
+                at: CellRef {
+                    sheet: 0,
+                    row: 2,
+                    col: 1,
+                },
+                input: num(4.0),
+            }])
+            .unwrap();
+        settle(engine.as_mut());
+        assert_eq!(
+            at(engine.as_ref(), 0, 2, 2),
+            CalcValue::Number(40.0),
+            "{name}"
+        );
+        let untouched = if name == "formualizer" { 999.0 } else { 20.0 };
+        assert_eq!(
+            at(engine.as_ref(), 0, 1, 2),
+            CalcValue::Number(untouched),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn names_and_tables_resolve() {
     for (name, mut engine) in engines() {
         let info = BookInfo {
@@ -246,10 +346,7 @@ fn names_and_tables_resolve() {
         engine.recalc_all().unwrap();
         settle(engine.as_mut());
         let read = grid(engine.as_ref(), 0);
-        // Formualizer 0.13.0 reports #CIRC! for a totals row that reads its own table.
-        if name != "formualizer" {
-            assert_eq!(read.0[&(4, 2)], CalcValue::Number(30.0), "{name} subtotal");
-        }
+        assert_eq!(read.0[&(4, 2)], CalcValue::Number(30.0), "{name} subtotal");
         assert_eq!(read.0[&(1, 5)], CalcValue::Number(2.0), "{name} name");
         // IronCalc 0.9.1 gives #NAME? for a name that isn't a plain reference or LAMBDA.
         if name != "ironcalc" {
@@ -260,6 +357,54 @@ fn names_and_tables_resolve() {
             );
         }
         assert_eq!(read.0[&(1, 7)], CalcValue::Number(30.0), "{name} table sum");
+    }
+}
+
+#[test]
+fn this_row_references_read_their_row() {
+    for (name, mut engine) in engines() {
+        let info = BookInfo {
+            tables: vec![TableInfo {
+                name: "Sales".to_string(),
+                sheet: 0,
+                range: Rect {
+                    top: 1,
+                    left: 1,
+                    bottom: 3,
+                    right: 4,
+                },
+                header_row: true,
+                totals_row: false,
+                columns: vec![
+                    "Q1".to_string(),
+                    "Q2".to_string(),
+                    "Sum".to_string(),
+                    "Twice".to_string(),
+                ],
+            }],
+            ..info()
+        };
+        let sheet = vec![
+            (1, 1, text("Q1")),
+            (1, 2, text("Q2")),
+            (1, 3, text("Sum")),
+            (1, 4, text("Twice")),
+            (2, 1, num(1.0)),
+            (2, 2, num(2.0)),
+            (2, 3, formula("SUM(Sales[[#This Row],[Q1]:[Q2]])", 0.0)),
+            (2, 4, formula("Sales[[#This Row],[Sum]]*2", 0.0)),
+            (3, 1, num(3.0)),
+            (3, 2, num(4.0)),
+            (3, 3, formula("SUM(Sales[[#This Row],[Q1]:[Q2]])", 0.0)),
+            (3, 4, formula("Sales[[#This Row],[Sum]]*2", 0.0)),
+        ];
+        load(engine.as_mut(), &info, &[sheet, Vec::new()]);
+        engine.recalc_all().unwrap();
+        settle(engine.as_mut());
+        let read = grid(engine.as_ref(), 0);
+        assert_eq!(read.0[&(2, 3)], CalcValue::Number(3.0), "{name}");
+        assert_eq!(read.0[&(3, 3)], CalcValue::Number(7.0), "{name}");
+        assert_eq!(read.0[&(3, 4)], CalcValue::Number(14.0), "{name}");
     }
 }
 

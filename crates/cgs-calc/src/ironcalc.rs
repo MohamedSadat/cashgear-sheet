@@ -1,8 +1,9 @@
 //! IronCalc behind `CalcEngine`.
 //!
 //! IronCalc keeps the value with each formula cell, so cached values load directly and
-//! nothing calculates until `evaluate`. That call recomputes every formula and can't be
-//! divided, so without an upstream change a "slice" is a whole workbook pass.
+//! nothing calculates until asked. It has no dependency graph: every edit recalculates
+//! every formula, spread over slices, with visible cells first. Between slices the
+//! other cells show their previous values.
 
 use std::collections::HashMap;
 
@@ -10,16 +11,16 @@ use ironcalc_base::cell::CellValue;
 use ironcalc_base::expressions::parser::static_analysis::add_implicit_intersection;
 use ironcalc_base::expressions::parser::stringify::to_rc_format;
 use ironcalc_base::expressions::parser::{new_parser_english, DefinedNameS, Parser};
-use ironcalc_base::expressions::types::CellReferenceRC;
+use ironcalc_base::expressions::types::{CellReferenceIndex, CellReferenceRC};
 use ironcalc_base::types::{
     ArrayKind, Cell, CellType, DefinedName, FormulaValue, Row, SheetData, SpillValue, Table,
     TableColumn, TableStyleInfo, Workbook,
 };
-use ironcalc_base::Model;
+use ironcalc_base::{EvaluationSlices, Model};
 
 use crate::{
-    err, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef, CellSink,
-    FormulaShape, Rect, Result, SheetCells, SheetRect, StructuralOp, StructuralUndo,
+    err, now_ms, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef,
+    CellSink, FormulaShape, Rect, Result, SheetCells, SheetRect, StructuralOp, StructuralUndo,
 };
 
 const LANGUAGE: &str = "en";
@@ -36,6 +37,7 @@ pub struct IronCalcEngine {
     model: Option<Model<'static>>,
     loading: Option<Loading>,
     dirty: bool,
+    slices: Option<EvaluationSlices>,
     changed: Vec<SheetRect>,
     sheets: Vec<String>,
 }
@@ -133,6 +135,7 @@ impl IronCalcEngine {
             model: None,
             loading: None,
             dirty: false,
+            slices: None,
             changed: Vec::new(),
             sheets: Vec::new(),
         }
@@ -382,6 +385,7 @@ impl CalcEngine for IronCalcEngine {
             }
         }
         self.dirty = true;
+        self.slices = None;
         Ok(previous)
     }
 
@@ -414,6 +418,7 @@ impl CalcEngine for IronCalcEngine {
             }
         };
         self.dirty = true;
+        self.slices = None;
         Ok(StructuralUndo {
             inverse,
             removed: Vec::new(),
@@ -422,17 +427,49 @@ impl CalcEngine for IronCalcEngine {
 
     fn recalc_all(&mut self) -> Result<()> {
         self.dirty = true;
+        self.slices = None;
         Ok(())
     }
 
-    fn calc_slice(&mut self, _ms: u32, _first: &[SheetRect]) -> Result<CalcProgress> {
-        if self.dirty {
-            self.dirty = false;
-            self.model()?.evaluate();
-            for sheet in 0..self.sheets.len() as u32 {
-                let whole = self.whole_sheet(sheet);
-                self.changed.push(whole);
+    fn calc_slice(&mut self, ms: u32, first: &[SheetRect]) -> Result<CalcProgress> {
+        if !self.dirty {
+            return Ok(CalcProgress::Done);
+        }
+        let stop_at = now_ms() + f64::from(ms);
+        let mut slices = self.slices.take();
+        let model = self.model()?;
+        let mut slices = slices.take().unwrap_or_else(|| model.begin_evaluation());
+        let first: Vec<CellReferenceIndex> = first
+            .iter()
+            .flat_map(|area| {
+                let sheet = area.sheet;
+                (area.rect.top..=area.rect.bottom).flat_map(move |row| {
+                    (area.rect.left..=area.rect.right).map(move |column| CellReferenceIndex {
+                        sheet,
+                        row: row as i32,
+                        column: column as i32,
+                    })
+                })
+            })
+            .collect();
+        // Reading the clock costs a call into JS, so don't do it for every formula.
+        let mut since_check = 0u32;
+        let finished = model.evaluate_slice(&mut slices, &first, || {
+            since_check += 1;
+            if since_check < 16 {
+                return false;
             }
+            since_check = 0;
+            now_ms() >= stop_at
+        });
+        if !finished {
+            self.slices = Some(slices);
+            return Ok(CalcProgress::More { remaining: None });
+        }
+        self.dirty = false;
+        for sheet in 0..self.sheets.len() as u32 {
+            let whole = self.whole_sheet(sheet);
+            self.changed.push(whole);
         }
         Ok(CalcProgress::Done)
     }

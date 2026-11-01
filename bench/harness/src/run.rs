@@ -42,6 +42,34 @@ fn new_engine(kind: EngineKind) -> Box<dyn CalcEngine> {
     }
 }
 
+pub fn new_engine_by_name(name: &str) -> Option<Box<dyn CalcEngine>> {
+    engine_by_name(name).map(new_engine)
+}
+
+/// Loads a workbook and calculates it fully, for the comparison with Excel.
+pub fn load_for_structural(
+    engine: &mut dyn CalcEngine,
+    book: &Book,
+) -> Result<(), cgs_calc::CalcError> {
+    let mut score = Score::default();
+    let (_, batches) = prepare(book, &mut score);
+    engine.begin_load(&book_info(book))?;
+    for (index, cells) in batches.iter().enumerate() {
+        engine.load_batch(&SheetCells {
+            sheet: index as u32,
+            cells,
+        })?;
+    }
+    engine.finish_load()?;
+    engine.recalc_all()?;
+    settle_engine(engine)
+}
+
+pub fn settle_engine(engine: &mut dyn CalcEngine) -> Result<(), cgs_calc::CalcError> {
+    while engine.calc_slice(SLICE_MS, &[])? != CalcProgress::Done {}
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct RunOptions {
     pub edits: usize,
@@ -158,6 +186,10 @@ pub struct Report {
     /// calculation. Zero is what "loads cached values without calculating" needs.
     pub cached_differs: u64,
     pub cached_read_ms: f64,
+    /// The first edit after a cached load, with nothing calculated before it: the
+    /// time until it has settled, and the longest slice on the way.
+    pub first_edit_ms: f64,
+    pub first_edit_max_slice_ms: f64,
     pub first_calc_ms: f64,
     /// Durations of the `calc_slice` calls of the first calculation.
     pub first_calc_slices: Timings,
@@ -171,6 +203,7 @@ pub struct Report {
     pub top_row_settle_ms: f64,
     /// Cells that a top-row insert should have kept but didn't.
     pub top_row_value_changes: u64,
+    pub top_row_examples: Vec<String>,
     pub memory_after_load: u64,
     pub memory_after_calc: u64,
     pub memory_after_edits: u64,
@@ -655,6 +688,41 @@ fn run_inner(
         return Ok(());
     }
 
+    // Prefer constants that formulas read, so that an edit has something to do.
+    let mut candidates: Vec<CellRef> = Vec::new();
+    if !loaded.constants.is_empty() {
+        let constants: std::collections::HashSet<CellRef> =
+            loaded.constants.iter().copied().collect();
+        candidates = loaded
+            .referenced
+            .iter()
+            .copied()
+            .filter(|cell| constants.contains(cell))
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+        if candidates.is_empty() {
+            candidates.clone_from(&loaded.constants);
+        }
+    }
+    let mut random = Random(0x9E37_79B9_7F4A_7C15 ^ bytes.len() as u64);
+    if let Some(&at) = candidates.get(random.below(candidates.len().max(1))) {
+        let start = now_ms();
+        let undo = engine
+            .set_cells(&[CellEdit {
+                at,
+                input: CellInput::Value(CalcValue::Number(12345.0)),
+            }])
+            .map_err(|e| e.0)?;
+        let mut slices = Vec::new();
+        settle(engine.as_mut(), &mut slices)?;
+        report.first_edit_ms = now_ms() - start;
+        report.first_edit_max_slice_ms = slices.iter().copied().fold(0.0, f64::max);
+        // Put the value back, so that scoring below compares like with like.
+        engine.set_cells(&undo).map_err(|e| e.0)?;
+        engine.take_changed();
+    }
+
     engine.recalc_all().map_err(|e| e.0)?;
     let mut first_slices = Vec::new();
     report.first_calc_ms = settle(engine.as_mut(), &mut first_slices)?;
@@ -673,24 +741,6 @@ fn run_inner(
     let mut slices = first_slices;
     let mut edit_slices = Vec::new();
     let mut edits = Vec::new();
-    // Prefer constants that formulas read, so that an edit has something to do.
-    let mut candidates: Vec<CellRef> = Vec::new();
-    if options.edits > 0 && !loaded.constants.is_empty() {
-        let constants: std::collections::HashSet<CellRef> =
-            loaded.constants.iter().copied().collect();
-        candidates = loaded
-            .referenced
-            .iter()
-            .copied()
-            .filter(|cell| constants.contains(cell))
-            .collect();
-        candidates.sort_unstable();
-        candidates.dedup();
-        if candidates.is_empty() {
-            candidates = loaded.constants.clone();
-        }
-    }
-    let mut random = Random(0x9E37_79B9_7F4A_7C15 ^ bytes.len() as u64);
     if !candidates.is_empty() {
         for _ in 0..options.edits {
             let at = candidates[random.below(candidates.len())];
@@ -748,6 +798,14 @@ fn run_inner(
                 };
                 if !same {
                     report.top_row_value_changes += 1;
+                    if options.examples && report.top_row_examples.len() < 5 {
+                        report.top_row_examples.push(format!(
+                            "{}{row}: {} -> {}",
+                            crate::formula::col_to_letters(i64::from(col)),
+                            describe(value),
+                            moved.map_or("(gone)".to_string(), describe),
+                        ));
+                    }
                 }
             }
         }

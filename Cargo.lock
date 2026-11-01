@@ -671,6 +671,14 @@ name = "cgs-refs"
 version = "0.0.0"
 
 [[package]]
+name = "cgs-size-probe"
+version = "0.0.0"
+dependencies = [
+ "cgs-calc",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "cgs-wasm"
 version = "0.0.0"
 dependencies = [
@@ -900,7 +908,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 2.0.119",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1360,8 +1368,7 @@ dependencies = [
 [[package]]
 name = "formualizer-common"
 version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59c4964d9d527263ca099a447aa7a0519945c1535a05b2c33254dae8ce538f7c"
+source = "git+https://github.com/MohamedSadat/formualizer?rev=fd6e3e7b0b36eca501ec7d637710361c99e6868c#fd6e3e7b0b36eca501ec7d637710361c99e6868c"
 dependencies = [
  "chrono",
 ]
@@ -1369,8 +1376,7 @@ dependencies = [
 [[package]]
 name = "formualizer-eval"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dfb1ac9617f08c7dd099fe3b56d1ca4220d90c43b105311a8fb97a60b96ec63"
+source = "git+https://github.com/MohamedSadat/formualizer?rev=fd6e3e7b0b36eca501ec7d637710361c99e6868c#fd6e3e7b0b36eca501ec7d637710361c99e6868c"
 dependencies = [
  "arrow",
  "arrow-array",
@@ -1398,8 +1404,7 @@ dependencies = [
 [[package]]
 name = "formualizer-macros"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb063a7dd5b9d742d3d3151eea8aab3891601815799e4b9d0f977f42b97fd443"
+source = "git+https://github.com/MohamedSadat/formualizer?rev=fd6e3e7b0b36eca501ec7d637710361c99e6868c#fd6e3e7b0b36eca501ec7d637710361c99e6868c"
 dependencies = [
  "formualizer-common",
  "proc-macro2",
@@ -1410,8 +1415,7 @@ dependencies = [
 [[package]]
 name = "formualizer-parse"
 version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3385b80d3b1be2244f62cf90a7dc8059409854e4220a61c69fcbbff3a25ec8e"
+source = "git+https://github.com/MohamedSadat/formualizer?rev=fd6e3e7b0b36eca501ec7d637710361c99e6868c#fd6e3e7b0b36eca501ec7d637710361c99e6868c"
 dependencies = [
  "formualizer-common",
  "once_cell",
@@ -1421,8 +1425,7 @@ dependencies = [
 [[package]]
 name = "formualizer-workbook"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef984f1bf4f0797f40806476d32e98f061216c1bd402af0142166ebbef805371"
+source = "git+https://github.com/MohamedSadat/formualizer?rev=fd6e3e7b0b36eca501ec7d637710361c99e6868c#fd6e3e7b0b36eca501ec7d637710361c99e6868c"
 dependencies = [
  "atoi_simd",
  "chrono",
@@ -2143,8 +2146,7 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 [[package]]
 name = "ironcalc"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aabf0987c9f8e941476a7bfd2564496ca9f97bbf25a7165f7d499895b35fff0c"
+source = "git+https://github.com/MohamedSadat/IronCalc?rev=c91da932ddf8c1db11076f3e2830efdfb7a1e724#c91da932ddf8c1db11076f3e2830efdfb7a1e724"
 dependencies = [
  "bitcode",
  "chrono",
@@ -2160,8 +2162,7 @@ dependencies = [
 [[package]]
 name = "ironcalc_base"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecf55ea346dcda5e0f0034d8300dc2d40ffbcb64e7c4db23bfa1d8a0cf11c738"
+source = "git+https://github.com/MohamedSadat/IronCalc?rev=c91da932ddf8c1db11076f3e2830efdfb7a1e724#c91da932ddf8c1db11076f3e2830efdfb7a1e724"
 dependencies = [
  "bitcode",
  "chrono",

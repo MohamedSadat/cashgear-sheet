@@ -1,16 +1,18 @@
 //! Formualizer behind `CalcEngine`.
 //!
 //! Loading uses deferred graph building: cached values go into the Arrow store, and
-//! formula text is staged without being parsed. So opening calculates nothing and a
-//! staged formula keeps its cached value. `evaluate_cells` then builds and calculates only
-//! what a chunk of cells needs, and each call commits what it did. A cancelled full
-//! evaluation can't be used for slices: it puts everything it did back to dirty.
+//! formula text is staged without being parsed. So opening calculates nothing, and a
+//! staged formula keeps its cached value. The first edit builds the graph and adopts
+//! those values as current, so that only what depends on the edit recalculates.
+//! `evaluate_slice` keeps what it finished, unlike a cancelled full evaluation, which
+//! puts everything it did back to dirty.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::time::Duration;
 
 use formualizer_common::{DateSystem, ExcelError, ExcelErrorKind, LiteralValue};
 use formualizer_eval::arrow_store::IngestBuilder;
-use formualizer_eval::engine::eval::Engine;
+use formualizer_eval::engine::eval::{Engine, EvaluationSlice};
 use formualizer_eval::engine::named_range::{NameScope, NamedDefinition};
 use formualizer_eval::engine::{EvalConfig, FormulaParsePolicy, TemporalEgress};
 use formualizer_eval::reference::{CellRef as FzCell, Coord, RangeRef};
@@ -19,12 +21,9 @@ use formualizer_workbook::workbook::WBResolver;
 use formualizer_workbook::{Workbook, WorkbookConfig};
 
 use crate::{
-    err, now_ms, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef,
-    CellSink, FormulaShape, Rect, Result, SheetCells, SheetRect, StructuralOp, StructuralUndo,
+    err, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef, CellSink,
+    FormulaShape, Rect, Result, SheetCells, SheetRect, StructuralOp, StructuralUndo,
 };
-
-const START_CHUNK: usize = 16;
-const MAX_CHUNK: usize = 65_536;
 
 pub struct FormualizerEngine {
     workbook: Workbook,
@@ -34,15 +33,16 @@ pub struct FormualizerEngine {
     extents: Vec<(u32, u32)>,
     /// Every formula cell, kept in sheet order for full recalculation.
     formulas: Vec<Vec<(u32, u32)>>,
-    dynamic_anchors: Vec<(u32, u32, u32)>,
+    /// Array formulas, which must run again to rebuild their spills.
+    array_anchors: Vec<(CellRef, String)>,
     /// Cells showing a saved spill. A stored value would block the real spill, so
     /// these empty out when calculation first starts.
     cached_spills: Vec<CellRef>,
-    pending: VecDeque<CellRef>,
-    chunk: usize,
+    /// Staged formulas haven't been adopted or calculated yet.
+    fresh: bool,
+    slice: EvaluationSlice,
+    idle: bool,
     changed: Vec<SheetRect>,
-    /// True once an edit may have dirtied cells that the pending list doesn't hold.
-    needs_settle: bool,
 }
 
 impl Default for FormualizerEngine {
@@ -123,12 +123,12 @@ impl FormualizerEngine {
             loading: Vec::new(),
             extents: Vec::new(),
             formulas: Vec::new(),
-            dynamic_anchors: Vec::new(),
+            array_anchors: Vec::new(),
             cached_spills: Vec::new(),
-            pending: VecDeque::new(),
-            chunk: START_CHUNK,
+            fresh: true,
+            slice: EvaluationSlice::default(),
+            idle: true,
             changed: Vec::new(),
-            needs_settle: false,
         }
     }
 
@@ -207,6 +207,33 @@ impl FormualizerEngine {
         }
     }
 
+    /// Makes staged formulas part of the graph, keeping their saved values, before
+    /// the first edit. Array formulas stay due, because their spills need rebuilding.
+    fn adopt(&mut self) -> Result<()> {
+        if !self.fresh {
+            return Ok(());
+        }
+        self.fresh = false;
+        self.engine().adopt_stored_values().map_err(err)?;
+        self.rearm_arrays()
+    }
+
+    fn rearm_arrays(&mut self) -> Result<()> {
+        for cell in std::mem::take(&mut self.cached_spills) {
+            let name = self.sheets[cell.sheet as usize].clone();
+            self.workbook
+                .set_value(&name, cell.row, cell.col, LiteralValue::Empty)
+                .map_err(err)?;
+        }
+        for (cell, text) in self.array_anchors.clone() {
+            let name = self.sheets[cell.sheet as usize].clone();
+            self.workbook
+                .set_formula(&name, cell.row, cell.col, &text)
+                .map_err(err)?;
+        }
+        Ok(())
+    }
+
     fn install_values(&mut self) -> Result<()> {
         let date_system = self.workbook.eval_config().date_system;
         let loading = std::mem::take(&mut self.loading);
@@ -251,7 +278,11 @@ impl CalcEngine for FormualizerEngine {
         self.loading = vec![HashMap::new(); book.sheets.len()];
         self.extents = vec![(0, 0); book.sheets.len()];
         self.formulas = vec![Vec::new(); book.sheets.len()];
-        self.pending.clear();
+        self.array_anchors.clear();
+        self.cached_spills.clear();
+        self.fresh = true;
+        self.slice.reset();
+        self.idle = true;
         let names: Vec<&str> = book.sheets.iter().map(String::as_str).collect();
         self.engine().adopt_file_sheets(names).map_err(err)?;
         for name in &book.names {
@@ -307,8 +338,15 @@ impl CalcEngine for FormualizerEngine {
                         self.loading[index].insert((*row, *col), to_literal(value));
                     }
                     self.formulas[index].push((*row, *col));
-                    if let FormulaShape::Dynamic(_) = shape {
-                        self.dynamic_anchors.push((cells.sheet, *row, *col));
+                    if !matches!(shape, FormulaShape::Normal) {
+                        self.array_anchors.push((
+                            CellRef {
+                                sheet: cells.sheet,
+                                row: *row,
+                                col: *col,
+                            },
+                            format!("={text}"),
+                        ));
                     }
                     self.engine()
                         .stage_formula_text(&name, *row, *col, format!("={text}"));
@@ -332,6 +370,9 @@ impl CalcEngine for FormualizerEngine {
     }
 
     fn set_cells(&mut self, edits: &[CellEdit]) -> Result<Vec<CellEdit>> {
+        self.adopt()?;
+        self.slice.reset();
+        self.idle = false;
         let mut previous = Vec::with_capacity(edits.len());
         for edit in edits {
             let name = self.sheet_name(edit.at.sheet)?.to_string();
@@ -378,11 +419,13 @@ impl CalcEngine for FormualizerEngine {
                 CellInput::Spill { .. } => {}
             }
         }
-        self.needs_settle = true;
         Ok(previous)
     }
 
     fn structural(&mut self, op: &StructuralOp) -> Result<StructuralUndo> {
+        self.adopt()?;
+        self.slice.reset();
+        self.idle = false;
         let (sheet, inverse) = match *op {
             StructuralOp::InsertRows { sheet, at, count } => {
                 (sheet, StructuralOp::DeleteRows { sheet, at, count })
@@ -413,9 +456,6 @@ impl CalcEngine for FormualizerEngine {
                 engine.delete_columns(&name, at, count).map_err(err)?;
             }
         }
-        // Formula positions moved. Reading them back would need engine internals,
-        // and only full recalculation uses the list, so it is rebuilt there.
-        self.needs_settle = true;
         Ok(StructuralUndo {
             inverse,
             removed: Vec::new(),
@@ -423,39 +463,49 @@ impl CalcEngine for FormualizerEngine {
     }
 
     fn recalc_all(&mut self) -> Result<()> {
-        self.pending.clear();
-        for (sheet, cells) in self.formulas.iter().enumerate() {
-            for &(row, col) in cells {
-                self.pending.push_back(CellRef {
-                    sheet: sheet as u32,
-                    row,
-                    col,
-                });
-            }
+        self.slice.reset();
+        self.idle = false;
+        if self.fresh {
+            // Everything staged is dirty when it is built, so nothing needs marking.
+            self.fresh = false;
+            return self.rearm_arrays();
         }
-        // Whatever was staged gets built and calculated by its first request. Cells
-        // already built must be marked by hand.
-        self.workbook
-            .engine_mut()
-            .mark_all_formulas_dirty_for_test();
+        self.engine().mark_all_formulas_dirty();
         Ok(())
     }
 
     fn calc_slice(&mut self, ms: u32, first: &[SheetRect]) -> Result<CalcProgress> {
-        let budget = f64::from(ms);
-        for cell in std::mem::take(&mut self.cached_spills) {
-            let name = self.sheets[cell.sheet as usize].clone();
-            self.workbook
-                .set_value(&name, cell.row, cell.col, LiteralValue::Empty)
-                .map_err(err)?;
+        if self.idle {
+            return Ok(CalcProgress::Done);
         }
-        if self.pending.is_empty() {
-            if self.needs_settle {
-                // No public list of dirty cells yet: an edit settles in one call.
-                self.needs_settle = false;
-                self.workbook.evaluate_all().map_err(err)?;
-                self.changed.extend(self.extents.iter().enumerate().map(
-                    |(sheet, &(rows, cols))| SheetRect {
+        // Volatile and cycle work can stay due; a slice that finds nothing dirty ends it.
+        let budget = Duration::from_secs_f64(f64::from(ms) / 1000.0);
+        if !first.is_empty() {
+            let sheets = &self.sheets;
+            let targets: Vec<(&str, u32, u32)> = first
+                .iter()
+                .flat_map(|area| {
+                    let name = sheets[area.sheet as usize].as_str();
+                    (area.rect.top..=area.rect.bottom).flat_map(move |row| {
+                        (area.rect.left..=area.rect.right).map(move |col| (name, row, col))
+                    })
+                })
+                .collect();
+            self.workbook.evaluate_cells(&targets).map_err(err)?;
+            // Those cells are clean now, so a pass planned before them is out of date.
+            self.slice.reset();
+        }
+        let result = self
+            .workbook
+            .engine_mut()
+            .evaluate_slice(&mut self.slice, budget)
+            .map_err(err)?;
+        if result.computed_vertices > 0 {
+            self.changed.extend(
+                self.extents
+                    .iter()
+                    .enumerate()
+                    .map(|(sheet, &(rows, cols))| SheetRect {
                         sheet: sheet as u32,
                         rect: Rect {
                             top: 1,
@@ -463,64 +513,14 @@ impl CalcEngine for FormualizerEngine {
                             bottom: rows.max(1),
                             right: cols.max(1),
                         },
-                    },
-                ));
-            }
+                    }),
+            );
+        }
+        if result.finished {
+            self.idle = true;
             return Ok(CalcProgress::Done);
         }
-        if !first.is_empty() {
-            let visible = |cell: &CellRef| {
-                first
-                    .iter()
-                    .any(|area| area.sheet == cell.sheet && area.rect.contains(cell.row, cell.col))
-            };
-            let (front, back): (Vec<CellRef>, Vec<CellRef>) = std::mem::take(&mut self.pending)
-                .into_iter()
-                .partition(visible);
-            self.pending = front.into_iter().chain(back).collect();
-        }
-        let start = now_ms();
-        let mut spent = 0.0;
-        while spent < budget && !self.pending.is_empty() {
-            let take = self.chunk.min(self.pending.len());
-            let batch: Vec<CellRef> = self.pending.drain(..take).collect();
-            let sheets = &self.sheets;
-            let targets: Vec<(&str, u32, u32)> = batch
-                .iter()
-                .map(|cell| (sheets[cell.sheet as usize].as_str(), cell.row, cell.col))
-                .collect();
-            let chunk_start = now_ms();
-            self.workbook.evaluate_cells(&targets).map_err(err)?;
-            let took = now_ms() - chunk_start;
-            for cell in &batch {
-                self.changed.push(SheetRect {
-                    sheet: cell.sheet,
-                    rect: Rect {
-                        top: cell.row,
-                        left: cell.col,
-                        bottom: cell.row,
-                        right: cell.col,
-                    },
-                });
-            }
-            // Aim each call at a quarter of the budget.
-            let aim = (budget / 4.0).max(1.0);
-            self.chunk = if took < aim / 2.0 {
-                (self.chunk * 2).min(MAX_CHUNK)
-            } else if took > aim * 2.0 {
-                (self.chunk / 2).max(1)
-            } else {
-                self.chunk
-            };
-            spent = now_ms() - start;
-        }
-        Ok(if self.pending.is_empty() && !self.needs_settle {
-            CalcProgress::Done
-        } else {
-            CalcProgress::More {
-                remaining: Some(self.pending.len()),
-            }
-        })
+        Ok(CalcProgress::More { remaining: None })
     }
 
     fn take_changed(&mut self) -> Vec<SheetRect> {

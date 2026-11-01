@@ -1,0 +1,22 @@
+[package]
+name = "cgs-size-probe"
+description = "Measures what one formula engine and its adapter add to the WASM. Never ships."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["formualizer", "ironcalc"]
+formualizer = ["cgs-calc/formualizer"]
+ironcalc = ["cgs-calc/ironcalc"]
+
+[dependencies]
+cgs-calc = { path = "../../crates/cgs-calc" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true

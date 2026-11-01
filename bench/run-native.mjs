@@ -19,14 +19,14 @@ const concurrency = Number(option('jobs', '8'));
 const own = rest.includes('--own');
 const bin = join(root, 'target', option('profile', 'fast'), own ? 'own-loader.exe' : 'run.exe');
 const manifest = JSON.parse(
-  await readFile(join(root, 'tests/workbooks/public/manifest.json'), 'utf8'),
+  await readFile(join(root, 'tests/workbooks', option('set', 'public'), 'manifest.json'), 'utf8'),
 );
 const files = manifest.files.filter((file) => file.path.includes(filter));
 const stream = createWriteStream(out);
 
 function runOne(file) {
   return new Promise((done) => {
-    const path = join(root, 'tests/workbooks/public', file.path);
+    const path = join(root, 'tests/workbooks', option('set', 'public'), file.path);
     const child = spawn(bin, own ? [engine, path] : [engine, path, edits, '1']);
     let stdout = '';
     const timer = setTimeout(() => child.kill(), timeoutMs);

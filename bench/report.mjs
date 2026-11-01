@@ -14,6 +14,16 @@ const percentile = (sorted, q) =>
 const pct = (n, d) => (d ? ((100 * n) / d).toFixed(3) + '%' : 'n/a');
 const ms = (value) => (value >= 100 ? value.toFixed(0) : value.toFixed(1));
 
+/**
+ * Function test suites: workbooks written to probe edge cases, which are not what real
+ * workbooks look like. The exit target pools everything; this split shows how much of a
+ * miss rate comes from each kind.
+ */
+export const conformance = (path) =>
+  /calc_tests|calc_test_no_export|^xlcalculator|^pycel|^formulas\/|^koala|FormulaEval|Format[A-Za-z]*Tests|FormatApproxTests|ElapsedFormat|FloorCeiling|functions__|Matrix|functions-excel|Trimfunctions|SubtotalFilters|FormulaTest|TextFormatTests|ceiling-floor/i.test(
+    path,
+  );
+
 export const usable = (row) =>
   row.ok &&
   row.provenance?.excelSaved &&
@@ -101,6 +111,14 @@ for (const input of inputs) {
       real.filter((row) => !row.engineFixture),
       'Without either engine’s own fixtures',
     ),
+    summarize(
+      real.filter((row) => !row.engineFixture && !conformance(row.path)),
+      'Documents (without fixtures or function test suites)',
+    ),
+    summarize(
+      real.filter((row) => !row.engineFixture && conformance(row.path)),
+      'Function test suites (without fixtures)',
+    ),
     ...(rows.some((row) => row.source === 'private')
       ? [
           summarize(
@@ -159,10 +177,8 @@ for (const input of inputs) {
   lines.push('');
 
   const slices = [];
-  const heavy = [];
   for (const row of rows.filter((candidate) => candidate.ok)) {
     for (const sample of row.sliceSamples ?? []) slices.push(sample);
-    if (row.firstCalcSlices?.count) heavy.push(row);
   }
   slices.sort((a, b) => a - b);
   lines.push(
@@ -171,6 +187,26 @@ for (const input of inputs) {
     `${slices.length} slices: p50 ${ms(percentile(slices, 0.5))} ms, p99 ${ms(percentile(slices, 0.99))} ms, max ${ms(slices.at(-1) ?? 0)} ms.`,
     '',
   );
+  const generated = rows.filter((row) => row.source === 'generated');
+  if (generated.length) {
+    lines.push(
+      '### Scale workbooks',
+      '',
+      '| Workbook | Formulas | Load | First edit after a cached load | Its longest slice | First calc | Slices | Slice p99 | Slice max | Edit p50 | Edit p99 | Edit slice p99 | Edit slice max | Top-row insert | Then settle | Peak memory | Match |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    );
+    for (const row of generated) {
+      if (!row.ok) {
+        lines.push(`| ${row.path} | | ${row.error} | | | | | | | | | | | | | | |`);
+        continue;
+      }
+      const mib = row.wasmMemoryBytes ? (row.wasmMemoryBytes / 1048576).toFixed(0) + ' MiB' : '';
+      lines.push(
+        `| ${row.path} | ${row.formulas} | ${ms(row.loadMs)} ms | ${ms(row.firstEditMs)} ms | ${ms(row.firstEditMaxSliceMs)} ms | ${ms(row.firstCalcMs)} ms | ${row.firstCalcSlices.count} | ${ms(row.firstCalcSlices.p99Ms)} | ${ms(row.firstCalcSlices.maxMs)} | ${ms(row.edit.p50Ms)} | ${ms(row.edit.p99Ms)} | ${ms(row.editSlices.p99Ms)} | ${ms(row.editSlices.maxMs)} | ${ms(row.topRowInsertMs)} ms | ${ms(row.topRowSettleMs)} ms | ${mib} | ${pct(row.score.matched, row.score.scored)} |`,
+      );
+    }
+    lines.push('');
+  }
   if (detail) {
     const worst = rows
       .filter(usable)
