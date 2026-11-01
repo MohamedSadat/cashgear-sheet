@@ -119,7 +119,7 @@ This runs in that repo, independently of the phases, and can start alongside Pha
 **Exit:**
 - [ ] `npm run verify` passes.
 - [ ] Stories cover light, dark and RTL.
-- [ ] Commit pushed, and this repo's pin bumped to it.
+- [ ] Commit pushed and its hash reported. Track U doesn't edit this repo, so it never writes alongside a running phase; the next phase here bumps the pin.
 
 Later gaps go here too when phases find them, such as scatter charts in `CgChart`.
 
