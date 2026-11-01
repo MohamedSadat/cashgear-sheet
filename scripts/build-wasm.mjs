@@ -5,8 +5,8 @@ import { gzipSync } from 'node:zlib';
 import { bindgenPath, bindgenVersion, root, run, wasmOutput } from './lib.mjs';
 
 const release = process.argv.includes('--release');
-// Room for the published Formualizer (3.6 MB); Phase 1 sets the real budget.
-const limitBytes = 4000000;
+// The Phase 1 budget: the formula engine plus our own crates, gzipped.
+const limitBytes = 5000000;
 const bindgen = bindgenPath();
 const check = spawnSync(bindgen, ['--version'], { encoding: 'utf8' });
 if (check.status !== 0 || check.stdout.trim() !== 'wasm-bindgen ' + bindgenVersion) {
@@ -54,5 +54,5 @@ if (release) {
     JSON.stringify({ wasmBytes, gzippedBytes, limitBytes }, null, 2) + '\n',
   );
   console.log('Release WASM: ' + wasmBytes + ' bytes; gzip: ' + gzippedBytes + ' / ' + limitBytes);
-  if (gzippedBytes > limitBytes) throw new Error('Release WASM gzip size exceeds 4 MB');
+  if (gzippedBytes > limitBytes) throw new Error('Release WASM gzip size exceeds 5 MB');
 }

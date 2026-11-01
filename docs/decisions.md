@@ -70,3 +70,21 @@ Every answer and default, with its date. Newest section last.
 | Theme storage | `localStorage` key `cgs-theme`, holding `system`, `light` or `dark` | Per-device convenience. It renders correctly without storage |
 | Static hosting headers | Only Vite (dev and preview) and Tauri set COOP/COEP for now | Hosting is a Phase 9 question, and that host must set the same headers |
 | Formatting scope | Prettier skips `docs/` and `CLAUDE.md` | The plan and logs are written by hand, and their tables stay compact |
+
+## 2026-11-01: Phase 1
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Which real workbooks join a private test set? | A folder of yours, path to come before the final measurement. It is read on this PC only and stays out of git. Only per-function counts reach the repo, with no file names or cell values. Excel COM opens these files read-only and never saves them |
+| Fork if upstream refuses patches? | Yes, when needed. Open issues and PRs upstream from your GitHub account. If one is refused or still unmerged at the end of the phase, pin the patch as a public fork under `MohamedSadat` at an exact commit, and rebase it whenever a new upstream version is taken |
+| WASM size budget | 5 MB gzipped, checked by `scripts/build-wasm.mjs` on release builds |
+| Exit targets | As proposed: 200+ files; 99.5% of formula cells match Excel's stored values (relative 1e-9, skipping volatile and external), pooled across non-generated files with no file over 10% of the pool; slice p99 of 50 ms or less on the reference machine |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default | Reason |
+| --- | --- | --- |
+| Excel COM and downloaded files | COM opens only generated workbooks and your private ones, read-only, with macros and external links off. Downloaded public files are only parsed and compared against their stored `<v>` | Public files are untrusted, and the accuracy test doesn't need Excel to open them |
+| Timing noise | Measure while the PC is in normal use and repeat noisy runs, rather than asking you to keep it idle | Timing is only needed at the end of the phase |
