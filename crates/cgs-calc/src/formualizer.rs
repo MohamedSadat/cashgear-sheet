@@ -16,7 +16,10 @@ use formualizer_eval::engine::eval::{Engine, EvaluationSlice};
 use formualizer_eval::engine::named_range::{NameScope, NamedDefinition};
 use formualizer_eval::engine::{EvalConfig, FormulaParsePolicy, TemporalEgress};
 use formualizer_eval::reference::{CellRef as FzCell, Coord, RangeRef};
-use formualizer_parse::parser::{parse, ASTNodeType, ReferenceType};
+use formualizer_parse::parser::{
+    parse, ASTNode, ASTNodeType, BinaryOperator, ReferenceType, UnaryOperator,
+};
+use formualizer_parse::pretty::canonical_formula;
 use formualizer_workbook::workbook::WBResolver;
 use formualizer_workbook::{Workbook, WorkbookConfig};
 
@@ -112,6 +115,41 @@ pub fn from_literal(value: &LiteralValue) -> CalcValue {
         other => other
             .as_serial_number()
             .map_or(CalcValue::Empty, CalcValue::Number),
+    }
+}
+
+/// A file marks a formula that spills as an array, so a plain formula such as
+/// `A:A&"/"&B:B` reads each range at its own row or column. Excel shows this as
+/// `@A:A`. Only a formula of operators and references is rewritten here; what a function
+/// does with a range belongs to the function. Returns the text if anything changed.
+fn implicit_intersection(text: &str) -> Option<String> {
+    if !text.contains(':') || text.contains('(') {
+        return None;
+    }
+    let mut ast = parse(format!("={text}")).ok()?;
+    wrap_ranges(&mut ast).then(|| canonical_formula(&ast))
+}
+
+fn wrap_ranges(node: &mut ASTNode) -> bool {
+    match &mut node.node_type {
+        ASTNodeType::Reference {
+            reference: ReferenceType::Range { .. },
+            ..
+        } => {
+            let inner = node.clone();
+            node.node_type = ASTNodeType::UnaryOp {
+                op: UnaryOperator::ImplicitIntersection,
+                expr: Box::new(inner),
+            };
+            true
+        }
+        ASTNodeType::UnaryOp { expr, .. } => wrap_ranges(expr),
+        ASTNodeType::BinaryOp { op, left, right } if *op != BinaryOperator::Range => {
+            let left = wrap_ranges(left);
+            let right = wrap_ranges(right);
+            left || right
+        }
+        _ => false,
     }
 }
 
@@ -285,11 +323,6 @@ impl CalcEngine for FormualizerEngine {
         self.idle = true;
         let names: Vec<&str> = book.sheets.iter().map(String::as_str).collect();
         self.engine().adopt_file_sheets(names).map_err(err)?;
-        for name in &book.names {
-            // A name the engine can't take only hurts the formulas that use it, and
-            // those show up in the per-function report.
-            let _ = self.define_name(name);
-        }
         for &(sheet, row) in &book.hidden_rows {
             let name = self.sheet_name(sheet)?.to_string();
             let _ = self.workbook.set_row_hidden(&name, row, true);
@@ -314,6 +347,18 @@ impl CalcEngine for FormualizerEngine {
                 table.columns.clone(),
                 table.totals_row,
             );
+        }
+        // After the tables, because a name can read one. A name can also read a name
+        // that comes later, so failures go round again while any succeed. One the engine
+        // still can't take only hurts the formulas that use it, and those show up in the
+        // per-function report.
+        let mut waiting: Vec<&crate::NameInfo> = book.names.iter().collect();
+        loop {
+            let before = waiting.len();
+            waiting.retain(|name| self.define_name(name).is_err());
+            if waiting.is_empty() || waiting.len() == before {
+                break;
+            }
         }
         Ok(())
     }
@@ -348,8 +393,12 @@ impl CalcEngine for FormualizerEngine {
                             format!("={text}"),
                         ));
                     }
-                    self.engine()
-                        .stage_formula_text(&name, *row, *col, format!("={text}"));
+                    let source = match shape {
+                        FormulaShape::Normal => implicit_intersection(text),
+                        _ => None,
+                    };
+                    let staged = source.unwrap_or_else(|| format!("={text}"));
+                    self.engine().stage_formula_text(&name, *row, *col, staged);
                 }
                 CellInput::Spill { cached, .. } => {
                     self.loading[index].insert((*row, *col), to_literal(cached));

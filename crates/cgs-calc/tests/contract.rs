@@ -409,6 +409,90 @@ fn this_row_references_read_their_row() {
 }
 
 #[test]
+fn a_plain_formula_reads_a_range_at_its_own_row() {
+    for (name, mut engine) in engines() {
+        let sheet = vec![
+            (1, 1, text("one")),
+            (2, 1, text("two")),
+            (3, 1, text("three")),
+            (2, 3, formula("A:A&\"!\"", 0.0)),
+            (3, 3, formula("A1:A3&\"?\"", 0.0)),
+        ];
+        load(engine.as_mut(), &info(), &[sheet, Vec::new()]);
+        engine.recalc_all().unwrap();
+        settle(engine.as_mut());
+        assert_eq!(
+            at(engine.as_ref(), 0, 2, 3),
+            CalcValue::Text("two!".to_string()),
+            "{name}"
+        );
+        assert_eq!(
+            at(engine.as_ref(), 0, 3, 3),
+            CalcValue::Text("three?".to_string()),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_name_can_read_a_table_or_a_later_name() {
+    for (name, mut engine) in engines() {
+        // IronCalc 0.9.1 gives #NAME? for a name that isn't a plain reference or LAMBDA.
+        if name == "ironcalc" {
+            continue;
+        }
+        let info = BookInfo {
+            names: vec![
+                NameInfo {
+                    name: "Doubled".to_string(),
+                    formula: "Total*2".to_string(),
+                    local_sheet: None,
+                },
+                NameInfo {
+                    name: "Total".to_string(),
+                    formula: "SUM(Sales[Cost])".to_string(),
+                    local_sheet: None,
+                },
+            ],
+            tables: vec![TableInfo {
+                name: "Sales".to_string(),
+                sheet: 0,
+                range: Rect {
+                    top: 1,
+                    left: 1,
+                    bottom: 3,
+                    right: 1,
+                },
+                header_row: true,
+                totals_row: false,
+                columns: vec!["Cost".to_string()],
+            }],
+            ..info()
+        };
+        let sheet = vec![
+            (1, 1, text("Cost")),
+            (2, 1, num(10.0)),
+            (3, 1, num(20.0)),
+            (1, 3, formula("Total", 0.0)),
+            (2, 3, formula("Doubled", 0.0)),
+        ];
+        load(engine.as_mut(), &info, &[sheet, Vec::new()]);
+        engine.recalc_all().unwrap();
+        settle(engine.as_mut());
+        assert_eq!(
+            at(engine.as_ref(), 0, 1, 3),
+            CalcValue::Number(30.0),
+            "{name}"
+        );
+        assert_eq!(
+            at(engine.as_ref(), 0, 2, 3),
+            CalcValue::Number(60.0),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn hidden_rows_reach_subtotal() {
     for (name, mut engine) in engines() {
         let info = BookInfo {
