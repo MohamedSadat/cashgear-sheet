@@ -30,7 +30,7 @@ CashGear Sheet is an Excel-like spreadsheet for the browser and desktop, built o
 
 ## Layout
 
-The repo is at the plan stage, and Phase 0 creates the layout below. See "Architecture" in `docs/PLAN.md`.
+See "Architecture" in `docs/PLAN.md`.
 
 - `crates/`: `cgs-model`, `cgs-calc`, `cgs-numfmt`, `cgs-refs`, `cgs-xlsx`, `cgs-pivot`, `cgs-engine`, `cgs-wasm` (the only JS-facing API) and `cgs-native` (desktop only).
 - `apps/web`: Vite PWA. `apps/desktop/src-tauri`: Tauri 2 shell, left out of `default-members`.
@@ -46,7 +46,7 @@ CashGear Video (`D:\CashGear\Projects\cashgear-moviepro`) is the model to follow
 
 ## Commands
 
-Phase 0 adds these. Checks run in CI, in this order:
+First run `pnpm install` and `pnpm setup:wasm` (builds the pinned `wasm-bindgen` into `.tools/`). `pnpm dev:web` and `pnpm dev:desktop` start the app. Checks run in CI, in this order:
 
 ```bash
 cargo fmt --all --check
