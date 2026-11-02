@@ -1,10 +1,7 @@
-//! The `CalcEngine` trait and the formula engine adapters. The engine is the only
-//! cell store; `cgs-model` holds everything else.
+//! The `CalcEngine` trait and the Formualizer adapter. The engine is the only cell
+//! store; `cgs-model` holds everything else.
 
-#[cfg(feature = "formualizer")]
 pub mod formualizer;
-#[cfg(feature = "ironcalc")]
-pub mod ironcalc;
 
 mod clock;
 

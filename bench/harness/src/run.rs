@@ -17,28 +17,19 @@ const SLICE_MS: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineKind {
-    #[cfg(feature = "formualizer")]
     Formualizer,
-    #[cfg(feature = "ironcalc")]
-    IronCalc,
 }
 
 pub fn engine_by_name(name: &str) -> Option<EngineKind> {
     match name {
-        #[cfg(feature = "formualizer")]
         "formualizer" => Some(EngineKind::Formualizer),
-        #[cfg(feature = "ironcalc")]
-        "ironcalc" => Some(EngineKind::IronCalc),
         _ => None,
     }
 }
 
 fn new_engine(kind: EngineKind) -> Box<dyn CalcEngine> {
     match kind {
-        #[cfg(feature = "formualizer")]
         EngineKind::Formualizer => Box::new(cgs_calc::formualizer::FormualizerEngine::new()),
-        #[cfg(feature = "ironcalc")]
-        EngineKind::IronCalc => Box::new(cgs_calc::ironcalc::IronCalcEngine::new()),
     }
 }
 
@@ -498,18 +489,6 @@ fn describe(value: &CalcValue) -> String {
         CalcValue::Text(text) => format!("{text:?}"),
         CalcValue::Error(error) => error.clone(),
     }
-}
-
-/// Scores a workbook read through any engine, for the own-importer comparison.
-#[cfg(feature = "own-loaders")]
-pub fn score_with(
-    book: &Book,
-    read: &dyn Fn(u32, (u32, u32)) -> HashMap<(u32, u32), CalcValue>,
-) -> Score {
-    let mut score = Score::default();
-    let (loaded, _) = prepare(book, &mut score);
-    score_sheets(book, read, &loaded, &mut score, true);
-    score
 }
 
 fn score_all(

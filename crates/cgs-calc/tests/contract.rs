@@ -1,5 +1,4 @@
-//! What every adapter must do. Each test runs once per engine that is compiled in.
-#![cfg(any(feature = "formualizer", feature = "ironcalc"))]
+//! What the engine adapter must do.
 
 use std::collections::HashMap;
 
@@ -9,18 +8,10 @@ use cgs_calc::{
 };
 
 fn engines() -> Vec<(&'static str, Box<dyn CalcEngine>)> {
-    vec![
-        #[cfg(feature = "formualizer")]
-        (
-            "formualizer",
-            Box::new(cgs_calc::formualizer::FormualizerEngine::new()),
-        ),
-        #[cfg(feature = "ironcalc")]
-        (
-            "ironcalc",
-            Box::new(cgs_calc::ironcalc::IronCalcEngine::new()),
-        ),
-    ]
+    vec![(
+        "formualizer",
+        Box::new(cgs_calc::formualizer::FormualizerEngine::new()),
+    )]
 }
 
 fn num(value: f64) -> CellInput {
@@ -263,8 +254,8 @@ fn slices_finish_and_visible_cells_can_come_first() {
 #[test]
 fn an_edit_recalculates_only_dependents_after_a_cached_load() {
     for (name, mut engine) in engines() {
-        // B1's cached value is wrong on purpose. Formualizer must keep it, because
-        // nothing it depends on changed. IronCalc recalculates everything on any edit.
+        // B1's cached value is wrong on purpose. It must stay, because nothing it
+        // depends on changed.
         let sheet = vec![
             (1, 1, num(2.0)),
             (1, 2, formula("A1*10", 999.0)),
@@ -288,10 +279,9 @@ fn an_edit_recalculates_only_dependents_after_a_cached_load() {
             CalcValue::Number(40.0),
             "{name}"
         );
-        let untouched = if name == "formualizer" { 999.0 } else { 20.0 };
         assert_eq!(
             at(engine.as_ref(), 0, 1, 2),
-            CalcValue::Number(untouched),
+            CalcValue::Number(999.0),
             "{name}"
         );
     }
@@ -348,14 +338,11 @@ fn names_and_tables_resolve() {
         let read = grid(engine.as_ref(), 0);
         assert_eq!(read.0[&(4, 2)], CalcValue::Number(30.0), "{name} subtotal");
         assert_eq!(read.0[&(1, 5)], CalcValue::Number(2.0), "{name} name");
-        // IronCalc 0.9.1 gives #NAME? for a name that isn't a plain reference or LAMBDA.
-        if name != "ironcalc" {
-            assert_eq!(
-                read.0[&(1, 6)],
-                CalcValue::Number(1.0),
-                "{name} formula name"
-            );
-        }
+        assert_eq!(
+            read.0[&(1, 6)],
+            CalcValue::Number(1.0),
+            "{name} formula name"
+        );
         assert_eq!(read.0[&(1, 7)], CalcValue::Number(30.0), "{name} table sum");
     }
 }
@@ -437,10 +424,6 @@ fn a_plain_formula_reads_a_range_at_its_own_row() {
 #[test]
 fn a_name_can_read_a_table_or_a_later_name() {
     for (name, mut engine) in engines() {
-        // IronCalc 0.9.1 gives #NAME? for a name that isn't a plain reference or LAMBDA.
-        if name == "ironcalc" {
-            continue;
-        }
         let info = BookInfo {
             names: vec![
                 NameInfo {
@@ -611,14 +594,14 @@ fn dynamic_text_arrays_spill() {
             CalcValue::Text("he".to_string()),
             "{name} anchor"
         );
-        // Formualizer 0.13.0 doesn't lift a text function over a range: LEFT gives one value.
-        if name != "formualizer" {
-            assert_eq!(
-                at(engine.as_ref(), 0, 2, 3),
-                CalcValue::Text("wo".to_string()),
-                "{name} spill"
-            );
-        }
+        // Formualizer doesn't spread a scalar function over a range yet, so LEFT gives one
+        // value here. Upstream tracks it as PSU3D0/formualizer#529. When that lands, this
+        // should say "wo" instead.
+        assert_eq!(
+            at(engine.as_ref(), 0, 2, 3),
+            CalcValue::Empty,
+            "{name} spill"
+        );
     }
 }
 

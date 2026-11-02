@@ -21,10 +21,7 @@ impl CellSink for First {
 
 #[wasm_bindgen]
 pub fn probe(formula: &str) -> f64 {
-    #[cfg(feature = "formualizer")]
     let mut engine = cgs_calc::formualizer::FormualizerEngine::new();
-    #[cfg(all(feature = "ironcalc", not(feature = "formualizer")))]
-    let mut engine = cgs_calc::ironcalc::IronCalcEngine::new();
     let info = BookInfo {
         sheets: vec!["Sheet1".to_string()],
         ..BookInfo::default()

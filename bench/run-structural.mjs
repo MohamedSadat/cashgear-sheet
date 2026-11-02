@@ -1,7 +1,7 @@
 // Random structural edits against Excel: 200 episodes of 5 edits from the same seed, so one
 // divergence can't taint the others. Excel runs once per seed and op list; its answers are
 // kept, and each engine is then compared after every edit.
-// Usage: node bench/run-structural.mjs [--seed=1] [--engines=formualizer,ironcalc] [--config=path]
+// Usage: node bench/run-structural.mjs [--seed=1]
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,7 +12,7 @@ const option = (name, fallback) => {
   return found ? found.split('=')[1] : fallback;
 };
 const seedNumber = Number(option('seed', '1'));
-const engines = option('engines', 'formualizer,ironcalc').split(',');
+const engines = option('engines', 'formualizer').split(',');
 const profile = option('profile', 'fast');
 const EPISODES = Number(option('episodes', '200'));
 const STEPS = Number(option('steps', '5'));

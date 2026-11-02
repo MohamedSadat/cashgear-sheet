@@ -6,26 +6,16 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
-# Exact pins: both engines change quickly, and a new release can change results.
-[features]
-default = []
-formualizer = [
-  "dep:formualizer-workbook",
-  "dep:formualizer-eval",
-  "dep:formualizer-common",
-  "dep:formualizer-parse",
-]
-ironcalc = ["dep:ironcalc_base"]
-
+# Exact pins: the engine changes quickly, and a new release can change results. The root
+# Cargo.toml takes these from our fork, which carries the patches listed in docs/phase1-report.md.
 [dependencies]
-formualizer-workbook = { version = "=0.13.0", default-features = false, features = ["system-clock"], optional = true }
-formualizer-eval = { version = "=0.13.0", default-features = false, features = ["system-clock"], optional = true }
-formualizer-common = { version = "=4.1.0", optional = true }
-formualizer-parse = { version = "=4.1.0", optional = true }
-ironcalc_base = { version = "=0.9.1", optional = true }
+formualizer-workbook = { version = "=0.13.0", default-features = false, features = ["system-clock"] }
+formualizer-eval = { version = "=0.13.0", default-features = false, features = ["system-clock"] }
+formualizer-common = "=4.1.0"
+formualizer-parse = "=4.1.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
 # The browser needs a JS clock and JS entropy, or the first evaluation panics.
-formualizer-workbook = { version = "=0.13.0", default-features = false, features = ["system-clock", "js-runtime"], optional = true }
-formualizer-eval = { version = "=0.13.0", default-features = false, features = ["system-clock", "js-runtime"], optional = true }
+formualizer-workbook = { version = "=0.13.0", default-features = false, features = ["system-clock", "js-runtime"] }
+formualizer-eval = { version = "=0.13.0", default-features = false, features = ["system-clock", "js-runtime"] }

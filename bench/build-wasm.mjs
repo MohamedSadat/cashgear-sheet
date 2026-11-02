@@ -1,16 +1,17 @@
-// Builds the Chrome harness for one engine, and its release size the same way as
-// scripts/build-wasm.mjs: binaryen, then gzip. Usage: node bench/build-wasm.mjs <engine> [cargo args]
+// Builds the Chrome harness, and measures the engine's release size the same way as
+// scripts/build-wasm.mjs: binaryen, then gzip. Usage: node bench/build-wasm.mjs [cargo args]
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { bindgenPath, root, run } from '../scripts/lib.mjs';
 
-const [engine, ...cargoArgs] = process.argv.slice(2);
+const engine = 'formualizer';
+const cargoArgs = process.argv.slice(2);
 const targetDir = join(root, 'target/bench-wasm-' + engine);
 const env = {
   ...process.env,
   CARGO_TARGET_DIR: targetDir,
-  // The same room for both engines. The default 1 MB stack is tight for deep chains.
+  // The default 1 MB stack is tight for deep chains.
   RUSTFLAGS: '-C link-arg=-zstack-size=8388608',
 };
 
@@ -28,7 +29,7 @@ async function optimize(path) {
   return { wasmBytes: bytes.length, gzippedBytes: gzipSync(bytes, { level: 9 }).length };
 }
 
-async function buildCrate(crate, features, outDir) {
+async function buildCrate(crate, outDir) {
   await run(
     'cargo',
     [
@@ -39,9 +40,6 @@ async function buildCrate(crate, features, outDir) {
       '--target',
       'wasm32-unknown-unknown',
       '--release',
-      '--no-default-features',
-      '--features',
-      features,
       ...cargoArgs,
     ],
     { env },
@@ -65,8 +63,8 @@ async function buildCrate(crate, features, outDir) {
 }
 
 const outRoot = join(root, 'bench/results/wasm');
-await buildCrate('cgs-bench', engine, join(outRoot, engine));
-const size = await buildCrate('cgs-size-probe', engine, join(outRoot, engine + '-size'));
+await buildCrate('cgs-bench', join(outRoot, engine));
+const size = await buildCrate('cgs-size-probe', join(outRoot, engine + '-size'));
 await writeFile(join(outRoot, engine + '-size.json'), JSON.stringify(size, null, 2) + '\n');
 console.log(
   `${engine}: ${size.wasmBytes} bytes, ${size.gzippedBytes} gzipped (engine and adapter only)`,

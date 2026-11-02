@@ -2,10 +2,6 @@
 
 pub mod book;
 pub mod formula;
-#[cfg(any(feature = "formualizer", feature = "ironcalc"))]
 pub mod run;
-#[cfg(all(
-    target_arch = "wasm32",
-    any(feature = "formualizer", feature = "ironcalc")
-))]
+#[cfg(target_arch = "wasm32")]
 mod wasm;

@@ -28,7 +28,7 @@ cgs-model = { path = "crates/cgs-model" }
 cgs-engine = { path = "crates/cgs-engine" }
 cgs-native = { path = "crates/cgs-native" }
 
-# The engines with the Phase 1 patches, each at an exact commit of a fork. See
+# Formualizer with the Phase 1 patches, at an exact commit of our fork. See
 # docs/decisions.md. A new upstream release is taken by rebasing the fork on it.
 [patch.crates-io]
 formualizer-common = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
@@ -36,8 +36,6 @@ formualizer-eval = { git = "https://github.com/MohamedSadat/formualizer", rev = 
 formualizer-macros = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
 formualizer-parse = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
 formualizer-workbook = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
-ironcalc = { git = "https://github.com/MohamedSadat/IronCalc", rev = "c91da932ddf8c1db11076f3e2830efdfb7a1e724" }
-ironcalc_base = { git = "https://github.com/MohamedSadat/IronCalc", rev = "c91da932ddf8c1db11076f3e2830efdfb7a1e724" }
 
 [profile.release]
 opt-level = 3

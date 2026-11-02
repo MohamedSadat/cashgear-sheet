@@ -1,6 +1,6 @@
 // Runs the native harness over the corpus in parallel, for quick iteration. The
 // bake-off's numbers come from Chrome, through bench/run-chrome.mjs.
-// Usage: node bench/run-native.mjs <engine> <out.jsonl> [--filter=text] [--edits=N] [--own]
+// Usage: node bench/run-native.mjs <engine> <out.jsonl> [--filter=text] [--edits=N]
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -16,8 +16,7 @@ const filter = option('filter', '');
 const edits = option('edits', '10');
 const timeoutMs = Number(option('timeout', '120000'));
 const concurrency = Number(option('jobs', '8'));
-const own = rest.includes('--own');
-const bin = join(root, 'target', option('profile', 'fast'), own ? 'own-loader.exe' : 'run.exe');
+const bin = join(root, 'target', option('profile', 'fast'), 'run.exe');
 const manifest = JSON.parse(
   await readFile(join(root, 'tests/workbooks', option('set', 'public'), 'manifest.json'), 'utf8'),
 );
@@ -27,7 +26,7 @@ const stream = createWriteStream(out);
 function runOne(file) {
   return new Promise((done) => {
     const path = join(root, 'tests/workbooks', option('set', 'public'), file.path);
-    const child = spawn(bin, own ? [engine, path] : [engine, path, edits, '1']);
+    const child = spawn(bin, [engine, path, edits, '1']);
     let stdout = '';
     const timer = setTimeout(() => child.kill(), timeoutMs);
     child.stdout.on('data', (chunk) => (stdout += chunk));
