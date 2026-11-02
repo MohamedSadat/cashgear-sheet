@@ -9,6 +9,7 @@ rust-version.workspace = true
 # Exact pins: the engine changes quickly, and a new release can change results. The root
 # Cargo.toml takes these from our fork, which carries the patches listed in docs/phase1-report.md.
 [dependencies]
+cgs-numfmt = { path = "../cgs-numfmt" }
 formualizer-workbook = { version = "=0.13.0", default-features = false, features = ["system-clock"] }
 formualizer-eval = { version = "=0.13.0", default-features = false, features = ["system-clock"] }
 formualizer-common = "=4.1.0"

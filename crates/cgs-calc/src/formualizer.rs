@@ -7,7 +7,10 @@
 //! `evaluate_slice` keeps what it finished, unlike a cancelled full evaluation, which
 //! puts everything it did back to dirty.
 
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+use cgs_numfmt::{Locale, Options, Value as FormatValue};
 
 use formualizer_common::{DateSystem, ExcelError, ExcelErrorKind, LiteralValue};
 use formualizer_eval::arrow_store::{
@@ -22,7 +25,7 @@ use formualizer_parse::parser::{
 };
 use formualizer_parse::pretty::canonical_formula;
 use formualizer_workbook::workbook::WBResolver;
-use formualizer_workbook::{Workbook, WorkbookConfig};
+use formualizer_workbook::{CustomFnOptions, Workbook, WorkbookConfig};
 
 use crate::{
     err, wants_sparse, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef,
@@ -47,6 +50,8 @@ enum SheetLoad {
 
 pub struct FormualizerEngine {
     workbook: Workbook,
+    /// The conventions `TEXT` follows, which the shell sets from the user's language.
+    locale: Arc<RwLock<Locale>>,
     sheets: Vec<String>,
     /// Sheets between `begin_sheet` and `finish_sheet`.
     loads: Vec<Option<SheetLoad>>,
@@ -94,6 +99,85 @@ fn config(date1904: bool) -> WorkbookConfig {
         enable_changelog: false,
         ingest_limits: Default::default(),
     }
+}
+
+/// `TEXT`, through `cgs-numfmt`, which knows the format codes the engine's own doesn't.
+fn text_function(
+    args: &[LiteralValue],
+    date1904: bool,
+    locale: &RwLock<Locale>,
+) -> std::result::Result<LiteralValue, ExcelError> {
+    let [value, code] = args else {
+        return Err(ExcelError::new(ExcelErrorKind::Value));
+    };
+    // A range reaches here as an array, and a scalar function reads its first cell.
+    let scalar = |argument: &LiteralValue| -> LiteralValue {
+        match argument {
+            LiteralValue::Array(rows) => rows
+                .first()
+                .and_then(|row| row.first())
+                .cloned()
+                .unwrap_or(LiteralValue::Empty),
+            other => other.clone(),
+        }
+    };
+    let value = scalar(value);
+    let code = scalar(code);
+    if let LiteralValue::Error(error) = &value {
+        return Err(error.clone());
+    }
+    if let LiteralValue::Error(error) = &code {
+        return Err(error.clone());
+    }
+    let code = match from_literal(&code) {
+        CalcValue::Text(text) => text,
+        CalcValue::Number(number) => number.to_string(),
+        CalcValue::Bool(flag) => if flag { "TRUE" } else { "FALSE" }.to_string(),
+        _ => String::new(),
+    };
+    let value = from_literal(&value);
+    let text;
+    let input = match &value {
+        CalcValue::Empty => FormatValue::Number(0.0),
+        CalcValue::Number(number) => FormatValue::Number(*number),
+        CalcValue::Bool(flag) => FormatValue::Bool(*flag),
+        // Text that reads as a number formats as one, as in Excel.
+        CalcValue::Text(inner) => match inner.trim().parse::<f64>() {
+            Ok(number) => FormatValue::Number(number),
+            Err(_) => {
+                text = inner;
+                FormatValue::Text(text)
+            }
+        },
+        CalcValue::Error(inner) => FormatValue::Error(inner),
+    };
+    let locale = locale
+        .read()
+        .map_err(|_| ExcelError::new(ExcelErrorKind::Value))?;
+    let options = Options {
+        locale: &locale,
+        date1904,
+    };
+    cgs_numfmt::text_function(input, &code, &options)
+        .map(LiteralValue::Text)
+        .map_err(|()| ExcelError::new(ExcelErrorKind::Value))
+}
+
+fn new_workbook(date1904: bool, locale: &Arc<RwLock<Locale>>) -> Workbook {
+    let mut workbook = Workbook::new_with_config(config(date1904));
+    let locale = Arc::clone(locale);
+    let handler = move |args: &[LiteralValue]| text_function(args, date1904, &locale);
+    let options = CustomFnOptions {
+        min_args: 2,
+        max_args: Some(2),
+        volatile: false,
+        thread_safe: true,
+        deterministic: true,
+        allow_override_builtin: true,
+    };
+    // It can only fail on a clash of names, and this is the first thing on a new workbook.
+    let _ = workbook.register_custom_function("TEXT", options, Arc::new(handler));
+    workbook
 }
 
 fn to_literal(value: &CalcValue) -> LiteralValue {
@@ -176,8 +260,10 @@ fn wrap_ranges(node: &mut ASTNode) -> bool {
 
 impl FormualizerEngine {
     pub fn new() -> Self {
+        let locale = Arc::new(RwLock::new(Locale::en_us()));
         Self {
-            workbook: Workbook::new_with_config(config(false)),
+            workbook: new_workbook(false, &locale),
+            locale,
             sheets: Vec::new(),
             loads: Vec::new(),
             pending: Vec::new(),
@@ -190,6 +276,13 @@ impl FormualizerEngine {
             slice: EvaluationSlice::default(),
             idle: true,
             changed: Vec::new(),
+        }
+    }
+
+    /// Sets the conventions `TEXT` follows for built-in date and number forms.
+    pub fn set_locale(&mut self, locale: Locale) {
+        if let Ok(mut current) = self.locale.write() {
+            *current = locale;
         }
     }
 
@@ -345,7 +438,7 @@ fn borrow_value(value: &CalcValue) -> Option<LoadValue<'_>> {
 
 impl CalcEngine for FormualizerEngine {
     fn begin_load(&mut self, book: &BookInfo) -> Result<()> {
-        self.workbook = Workbook::new_with_config(config(book.date1904));
+        self.workbook = new_workbook(book.date1904, &self.locale);
         self.sheets = book.sheets.clone();
         self.loads = book.sheets.iter().map(|_| None).collect();
         self.pending = vec![Vec::new(); book.sheets.len()];

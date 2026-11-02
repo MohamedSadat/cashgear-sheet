@@ -863,3 +863,49 @@ fn a_sparse_sheet_keeps_a_far_corner() {
         );
     }
 }
+
+#[test]
+fn text_reads_format_codes_through_cgs_numfmt() {
+    let cases: [(&str, CalcValue); 8] = [
+        (
+            r#"TEXT(45306,"yyyy-mm-dd")"#,
+            CalcValue::Text("2024-01-15".to_string()),
+        ),
+        (
+            r##"TEXT(1234.5,"#,##0.00")"##,
+            CalcValue::Text("1,234.50".to_string()),
+        ),
+        (
+            r#"TEXT(0.256,"0.0%")"#,
+            CalcValue::Text("25.6%".to_string()),
+        ),
+        (r#"TEXT("abc","@")"#, CalcValue::Text("abc".to_string())),
+        (
+            r#"TEXT("12.5","0.00")"#,
+            CalcValue::Text("12.50".to_string()),
+        ),
+        (
+            r#"TEXT(-1.5,"0.0;(0.0)")"#,
+            CalcValue::Text("(1.5)".to_string()),
+        ),
+        (
+            r#"TEXT(45306.5,"h:mm AM/PM")"#,
+            CalcValue::Text("12:00 PM".to_string()),
+        ),
+        (r#"TEXT(1/0,"0")"#, CalcValue::Error("#DIV/0!".to_string())),
+    ];
+    for (name, mut engine) in engines() {
+        let sheet: Vec<_> = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (text, _))| (index as u32 + 1, 1, formula(text, 0.0)))
+            .collect();
+        load(engine.as_mut(), &info(), &[sheet, Vec::new()]);
+        engine.recalc_all().unwrap();
+        settle(engine.as_mut());
+        for (index, (text, expected)) in cases.iter().enumerate() {
+            let value = at(engine.as_ref(), 0, index as u32 + 1, 1);
+            assert_eq!(&value, expected, "{name}: {text}");
+        }
+    }
+}
