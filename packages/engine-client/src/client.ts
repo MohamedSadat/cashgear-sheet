@@ -1,11 +1,35 @@
-import { releaseProxy, transfer, wrap, type Remote } from 'comlink';
-import type { EngineApi, EngineInfo, TileImage, TileRequest, TileWorkerApi } from './types';
+import { proxy, releaseProxy, transfer, wrap, type Remote } from 'comlink';
+import type {
+  BookSummary,
+  CellText,
+  DrawingBox,
+  EngineApi,
+  EngineInfo,
+  FileSource,
+  LoadEvent,
+  LocaleData,
+  TileImage,
+  TileRequest,
+  TileWorkerApi,
+} from './types';
+import { decodeLayout, type SheetLayout } from './layout';
 
 export interface EngineClient {
   /** Starts the engine and connects the tile worker to it. */
   init(): Promise<EngineInfo>;
   /** Proves this page and the engine share memory (needs cross-origin isolation). */
   checkSharedMemory(): Promise<boolean>;
+  setLocale(locale: LocaleData): Promise<void>;
+  /** Opens a workbook. Its sheets become readable through `onEvent`. */
+  open(source: FileSource, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
+  close(): Promise<void>;
+  /** Reads this sheet next, if it isn't read yet. */
+  prioritize(sheet: number): Promise<void>;
+  layout(sheet: number): Promise<SheetLayout>;
+  drawings(sheet: number): Promise<DrawingBox[]>;
+  /** `row` and `col` are 1-based. */
+  cellText(sheet: number, row: number, col: number): Promise<CellText>;
+  memoryBytes(): Promise<number>;
   drawTile(request: TileRequest): Promise<TileImage>;
   dispose(): void;
 }
@@ -57,6 +81,16 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
       await engine.touchSharedMemory(buffer, value);
       return Atomics.load(new Int32Array(buffer), 0) === value;
     },
+    setLocale: (locale) => engine.setLocale(locale),
+    open: (source, onEvent) => engine.open(source, proxy(onEvent)),
+    close: () => engine.close(),
+    prioritize: (sheet) => engine.prioritize(sheet),
+    async layout(sheet) {
+      return decodeLayout(await engine.layout(sheet));
+    },
+    drawings: (sheet) => engine.drawings(sheet),
+    cellText: (sheet, row, col) => engine.cellText(sheet, row, col),
+    memoryBytes: () => engine.memoryBytes(),
     async drawTile(request) {
       await connected;
       return tiles.draw(request);

@@ -30,36 +30,78 @@ body {
 
 .cgs-shell {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   height: 100%;
 }
 
-.cgs-header,
-.cgs-status {
-  display: flex;
-  align-items: center;
-  gap: var(--cg-space-4);
-  padding: var(--cg-space-2) var(--cg-space-4);
-  background: var(--cg-surface-subtle);
+.cgs-shell-drop .cgs-grid {
+  outline: 2px dashed var(--cg-accent);
+  outline-offset: -2px;
 }
 
 .cgs-header {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: var(--cg-space-4);
+  padding: var(--cg-space-1) var(--cg-space-4);
+  background: var(--cg-surface-subtle);
   border-block-end: var(--cg-border-style);
 }
 
-.cgs-status {
-  border-block-start: var(--cg-border-style);
-  color: var(--cg-text-secondary);
+.cgs-header-start {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-4);
+  min-width: 0;
 }
 
 .cgs-title {
   margin: 0;
+  max-width: 32ch;
+  overflow: hidden;
   font-size: var(--cg-font-size-md);
   font-weight: var(--cg-font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cgs-formula-bar {
+  display: flex;
+  align-items: stretch;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-1) var(--cg-space-2);
+  background: var(--cg-surface);
+  border-block-end: var(--cg-border-style);
+}
+
+.cgs-name-box,
+.cgs-formula-text {
+  min-width: 0;
+  padding: 0 var(--cg-space-2);
+  color: var(--cg-text);
+  font: inherit;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+  border-radius: var(--cg-radius-sm);
+}
+
+.cgs-name-box {
+  flex: 0 0 9em;
+}
+
+.cgs-formula-text {
+  flex: 1 1 auto;
+}
+
+.cgs-formula-mark {
+  align-self: center;
+  color: var(--cg-text-secondary);
+  font-style: italic;
 }
 
 .cgs-grid {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -69,4 +111,59 @@ body {
   display: block;
   width: 100%;
   height: 100%;
+  outline: none;
+  touch-action: none;
+}
+
+.cgs-welcome,
+.cgs-sheet-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  align-items: center;
+  justify-content: center;
+  color: var(--cg-text-secondary);
+  text-align: center;
+  pointer-events: none;
+}
+
+/* It stands in for a sheet that can't show yet, so it covers what was there. */
+.cgs-sheet-note {
+  background: var(--cg-surface);
+}
+
+.cgs-welcome p {
+  margin: 0;
+}
+
+.cgs-welcome-note {
+  font-size: var(--cg-font-size-xs, var(--cg-font-size-sm));
+}
+
+.cgs-open-button {
+  padding: var(--cg-space-2) var(--cg-space-4);
+  color: #fff;
+  font: inherit;
+  background: var(--cg-accent);
+  border: 0;
+  border-radius: var(--cg-radius-sm);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.cgs-tabs {
+  min-height: 0;
+  background: var(--cg-surface-subtle);
+  border-block-start: var(--cg-border-style);
+}
+
+/* Tabs here choose a sheet, and the grid is their content, so the empty panels go. */
+.cgs-tabs [data-testid='sheet-tabs'] > :first-child {
+  display: none;
+}
+
+.cgs-zoom {
+  inline-size: 140px;
 }

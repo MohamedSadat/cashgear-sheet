@@ -1,77 +1,1118 @@
-import { TileCache, tilePixels, type EngineClient, type TilePalette } from '@cgs/engine-client';
-import { visibleTiles } from './geometry';
+import {
+  TileCache,
+  TILE_COLS,
+  TILE_ROWS,
+  type DrawingBox,
+  type EngineClient,
+  type SheetLayout,
+  type TileAddress,
+  type TilePalette,
+} from '@cgs/engine-client';
+import {
+  drawCorner,
+  drawHeaderCell,
+  drawPlaceholder,
+  drawScrollbar,
+  drawSelection,
+  type GridColors,
+  type ScrollbarShape,
+} from './draw';
+import {
+  Axis,
+  cellName,
+  columnName,
+  MAX_COLS,
+  MAX_ROWS,
+  rangeName,
+  scrollForThumb,
+  thumbFor,
+  tilesCovering,
+  type CellRange,
+} from './geometry';
+
+const SCROLLBAR_PX = 14;
+const HEADER_HEIGHT_PX = 20;
+const MIN_THUMB_PX = 24;
+const WHEEL_LINE_PX = 53;
+export const MIN_ZOOM = 10;
+export const MAX_ZOOM = 400;
+const HEADER_FONT_PX = 11;
+
+export interface GridSelection {
+  /** 0-based. */
+  row: number;
+  col: number;
+  range: CellRange;
+  name: string;
+}
+
+export interface GridEvents {
+  onSelection: (selection: GridSelection) => void;
+  onZoom: (zoom: number) => void;
+  onError: (error: unknown) => void;
+}
+
+/** What a sheet remembers while another one is showing. */
+interface SheetView {
+  zoom: number;
+  scrollX: number;
+  scrollY: number;
+  row: number;
+  col: number;
+  range: CellRange;
+}
+
+interface Pane {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** The sheet position at the pane's top left. */
+  sheetX: number;
+  sheetY: number;
+}
+
+const defaultColWidthFallback = 64;
+const defaultRowHeightFallback = 20;
 
 /**
- * Composites tile pictures onto the visible canvas, outside React. The tile worker
- * draws them from the engine's data, so nothing here waits on the engine or sees a cell.
+ * Composites tile pictures onto the visible canvas and handles input, outside React. The tile
+ * worker draws them from the engine's data, so nothing here waits on the engine or sees a cell.
  */
 export class GridController {
   private readonly context: CanvasRenderingContext2D;
   private readonly cache: TileCache;
   private palette: TilePalette;
-  private scale = 1;
+  private colors: GridColors;
+  private dpr = 1;
+  private width = 0;
+  private height = 0;
   private frame = 0;
+
+  private sheet = -1;
+  private layout: SheetLayout | null = null;
+  private drawings: DrawingBox[] = [];
+  private merges: Uint32Array = new Uint32Array();
+  private rows = new Axis(MAX_ROWS, defaultRowHeightFallback);
+  private cols = new Axis(MAX_COLS, defaultColWidthFallback);
+  private zoom = 100;
+  private scrollX = 0;
+  private scrollY = 0;
+  private row = 0;
+  private col = 0;
+  private anchorRow = 0;
+  private anchorCol = 0;
+  private range: CellRange = { top: 0, left: 0, bottom: 0, right: 0 };
+  private readonly remembered = new Map<number, SheetView>();
+
+  private dragging: 'cells' | 'vertical' | 'horizontal' | null = null;
+  private dragOffset = 0;
+  private lastPointer = { x: 0, y: 0 };
+  private autoScroll = 0;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
     client: EngineClient,
     palette: TilePalette,
-    onError: (error: unknown) => void,
+    colors: GridColors,
+    private readonly events: GridEvents,
   ) {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('This browser has no 2D canvas.');
     this.context = context;
     this.palette = palette;
+    this.colors = colors;
     canvas.dataset.background = palette.background;
-    this.cache = new TileCache((request) => client.drawTile(request), this.schedule, onError);
-    this.cache.setStyle({ scale: this.scale, palette });
+    this.cache = new TileCache(
+      (request) => client.drawTile(request),
+      this.schedule,
+      events.onError,
+    );
+    canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    canvas.addEventListener('pointerdown', this.onPointerDown);
+    canvas.addEventListener('pointermove', this.onPointerMove);
+    canvas.addEventListener('pointerup', this.onPointerUp);
+    canvas.addEventListener('pointercancel', this.onPointerUp);
+    canvas.addEventListener('keydown', this.onKeyDown);
+    this.applyStyle();
+  }
+
+  private get scale() {
+    return (this.zoom / 100) * this.dpr;
+  }
+
+  private tileStyle() {
+    return {
+      scale: this.scale,
+      palette: { ...this.palette, showGrid: this.layout?.showGrid ?? true },
+    };
+  }
+
+  private applyStyle() {
+    this.cache.setStyle(this.tileStyle());
   }
 
   /** Redraws tiles with the new theme's colours; the old ones stay until they arrive. */
-  setPalette(palette: TilePalette) {
+  setTheme(palette: TilePalette, colors: GridColors) {
     this.palette = palette;
+    this.colors = colors;
     this.canvas.dataset.background = palette.background;
     this.canvas.dataset.ready = 'false';
-    this.cache.setStyle({ scale: this.scale, palette });
+    this.applyStyle();
     this.schedule();
   }
 
   /** Takes the canvas's size in CSS pixels. */
-  resize(width: number, height: number, scale: number) {
-    this.canvas.width = Math.round(width * scale);
-    this.canvas.height = Math.round(height * scale);
-    if (scale !== this.scale) {
-      this.scale = scale;
-      this.cache.setStyle({ scale, palette: this.palette });
+  resize(width: number, height: number, dpr: number) {
+    this.width = Math.round(width * dpr);
+    this.height = Math.round(height * dpr);
+    this.canvas.width = this.width;
+    this.canvas.height = this.height;
+    if (dpr !== this.dpr) {
+      this.dpr = dpr;
+      this.rows.setScale(this.scale);
+      this.cols.setScale(this.scale);
+      this.applyStyle();
     }
     this.schedule();
   }
 
+  /** A different workbook is opening: everything drawn so far is gone. */
+  reset() {
+    this.cache.clear();
+    this.remembered.clear();
+    this.sheet = -1;
+    this.layout = null;
+    this.drawings = [];
+    this.merges = new Uint32Array();
+    this.schedule();
+  }
+
+  /** Shows a sheet. Comes back to where it was if it has been shown before. */
+  showSheet(sheet: number, layout: SheetLayout, drawings: DrawingBox[]) {
+    if (this.sheet >= 0) this.remember();
+    const sameSheet = sheet === this.sheet;
+    const kept = this.remembered.get(sheet);
+    this.sheet = sheet;
+    this.layout = layout;
+    this.drawings = drawings;
+    this.merges = layout.merges;
+    this.zoom = sameSheet || kept ? (kept?.zoom ?? this.zoom) : layout.zoom;
+    const rowLines = new Int32Array(layout.rows.length);
+    for (let at = 0; at < layout.rows.length; at += 2) {
+      rowLines[at] = layout.rows[at]! - 1;
+      rowLines[at + 1] = layout.rows[at + 1]!;
+    }
+    const colLines: number[] = [];
+    for (let at = 0; at < layout.cols.length; at += 3) {
+      const last = Math.min(layout.cols[at + 1]!, MAX_COLS);
+      for (let col = layout.cols[at]!; col <= last; col++) {
+        colLines.push(col - 1, layout.cols[at + 2]!);
+      }
+    }
+    this.rows = new Axis(MAX_ROWS, layout.defaultRowPx, rowLines, this.scale);
+    this.cols = new Axis(MAX_COLS, layout.defaultColPx, colLines, this.scale);
+    this.applyStyle();
+    if (kept) {
+      this.scrollX = kept.scrollX;
+      this.scrollY = kept.scrollY;
+      this.row = kept.row;
+      this.col = kept.col;
+      this.anchorRow = kept.row;
+      this.anchorCol = kept.col;
+      this.range = kept.range;
+    } else if (!sameSheet) {
+      this.scrollX = this.cols.offset(layout.leftCol - 1);
+      this.scrollY = this.rows.offset(layout.topRow - 1);
+      this.select(layout.activeRow - 1, layout.activeCol - 1, false, false);
+    }
+    this.clampScroll();
+    this.events.onZoom(this.zoom);
+    this.notifySelection();
+    this.schedule();
+  }
+
+  /** The sheet's tiles were asked for before it was read. */
+  sheetReady(sheet: number) {
+    this.cache.invalidateSheet(sheet);
+    this.schedule();
+  }
+
+  setZoom(zoom: number) {
+    const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(zoom)));
+    if (next === this.zoom) return;
+    // Keep the top-left cell where it is.
+    const topRow = this.rows.at(this.scrollY);
+    const leftCol = this.cols.at(this.scrollX);
+    const rowInto = this.scrollY - this.rows.offset(topRow);
+    const colInto = this.scrollX - this.cols.offset(leftCol);
+    const rowShare = this.rows.size(topRow) ? rowInto / this.rows.size(topRow) : 0;
+    const colShare = this.cols.size(leftCol) ? colInto / this.cols.size(leftCol) : 0;
+    this.zoom = next;
+    this.rows.setScale(this.scale);
+    this.cols.setScale(this.scale);
+    this.scrollY = this.rows.offset(topRow) + rowShare * this.rows.size(topRow);
+    this.scrollX = this.cols.offset(leftCol) + colShare * this.cols.size(leftCol);
+    this.applyStyle();
+    this.clampScroll();
+    this.events.onZoom(this.zoom);
+    this.schedule();
+  }
+
+  getZoom() {
+    return this.zoom;
+  }
+
+  focus() {
+    this.canvas.focus({ preventScroll: true });
+  }
+
   dispose() {
     cancelAnimationFrame(this.frame);
+    cancelAnimationFrame(this.autoScroll);
     this.frame = 0;
+    const { canvas } = this;
+    canvas.removeEventListener('wheel', this.onWheel);
+    canvas.removeEventListener('pointerdown', this.onPointerDown);
+    canvas.removeEventListener('pointermove', this.onPointerMove);
+    canvas.removeEventListener('pointerup', this.onPointerUp);
+    canvas.removeEventListener('pointercancel', this.onPointerUp);
+    canvas.removeEventListener('keydown', this.onKeyDown);
     this.cache.dispose();
+  }
+
+  /** For tests: where things are. */
+  state() {
+    return {
+      sheet: this.sheet,
+      scrollX: this.scrollX,
+      scrollY: this.scrollY,
+      zoom: this.zoom,
+      row: this.row,
+      col: this.col,
+      topRow: this.rows.at(this.scrollY),
+      contentHeight: this.contentHeight(),
+      drawings: this.drawings,
+    };
+  }
+
+  /** For tests: where to click for a cell, in CSS pixels on the canvas. */
+  pointForCell(row: number, col: number) {
+    const pane = this.panes()[0]!;
+    const frozen = this.frozen();
+    const view = this.view();
+    const inFrozenRows = row < frozen.firstRow + frozen.rows;
+    const inFrozenCols = col < frozen.firstCol + frozen.cols;
+    const x = inFrozenCols
+      ? view.x + this.cols.offset(col) - this.cols.offset(frozen.firstCol)
+      : pane.x + this.cols.offset(col) - this.scrollX;
+    const y = inFrozenRows
+      ? view.y + this.rows.offset(row) - this.rows.offset(frozen.firstRow)
+      : pane.y + this.rows.offset(row) - this.scrollY;
+    return {
+      x: (x + this.cols.size(col) / 2) / this.dpr,
+      y: (y + this.rows.size(row) / 2) / this.dpr,
+    };
+  }
+
+  /** For tests: moves the view as a scrollbar drag would. */
+  scrollTo(x: number, y: number) {
+    this.scrollX = x;
+    this.scrollY = y;
+    this.clampScroll();
+    this.schedule();
+  }
+
+  private remember() {
+    this.remembered.set(this.sheet, {
+      zoom: this.zoom,
+      scrollX: this.scrollX,
+      scrollY: this.scrollY,
+      row: this.row,
+      col: this.col,
+      range: this.range,
+    });
   }
 
   private readonly schedule = () => {
     if (!this.frame) this.frame = requestAnimationFrame(this.composite);
   };
 
+  private headerWidth() {
+    if (this.layout && !this.layout.showHeaders) return 0;
+    // Wide enough for the longest row number in view, with room around it.
+    const last = Math.max(1000, this.rows.at(this.scrollY + this.height) + 1);
+    const digits = String(last).length;
+    return Math.round((digits * 7 + 12) * this.scale);
+  }
+
+  private headerHeight() {
+    if (this.layout && !this.layout.showHeaders) return 0;
+    return Math.round(HEADER_HEIGHT_PX * this.scale);
+  }
+
+  private frozen() {
+    const layout = this.layout;
+    const rows = layout?.frozenRows ?? 0;
+    const cols = layout?.frozenCols ?? 0;
+    const firstRow = (layout?.firstRow ?? 1) - 1;
+    const firstCol = (layout?.firstCol ?? 1) - 1;
+    return {
+      rows,
+      cols,
+      firstRow,
+      firstCol,
+      height: rows ? this.rows.offset(firstRow + rows) - this.rows.offset(firstRow) : 0,
+      width: cols ? this.cols.offset(firstCol + cols) - this.cols.offset(firstCol) : 0,
+    };
+  }
+
+  private scrollbarSize() {
+    return Math.round(SCROLLBAR_PX * this.dpr);
+  }
+
+  /** The area of the canvas that shows the scrolling pane and the frozen panes. */
+  private view() {
+    const header = { width: this.headerWidth(), height: this.headerHeight() };
+    const bar = this.scrollbarSize();
+    return {
+      x: header.width,
+      y: header.height,
+      width: Math.max(0, this.width - header.width - bar),
+      height: Math.max(0, this.height - header.height - bar),
+    };
+  }
+
+  private panes(): Pane[] {
+    const view = this.view();
+    const frozen = this.frozen();
+    const frozenX = this.cols.offset(frozen.firstCol);
+    const frozenY = this.rows.offset(frozen.firstRow);
+    const mainWidth = Math.max(0, view.width - frozen.width);
+    const mainHeight = Math.max(0, view.height - frozen.height);
+    const panes: Pane[] = [
+      {
+        x: view.x + frozen.width,
+        y: view.y + frozen.height,
+        width: mainWidth,
+        height: mainHeight,
+        sheetX: this.scrollX,
+        sheetY: this.scrollY,
+      },
+    ];
+    if (frozen.rows) {
+      panes.push({
+        x: view.x + frozen.width,
+        y: view.y,
+        width: mainWidth,
+        height: Math.min(frozen.height, view.height),
+        sheetX: this.scrollX,
+        sheetY: frozenY,
+      });
+    }
+    if (frozen.cols) {
+      panes.push({
+        x: view.x,
+        y: view.y + frozen.height,
+        width: Math.min(frozen.width, view.width),
+        height: mainHeight,
+        sheetX: frozenX,
+        sheetY: this.scrollY,
+      });
+    }
+    if (frozen.rows && frozen.cols) {
+      panes.push({
+        x: view.x,
+        y: view.y,
+        width: Math.min(frozen.width, view.width),
+        height: Math.min(frozen.height, view.height),
+        sheetX: frozenX,
+        sheetY: frozenY,
+      });
+    }
+    return panes;
+  }
+
+  private minScroll() {
+    const frozen = this.frozen();
+    return {
+      x: this.cols.offset(frozen.firstCol + frozen.cols),
+      y: this.rows.offset(frozen.firstRow + frozen.rows),
+    };
+  }
+
+  private clampScroll() {
+    const view = this.view();
+    const frozen = this.frozen();
+    const low = this.minScroll();
+    const maxX = Math.max(low.x, this.cols.total - (view.width - frozen.width));
+    const maxY = Math.max(low.y, this.rows.total - (view.height - frozen.height));
+    this.scrollX = Math.max(low.x, Math.min(maxX, this.scrollX));
+    this.scrollY = Math.max(low.y, Math.min(maxY, this.scrollY));
+  }
+
+  private contentHeight() {
+    const used = this.layout?.usedRows ?? 0;
+    const view = this.view();
+    const low = this.minScroll().y;
+    return Math.max(
+      this.rows.offset(Math.min(MAX_ROWS, used + 16)) - low,
+      this.scrollY - low + view.height,
+      view.height,
+    );
+  }
+
+  private contentWidth() {
+    const used = this.layout?.usedCols ?? 0;
+    const view = this.view();
+    const low = this.minScroll().x;
+    return Math.max(
+      this.cols.offset(Math.min(MAX_COLS, used + 8)) - low,
+      this.scrollX - low + view.width,
+      view.width,
+    );
+  }
+
+  private verticalBar(): ScrollbarShape {
+    const bar = this.scrollbarSize();
+    const view = this.view();
+    const low = this.minScroll().y;
+    const content = this.contentHeight();
+    const track = view.height;
+    const { position, length } = thumbFor(
+      this.scrollY - low,
+      view.height,
+      content,
+      track,
+      MIN_THUMB_PX * this.dpr,
+    );
+    return {
+      x: this.width - bar,
+      y: view.y,
+      width: bar,
+      height: track,
+      thumb: position,
+      length,
+      vertical: true,
+    };
+  }
+
+  private horizontalBar(): ScrollbarShape {
+    const bar = this.scrollbarSize();
+    const view = this.view();
+    const low = this.minScroll().x;
+    const content = this.contentWidth();
+    const track = view.width;
+    const { position, length } = thumbFor(
+      this.scrollX - low,
+      view.width,
+      content,
+      track,
+      MIN_THUMB_PX * this.dpr,
+    );
+    return {
+      x: view.x,
+      y: this.height - bar,
+      width: track,
+      height: bar,
+      thumb: position,
+      length,
+      vertical: false,
+    };
+  }
+
   private readonly composite = () => {
     this.frame = 0;
-    const { canvas, context, cache } = this;
-    context.fillStyle = this.palette.background;
+    const { canvas, context, cache, colors } = this;
+    context.fillStyle = colors.background;
     context.fillRect(0, 0, canvas.width, canvas.height);
-    const { width, height } = tilePixels(this.scale);
-    const tiles = visibleTiles(canvas.width, canvas.height, width, height);
-    for (const { firstRow, firstCol, x, y } of tiles) {
-      const bitmap = cache.get(firstRow, firstCol);
-      if (bitmap) context.drawImage(bitmap, x, y);
+    const panes = this.panes();
+    const wanted: TileAddress[] = [];
+    const visible: TileAddress[] = [];
+    const sheet = Math.max(this.sheet, 0);
+    for (const pane of panes) {
+      if (pane.width <= 0 || pane.height <= 0) continue;
+      const range: CellRange = {
+        top: this.rows.at(pane.sheetY),
+        left: this.cols.at(pane.sheetX),
+        bottom: this.rows.at(pane.sheetY + pane.height - 1),
+        right: this.cols.at(pane.sheetX + pane.width - 1),
+      };
+      context.save();
+      context.beginPath();
+      context.rect(pane.x, pane.y, pane.width, pane.height);
+      context.clip();
+      for (const { firstRow, firstCol } of tilesCovering(range)) {
+        visible.push({ sheet, firstRow, firstCol });
+        const bitmap = cache.get(sheet, firstRow, firstCol);
+        if (!bitmap) continue;
+        const x = this.cols.offset(firstCol) - pane.sheetX + pane.x;
+        const y = this.rows.offset(firstRow) - pane.sheetY + pane.y;
+        const width = this.cols.offset(firstCol + TILE_COLS) - this.cols.offset(firstCol);
+        const height = this.rows.offset(firstRow + TILE_ROWS) - this.rows.offset(firstRow);
+        // A stale picture can be another size; it stands in, stretched, until its
+        // replacement arrives.
+        if (bitmap.width === width && bitmap.height === height) {
+          context.drawImage(bitmap, x, y);
+        } else {
+          context.drawImage(bitmap, x, y, width, height);
+        }
+      }
+      this.drawDrawings(pane);
+      this.drawSelectionIn(pane);
+      context.restore();
     }
+    wanted.push(...visible);
+    // One tile further each way, so that scrolling meets pictures that are ready.
+    const main = panes[0]!;
+    const below = this.rows.at(main.sheetY + main.height - 1);
+    const above = this.rows.at(main.sheetY);
+    const rightmost = this.cols.at(main.sheetX + main.width - 1);
+    const leftmost = this.cols.at(main.sheetX);
+    const around: CellRange = {
+      top: Math.max(0, above - TILE_ROWS),
+      left: Math.max(0, leftmost - TILE_COLS),
+      bottom: Math.min(MAX_ROWS - 1, below + TILE_ROWS),
+      right: Math.min(MAX_COLS - 1, rightmost + TILE_COLS),
+    };
+    for (const { firstRow, firstCol } of tilesCovering(around)) {
+      if (!visible.some((tile) => tile.firstRow === firstRow && tile.firstCol === firstCol)) {
+        wanted.push({ sheet, firstRow, firstCol });
+      }
+    }
+    cache.want(wanted);
+
+    this.drawHeaders();
+    this.drawPaneLines();
+    drawScrollbar(context, colors, this.verticalBar());
+    drawScrollbar(context, colors, this.horizontalBar());
+    context.fillStyle = colors.scrollTrack;
+    const bar = this.scrollbarSize();
+    context.fillRect(this.width - bar, this.height - bar, bar, bar);
+
     // For tests: the picture is complete once every tile is drawn in the current style.
-    const ready = tiles.every((tile) => cache.isCurrent(tile.firstRow, tile.firstCol));
-    canvas.dataset.ready = String(ready && tiles.length > 0);
-    canvas.dataset.tiles = String(tiles.length);
-    canvas.dataset.firstTileHash = String(cache.hash(0, 0) ?? '');
+    const ready =
+      this.sheet >= 0 &&
+      visible.length > 0 &&
+      visible.every((tile) => cache.isCurrent(tile.sheet, tile.firstRow, tile.firstCol));
+    canvas.dataset.ready = String(ready);
+    canvas.dataset.tiles = String(visible.length);
+    canvas.dataset.firstTileHash = String(cache.hash(sheet, 0, 0) ?? '');
+  };
+
+  private drawDrawings(pane: Pane) {
+    if (!this.drawings.length) return;
+    const pixel = Math.max(1, Math.round(this.dpr));
+    const fontPx = Math.round(HEADER_FONT_PX * this.scale);
+    for (const box of this.drawings) {
+      const x = box.x * this.scale - pane.sheetX + pane.x;
+      const y = box.y * this.scale - pane.sheetY + pane.y;
+      const width = box.width * this.scale;
+      const height = box.height * this.scale;
+      if (x > pane.x + pane.width || y > pane.y + pane.height) continue;
+      if (x + width < pane.x || y + height < pane.y) continue;
+      drawPlaceholder(this.context, this.colors, box, x, y, width, height, pixel, fontPx);
+    }
+  }
+
+  private cellRect(row: number, col: number, pane: Pane) {
+    return {
+      x: this.cols.offset(col) - pane.sheetX + pane.x,
+      y: this.rows.offset(row) - pane.sheetY + pane.y,
+      width: this.cols.size(col),
+      height: this.rows.size(row),
+    };
+  }
+
+  private drawSelectionIn(pane: Pane) {
+    const { range } = this;
+    const x = this.cols.offset(range.left) - pane.sheetX + pane.x;
+    const y = this.rows.offset(range.top) - pane.sheetY + pane.y;
+    const width = this.cols.offset(range.right + 1) - this.cols.offset(range.left);
+    const height = this.rows.offset(range.bottom + 1) - this.rows.offset(range.top);
+    const merged = this.mergeAt(this.row, this.col);
+    const active = merged
+      ? {
+          x: this.cols.offset(merged.left) - pane.sheetX + pane.x,
+          y: this.rows.offset(merged.top) - pane.sheetY + pane.y,
+          width: this.cols.offset(merged.right + 1) - this.cols.offset(merged.left),
+          height: this.rows.offset(merged.bottom + 1) - this.rows.offset(merged.top),
+        }
+      : this.cellRect(this.row, this.col, pane);
+    const many =
+      range.top !== range.bottom || range.left !== range.right
+        ? !merged ||
+          merged.top !== range.top ||
+          merged.left !== range.left ||
+          merged.bottom !== range.bottom ||
+          merged.right !== range.right
+        : false;
+    const pixel = Math.max(1, Math.round(this.dpr));
+    drawSelection(this.context, this.colors, { x, y, width, height }, active, many, pixel);
+  }
+
+  private drawHeaders() {
+    const { context, colors, layout } = this;
+    if (layout && !layout.showHeaders) return;
+    const headerWidth = this.headerWidth();
+    const headerHeight = this.headerHeight();
+    const pixel = Math.max(1, Math.round(this.dpr));
+    context.font = Math.round(HEADER_FONT_PX * this.scale) + 'px ' + colors.fontFamily;
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    const { range } = this;
+    for (const pane of this.panes()) {
+      if (pane.y === this.view().y && pane.width > 0) {
+        // Column headers, once per horizontal stretch.
+        const first = this.cols.at(pane.sheetX);
+        const end = pane.sheetX + pane.width;
+        context.save();
+        context.beginPath();
+        context.rect(pane.x, 0, pane.width, headerHeight);
+        context.clip();
+        for (let col = first; col < MAX_COLS; col++) {
+          const start = this.cols.offset(col);
+          if (start >= end) break;
+          const size = this.cols.size(col);
+          if (!size) continue;
+          drawHeaderCell(
+            context,
+            colors,
+            columnName(col),
+            start - pane.sheetX + pane.x,
+            0,
+            size,
+            headerHeight,
+            col >= range.left && col <= range.right,
+            pixel,
+          );
+        }
+        context.restore();
+      }
+      if (pane.x === this.view().x && pane.height > 0) {
+        const first = this.rows.at(pane.sheetY);
+        const end = pane.sheetY + pane.height;
+        context.save();
+        context.beginPath();
+        context.rect(0, pane.y, headerWidth, pane.height);
+        context.clip();
+        for (let row = first; row < MAX_ROWS; row++) {
+          const start = this.rows.offset(row);
+          if (start >= end) break;
+          const size = this.rows.size(row);
+          if (!size) continue;
+          drawHeaderCell(
+            context,
+            colors,
+            String(row + 1),
+            0,
+            start - pane.sheetY + pane.y,
+            headerWidth,
+            size,
+            row >= range.top && row <= range.bottom,
+            pixel,
+          );
+        }
+        context.restore();
+      }
+    }
+    drawCorner(context, colors, headerWidth, headerHeight, pixel);
+  }
+
+  private drawPaneLines() {
+    const frozen = this.frozen();
+    if (!frozen.rows && !frozen.cols) return;
+    const { context, colors } = this;
+    const view = this.view();
+    const pixel = Math.max(1, Math.round(this.dpr));
+    context.fillStyle = colors.paneLine;
+    if (frozen.rows) {
+      context.fillRect(view.x, view.y + frozen.height - pixel, view.width, pixel);
+    }
+    if (frozen.cols) {
+      context.fillRect(view.x + frozen.width - pixel, view.y, pixel, view.height);
+    }
+  }
+
+  private mergeAt(row: number, col: number): CellRange | null {
+    const { merges } = this;
+    for (let at = 0; at < merges.length; at += 4) {
+      const top = merges[at]! - 1;
+      const left = merges[at + 1]! - 1;
+      const bottom = merges[at + 2]! - 1;
+      const right = merges[at + 3]! - 1;
+      if (row >= top && row <= bottom && col >= left && col <= right) {
+        return { top, left, bottom, right };
+      }
+    }
+    return null;
+  }
+
+  /** Grows a range until no merged area hangs over its edge. */
+  private growToMerges(range: CellRange): CellRange {
+    const { merges } = this;
+    if (!merges.length) return range;
+    const out = { ...range };
+    for (let changed = true; changed;) {
+      changed = false;
+      for (let at = 0; at < merges.length; at += 4) {
+        const top = merges[at]! - 1;
+        const left = merges[at + 1]! - 1;
+        const bottom = merges[at + 2]! - 1;
+        const right = merges[at + 3]! - 1;
+        const touches =
+          top <= out.bottom && bottom >= out.top && left <= out.right && right >= out.left;
+        if (
+          touches &&
+          (top < out.top || left < out.left || bottom > out.bottom || right > out.right)
+        ) {
+          out.top = Math.min(out.top, top);
+          out.left = Math.min(out.left, left);
+          out.bottom = Math.max(out.bottom, bottom);
+          out.right = Math.max(out.right, right);
+          changed = true;
+        }
+      }
+    }
+    return out;
+  }
+
+  private select(row: number, col: number, extend: boolean, reveal = true) {
+    const safeRow = Math.max(0, Math.min(MAX_ROWS - 1, row));
+    const safeCol = Math.max(0, Math.min(MAX_COLS - 1, col));
+    if (extend) {
+      this.range = this.growToMerges({
+        top: Math.min(this.anchorRow, safeRow),
+        left: Math.min(this.anchorCol, safeCol),
+        bottom: Math.max(this.anchorRow, safeRow),
+        right: Math.max(this.anchorCol, safeCol),
+      });
+    } else {
+      const merge = this.mergeAt(safeRow, safeCol);
+      this.row = merge ? merge.top : safeRow;
+      this.col = merge ? merge.left : safeCol;
+      this.anchorRow = this.row;
+      this.anchorCol = this.col;
+      this.range = merge ?? { top: this.row, left: this.col, bottom: this.row, right: this.col };
+    }
+    if (reveal) this.reveal(safeRow, safeCol);
+    this.notifySelection();
+    this.schedule();
+  }
+
+  private notifySelection() {
+    const merge = this.mergeAt(this.row, this.col);
+    const same =
+      merge &&
+      merge.top === this.range.top &&
+      merge.left === this.range.left &&
+      merge.bottom === this.range.bottom &&
+      merge.right === this.range.right;
+    this.events.onSelection({
+      row: this.row,
+      col: this.col,
+      range: this.range,
+      // A merged area goes by its first cell, as in Excel's name box.
+      name: same ? cellName(this.row, this.col) : rangeName(this.range),
+    });
+  }
+
+  /** Scrolls so that a cell in the scrolling area is in view. */
+  private reveal(row: number, col: number) {
+    const frozen = this.frozen();
+    const view = this.view();
+    const mainWidth = view.width - frozen.width;
+    const mainHeight = view.height - frozen.height;
+    if (row >= frozen.firstRow + frozen.rows) {
+      const top = this.rows.offset(row);
+      const bottom = top + this.rows.size(row);
+      if (top < this.scrollY) this.scrollY = top;
+      else if (bottom > this.scrollY + mainHeight) this.scrollY = bottom - mainHeight;
+    }
+    if (col >= frozen.firstCol + frozen.cols) {
+      const left = this.cols.offset(col);
+      const right = left + this.cols.size(col);
+      if (left < this.scrollX) this.scrollX = left;
+      else if (right > this.scrollX + mainWidth) this.scrollX = right - mainWidth;
+    }
+    this.clampScroll();
+  }
+
+  private readonly onWheel = (event: WheelEvent) => {
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) {
+      const step = event.deltaY < 0 ? 10 : -10;
+      this.setZoom(this.zoom + step);
+      return;
+    }
+    const unit = event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? this.height : 1;
+    let dx = event.deltaX * unit * this.dpr;
+    let dy = event.deltaY * unit * this.dpr;
+    if (event.shiftKey && !dx) {
+      dx = dy;
+      dy = 0;
+    }
+    this.scrollX += dx;
+    this.scrollY += dy;
+    this.clampScroll();
+    this.schedule();
+  };
+
+  private pointerPosition(event: PointerEvent) {
+    const bounds = this.canvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - bounds.left) * this.dpr,
+      y: (event.clientY - bounds.top) * this.dpr,
+    };
+  }
+
+  /** The cell under a canvas position, in whichever pane it falls. */
+  private cellAt(x: number, y: number) {
+    const frozen = this.frozen();
+    const view = this.view();
+    const inFrozenCols = x < view.x + frozen.width;
+    const inFrozenRows = y < view.y + frozen.height;
+    const sheetX = inFrozenCols
+      ? x - view.x + this.cols.offset(frozen.firstCol)
+      : x - (view.x + frozen.width) + this.scrollX;
+    const sheetY = inFrozenRows
+      ? y - view.y + this.rows.offset(frozen.firstRow)
+      : y - (view.y + frozen.height) + this.scrollY;
+    return { row: this.rows.at(sheetY), col: this.cols.at(sheetX) };
+  }
+
+  private readonly onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    const { x, y } = this.pointerPosition(event);
+    this.focus();
+    const vertical = this.verticalBar();
+    const horizontal = this.horizontalBar();
+    this.canvas.setPointerCapture(event.pointerId);
+    if (x >= vertical.x && y >= vertical.y && y < vertical.y + vertical.height) {
+      const along = y - vertical.y;
+      if (along < vertical.thumb || along > vertical.thumb + vertical.length) {
+        const page = this.view().height;
+        this.scrollY += along < vertical.thumb ? -page : page;
+        this.clampScroll();
+        this.schedule();
+        return;
+      }
+      this.dragging = 'vertical';
+      this.dragOffset = along - vertical.thumb;
+      return;
+    }
+    if (y >= horizontal.y && x >= horizontal.x && x < horizontal.x + horizontal.width) {
+      const along = x - horizontal.x;
+      if (along < horizontal.thumb || along > horizontal.thumb + horizontal.length) {
+        const page = this.view().width;
+        this.scrollX += along < horizontal.thumb ? -page : page;
+        this.clampScroll();
+        this.schedule();
+        return;
+      }
+      this.dragging = 'horizontal';
+      this.dragOffset = along - horizontal.thumb;
+      return;
+    }
+    const view = this.view();
+    if (x < view.x && y < view.y) {
+      // The corner selects the whole sheet.
+      this.row = 0;
+      this.col = 0;
+      this.anchorRow = 0;
+      this.anchorCol = 0;
+      this.range = { top: 0, left: 0, bottom: MAX_ROWS - 1, right: MAX_COLS - 1 };
+      this.notifySelection();
+      this.schedule();
+      return;
+    }
+    const { row, col } = this.cellAt(Math.max(x, view.x), Math.max(y, view.y));
+    if (x < view.x) {
+      this.row = row;
+      this.col = this.cols.nextVisible(0);
+      this.anchorRow = row;
+      this.anchorCol = this.col;
+      this.range = { top: row, left: 0, bottom: row, right: MAX_COLS - 1 };
+      this.notifySelection();
+      this.schedule();
+      return;
+    }
+    if (y < view.y) {
+      this.col = col;
+      this.row = this.rows.nextVisible(0);
+      this.anchorRow = this.row;
+      this.anchorCol = col;
+      this.range = { top: 0, left: col, bottom: MAX_ROWS - 1, right: col };
+      this.notifySelection();
+      this.schedule();
+      return;
+    }
+    this.dragging = 'cells';
+    this.lastPointer = { x, y };
+    this.select(row, col, event.shiftKey);
+  };
+
+  private readonly onPointerMove = (event: PointerEvent) => {
+    if (!this.dragging) return;
+    const { x, y } = this.pointerPosition(event);
+    this.lastPointer = { x, y };
+    if (this.dragging === 'vertical') {
+      const bar = this.verticalBar();
+      const low = this.minScroll().y;
+      this.scrollY =
+        low +
+        scrollForThumb(
+          y - bar.y - this.dragOffset,
+          bar.length,
+          bar.height,
+          this.contentHeight(),
+          this.view().height,
+        );
+      this.clampScroll();
+      this.schedule();
+      return;
+    }
+    if (this.dragging === 'horizontal') {
+      const bar = this.horizontalBar();
+      const low = this.minScroll().x;
+      this.scrollX =
+        low +
+        scrollForThumb(
+          x - bar.x - this.dragOffset,
+          bar.length,
+          bar.width,
+          this.contentWidth(),
+          this.view().width,
+        );
+      this.clampScroll();
+      this.schedule();
+      return;
+    }
+    this.extendTo(x, y);
+    this.startAutoScroll();
+  };
+
+  private extendTo(x: number, y: number) {
+    const view = this.view();
+    const { row, col } = this.cellAt(
+      Math.max(view.x, Math.min(view.x + view.width - 1, x)),
+      Math.max(view.y, Math.min(view.y + view.height - 1, y)),
+    );
+    this.select(row, col, true);
+  }
+
+  /** Keeps scrolling while a drag holds the pointer past the sheet's edge. */
+  private startAutoScroll() {
+    if (this.autoScroll) return;
+    const tick = () => {
+      this.autoScroll = 0;
+      if (this.dragging !== 'cells') return;
+      const view = this.view();
+      const { x, y } = this.lastPointer;
+      const dy = y < view.y ? y - view.y : y > view.y + view.height ? y - view.y - view.height : 0;
+      const dx = x < view.x ? x - view.x : x > view.x + view.width ? x - view.x - view.width : 0;
+      if (!dx && !dy) return;
+      this.scrollX += dx / 4;
+      this.scrollY += dy / 4;
+      this.clampScroll();
+      this.extendTo(x, y);
+      this.autoScroll = requestAnimationFrame(tick);
+    };
+    this.autoScroll = requestAnimationFrame(tick);
+  }
+
+  private readonly onPointerUp = () => {
+    this.dragging = null;
+  };
+
+  /** One line from this one, skipping hidden lines, or leaving a merged area. */
+  private stepped(axis: Axis, line: number, direction: number, maximum: number) {
+    const next = line + direction;
+    if (next < 0 || next >= maximum) return line;
+    return direction > 0 ? axis.nextVisible(next) : axis.previousVisible(next);
+  }
+
+  private readonly onKeyDown = (event: KeyboardEvent) => {
+    const extend = event.shiftKey;
+    const focusRow = extend
+      ? this.anchorRow === this.range.top
+        ? this.range.bottom
+        : this.range.top
+      : this.row;
+    const focusCol = extend
+      ? this.anchorCol === this.range.left
+        ? this.range.right
+        : this.range.left
+      : this.col;
+    const view = this.view();
+    let row = focusRow;
+    let col = focusCol;
+    const merge = extend ? null : this.mergeAt(this.row, this.col);
+    switch (event.key) {
+      case 'ArrowDown':
+        row = this.stepped(this.rows, merge ? merge.bottom : focusRow, 1, MAX_ROWS);
+        break;
+      case 'ArrowUp':
+        row = this.stepped(this.rows, merge ? merge.top : focusRow, -1, MAX_ROWS);
+        break;
+      case 'ArrowRight':
+        col = this.stepped(this.cols, merge ? merge.right : focusCol, 1, MAX_COLS);
+        break;
+      case 'ArrowLeft':
+        col = this.stepped(this.cols, merge ? merge.left : focusCol, -1, MAX_COLS);
+        break;
+      case 'Tab':
+        col = this.stepped(
+          this.cols,
+          merge ? (event.shiftKey ? merge.left : merge.right) : focusCol,
+          event.shiftKey ? -1 : 1,
+          MAX_COLS,
+        );
+        event.preventDefault();
+        this.select(this.row, col, false);
+        return;
+      case 'Enter':
+        row = this.stepped(
+          this.rows,
+          merge ? (event.shiftKey ? merge.top : merge.bottom) : focusRow,
+          event.shiftKey ? -1 : 1,
+          MAX_ROWS,
+        );
+        event.preventDefault();
+        this.select(row, this.col, false);
+        return;
+      case 'PageDown': {
+        const page = view.height;
+        const target = this.rows.at(this.rows.offset(focusRow) + page);
+        this.scrollY += page;
+        this.clampScroll();
+        row = target;
+        break;
+      }
+      case 'PageUp': {
+        const page = view.height;
+        const target = this.rows.at(Math.max(0, this.rows.offset(focusRow) - page));
+        this.scrollY -= page;
+        this.clampScroll();
+        row = target;
+        break;
+      }
+      case 'Home':
+        col = 0;
+        if (event.ctrlKey || event.metaKey) row = 0;
+        break;
+      case 'End':
+        if (event.ctrlKey || event.metaKey) {
+          row = Math.max(0, (this.layout?.usedRows ?? 1) - 1);
+          col = Math.max(0, (this.layout?.usedCols ?? 1) - 1);
+        } else {
+          return;
+        }
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    this.select(row, col, extend);
   };
 }

@@ -7,4 +7,10 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cgs-calc = { path = "../cgs-calc" }
 cgs-model.workspace = true
+cgs-numfmt = { path = "../cgs-numfmt" }
+cgs-xlsx = { path = "../cgs-xlsx" }
+
+[dev-dependencies]
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }

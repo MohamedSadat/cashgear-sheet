@@ -1,38 +1,112 @@
-// Draws a tile on any 2D context, so drawing can move threads if it needs to. It
-// runs in the tile worker today. Pure apart from the context: no DOM, no engine.
+// Draws a tile on any 2D context, so drawing can move threads if it needs to. It runs in
+// the tile worker today. Pure apart from the context: no DOM, no engine.
+import { shortenGeneral, singleLine, wrapLines } from './text-fit';
 import type { TilePalette } from './types';
-import { cellColors, cellText, type ViewBlock } from './view-block';
+import {
+  ALIGN_CENTER,
+  ALIGN_CENTER_CONTINUOUS,
+  ALIGN_DISTRIBUTED,
+  ALIGN_FILL,
+  ALIGN_JUSTIFY,
+  ALIGN_LEFT,
+  ALIGN_RIGHT,
+  CELL_HASHES,
+  CELL_MERGED,
+  CELL_NO_BOTTOM_GRID,
+  CELL_NO_RIGHT_GRID,
+  CELL_OCCUPIED,
+  CELL_RTL,
+  cellText,
+  FONT_BOLD,
+  FONT_ITALIC,
+  FONT_STRIKE,
+  KIND_GENERAL,
+  KIND_MASK,
+  KIND_NUMBER,
+  KIND_TEXT,
+  LAYOUT_DIAGONAL_DOWN,
+  LAYOUT_DIAGONAL_UP,
+  LAYOUT_SHRINK,
+  LAYOUT_WRAP,
+  LINE_DASHED,
+  LINE_DASH_DOT,
+  LINE_DASH_DOT_DOT,
+  LINE_DOTTED,
+  LINE_DOUBLE,
+  LINE_HAIR,
+  LINE_MEDIUM,
+  LINE_MEDIUM_DASHED,
+  LINE_MEDIUM_DASH_DOT,
+  LINE_MEDIUM_DASH_DOT_DOT,
+  LINE_NONE,
+  LINE_SLANT_DASH_DOT,
+  LINE_THICK,
+  VALIGN_BOTTOM,
+  VALIGN_CENTER,
+  VALIGN_TOP,
+  type TileStyle,
+  type ViewBlock,
+} from './view-block';
 
-export const CELL_WIDTH = 64;
-export const ROW_HEIGHT = 20;
 export const TILE_ROWS = 64;
 export const TILE_COLS = 16;
-const FONT_SIZE = 12;
-const TEXT_INSET = 4;
+const CELL_INSET = 2;
+const INDENT_PX = 9;
+const EMPTY_STYLE: TileStyle = {
+  font: '',
+  size: 11,
+  fontFlags: 0,
+  underline: 0,
+  horizontal: ALIGN_LEFT,
+  vertical: VALIGN_BOTTOM,
+  indent: 0,
+  rotation: 0,
+  layout: 0,
+  rightLine: LINE_NONE,
+  bottomLine: LINE_NONE,
+  diagonalLine: LINE_NONE,
+  rightColor: 0,
+  bottomColor: 0,
+  diagonalColor: 0,
+};
 
 export type TileContext = Pick<
   OffscreenCanvasRenderingContext2D,
   | 'beginPath'
   | 'clip'
+  | 'direction'
   | 'fillRect'
   | 'fillStyle'
   | 'fillText'
   | 'font'
+  | 'lineTo'
+  | 'lineWidth'
+  | 'measureText'
+  | 'moveTo'
   | 'rect'
   | 'restore'
+  | 'rotate'
   | 'save'
+  | 'setLineDash'
+  | 'stroke'
+  | 'strokeStyle'
+  | 'textAlign'
   | 'textBaseline'
+  | 'translate'
 >;
 
-/** A cell's size in whole device pixels. */
-export function cellPixels(scale: number) {
-  return { width: Math.round(CELL_WIDTH * scale), height: Math.round(ROW_HEIGHT * scale) };
+/** A size in whole device pixels. Every cell rounds alone, so sizes add up exactly. */
+export function devicePx(px: number, scale: number) {
+  return Math.round(px * scale);
 }
 
-/** A tile's size in whole device pixels. */
-export function tilePixels(scale: number) {
-  const cell = cellPixels(scale);
-  return { width: cell.width * TILE_COLS, height: cell.height * TILE_ROWS };
+/** Device positions of a tile's lines: `xs[i]` is column i's left edge, `xs[cols]` its end. */
+export function tileEdges(sizes: ArrayLike<number>, scale: number): Int32Array {
+  const edges = new Int32Array(sizes.length + 1);
+  for (let index = 0; index < sizes.length; index++) {
+    edges[index + 1] = edges[index]! + devicePx(sizes[index]!, scale);
+  }
+  return edges;
 }
 
 /** `0xRRGGBBAA` as a CSS colour. */
@@ -42,49 +116,714 @@ export function cssColor(rgba: number): string {
 
 const hasAlpha = (rgba: number) => (rgba & 0xff) !== 0;
 
+/** What a font falls back on. Calibri has Carlito, whose widths match. */
+export function fontStack(name: string, palette: TilePalette): string {
+  if (palette.fontOverride) return '"' + palette.fontOverride + '", ' + palette.fontFamily;
+  const known = '"' + name.replace(/"/g, '') + '"';
+  const lower = name.toLowerCase();
+  if (!name) return 'Carlito, ' + palette.fontFamily;
+  if (lower.startsWith('calibri') || lower.startsWith('aptos'))
+    return known + ', Carlito, ' + palette.fontFamily;
+  if (lower === 'cambria' || lower.includes('times') || lower === 'georgia')
+    return known + ', Georgia, serif';
+  if (lower.includes('courier') || lower === 'consolas') return known + ', monospace';
+  return known + ', ' + palette.fontFamily;
+}
+
+interface FontMetrics {
+  css: string;
+  ascent: number;
+  descent: number;
+  px: number;
+}
+
+/** Everything drawing one tile needs. It lives as long as the drawing does. */
+class Painter {
+  private fonts = new Map<number, FontMetrics>();
+  private currentFont = '';
+  readonly xs: Int32Array;
+  readonly ys: Int32Array;
+
+  constructor(
+    private readonly context: TileContext,
+    private readonly block: ViewBlock,
+    private readonly palette: TilePalette,
+    private readonly scale: number,
+  ) {
+    this.xs = tileEdges(block.colPx, scale);
+    this.ys = tileEdges(block.rowPx, scale);
+    context.textBaseline = 'alphabetic';
+    context.direction = 'ltr';
+  }
+
+  private cell(row: number, col: number) {
+    const at = (row * this.block.cols + col) * 6;
+    const { cells } = this.block;
+    const packed = cells[at + 4]!;
+    return {
+      textLength: cells[at + 1]!,
+      fill: cells[at + 2]!,
+      color: cells[at + 3]!,
+      style: packed & 0xffff,
+      flags: packed >>> 16,
+      fillAt: cells[at + 5]!,
+    };
+  }
+
+  private styleOf(index: number) {
+    return this.block.styles[index] ?? EMPTY_STYLE;
+  }
+
+  private fontFor(index: number, style: TileStyle, shrink = 1): FontMetrics {
+    const key = index * 1024 + Math.round(shrink * 1000);
+    let metrics = this.fonts.get(key);
+    if (!metrics) {
+      const px = ((style.size * 96) / 72) * this.scale * shrink;
+      const css =
+        (style.fontFlags & FONT_ITALIC ? 'italic ' : '') +
+        (style.fontFlags & FONT_BOLD ? 'bold ' : '') +
+        px.toFixed(2) +
+        'px ' +
+        fontStack(style.font, this.palette);
+      this.context.font = css;
+      this.currentFont = css;
+      const measured = this.context.measureText('Mg');
+      metrics = {
+        css,
+        px,
+        ascent: measured.fontBoundingBoxAscent ?? px * 0.8,
+        descent: measured.fontBoundingBoxDescent ?? px * 0.2,
+      };
+      this.fonts.set(key, metrics);
+    }
+    if (this.currentFont !== metrics.css) {
+      this.context.font = metrics.css;
+      this.currentFont = metrics.css;
+    }
+    return metrics;
+  }
+
+  private width(text: string) {
+    return this.context.measureText(text).width;
+  }
+
+  drawBackground() {
+    const { context, block, palette, xs, ys } = this;
+    const pixel = Math.max(1, Math.round(this.scale));
+    context.fillStyle = palette.background;
+    context.fillRect(0, 0, xs[block.cols]!, ys[block.rows]!);
+    // Fills hide gridlines, as in Excel.
+    for (let row = 0; row < block.rows; row++) {
+      const top = ys[row]!;
+      const height = ys[row + 1]! - top;
+      if (!height) continue;
+      for (let col = 0; col < block.cols; col++) {
+        const left = xs[col]!;
+        const width = xs[col + 1]! - left;
+        if (!width) continue;
+        const { fill, flags } = this.cell(row, col);
+        if (hasAlpha(fill)) {
+          context.fillStyle = cssColor(fill);
+          context.fillRect(left, top, width, height);
+        } else if (palette.showGrid !== false) {
+          context.fillStyle = palette.gridline;
+          if (!(flags & CELL_NO_RIGHT_GRID))
+            context.fillRect(left + width - pixel, top, pixel, height);
+          if (!(flags & CELL_NO_BOTTOM_GRID))
+            context.fillRect(left, top + height - pixel, width, pixel);
+        }
+      }
+    }
+  }
+
+  /** Is this cell free for text to overflow across? */
+  private free(row: number, col: number) {
+    const { textLength, flags } = this.cell(row, col);
+    return !textLength && !(flags & (CELL_MERGED | CELL_OCCUPIED | CELL_HASHES));
+  }
+
+  /** Clears the gridlines text runs across, between these columns of a row. */
+  private clearGrid(row: number, fromCol: number, toCol: number) {
+    const { context, palette, xs, ys } = this;
+    if (palette.showGrid === false) return;
+    const pixel = Math.max(1, Math.round(this.scale));
+    const top = ys[row]!;
+    const height = ys[row + 1]! - top - pixel;
+    if (height <= 0) return;
+    for (let col = fromCol; col < toCol; col++) {
+      const { fill } = this.cell(row, col);
+      context.fillStyle = hasAlpha(fill) ? cssColor(fill) : palette.background;
+      context.fillRect(xs[col + 1]! - pixel, top, pixel, height);
+    }
+  }
+
+  drawCellsText() {
+    const { block, xs, ys } = this;
+    for (let row = 0; row < block.rows; row++) {
+      if (ys[row + 1] === ys[row]) continue;
+      for (let col = 0; col < block.cols; col++) {
+        if (xs[col + 1] === xs[col]) continue;
+        const { textLength, flags, style, color, fillAt } = this.cell(row, col);
+        if (!textLength && !(flags & CELL_HASHES)) continue;
+        this.drawText(
+          cellText(block, row, col),
+          { row, col, flags, style, color, fillAt },
+          xs[col]!,
+          ys[row]!,
+          xs[col + 1]! - xs[col]!,
+          ys[row + 1]! - ys[row]!,
+        );
+      }
+    }
+  }
+
+  /** A CSS position, as device pixels from the tile's corner. Lines inside the tile are exact. */
+  private mapped(css: number, sizes: ArrayLike<number>, edges: Int32Array) {
+    if (css <= 0) return devicePx(css, this.scale);
+    let total = 0;
+    for (let index = 0; index < sizes.length; index++) {
+      if (total === css) return edges[index]!;
+      total += sizes[index]!;
+    }
+    return edges[sizes.length]! + devicePx(css - total, this.scale);
+  }
+
+  drawExtras() {
+    const { block, xs, ys, context } = this;
+    for (const extra of block.extras) {
+      const left = this.mapped(extra.x, block.colPx, xs);
+      const top = this.mapped(extra.y, block.rowPx, ys);
+      const right = this.mapped(extra.x + extra.width, block.colPx, xs);
+      const bottom = this.mapped(extra.y + extra.height, block.rowPx, ys);
+      if (extra.kind === 1) {
+        this.drawText(
+          extra.text,
+          {
+            row: -1,
+            col: -1,
+            flags: extra.flags,
+            style: extra.style,
+            color: extra.color,
+            fillAt: extra.fillAt,
+          },
+          left,
+          top,
+          right - left,
+          bottom - top,
+        );
+        continue;
+      }
+      // Overflow from outside the tile: how far does it reach in?
+      const rowIndex = this.rowAt(extra.y);
+      if (rowIndex < 0) continue;
+      const style = this.styleOf(extra.style);
+      const metrics = this.fontFor(extra.style, style);
+      const line = singleLine(extra.text);
+      const width = this.width(line);
+      const inset = devicePx(CELL_INSET, this.scale);
+      const fromLeft = extra.x < 0;
+      const start = this.textStart(style, left, right, width, inset);
+      const end = start + width;
+      if (fromLeft ? end <= 0 : start >= xs[block.cols]!) continue;
+      // Stop at the first occupied cell the text would meet.
+      let clipLeft = 0;
+      let clipRight = xs[block.cols]!;
+      if (fromLeft) {
+        let col = 0;
+        while (col < block.cols && this.free(rowIndex, col) && xs[col]! < end) col++;
+        clipRight = xs[col]!;
+        this.clearGrid(rowIndex, 0, Math.max(0, col - 1));
+        if (col > 0 && xs[col - 1]! < end && end > xs[col]!) {
+          this.clearGrid(rowIndex, col - 1, col - 1);
+        }
+      } else {
+        let col = block.cols - 1;
+        while (col >= 0 && this.free(rowIndex, col) && xs[col + 1]! > start) col--;
+        clipLeft = xs[col + 1]!;
+        this.clearGrid(rowIndex, col + 1, block.cols - 1);
+      }
+      if (clipRight <= clipLeft) continue;
+      context.save();
+      context.beginPath();
+      context.rect(clipLeft, top, clipRight - clipLeft, bottom - top);
+      context.clip();
+      this.paintLine(line, style, metrics, extra.color, extra.flags, start, width, top, bottom);
+      context.restore();
+    }
+  }
+
+  private rowAt(css: number) {
+    let total = 0;
+    const { rowPx } = this.block;
+    for (let row = 0; row < rowPx.length; row++) {
+      if (total === css) return row;
+      total += rowPx[row]!;
+    }
+    return -1;
+  }
+
+  /** Where a line of this width starts in a cell, by its alignment. */
+  private textStart(style: TileStyle, left: number, right: number, width: number, inset: number) {
+    const indent = devicePx(style.indent * INDENT_PX, this.scale);
+    switch (style.horizontal) {
+      case ALIGN_RIGHT:
+        return right - inset - indent - width - 1;
+      case ALIGN_CENTER:
+      case ALIGN_CENTER_CONTINUOUS:
+      case ALIGN_DISTRIBUTED:
+        return (left + right - width) / 2;
+      default:
+        return left + inset + indent;
+    }
+  }
+
+  private baseline(style: TileStyle, metrics: FontMetrics, top: number, bottom: number) {
+    const pixel = Math.max(1, Math.round(this.scale));
+    switch (style.vertical) {
+      case VALIGN_TOP:
+        return top + metrics.ascent;
+      case VALIGN_CENTER:
+        return (top + bottom - metrics.ascent - metrics.descent) / 2 + metrics.ascent;
+      case VALIGN_BOTTOM:
+      default:
+        return bottom - metrics.descent - pixel;
+    }
+  }
+
+  private paintLine(
+    line: string,
+    style: TileStyle,
+    metrics: FontMetrics,
+    color: number,
+    flags: number,
+    start: number,
+    width: number,
+    top: number,
+    bottom: number,
+    y?: number,
+  ) {
+    const { context, palette, scale } = this;
+    const baseline = y ?? this.baseline(style, metrics, top, bottom);
+    context.fillStyle = hasAlpha(color) ? cssColor(color) : palette.text;
+    // Set every time: `restore` puts back whatever direction its `save` saw.
+    context.direction = flags & CELL_RTL ? 'rtl' : 'ltr';
+    context.textAlign = 'left';
+    context.fillText(line, start, baseline);
+    if (style.underline) {
+      const weight = Math.max(1, Math.round(metrics.px / 14));
+      const under = baseline + Math.max(1, Math.round(1.5 * scale));
+      context.fillRect(start, under, width, weight);
+      if (style.underline === 2 || style.underline === 4) {
+        context.fillRect(start, under + weight + Math.max(1, Math.round(scale)), width, weight);
+      }
+    }
+    if (style.fontFlags & FONT_STRIKE) {
+      const weight = Math.max(1, Math.round(metrics.px / 14));
+      context.fillRect(start, baseline - metrics.px * 0.3, width, weight);
+    }
+  }
+
+  private drawText(
+    raw: string,
+    cell: {
+      row: number;
+      col: number;
+      flags: number;
+      style: number;
+      color: number;
+      fillAt: number;
+    },
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+  ) {
+    const { context, block, xs, scale } = this;
+    const style = this.styleOf(cell.style);
+    let right = left + width;
+    const bottom = top + height;
+    // Centred across a selection: over the empty cells after it that say the same.
+    if (style.horizontal === ALIGN_CENTER_CONTINUOUS && cell.row >= 0) {
+      let last = cell.col;
+      while (
+        last + 1 < block.cols &&
+        this.free(cell.row, last + 1) &&
+        this.styleOf(this.cell(cell.row, last + 1).style).horizontal === ALIGN_CENTER_CONTINUOUS
+      ) {
+        last++;
+      }
+      right = xs[last + 1]!;
+    }
+    const inset = devicePx(CELL_INSET, scale);
+    const indent = devicePx(style.indent * INDENT_PX, scale);
+    const room = Math.max(1, right - left - inset * 2 - indent - 1);
+    const kind = cell.flags & KIND_MASK;
+    const wrap =
+      (style.layout & LAYOUT_WRAP) !== 0 ||
+      style.horizontal === ALIGN_JUSTIFY ||
+      style.horizontal === ALIGN_DISTRIBUTED;
+    let metrics = this.fontFor(cell.style, style);
+
+    if (cell.flags & CELL_HASHES) {
+      this.paintHashes(style, metrics, cell, left, right, top, bottom, room);
+      return;
+    }
+
+    if (style.rotation) {
+      this.drawRotated(raw, style, metrics, cell, left, top, width, height);
+      return;
+    }
+
+    if (wrap && kind === KIND_TEXT) {
+      this.drawWrapped(raw, style, metrics, cell, left, top, right, bottom, room, inset);
+      return;
+    }
+
+    let line = singleLine(raw);
+    if (style.layout & LAYOUT_SHRINK) {
+      const full = this.width(line);
+      if (full > room) {
+        metrics = this.fontFor(cell.style, style, Math.max(0.1, room / full));
+      }
+    }
+    if (cell.fillAt) {
+      line = this.expandFill(line, cell.fillAt - 1, room);
+    } else if (style.horizontal === ALIGN_FILL && line) {
+      const one = this.width(line);
+      if (one > 0 && one < room) line = line.repeat(Math.floor(room / one));
+    }
+
+    // Worth measuring only when the text could be too wide.
+    const textWidth =
+      line.length * metrics.px * 1.1 <= room ||
+      (style.horizontal === ALIGN_LEFT && kind === KIND_TEXT && !style.underline)
+        ? null
+        : this.width(line);
+    const isNumber = kind === KIND_NUMBER || kind === KIND_GENERAL;
+    if (isNumber && textWidth !== null && textWidth > room) {
+      if (kind === KIND_GENERAL) {
+        const short = shortenGeneral(line, (candidate) => this.width(candidate) <= room);
+        if (short === null) {
+          this.paintHashes(style, metrics, cell, left, right, top, bottom, room);
+          return;
+        }
+        line = short;
+      } else {
+        this.paintHashes(style, metrics, cell, left, right, top, bottom, room);
+        return;
+      }
+    }
+
+    const measured = this.width(line);
+    const start = this.textStart(style, left, right, measured, inset);
+    let clipLeft = left;
+    let clipRight = right - 1;
+    const overflowEnd = left + width;
+    const canOverflow =
+      kind === KIND_TEXT && cell.row >= 0 && !cell.fillAt && style.horizontal !== ALIGN_FILL;
+    if (canOverflow && (start < left || start + measured > overflowEnd)) {
+      const end = start + measured;
+      let last = cell.col;
+      while (last + 1 < block.cols && xs[last + 1]! < end && this.free(cell.row, last + 1)) {
+        last++;
+      }
+      let first = cell.col;
+      while (first > 0 && xs[first]! > start && this.free(cell.row, first - 1)) first--;
+      clipLeft = xs[first]!;
+      // Text reaching the tile's edge carries on in the next tile.
+      clipRight = last === block.cols - 1 ? xs[block.cols]! : xs[last + 1]! - 1;
+      if (first < last) this.clearGrid(cell.row, first, last);
+    }
+    context.save();
+    context.beginPath();
+    context.rect(clipLeft, top, clipRight - clipLeft, height);
+    context.clip();
+    this.paintLine(line, style, metrics, cell.color, cell.flags, start, measured, top, bottom);
+    context.restore();
+  }
+
+  private paintHashes(
+    style: TileStyle,
+    metrics: FontMetrics,
+    cell: { flags: number; color: number },
+    left: number,
+    right: number,
+    top: number,
+    bottom: number,
+    room: number,
+  ) {
+    const { context } = this;
+    const one = this.width('#');
+    const hashes = '#'.repeat(Math.max(1, Math.floor(room / one)));
+    const width = this.width(hashes);
+    context.save();
+    context.beginPath();
+    context.rect(left, top, right - left, bottom - top);
+    context.clip();
+    const plain = { ...style, underline: 0, fontFlags: style.fontFlags & ~FONT_STRIKE };
+    this.paintLine(
+      hashes,
+      plain,
+      metrics,
+      cell.color,
+      cell.flags & ~CELL_RTL,
+      (left + right - width) / 2,
+      width,
+      top,
+      bottom,
+    );
+    context.restore();
+  }
+
+  /** Repeats the `*x` character at this byte position until the line fills the room. */
+  private expandFill(line: string, byteAt: number, room: number) {
+    const bytes = new TextEncoder().encode(line);
+    const decoder = new TextDecoder();
+    const before = decoder.decode(bytes.subarray(0, byteAt));
+    const rest = decoder.decode(bytes.subarray(byteAt));
+    const fill = [...rest][0] ?? ' ';
+    const after = rest.slice(fill.length);
+    const one = this.width(fill);
+    const spare = room - this.width(before + after);
+    const count = one > 0 ? Math.max(0, Math.floor(spare / one)) : 0;
+    return before + fill.repeat(count) + after;
+  }
+
+  private drawWrapped(
+    raw: string,
+    style: TileStyle,
+    metrics: FontMetrics,
+    cell: { flags: number; color: number },
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+    room: number,
+    inset: number,
+  ) {
+    const { context } = this;
+    const lines = wrapLines(raw, (candidate) => this.width(candidate) <= room);
+    const lineHeight = metrics.ascent + metrics.descent;
+    const blockHeight = lineHeight * lines.length;
+    let y: number;
+    switch (style.vertical) {
+      case VALIGN_TOP:
+        y = top + metrics.ascent;
+        break;
+      case VALIGN_CENTER:
+        y = (top + bottom - blockHeight) / 2 + metrics.ascent;
+        break;
+      case VALIGN_BOTTOM:
+        y = bottom - blockHeight + metrics.ascent - Math.max(1, Math.round(this.scale));
+        break;
+      default:
+        y = top + metrics.ascent;
+    }
+    context.save();
+    context.beginPath();
+    context.rect(left, top, right - left - 1, bottom - top);
+    context.clip();
+    for (const line of lines) {
+      const width = this.width(line);
+      const start = this.textStart(style, left, right, width, inset);
+      this.paintLine(line, style, metrics, cell.color, cell.flags, start, width, top, bottom, y);
+      y += lineHeight;
+    }
+    context.restore();
+  }
+
+  private drawRotated(
+    raw: string,
+    style: TileStyle,
+    metrics: FontMetrics,
+    cell: { flags: number; color: number },
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+  ) {
+    const { context, palette, scale } = this;
+    const line = singleLine(raw);
+    const lineHeight = metrics.ascent + metrics.descent;
+    const inset = devicePx(CELL_INSET, scale);
+    /** The middle of a box this size, placed in the cell by the style's alignment. */
+    const middle = (boxWidth: number, boxHeight: number) => {
+      const x =
+        style.horizontal === ALIGN_LEFT
+          ? left + inset + boxWidth / 2
+          : style.horizontal === ALIGN_RIGHT
+            ? left + width - inset - boxWidth / 2
+            : left + width / 2;
+      const y =
+        style.vertical === VALIGN_TOP
+          ? top + boxHeight / 2
+          : style.vertical === VALIGN_CENTER
+            ? top + height / 2
+            : top + height - boxHeight / 2 - Math.max(1, Math.round(scale));
+      return { x, y };
+    };
+    context.save();
+    context.beginPath();
+    context.rect(left, top, width - 1, height);
+    context.clip();
+    context.fillStyle = hasAlpha(cell.color) ? cssColor(cell.color) : palette.text;
+    context.direction = cell.flags & CELL_RTL ? 'rtl' : 'ltr';
+    context.textAlign = 'center';
+    if (style.rotation === 255) {
+      // Stacked: one character under another.
+      const letters = [...line];
+      const { x, y } = middle(metrics.px, lineHeight * letters.length);
+      let baseline = y - (lineHeight * letters.length) / 2 + metrics.ascent;
+      for (const ch of letters) {
+        context.fillText(ch, x, baseline);
+        baseline += lineHeight;
+      }
+    } else {
+      const angle = style.rotation <= 90 ? style.rotation : 90 - style.rotation;
+      const radians = (angle * Math.PI) / 180;
+      const length = this.width(line);
+      const { x, y } = middle(
+        Math.abs(Math.cos(radians)) * length + Math.abs(Math.sin(radians)) * lineHeight,
+        Math.abs(Math.sin(radians)) * length + Math.abs(Math.cos(radians)) * lineHeight,
+      );
+      context.translate(x, y);
+      context.rotate(-radians);
+      context.fillText(line, 0, (metrics.ascent - metrics.descent) / 2);
+    }
+    context.textAlign = 'left';
+    context.restore();
+  }
+
+  drawBorders() {
+    const { block, xs, ys } = this;
+    for (let row = 0; row < block.rows; row++) {
+      const top = ys[row]!;
+      const bottom = ys[row + 1]!;
+      if (top === bottom) continue;
+      for (let col = 0; col < block.cols; col++) {
+        const left = xs[col]!;
+        const right = xs[col + 1]!;
+        if (left === right) continue;
+        const { style: index } = this.cell(row, col);
+        const style = this.styleOf(index);
+        if (style.rightLine) {
+          this.drawLine(style.rightLine, style.rightColor, right, top, right, bottom, true);
+        }
+        if (style.bottomLine) {
+          this.drawLine(style.bottomLine, style.bottomColor, left, bottom, right, bottom, false);
+        }
+        if (style.diagonalLine) this.drawDiagonal(style, left, top, right, bottom);
+      }
+    }
+  }
+
+  /** A line along a cell's right or bottom edge, kept inside the cell so tiles can't cut it. */
+  private drawLine(
+    kind: number,
+    color: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    vertical: boolean,
+  ) {
+    const { context, palette, scale } = this;
+    const pixel = Math.max(1, Math.round(scale));
+    let weight = pixel;
+    if (kind === LINE_MEDIUM || kind === LINE_MEDIUM_DASHED) weight = pixel * 2;
+    if (kind === LINE_MEDIUM_DASH_DOT || kind === LINE_MEDIUM_DASH_DOT_DOT) weight = pixel * 2;
+    if (kind === LINE_SLANT_DASH_DOT) weight = pixel * 2;
+    if (kind === LINE_THICK) weight = pixel * 3;
+    const css = hasAlpha(color) ? cssColor(color) : palette.text;
+    if (kind === LINE_DOUBLE) {
+      context.fillStyle = css;
+      if (vertical) {
+        context.fillRect(x1 - pixel, y1, pixel, y2 - y1);
+        context.fillRect(x1 - pixel * 3, y1, pixel, y2 - y1);
+      } else {
+        context.fillRect(x1, y1 - pixel, x2 - x1, pixel);
+        context.fillRect(x1, y1 - pixel * 3, x2 - x1, pixel);
+      }
+      return;
+    }
+    const dash = lineDash(kind, pixel);
+    if (!dash) {
+      context.fillStyle = css;
+      if (vertical) context.fillRect(x1 - weight, y1, weight, y2 - y1);
+      else context.fillRect(x1, y1 - weight, x2 - x1, weight);
+      return;
+    }
+    context.save();
+    context.strokeStyle = css;
+    context.lineWidth = weight;
+    context.setLineDash(dash);
+    context.beginPath();
+    const offset = weight / 2;
+    if (vertical) {
+      context.moveTo(x1 - offset, y1);
+      context.lineTo(x2 - offset, y2);
+    } else {
+      context.moveTo(x1, y1 - offset);
+      context.lineTo(x2, y2 - offset);
+    }
+    context.stroke();
+    context.restore();
+  }
+
+  private drawDiagonal(style: TileStyle, left: number, top: number, right: number, bottom: number) {
+    const { context, palette, scale } = this;
+    const pixel = Math.max(1, Math.round(scale));
+    context.save();
+    context.strokeStyle = hasAlpha(style.diagonalColor)
+      ? cssColor(style.diagonalColor)
+      : palette.text;
+    context.lineWidth = style.diagonalLine === LINE_THICK ? pixel * 3 : pixel;
+    context.setLineDash(lineDash(style.diagonalLine, pixel) ?? []);
+    context.beginPath();
+    if (style.layout & LAYOUT_DIAGONAL_DOWN) {
+      context.moveTo(left, top);
+      context.lineTo(right, bottom);
+    }
+    if (style.layout & LAYOUT_DIAGONAL_UP) {
+      context.moveTo(left, bottom);
+      context.lineTo(right, top);
+    }
+    context.stroke();
+    context.restore();
+  }
+}
+
+function lineDash(kind: number, pixel: number): number[] | null {
+  switch (kind) {
+    case LINE_HAIR:
+    case LINE_DOTTED:
+      return [pixel, pixel];
+    case LINE_DASHED:
+    case LINE_MEDIUM_DASHED:
+      return [pixel * 4, pixel * 2];
+    case LINE_DASH_DOT:
+    case LINE_MEDIUM_DASH_DOT:
+    case LINE_SLANT_DASH_DOT:
+      return [pixel * 4, pixel * 2, pixel, pixel * 2];
+    case LINE_DASH_DOT_DOT:
+    case LINE_MEDIUM_DASH_DOT_DOT:
+      return [pixel * 4, pixel * 2, pixel, pixel * 2, pixel, pixel * 2];
+    default:
+      return null;
+  }
+}
+
 export function drawTile(
   context: TileContext,
   block: ViewBlock,
   palette: TilePalette,
   scale: number,
 ) {
-  const cell = cellPixels(scale);
-  context.fillStyle = palette.background;
-  context.fillRect(0, 0, cell.width * block.cols, cell.height * block.rows);
-
-  // Fills hide gridlines, as in Excel.
-  for (let row = 0; row < block.rows; row++) {
-    for (let col = 0; col < block.cols; col++) {
-      const x = col * cell.width;
-      const y = row * cell.height;
-      const { fill } = cellColors(block, row, col);
-      if (hasAlpha(fill)) {
-        context.fillStyle = cssColor(fill);
-        context.fillRect(x, y, cell.width, cell.height);
-      } else {
-        context.fillStyle = palette.gridline;
-        context.fillRect(x + cell.width - 1, y, 1, cell.height);
-        context.fillRect(x, y + cell.height - 1, cell.width, 1);
-      }
-    }
-  }
-
-  context.font = FONT_SIZE * scale + 'px ' + palette.fontFamily;
-  context.textBaseline = 'middle';
-  for (let row = 0; row < block.rows; row++) {
-    for (let col = 0; col < block.cols; col++) {
-      const text = cellText(block, row, col);
-      if (!text) continue;
-      const x = col * cell.width;
-      const y = row * cell.height;
-      const color = cellColors(block, row, col).text;
-      context.fillStyle = hasAlpha(color) ? cssColor(color) : palette.text;
-      context.save();
-      context.beginPath();
-      context.rect(x, y, cell.width - 1, cell.height - 1);
-      context.clip();
-      context.fillText(text, x + TEXT_INSET * scale, y + cell.height / 2);
-      context.restore();
-    }
-  }
+  const painter = new Painter(context, block, palette, scale);
+  painter.drawBackground();
+  painter.drawCellsText();
+  painter.drawExtras();
+  painter.drawBorders();
 }
+
+export { ALIGN_CENTER };

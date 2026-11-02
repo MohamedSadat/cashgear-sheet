@@ -1,0 +1,578 @@
+// Builds test workbooks with their saved values already in them, so no Excel is needed and
+// nothing binary is checked in. Used by the browser specs, the desktop smoke test and the
+// speed checks. Run directly, it writes them to tests/workbooks/fixtures, which git ignores.
+import { crc32, deflateRawSync } from 'node:zlib';
+
+/** A zip of (name, text or bytes) entries. */
+export function zip(entries) {
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, content] of entries) {
+    const body = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+    const packed = deflateRawSync(body, { level: 6 });
+    const nameBytes = Buffer.from(name);
+    const crc = crc32(body);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(packed.length, 18);
+    local.writeUInt32LE(body.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const header = Buffer.alloc(46);
+    header.writeUInt32LE(0x02014b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(20, 6);
+    header.writeUInt16LE(0x0800, 8);
+    header.writeUInt16LE(8, 10);
+    header.writeUInt32LE(crc, 16);
+    header.writeUInt32LE(packed.length, 20);
+    header.writeUInt32LE(body.length, 24);
+    header.writeUInt16LE(nameBytes.length, 28);
+    header.writeUInt32LE(offset, 42);
+    central.push(header, nameBytes);
+    chunks.push(local, nameBytes, packed);
+    offset += local.length + nameBytes.length + packed.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, directory, end]);
+}
+
+export const escapeXml = (text) =>
+  String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+export const column = (index) => {
+  let text = '';
+  for (let rest = index; rest > 0; rest = Math.floor((rest - 1) / 26)) {
+    text = String.fromCharCode(65 + ((rest - 1) % 26)) + text;
+  }
+  return text;
+};
+
+const MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const RELS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+/** The smallest chart Excel accepts: columns over a sheet's numbers. */
+function chartXml(sheet) {
+  return `<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:val><c:numRef><c:f>${sheet}!$B$4:$B$5</c:f></c:numRef></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart><c:catAx><c:axId val="1"/><c:scaling/><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling/><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx></c:plotArea></c:chart></c:chartSpace>`;
+}
+
+/** One cell as XML: a number, `{ t: text }`, `{ f, v }` for a formula with a saved value. */
+export function cellXml(at, value, style) {
+  const s = style ? ' s="' + style + '"' : '';
+  if (value === null || value === undefined) return style ? `<c r="${at}"${s}/>` : '';
+  if (typeof value === 'number') return `<c r="${at}"${s}><v>${value}</v></c>`;
+  if (typeof value === 'string') {
+    return `<c r="${at}"${s} t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
+  }
+  if (typeof value === 'boolean') return `<c r="${at}"${s} t="b"><v>${value ? 1 : 0}</v></c>`;
+  if ('e' in value) return `<c r="${at}"${s} t="e"><v>${escapeXml(value.e)}</v></c>`;
+  const formula = `<f>${escapeXml(value.f)}</f>`;
+  if (typeof value.v === 'string') {
+    return `<c r="${at}"${s} t="str">${formula}<v>${escapeXml(value.v)}</v></c>`;
+  }
+  return `<c r="${at}"${s}>${formula}<v>${value.v}</v></c>`;
+}
+
+/**
+ * Builds a workbook. `sheets` are `{ name, rows, xml, drawings, state }`, where `rows` is a
+ * list of `[row number, cells, attributes]` and `cells` a list of `[column, value, style]`.
+ * `xml` holds what goes around `sheetData`: `{ before, after }`.
+ */
+export function workbook(
+  sheets,
+  { styles = '<styleSheet xmlns="' + MAIN + '"/>', theme, active = 0 } = {},
+) {
+  const parts = [];
+  const overrides = sheets
+    .map((sheet, index) => {
+      const number = index + 1;
+      const drawing = sheet.drawings
+        ? `<Override PartName="/xl/drawings/drawing${number}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/xl/charts/chart${number}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`
+        : '';
+      return `<Override PartName="/xl/worksheets/sheet${number}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>${drawing}`;
+    })
+    .join('');
+  parts.push([
+    '[Content_Types].xml',
+    `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${overrides}</Types>`,
+  ]);
+  parts.push([
+    '_rels/.rels',
+    `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+  ]);
+  parts.push([
+    'xl/workbook.xml',
+    `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><bookViews><workbookView activeTab="${active}"/></bookViews><sheets>` +
+      sheets
+        .map((sheet, index) => {
+          const state = sheet.state ? ` state="${sheet.state}"` : '';
+          return `<sheet name="${escapeXml(sheet.name)}" sheetId="${index + 1}"${state} r:id="rId${index + 1}"/>`;
+        })
+        .join('') +
+      '</sheets></workbook>',
+  ]);
+  const extra = theme
+    ? `<Relationship Id="rTheme" Type="${RELS}/theme" Target="theme/theme1.xml"/>`
+    : '';
+  parts.push([
+    'xl/_rels/workbook.xml.rels',
+    `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      sheets
+        .map(
+          (_, index) =>
+            `<Relationship Id="rId${index + 1}" Type="${RELS}/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`,
+        )
+        .join('') +
+      `<Relationship Id="rStyles" Type="${RELS}/styles" Target="styles.xml"/>${extra}</Relationships>`,
+  ]);
+  parts.push(['xl/styles.xml', HEADER + styles]);
+  if (theme) parts.push(['xl/theme/theme1.xml', HEADER + theme]);
+  sheets.forEach((sheet, index) => {
+    const number = index + 1;
+    const pieces = [
+      `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}">${sheet.xml?.before ?? ''}<sheetData>`,
+    ];
+    for (const [rowNumber, cells, attributes] of sheet.rows ?? []) {
+      pieces.push(`<row r="${rowNumber}"${attributes ? ' ' + attributes : ''}>`);
+      for (const [col, value, style] of cells) {
+        pieces.push(cellXml(column(col) + rowNumber, value, style));
+      }
+      pieces.push('</row>');
+    }
+    pieces.push('</sheetData>');
+    pieces.push(sheet.xml?.after ?? '');
+    if (sheet.drawings) pieces.push('<drawing r:id="rDrawing"/>');
+    pieces.push('</worksheet>');
+    parts.push([`xl/worksheets/sheet${number}.xml`, pieces.join('')]);
+    if (sheet.drawings) {
+      parts.push([
+        `xl/worksheets/_rels/sheet${number}.xml.rels`,
+        `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rDrawing" Type="${RELS}/drawing" Target="../drawings/drawing${number}.xml"/></Relationships>`,
+      ]);
+      parts.push([`xl/drawings/drawing${number}.xml`, HEADER + sheet.drawings]);
+      parts.push([
+        `xl/drawings/_rels/drawing${number}.xml.rels`,
+        `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/chart" Target="../charts/chart${number}.xml"/><Relationship Id="rId2" Type="${RELS}/image" Target="../media/image${number}.png"/></Relationships>`,
+      ]);
+      parts.push([`xl/charts/chart${number}.xml`, HEADER + chartXml(sheet.name)]);
+      parts.push([`xl/media/image${number}.png`, ONE_PIXEL_PNG]);
+    }
+  });
+  return zip(parts);
+}
+
+// A style table with one of everything the grid draws. The xf indices below are named so
+// that a workbook reads like a description of itself.
+export const XF = {
+  plain: 0,
+  bold: 1,
+  italic: 2,
+  underline: 3,
+  strike: 4,
+  big: 5,
+  red: 6,
+  themeDark: 7,
+  fixedBlack: 8,
+  fillYellow: 9,
+  fillAccent: 10,
+  fillWhiteTheme: 11,
+  money: 12,
+  percent: 13,
+  date: 14,
+  time: 15,
+  redNegative: 16,
+  accounting: 17,
+  thinBox: 18,
+  thickBottom: 19,
+  doubleBottom: 20,
+  dashedBox: 21,
+  center: 22,
+  right: 23,
+  top: 24,
+  wrap: 25,
+  wrapCenter: 26,
+  indent: 27,
+  rotated: 28,
+  stacked: 29,
+  shrink: 30,
+  fillCode: 31,
+  arial: 32,
+  times: 33,
+  courier: 34,
+  rtlOrder: 35,
+  ltrOrder: 36,
+  grayPattern: 37,
+  centerAcross: 38,
+  fixedDarkBlue: 39,
+};
+
+export const STYLES = `<styleSheet xmlns="${MAIN}">
+<numFmts count="6">
+  <numFmt numFmtId="164" formatCode="#,##0.00"/>
+  <numFmt numFmtId="165" formatCode="yyyy-mm-dd"/>
+  <numFmt numFmtId="166" formatCode="h:mm:ss"/>
+  <numFmt numFmtId="167" formatCode="0.00;[Red]-0.00"/>
+  <numFmt numFmtId="168" formatCode="_(&quot;$&quot;* #,##0.00_);_(&quot;$&quot;* \\(#,##0.00\\)"/>
+  <numFmt numFmtId="169" formatCode="@*."/>
+</numFmts>
+<fonts count="14">
+  <font><sz val="11"/><name val="Calibri"/></font>
+  <font><b/><sz val="11"/><name val="Calibri"/></font>
+  <font><i/><sz val="11"/><name val="Calibri"/></font>
+  <font><u/><sz val="11"/><name val="Calibri"/></font>
+  <font><strike/><sz val="11"/><name val="Calibri"/></font>
+  <font><sz val="18"/><name val="Calibri"/></font>
+  <font><sz val="11"/><color rgb="FFC00000"/><name val="Calibri"/></font>
+  <font><sz val="11"/><color theme="1"/><name val="Calibri"/></font>
+  <font><sz val="11"/><color rgb="FF000000"/><name val="Calibri"/></font>
+  <font><sz val="10"/><name val="Arial"/></font>
+  <font><sz val="11"/><name val="Times New Roman"/></font>
+  <font><sz val="10"/><name val="Courier New"/></font>
+  <font><sz val="11"/><color rgb="FF000080"/><name val="Calibri"/></font>
+  <font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>
+</fonts>
+<fills count="6">
+  <fill><patternFill patternType="none"/></fill>
+  <fill><patternFill patternType="gray125"/></fill>
+  <fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/><bgColor indexed="64"/></patternFill></fill>
+  <fill><patternFill patternType="solid"><fgColor theme="4"/><bgColor indexed="64"/></patternFill></fill>
+  <fill><patternFill patternType="solid"><fgColor theme="0"/><bgColor indexed="64"/></patternFill></fill>
+  <fill><patternFill patternType="mediumGray"><fgColor rgb="FF808080"/><bgColor rgb="FFFFFFFF"/></patternFill></fill>
+</fills>
+<borders count="5">
+  <border><left/><right/><top/><bottom/><diagonal/></border>
+  <border><left style="thin"><color auto="1"/></left><right style="thin"><color auto="1"/></right><top style="thin"><color auto="1"/></top><bottom style="thin"><color auto="1"/></bottom><diagonal/></border>
+  <border><left/><right/><top/><bottom style="thick"><color rgb="FF0000FF"/></bottom><diagonal/></border>
+  <border><left/><right/><top/><bottom style="double"><color rgb="FF000000"/></bottom><diagonal/></border>
+  <border><left style="dashed"><color rgb="FF00B050"/></left><right style="dashed"><color rgb="FF00B050"/></right><top style="dashed"><color rgb="FF00B050"/></top><bottom style="dashed"><color rgb="FF00B050"/></bottom><diagonal/></border>
+</borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="40">
+  <xf/>
+  <xf fontId="1"/>
+  <xf fontId="2"/>
+  <xf fontId="3"/>
+  <xf fontId="4"/>
+  <xf fontId="5"/>
+  <xf fontId="6"/>
+  <xf fontId="7"/>
+  <xf fontId="8"/>
+  <xf fillId="2"/>
+  <xf fontId="13" fillId="3"/>
+  <xf fillId="4"/>
+  <xf numFmtId="164"/>
+  <xf numFmtId="10"/>
+  <xf numFmtId="165"/>
+  <xf numFmtId="166"/>
+  <xf numFmtId="167"/>
+  <xf numFmtId="168"/>
+  <xf borderId="1"/>
+  <xf borderId="2"/>
+  <xf borderId="3"/>
+  <xf borderId="4"/>
+  <xf><alignment horizontal="center" vertical="center"/></xf>
+  <xf><alignment horizontal="right"/></xf>
+  <xf><alignment vertical="top"/></xf>
+  <xf><alignment wrapText="1" vertical="top"/></xf>
+  <xf><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+  <xf><alignment horizontal="left" indent="2"/></xf>
+  <xf><alignment horizontal="center" textRotation="45"/></xf>
+  <xf><alignment horizontal="center" textRotation="255"/></xf>
+  <xf><alignment shrinkToFit="1"/></xf>
+  <xf numFmtId="169"/>
+  <xf fontId="9"/>
+  <xf fontId="10"/>
+  <xf fontId="11"/>
+  <xf><alignment readingOrder="2"/></xf>
+  <xf><alignment readingOrder="1"/></xf>
+  <xf fillId="5"/>
+  <xf><alignment horizontal="centerContinuous"/></xf>
+  <xf fontId="12"/>
+</cellXfs>
+</styleSheet>`;
+
+/** Arabic and mixed text, in every position the direction logic cares about. */
+export function arabicBook() {
+  const rows = [
+    [1, [[1, 'Arabic and mixed text', XF.bold]]],
+    [
+      2,
+      [
+        [1, 'مرحبا بالعالم'],
+        [2, 'Hello'],
+        [3, 'Hello مرحبا'],
+        [4, 'مرحبا Hello'],
+      ],
+    ],
+    [
+      3,
+      [
+        [1, 'السعر 100 جنيه'],
+        [2, '123'],
+        [3, 'رقم 42'],
+        [4, '42 رقم'],
+      ],
+    ],
+    [
+      4,
+      [
+        [1, 'نص طويل جدا يمتد إلى الخلايا المجاورة عندما تكون فارغة'],
+        [5, 'after'],
+      ],
+    ],
+    [
+      5,
+      [
+        [2, 'long English text overflowing to the right of its cell, past a few columns'],
+        [6, 'stop'],
+      ],
+    ],
+    [
+      6,
+      [
+        [1, 'يسار', XF.ltrOrder],
+        [2, 'left', XF.rtlOrder],
+        [3, 'يمين', XF.right],
+        [4, 'وسط', XF.center],
+      ],
+    ],
+    [
+      7,
+      [
+        [1, 'عربي', XF.bold],
+        [2, 'عربي', XF.italic],
+        [3, 'عربي', XF.underline],
+        [4, 'عربي', XF.big],
+      ],
+    ],
+    [
+      8,
+      [
+        [1, 'سطر أول\nسطر ثان', XF.wrap],
+        [2, 'first\nثان', XF.wrap],
+      ],
+      'ht="45" customHeight="1"',
+    ],
+    [
+      9,
+      [
+        [1, 1234.5],
+        [2, 45306, XF.date],
+        [3, 0.25, XF.percent],
+        [4, 'النهاية'],
+      ],
+    ],
+    [10, [[1, 'مدمج عبر خليتين', XF.center]]],
+  ];
+  return workbook(
+    [
+      {
+        name: 'عربي',
+        rows,
+        xml: {
+          before: '<cols><col min="1" max="4" width="20.7109375" customWidth="1"/></cols>',
+          after: '<mergeCells count="1"><mergeCell ref="A10:B10"/></mergeCells>',
+        },
+      },
+    ],
+    { styles: STYLES },
+  );
+}
+
+/** One of everything: fonts, fills, borders, alignments, formats, merges, panes, drawings. */
+export function formattingBook() {
+  const row = (number, cells, attributes) => [number, cells, attributes];
+  const sheet = {
+    name: 'Formats',
+    rows: [
+      row(1, [
+        [1, 'Header one', XF.fillAccent],
+        [2, 'Header two', XF.fillAccent],
+        [3, 'Header three', XF.fillAccent],
+        [4, 'Header four', XF.fillAccent],
+        [5, 'Header five', XF.fillAccent],
+      ]),
+      row(2, [
+        [1, 'bold', XF.bold],
+        [2, 'italic', XF.italic],
+        [3, 'underline', XF.underline],
+        [4, 'strike', XF.strike],
+        [5, 'big', XF.big],
+      ]),
+      row(3, [
+        [1, 'red', XF.red],
+        [2, 'theme black', XF.themeDark],
+        [3, 'fixed black', XF.fixedBlack],
+        [4, 'fixed navy', XF.fixedDarkBlue],
+        [5, 'on yellow', XF.fillYellow],
+      ]),
+      row(4, [
+        [1, 1234.5, XF.money],
+        [2, 0.125, XF.percent],
+        [3, 45306, XF.date],
+        [4, 0.75, XF.time],
+        [5, -42.5, XF.redNegative],
+      ]),
+      row(5, [
+        [1, 1234.5, XF.accounting],
+        [2, 3.14159265358979],
+        [3, 123456789012],
+        [4, 1234567.891, XF.money],
+        [5, -1, XF.date],
+      ]),
+      row(6, [
+        [1, true],
+        [2, false],
+        [3, { e: '#N/A' }],
+        [4, { f: '1+1', v: 2 }],
+        [5, { f: '"a"&"b"', v: 'ab' }],
+      ]),
+      row(7, [
+        [1, 'boxed', XF.thinBox],
+        [2, 'thick', XF.thickBottom],
+        [3, 'double', XF.doubleBottom],
+        [4, 'dashed', XF.dashedBox],
+        [5, null, XF.fillWhiteTheme],
+      ]),
+      row(
+        8,
+        [
+          [1, 'centre', XF.center],
+          [2, 'right', XF.right],
+          [3, 'top', XF.top],
+          [4, 'wrapped text across some lines', XF.wrap],
+          [5, 'centred and wrapped text', XF.wrapCenter],
+        ],
+        'ht="60" customHeight="1"',
+      ),
+      row(
+        9,
+        [
+          [1, 'indented', XF.indent],
+          [2, 'angled', XF.rotated],
+          [3, 'up', XF.stacked],
+          [4, 'shrink this text to fit', XF.shrink],
+          [5, 'dots', XF.fillCode],
+        ],
+        'ht="48" customHeight="1"',
+      ),
+      row(10, [
+        [1, 'Arial 10', XF.arial],
+        [2, 'Times', XF.times],
+        [3, 'Courier', XF.courier],
+        [4, null, XF.grayPattern],
+        [5, 'across', XF.centerAcross],
+        [6, null, XF.centerAcross],
+      ]),
+      row(11, [[1, 'merged across three', XF.center]]),
+      row(12, [[1, 'A very long piece of text that overflows into the empty cells on its right']]),
+      row(13, [
+        [1, 'cut off at the next value'],
+        [3, 'here'],
+      ]),
+      row(14, [[3, 'right aligned text overflowing leftwards', XF.right]]),
+      row(16, [[1, 'after the hidden row']], ''),
+      row(15, [[1, 'hidden row']], 'hidden="1"'),
+    ].sort((a, b) => a[0] - b[0]),
+    xml: {
+      before:
+        '<sheetViews><sheetView workbookViewId="0"><pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"/><selection pane="bottomRight" activeCell="B2" sqref="B2"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="18.7109375" customWidth="1"/><col min="2" max="5" width="14.7109375" customWidth="1"/><col min="8" max="8" width="9" hidden="1"/></cols>',
+      after: '<mergeCells count="1"><mergeCell ref="A11:C11"/></mergeCells>',
+    },
+    drawings: `<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="${RELS}">
+      <xdr:twoCellAnchor><xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>10</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>8</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+        <xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Sales chart"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>
+      <xdr:oneCellAnchor><xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>10</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="1905000" cy="952500"/>
+        <xdr:pic><xdr:nvPicPr><xdr:cNvPr id="3" name="Logo"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId2"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+    </xdr:wsDr>`,
+  };
+  const second = {
+    name: 'Second',
+    rows: [
+      [1, [[1, 'On the second sheet']]],
+      [2, [[1, 2]]],
+    ],
+  };
+  const hidden = { name: 'Hidden', state: 'hidden', rows: [[1, [[1, 'secret']]]] };
+  return workbook([sheet, second, hidden], { styles: STYLES });
+}
+
+/** A workbook with only automatic and theme text, as Excel saves a new file. */
+export function defaultStyledBook() {
+  const rows = [];
+  for (let r = 1; r <= 40; r++) {
+    rows.push([
+      r,
+      [
+        [1, 'Item ' + r, XF.themeDark],
+        [2, r * 3.5, XF.money],
+        [3, { f: `B${r}*2`, v: r * 7 }],
+        [4, 45000 + r, XF.date],
+      ],
+    ]);
+  }
+  return workbook(
+    [
+      {
+        name: 'Sheet1',
+        rows,
+        xml: { before: '<cols><col min="4" max="4" width="12.7109375" customWidth="1"/></cols>' },
+      },
+    ],
+    { styles: STYLES },
+  );
+}
+
+/** `count` rows of values, with no shared strings, for scrolling. */
+export function manyRowsXml(count, columns = 6) {
+  const parts = [];
+  for (let r = 1; r <= count; r++) {
+    parts.push(`<row r="${r}">`);
+    parts.push(`<c r="A${r}" t="inlineStr"><is><t>Row ${r}</t></is></c>`);
+    for (let c = 2; c <= columns; c++) {
+      parts.push(`<c r="${column(c)}${r}"><v>${(r * c) % 9973}</v></c>`);
+    }
+    parts.push('</row>');
+  }
+  return parts.join('');
+}
+
+/** A sheet of `rows` rows of values, built in one piece, for the speed checks. */
+export function manyRowsBook(rows, columns = 6) {
+  const sheet = `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}"><dimension ref="A1:${column(columns)}${rows}"/><sheetData>${manyRowsXml(rows, columns)}</sheetData></worksheet>`;
+  return zip([
+    [
+      '_rels/.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ],
+    [
+      'xl/workbook.xml',
+      `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><sheets><sheet name="Rows" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    ],
+    [
+      'xl/_rels/workbook.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+    ],
+    ['xl/worksheets/sheet1.xml', sheet],
+  ]);
+}

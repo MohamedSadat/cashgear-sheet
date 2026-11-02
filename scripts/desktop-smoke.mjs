@@ -1,14 +1,16 @@
 // Launches the release desktop build, attaches Playwright to its WebView2 over CDP
-// and checks the same things the browser specs check: the pattern in both themes,
-// a CashGear control, cross-origin isolation and shared memory. It also checks the
-// native command, the window's own theme, and that the choice survives a restart.
+// and checks the same things the browser specs check: real workbooks read through the
+// desktop's file protocol, the same golden images as the web in both themes, a CashGear
+// control, cross-origin isolation and shared memory. It also checks the native command,
+// the window's own theme, and that the choice survives a restart.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, expect } from '@playwright/test';
-import { checkPattern, controlColor } from '../tests/e2e/pattern.mjs';
+import { controlColor, expectGolden, FONT_OVERRIDE, waitForGrid } from '../tests/e2e/helpers.mjs';
+import { arabicBook, defaultStyledBook, formattingBook } from '../tests/fixtures/workbooks.mjs';
 import { root } from './lib.mjs';
 
 const appVersion = JSON.parse(
@@ -87,6 +89,7 @@ async function launch() {
       ...process.env,
       WEBVIEW2_USER_DATA_FOLDER: profile,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments,
+      CGS_DESKTOP_SMOKE: '1',
     },
     stdio: 'inherit',
   });
@@ -154,15 +157,33 @@ async function expectWindowTheme(page, theme) {
   await expect.poll(() => windowTheme(page), { timeout: 10000 }).toBe(theme);
 }
 
+/** Opens a file on disk the way the dialog does, through the native side and its protocol. */
+async function openPath(page, path) {
+  await page.evaluate(async (path) => {
+    const file = await window.cgsOpenPath(path);
+    await window.cgsTest.open(file);
+  }, path);
+}
+
+const fixtures = await mkdtemp(join(tmpdir(), 'cgs-smoke-books-'));
+const books = {
+  formatting: join(fixtures, 'formatting.xlsx'),
+  arabic: join(fixtures, 'arabic.xlsx'),
+  defaults: join(fixtures, 'defaults.xlsx'),
+};
+await writeFile(books.formatting, formattingBook());
+await writeFile(books.arabic, arabicBook());
+await writeFile(books.defaults, defaultStyledBook());
+
 let app;
 try {
   app = await launch();
   let page = app.page;
-  await expect(page.getByTestId('engine-status')).toHaveText('Engine ready', { timeout: 30000 });
+  await expect(page.getByTestId('engine-status')).toHaveText('Ready', { timeout: 30000 });
   if (!(await page.evaluate(() => crossOriginIsolated)))
     throw new Error('Desktop is not cross-origin isolated');
-  await expect(page.getByTestId('shared-memory')).toHaveText('Shared memory OK');
-  await expect(page.getByTestId('host-info')).toHaveText(`Desktop ${appVersion} · windows x86_64`);
+  await expect(page.locator('.cgs-shell')).toHaveAttribute('data-shared-memory', 'true');
+  await expect(page.getByTestId('host-info')).toHaveText(`Desktop ${appVersion}`);
   await expect(page.getByRole('radiogroup', { name: 'Theme' })).toBeVisible();
   await expect(page.getByRole('radio', { name: 'System' })).toBeChecked();
   // Playwright doesn't list workers that started before it attached, but the page
@@ -180,37 +201,68 @@ try {
 
   // A fresh profile follows the system.
   const system = await systemTheme(page);
-  const followed = await checkPattern(page, system);
   await expectWindowTheme(page, system);
-  results.system = { theme: system, tiles: followed.tiles, scale: followed.scale };
+  results.system = system;
 
+  // The same fonts as the web's golden images, whatever this machine has.
+  await page.evaluate(FONT_OVERRIDE);
+  await page.reload();
+  await expect(page.getByTestId('engine-status')).toHaveText('Ready', { timeout: 30000 });
+
+  // Real files, through the dialog's path: the native side and the read protocol.
   const controls = {};
+  const goldens = {};
   for (const theme of ['light', 'dark']) {
     await page.getByRole('radio', { name: theme === 'light' ? 'Light' : 'Dark' }).click();
-    const { image } = await checkPattern(page, theme);
     await expectWindowTheme(page, theme);
     controls[theme] = await controlColor(page);
-    await writeFile(join(root, `bench/results/desktop-${theme}.png`), image);
-    await page.screenshot({ path: join(root, `bench/results/desktop-${theme}-page.png`) });
+    for (const [name, path] of Object.entries(books)) {
+      await openPath(page, path);
+      await waitForGrid(page, theme);
+      goldens[name + '-' + theme] = await expectGolden(page, name + '-' + theme);
+      if (name === 'formatting') {
+        await page.screenshot({ path: join(root, `bench/results/desktop-${theme}-page.png`) });
+      }
+    }
   }
   if (controls.light === controls.dark)
     throw new Error('The CashGear control did not change with the theme: ' + controls.light);
   results.controlColors = controls;
+  results.goldenDifference = goldens;
+
+  // A value read through the protocol, and the formula behind it.
+  await openPath(page, books.formatting);
+  await waitForGrid(page, 'dark');
+  results.cellText = await page.evaluate(() => window.cgsTest.cellText(4, 2));
+  if (results.cellText !== '12.50%') throw new Error('Cell B4 shows ' + results.cellText);
+
+  // The file just opened is on the recent list, and the list survives a restart.
+  const recent = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('recent_files', {}));
+  if (!recent.some((file) => file.name === 'formatting.xlsx'))
+    throw new Error('The recent list is missing a file: ' + JSON.stringify(recent));
 
   // The last choice, dark, survives a restart: the page and the window both start in it.
   await kill(app);
   app = await launch();
   page = app.page;
-  await expect(page.getByTestId('engine-status')).toHaveText('Engine ready', { timeout: 30000 });
+  await expect(page.getByTestId('engine-status')).toHaveText('Ready', { timeout: 30000 });
   await expect(page.getByRole('radio', { name: 'Dark' })).toBeChecked();
-  await checkPattern(page, 'dark');
   await expectWindowTheme(page, 'dark');
   results.remembered = 'dark';
+  const remembered = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke('recent_files', {}),
+  );
+  if (!remembered[0] || remembered[0].name !== 'formatting.xlsx')
+    throw new Error('The recent list did not survive a restart: ' + JSON.stringify(remembered));
+  await page.getByRole('menuitem', { name: 'File' }).click();
+  await page.getByRole('menuitem', { name: 'Recent' }).click();
+  await page.getByRole('menuitem', { name: 'formatting.xlsx' }).click();
+  await waitForGrid(page, 'dark');
+  results.reopenedFromRecent = await page.getByRole('heading', { level: 1 }).textContent();
 
   // Back to the system: the window lets go of its override too.
   await page.getByRole('radio', { name: 'System' }).click();
   await expect.poll(() => windowTheme(page), { timeout: 10000 }).toBe(system);
-  await checkPattern(page, system);
   results.backToSystem = system;
 
   if (policyViolations.length)
@@ -248,6 +300,7 @@ try {
       process.exitCode = 1;
     }
   }
+  await rm(fixtures, { recursive: true, force: true }).catch(() => {});
   if (profile.startsWith(profilePrefix))
     await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(
       (error) => console.warn('Temporary folder cleanup: ' + error.message),

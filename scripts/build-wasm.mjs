@@ -12,14 +12,25 @@ const check = spawnSync(bindgen, ['--version'], { encoding: 'utf8' });
 if (check.status !== 0 || check.stdout.trim() !== 'wasm-bindgen ' + bindgenVersion) {
   throw new Error('wasm-bindgen ' + bindgenVersion + ' is missing. Run pnpm setup:wasm.');
 }
-await run('cargo', [
-  'build',
-  '-p',
-  'cgs-wasm',
-  '--target',
-  'wasm32-unknown-unknown',
-  ...(release ? ['--release'] : []),
-]);
+// Deep formula chains need a larger stack than the default 1 MB, and SIMD makes inflating
+// and scanning XML much faster. Chrome, Edge and WebView2 have had it since 2021.
+await run(
+  'cargo',
+  [
+    'build',
+    '-p',
+    'cgs-wasm',
+    '--target',
+    'wasm32-unknown-unknown',
+    ...(release ? ['--release'] : []),
+  ],
+  {
+    env: {
+      ...process.env,
+      RUSTFLAGS: '-C link-arg=-zstack-size=8388608 -C target-feature=+simd128',
+    },
+  },
+);
 await mkdir(wasmOutput, { recursive: true });
 await run(bindgen, [
   join(root, 'target/wasm32-unknown-unknown', release ? 'release' : 'debug', 'cgs_wasm.wasm'),

@@ -1,0 +1,1006 @@
+//! Builds a tile: what each of its cells shows, in one theme's colours.
+
+use std::collections::HashMap;
+
+use cgs_calc::formualizer::FormualizerEngine;
+use cgs_calc::{CalcEngine, CalcValue, CellSink, Rect as CalcRect, SheetRect};
+use cgs_model::color::{ensure_contrast, MIN_CONTRAST};
+use cgs_model::{
+    Book, ColorSpace, DarkColors, Fill, HAlign, LineStyle, Pattern, ReadingOrder, Rect, Rgb,
+    SheetInfo, StyleTable, Underline, VAlign, Xf, MAX_COLS, MAX_ROWS, TILE_COLS, TILE_ROWS,
+};
+use cgs_numfmt::{FormatColor, NumFmt, Options, Value};
+
+use crate::view_block::*;
+
+/// The screen's own colours, which a tile's colours are worked out against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Screen {
+    pub dark: bool,
+    pub background: Rgb,
+    pub text: Rgb,
+}
+
+impl Screen {
+    fn dark_colors(&self) -> Option<DarkColors> {
+        self.dark.then_some(DarkColors {
+            background: self.background,
+            text: self.text,
+        })
+    }
+}
+
+/// How far overflowing text is looked for, in columns. One tile's width either side.
+const OVERFLOW_REACH: u32 = TILE_COLS;
+/// Longest text a tile carries for one cell, as Excel draws only so much anyway.
+const MAX_CELL_TEXT: usize = 8192;
+
+/// Colours and formats worked out once per theme, not once per cell.
+#[derive(Debug, Default)]
+pub struct TileCache {
+    screen: Option<Screen>,
+    fills: HashMap<u32, Option<Rgb>>,
+    formats: HashMap<u32, NumFmt>,
+}
+
+fn rgba(rgb: Rgb) -> u32 {
+    (rgb << 8) | 0xFF
+}
+
+fn mix(top: Rgb, under: Rgb, share: u32) -> Rgb {
+    let channel = |shift: u32| {
+        let a = (top >> shift) & 0xFF;
+        let b = (under >> shift) & 0xFF;
+        ((a * share + b * (100 - share) + 50) / 100) << shift
+    };
+    channel(16) | channel(8) | channel(0)
+}
+
+fn fill_color(fill: &Fill, colors: &ColorSpace, screen: &Screen) -> Option<Rgb> {
+    let dark = screen.dark_colors();
+    match fill.pattern {
+        Pattern::None => None,
+        Pattern::Solid => Some(colors.resolve(fill.fg, dark).unwrap_or(screen.text)),
+        Pattern::Mixed(share) => {
+            let top = colors.resolve(fill.fg, dark).unwrap_or(screen.text);
+            let under = colors.resolve(fill.bg, dark).unwrap_or(screen.background);
+            Some(mix(top, under, u32::from(share)))
+        }
+    }
+}
+
+fn format_color(color: FormatColor, colors: &ColorSpace) -> Rgb {
+    match color {
+        FormatColor::Black => 0x000000,
+        FormatColor::Blue => 0x0000FF,
+        FormatColor::Cyan => 0x00FFFF,
+        FormatColor::Green => 0x00FF00,
+        FormatColor::Magenta => 0xFF00FF,
+        FormatColor::Red => 0xFF0000,
+        FormatColor::White => 0xFFFFFF,
+        FormatColor::Yellow => 0xFFFF00,
+        // [Color 1] is the palette's entry 8, the first a file can change.
+        FormatColor::Indexed(number) => colors
+            .indexed
+            .get(usize::from(number) + 7)
+            .copied()
+            .unwrap_or(0),
+    }
+}
+
+/// What a value shows and how, before it is placed in a cell.
+#[derive(Debug)]
+struct Shown {
+    flags: u16,
+    fill_at: u32,
+    fill_char: char,
+    color: Option<FormatColor>,
+    /// The text's first strong character reads right to left, which is what General
+    /// alignment goes by, whatever the cell's reading order says.
+    starts_rtl: bool,
+}
+
+impl Default for Shown {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            fill_at: 0,
+            fill_char: '\0',
+            color: None,
+            starts_rtl: false,
+        }
+    }
+}
+
+fn is_rtl_char(ch: char) -> bool {
+    matches!(ch as u32,
+        0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF)
+}
+
+/// Whether text reads right to left, by its first strong character.
+pub fn starts_rtl(text: &str) -> bool {
+    for ch in text.chars() {
+        if is_rtl_char(ch) {
+            return true;
+        }
+        if ch.is_alphabetic() {
+            return false;
+        }
+    }
+    false
+}
+
+fn truncate(text: &mut String) {
+    if text.len() > MAX_CELL_TEXT {
+        let mut end = MAX_CELL_TEXT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+}
+
+fn format_for<'a>(
+    formats: &'a mut HashMap<u32, NumFmt>,
+    styles: &StyleTable,
+    id: u32,
+) -> &'a NumFmt {
+    formats.entry(id).or_insert_with(|| {
+        if let Some(code) = styles.num_fmts.get(&id) {
+            NumFmt::parse(code)
+        } else {
+            NumFmt::builtin(id).unwrap_or_else(NumFmt::general)
+        }
+    })
+}
+
+/// What a value shows. A `*x` fill's character goes into the text at its position, for the
+/// tile worker to repeat once it can measure the column.
+fn show_value(
+    value: &CalcValue,
+    format: &NumFmt,
+    options: &Options<'_>,
+    reading_order: ReadingOrder,
+    out: &mut String,
+) -> Shown {
+    let mut shown = show_plain(value, format, options, reading_order, out);
+    if shown.fill_char != '\0' {
+        out.insert((shown.fill_at - 1) as usize, shown.fill_char);
+    }
+    shown.fill_char = '\0';
+    shown
+}
+
+/// What a value shows, without its fill character.
+fn show_plain(
+    value: &CalcValue,
+    format: &NumFmt,
+    options: &Options<'_>,
+    reading_order: ReadingOrder,
+    out: &mut String,
+) -> Shown {
+    let mut shown = Shown::default();
+    match value {
+        CalcValue::Empty => {}
+        CalcValue::Number(number) => {
+            let display = format.format(Value::Number(*number), options, out);
+            shown.flags = if display.general {
+                KIND_GENERAL
+            } else {
+                KIND_NUMBER
+            };
+            if display.hashes {
+                shown.flags |= CELL_HASHES;
+            }
+            shown.color = display.color;
+            if let Some((ch, at)) = display.fill {
+                shown.fill_at = at as u32 + 1;
+                shown.fill_char = ch;
+            }
+        }
+        CalcValue::Text(text) => {
+            let display = format.format(Value::Text(text), options, out);
+            shown.flags = KIND_TEXT;
+            shown.color = display.color;
+            if let Some((ch, at)) = display.fill {
+                shown.fill_at = at as u32 + 1;
+                shown.fill_char = ch;
+            }
+        }
+        CalcValue::Bool(flag) => {
+            out.push_str(if *flag { "TRUE" } else { "FALSE" });
+            shown.flags = KIND_OTHER;
+        }
+        CalcValue::Error(text) => {
+            out.push_str(text);
+            shown.flags = KIND_OTHER;
+        }
+    }
+    shown.starts_rtl = (shown.flags & KIND_MASK) == KIND_TEXT && starts_rtl(out);
+    let rtl = match reading_order {
+        ReadingOrder::RightToLeft => true,
+        ReadingOrder::LeftToRight => false,
+        ReadingOrder::Context => shown.starts_rtl,
+    };
+    if rtl {
+        shown.flags |= CELL_RTL;
+    }
+    if out.is_empty() {
+        shown.flags |= CELL_OCCUPIED;
+    }
+    truncate(out);
+    shown
+}
+
+fn horizontal_code(align: HAlign, flags: u16, starts_rtl: bool) -> u8 {
+    match align {
+        HAlign::Left => 0,
+        HAlign::Center => 1,
+        HAlign::Right => 2,
+        HAlign::Fill => 3,
+        HAlign::Justify => 4,
+        HAlign::CenterContinuous => 5,
+        HAlign::Distributed => 6,
+        HAlign::General => match flags & KIND_MASK {
+            KIND_NUMBER | KIND_GENERAL => 2,
+            KIND_OTHER => 1,
+            _ if starts_rtl => 2,
+            _ => 0,
+        },
+    }
+}
+
+fn vertical_code(align: VAlign) -> u8 {
+    match align {
+        VAlign::Top => 0,
+        VAlign::Center => 1,
+        VAlign::Bottom => 2,
+        VAlign::Justify => 3,
+        VAlign::Distributed => 4,
+    }
+}
+
+fn underline_code(underline: Underline) -> u8 {
+    match underline {
+        Underline::None => 0,
+        Underline::Single => 1,
+        Underline::Double => 2,
+        Underline::SingleAccounting => 3,
+        Underline::DoubleAccounting => 4,
+    }
+}
+
+fn line_code(style: LineStyle) -> u8 {
+    style as u8
+}
+
+/// A style's full identity within one tile.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct StyleKey {
+    font: u32,
+    record: StyleRecord,
+}
+
+struct Styles<'a> {
+    table: &'a StyleTable,
+    screen: Screen,
+    by_key: HashMap<StyleKey, u16>,
+}
+
+impl Styles<'_> {
+    fn line_color(&self, color: cgs_model::Color) -> u32 {
+        match self.table.colors.resolve(color, self.screen.dark_colors()) {
+            None => AUTOMATIC,
+            Some(rgb) if self.screen.dark => rgba(ensure_contrast(rgb, self.screen.background)),
+            Some(rgb) => rgba(rgb),
+        }
+    }
+
+    /// The style a text cell needs, with its borders. Blank cells use font 0 so that
+    /// blanks with the same borders share a style.
+    #[allow(clippy::too_many_arguments)]
+    fn index(
+        &mut self,
+        writer: &mut TileWriter,
+        xf: &Xf,
+        flags: u16,
+        starts_rtl: bool,
+        has_text: bool,
+        right: Option<(LineStyle, cgs_model::Color)>,
+        bottom: Option<(LineStyle, cgs_model::Color)>,
+    ) -> u16 {
+        let border = self.table.border(xf);
+        let mut record = StyleRecord::default();
+        let mut font_id = 0;
+        if has_text {
+            let font = self.table.font(xf);
+            font_id = xf.font;
+            record.size = (f64::from(font.size) * 100.0).round() as u16;
+            record.font_flags = (u8::from(font.bold) * FONT_BOLD)
+                | (u8::from(font.italic) * FONT_ITALIC)
+                | (u8::from(font.strike) * FONT_STRIKE);
+            record.underline = underline_code(font.underline);
+            let alignment = xf.alignment;
+            record.horizontal = horizontal_code(alignment.horizontal, flags, starts_rtl);
+            record.vertical = vertical_code(alignment.vertical);
+            record.indent = alignment.indent;
+            record.rotation = alignment.rotation;
+            record.layout = (u8::from(alignment.wrap) * LAYOUT_WRAP)
+                | (u8::from(alignment.shrink) * LAYOUT_SHRINK);
+        }
+        // Text centred across a selection looks for empty cells that say the same.
+        if !has_text && xf.alignment.horizontal == HAlign::CenterContinuous {
+            record.horizontal = horizontal_code(HAlign::CenterContinuous, flags, false);
+        }
+        if let Some((style, color)) = right {
+            record.right_line = line_code(style);
+            record.right_color = self.line_color(color);
+        }
+        if let Some((style, color)) = bottom {
+            record.bottom_line = line_code(style);
+            record.bottom_color = self.line_color(color);
+        }
+        if border.diagonal.style != LineStyle::None {
+            record.diagonal_line = line_code(border.diagonal.style);
+            record.diagonal_color = self.line_color(border.diagonal.color);
+            record.layout |= (u8::from(border.diagonal_up) * LAYOUT_DIAGONAL_UP)
+                | (u8::from(border.diagonal_down) * LAYOUT_DIAGONAL_DOWN);
+        }
+        let key = StyleKey {
+            font: font_id,
+            record,
+        };
+        if let Some(&index) = self.by_key.get(&key) {
+            return index;
+        }
+        let name = if has_text {
+            self.table.font(xf).name.as_str()
+        } else {
+            ""
+        };
+        let index = writer.style(name, record);
+        self.by_key.insert(key, index);
+        index
+    }
+}
+
+/// The values around a tile, read once.
+struct Window {
+    top: u32,
+    left: u32,
+    width: u32,
+    height: u32,
+    cells: Vec<Option<CalcValue>>,
+}
+
+impl Window {
+    fn new(top: u32, left: u32, width: u32, height: u32) -> Self {
+        let mut cells = Vec::new();
+        cells.resize_with((width * height) as usize, || None);
+        Self {
+            top,
+            left,
+            width,
+            height,
+            cells,
+        }
+    }
+
+    fn get(&self, row: u32, col: u32) -> Option<&CalcValue> {
+        if row < self.top || col < self.left {
+            return None;
+        }
+        let (row, col) = (row - self.top, col - self.left);
+        if row >= self.height || col >= self.width {
+            return None;
+        }
+        self.cells[(row * self.width + col) as usize].as_ref()
+    }
+}
+
+impl CellSink for Window {
+    fn cell(&mut self, row: u32, col: u32, value: &CalcValue) {
+        if row < self.top || col < self.left {
+            return;
+        }
+        let (row, col) = (row - self.top, col - self.left);
+        if row < self.height && col < self.width {
+            self.cells[(row * self.width + col) as usize] = Some(value.clone());
+        }
+    }
+}
+
+fn pick_line(
+    own: cgs_model::Line,
+    other: cgs_model::Line,
+) -> Option<(LineStyle, cgs_model::Color)> {
+    if own.style != LineStyle::None {
+        Some((own.style, own.color))
+    } else if other.style != LineStyle::None {
+        Some((other.style, other.color))
+    } else {
+        None
+    }
+}
+
+/// Everything a tile is made from.
+pub struct TileInput<'a> {
+    pub book: &'a Book,
+    pub calc: &'a FormualizerEngine,
+    pub options: &'a Options<'a>,
+}
+
+fn row_span(info: &SheetInfo, from: u32, to: u32) -> i32 {
+    // From `from` up to but not including `to`, and negative when `to` is first.
+    if to < from {
+        return -row_span(info, to, from);
+    }
+    let mut total = i64::from(to - from) * i64::from(info.rows.default_px);
+    let at = info.rows.rows.partition_point(|&(row, _)| row < from);
+    for &(row, line) in &info.rows.rows[at..] {
+        if row >= to {
+            break;
+        }
+        let px = if line.hidden {
+            0
+        } else {
+            line.size.unwrap_or(info.rows.default_px)
+        };
+        total += i64::from(px) - i64::from(info.rows.default_px);
+    }
+    total.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn col_span(info: &SheetInfo, from: u32, to: u32) -> i32 {
+    if to < from {
+        return -col_span(info, to, from);
+    }
+    let mut total = i64::from(to - from) * i64::from(info.cols.default_px);
+    for &(first, last, line) in &info.cols.ranges {
+        let (start, end) = (first.max(from), (last + 1).min(to));
+        if start >= end {
+            continue;
+        }
+        let px = if line.hidden {
+            0
+        } else {
+            line.size.unwrap_or(info.cols.default_px)
+        };
+        total += i64::from(end - start) * (i64::from(px) - i64::from(info.cols.default_px));
+    }
+    total.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// A rectangle's position and size, for a drawing or the app's layout.
+pub fn sheet_x(info: &SheetInfo, col: u32) -> i64 {
+    i64::from(col_span(info, 1, col))
+}
+
+pub fn sheet_y(info: &SheetInfo, row: u32) -> i64 {
+    i64::from(row_span(info, 1, row))
+}
+
+/// Builds the tile whose top-left cell is (`first_row`, `first_col`), counted from 0.
+pub fn build_tile(
+    input: &TileInput<'_>,
+    cache: &mut TileCache,
+    sheet: u32,
+    first_row: u32,
+    first_col: u32,
+    screen: Screen,
+) -> ViewBlock {
+    if cache.screen != Some(screen) {
+        cache.screen = Some(screen);
+        cache.fills.clear();
+    }
+    let info = &input.book.sheets[sheet as usize];
+    let table = &input.book.styles;
+    let rows = TILE_ROWS.min(MAX_ROWS.saturating_sub(first_row));
+    let cols = TILE_COLS.min(MAX_COLS.saturating_sub(first_col));
+    let top = first_row + 1;
+    let left = first_col + 1;
+    let row_px: Vec<u16> = (top..top + rows)
+        .map(|row| info.rows.px(row).min(u32::from(u16::MAX)) as u16)
+        .collect();
+    let col_px: Vec<u16> = (left..left + cols)
+        .map(|col| info.cols.px(col).min(u32::from(u16::MAX)) as u16)
+        .collect();
+    let mut writer = TileWriter::new(first_row, first_col, row_px, col_px);
+    if !info.loaded {
+        writer.set_flags(TILE_NOT_READY);
+        for _ in 0..rows * cols {
+            writer.cell("", CellRecord::default());
+        }
+        return writer.finish();
+    }
+
+    let bottom = top + rows - 1;
+    let right = left + cols - 1;
+    let window_left = left.saturating_sub(OVERFLOW_REACH).max(1);
+    let window_right = (right + OVERFLOW_REACH).min(MAX_COLS);
+    let mut window = Window::new(top, window_left, window_right - window_left + 1, rows);
+    if top <= info.used.0 && window_left <= info.used.1 {
+        input.calc.read_block(
+            SheetRect {
+                sheet,
+                rect: CalcRect {
+                    top,
+                    left: window_left,
+                    bottom: bottom.min(info.used.0),
+                    right: window_right.min(info.used.1),
+                },
+            },
+            &mut window,
+        );
+    }
+
+    let mut styles = Styles {
+        table,
+        screen,
+        by_key: HashMap::new(),
+    };
+    let mut text = String::new();
+
+    // Merged areas: which cells they cover, and the text each shows.
+    let merges: Vec<Rect> = info.merges_in_tile(top, left).copied().collect();
+    let merge_at = |row: u32, col: u32| merges.iter().find(|merge| merge.contains(row, col));
+    let fill_of = |cache: &mut TileCache, xf_index: u32, xf: &Xf| -> Option<Rgb> {
+        *cache
+            .fills
+            .entry(xf_index)
+            .or_insert_with(|| fill_color(table.fill(xf), &table.colors, &screen))
+    };
+    let text_color = |xf: &Xf, shown: Option<FormatColor>, fill: Option<Rgb>| -> u32 {
+        let base = match shown {
+            Some(color) => Some(format_color(color, &table.colors)),
+            None => table
+                .colors
+                .resolve(table.font(xf).color, screen.dark_colors()),
+        };
+        match (base, screen.dark, fill) {
+            (None, false, _) | (None, true, None) => AUTOMATIC,
+            (None, true, Some(fill)) => {
+                // Automatic text on a pale fill stays the black it is everywhere else.
+                if cgs_model::color::contrast(screen.text, fill) >= MIN_CONTRAST {
+                    AUTOMATIC
+                } else if cgs_model::color::contrast(0x000000, fill) >= MIN_CONTRAST {
+                    rgba(0x000000)
+                } else {
+                    rgba(ensure_contrast(screen.text, fill))
+                }
+            }
+            (Some(color), false, _) => rgba(color),
+            (Some(color), true, fill) => {
+                rgba(ensure_contrast(color, fill.unwrap_or(screen.background)))
+            }
+        }
+    };
+
+    for row in top..=bottom {
+        for col in left..=right {
+            let merge = merge_at(row, col);
+            let xf_index = match merge {
+                Some(area) => info.style_at(area.top, area.left),
+                None => info.style_at(row, col),
+            };
+            let xf = table.xf(xf_index);
+            let fill = fill_of(cache, xf_index, xf);
+            text.clear();
+            let own_xf_index = if merge.is_some() {
+                info.style_at(row, col)
+            } else {
+                xf_index
+            };
+            let own_xf = table.xf(own_xf_index);
+            let mut flags = 0;
+            let mut record = CellRecord {
+                fill: fill.map_or(0, rgba),
+                ..CellRecord::default()
+            };
+            let mut has_text = false;
+            let mut text_starts_rtl = false;
+            if let Some(area) = merge {
+                flags |= CELL_MERGED;
+                if col < area.right {
+                    flags |= CELL_NO_RIGHT_GRID;
+                }
+                if row < area.bottom {
+                    flags |= CELL_NO_BOTTOM_GRID;
+                }
+            } else if let Some(value) = window.get(row, col) {
+                let format = format_for(&mut cache.formats, table, xf.num_fmt);
+                let shown = show_value(
+                    value,
+                    format,
+                    input.options,
+                    xf.alignment.reading_order,
+                    &mut text,
+                );
+                flags |= shown.flags;
+                record.fill_at = shown.fill_at;
+                text_starts_rtl = shown.starts_rtl;
+                has_text = !text.is_empty() || flags & CELL_HASHES != 0;
+                record.color = text_color(xf, shown.color, fill);
+            }
+
+            // Lines belong to the cell above and to the left of them, so each is drawn by
+            // exactly one tile. Inside a merged area there are none.
+            let border = table.border(own_xf);
+            let right_line = if merge.is_some_and(|area| col < area.right) {
+                None
+            } else {
+                let next = if col < MAX_COLS {
+                    table.border(table.xf(info.style_at(row, col + 1))).left
+                } else {
+                    cgs_model::Line::default()
+                };
+                pick_line(border.right, next)
+            };
+            let bottom_line = if merge.is_some_and(|area| row < area.bottom) {
+                None
+            } else {
+                let next = if row < MAX_ROWS {
+                    table.border(table.xf(info.style_at(row + 1, col))).top
+                } else {
+                    cgs_model::Line::default()
+                };
+                pick_line(border.bottom, next)
+            };
+            record.flags = flags;
+            record.style = styles.index(
+                &mut writer,
+                xf,
+                flags,
+                text_starts_rtl,
+                has_text,
+                right_line,
+                bottom_line,
+            );
+            writer.cell(&text, record);
+        }
+    }
+
+    // A merged area's text, once per tile it touches.
+    for area in &merges {
+        let value = match window.get(area.top, area.left) {
+            Some(value) => Some(value.clone()),
+            None if area.top >= window.top
+                && area.top < window.top + window.height
+                && area.left >= window.left
+                && area.left < window.left + window.width =>
+            {
+                None
+            }
+            None => {
+                let mut one = Window::new(area.top, area.left, 1, 1);
+                input.calc.read_block(
+                    SheetRect {
+                        sheet,
+                        rect: CalcRect {
+                            top: area.top,
+                            left: area.left,
+                            bottom: area.top,
+                            right: area.left,
+                        },
+                    },
+                    &mut one,
+                );
+                one.cells.pop().flatten()
+            }
+        };
+        let Some(value) = value else { continue };
+        let xf_index = info.style_at(area.top, area.left);
+        let xf = table.xf(xf_index);
+        let fill = fill_of(cache, xf_index, xf);
+        text.clear();
+        let format = format_for(&mut cache.formats, table, xf.num_fmt);
+        let shown = show_value(
+            &value,
+            format,
+            input.options,
+            xf.alignment.reading_order,
+            &mut text,
+        );
+        if text.is_empty() {
+            continue;
+        }
+        let color = text_color(xf, shown.color, fill);
+        let style = styles.index(
+            &mut writer,
+            xf,
+            shown.flags,
+            shown.starts_rtl,
+            true,
+            None,
+            None,
+        );
+        writer.extra(
+            &text,
+            ExtraRecord {
+                kind: EXTRA_MERGE,
+                x: col_span(info, left, area.left),
+                y: row_span(info, top, area.top),
+                width: col_span(info, area.left, area.right + 1),
+                height: row_span(info, area.top, area.bottom + 1),
+                color,
+                style,
+                flags: shown.flags,
+                fill_at: shown.fill_at,
+            },
+        );
+    }
+
+    // Text from either side that might overflow into this tile.
+    let overflows_right = |h: u8| h == 0 || h == 1 || h == 5;
+    let overflows_left = |h: u8| h == 2 || h == 1 || h == 5;
+    let add_overflow = |row: u32,
+                        col: u32,
+                        value: &CalcValue,
+                        going_right: bool,
+                        cache: &mut TileCache,
+                        writer: &mut TileWriter,
+                        styles: &mut Styles<'_>,
+                        text: &mut String| {
+        if !matches!(value, CalcValue::Text(_)) {
+            return;
+        }
+        let xf_index = info.style_at(row, col);
+        let xf = table.xf(xf_index);
+        let alignment = xf.alignment;
+        if alignment.wrap || alignment.rotation != 0 || alignment.shrink {
+            return;
+        }
+        text.clear();
+        let format = format_for(&mut cache.formats, table, xf.num_fmt);
+        let shown = show_value(value, format, input.options, alignment.reading_order, text);
+        if text.is_empty() || shown.fill_at != 0 {
+            return;
+        }
+        let horizontal = horizontal_code(alignment.horizontal, shown.flags, shown.starts_rtl);
+        let fits = if going_right {
+            overflows_right(horizontal)
+        } else {
+            overflows_left(horizontal)
+        };
+        if !fits {
+            return;
+        }
+        let fill = fill_of(cache, xf_index, xf);
+        let color = text_color(xf, shown.color, fill);
+        let style = styles.index(writer, xf, shown.flags, shown.starts_rtl, true, None, None);
+        writer.extra(
+            text,
+            ExtraRecord {
+                kind: EXTRA_OVERFLOW,
+                x: col_span(info, left, col),
+                y: row_span(info, top, row),
+                width: col_span(info, col, col + 1),
+                height: i32::try_from(info.rows.px(row)).unwrap_or(0),
+                color,
+                style,
+                flags: shown.flags,
+                fill_at: 0,
+            },
+        );
+    };
+    for row in top..=bottom {
+        if info.rows.px(row) == 0 {
+            continue;
+        }
+        if merge_at(row, left).is_none() && window.get(row, left).is_none() {
+            let mut col = left;
+            while col > window_left {
+                col -= 1;
+                if info.merge_at(row, col).is_some() {
+                    break;
+                }
+                if let Some(value) = window.get(row, col) {
+                    add_overflow(
+                        row,
+                        col,
+                        value,
+                        true,
+                        cache,
+                        &mut writer,
+                        &mut styles,
+                        &mut text,
+                    );
+                    break;
+                }
+            }
+        }
+        if merge_at(row, right).is_none() && window.get(row, right).is_none() {
+            let mut col = right;
+            while col < window_right {
+                col += 1;
+                if info.merge_at(row, col).is_some() {
+                    break;
+                }
+                if let Some(value) = window.get(row, col) {
+                    add_overflow(
+                        row,
+                        col,
+                        value,
+                        false,
+                        cache,
+                        &mut writer,
+                        &mut styles,
+                        &mut text,
+                    );
+                    break;
+                }
+            }
+        }
+    }
+    writer.finish()
+}
+
+/// What one cell shows, for the formula bar and for tests against Excel.
+pub fn display_text(
+    input: &TileInput<'_>,
+    cache: &mut TileCache,
+    sheet: u32,
+    row: u32,
+    col: u32,
+) -> String {
+    let info = &input.book.sheets[sheet as usize];
+    let table = &input.book.styles;
+    let mut window = Window::new(row, col, 1, 1);
+    input.calc.read_block(
+        SheetRect {
+            sheet,
+            rect: CalcRect {
+                top: row,
+                left: col,
+                bottom: row,
+                right: col,
+            },
+        },
+        &mut window,
+    );
+    let mut out = String::new();
+    if let Some(value) = window.get(row, col) {
+        let xf = table.xf(info.style_at(row, col));
+        let format = format_for(&mut cache.formats, table, xf.num_fmt);
+        show_plain(
+            value,
+            format,
+            input.options,
+            xf.alignment.reading_order,
+            &mut out,
+        );
+    }
+    out
+}
+
+/// What the formula bar shows for a cell: its formula, or its constant in full.
+pub fn edit_text(
+    input: &TileInput<'_>,
+    cache: &mut TileCache,
+    sheet: u32,
+    row: u32,
+    col: u32,
+) -> String {
+    let at = cgs_calc::CellRef { sheet, row, col };
+    if let Some(formula) = input.calc.formula_text(at) {
+        return format!("={}", formula_for_people(&formula));
+    }
+    let info = &input.book.sheets[sheet as usize];
+    let table = &input.book.styles;
+    let mut window = Window::new(row, col, 1, 1);
+    input.calc.read_block(
+        SheetRect {
+            sheet,
+            rect: CalcRect {
+                top: row,
+                left: col,
+                bottom: row,
+                right: col,
+            },
+        },
+        &mut window,
+    );
+    let mut out = String::new();
+    let Some(value) = window.get(row, col) else {
+        return out;
+    };
+    let xf = table.xf(info.style_at(row, col));
+    let format = format_for(&mut cache.formats, table, xf.num_fmt);
+    match value {
+        CalcValue::Empty => {}
+        CalcValue::Number(number) => {
+            cgs_numfmt::edit_text(Value::Number(*number), format, input.options, &mut out);
+        }
+        CalcValue::Text(text) => {
+            cgs_numfmt::edit_text(Value::Text(text), format, input.options, &mut out);
+        }
+        CalcValue::Bool(flag) => {
+            cgs_numfmt::edit_text(Value::Bool(*flag), format, input.options, &mut out);
+        }
+        CalcValue::Error(text) => {
+            cgs_numfmt::edit_text(Value::Error(text), format, input.options, &mut out);
+        }
+    }
+    out
+}
+
+/// Formula text as Excel shows it: without the prefixes a file stores newer functions with,
+/// and without the spaces the engine prints once it has parsed a formula. A space between two
+/// operands stays, because that is the intersection operator.
+fn formula_for_people(text: &str) -> String {
+    let mut plain = text.to_string();
+    for prefix in ["_xlfn.", "_xlws.", "_xlpm."] {
+        if plain.contains(prefix) {
+            plain = plain.replace(prefix, "");
+        }
+    }
+    let operand = |ch: char| {
+        ch.is_alphanumeric() || matches!(ch, '_' | '$' | '\'' | '"' | ')' | ']' | '.' | '#' | '!')
+    };
+    let chars: Vec<char> = plain.chars().collect();
+    let mut out = String::with_capacity(plain.len());
+    let mut quote = None;
+    for (at, &ch) in chars.iter().enumerate() {
+        match quote {
+            Some(open) => {
+                if ch == open {
+                    quote = None;
+                }
+            }
+            None => {
+                if ch == '"' || ch == '\'' {
+                    quote = Some(ch);
+                } else if ch == ' ' {
+                    let before = out.chars().last().is_some_and(operand);
+                    let after = chars[at + 1..]
+                        .iter()
+                        .find(|&&next| next != ' ')
+                        .is_some_and(|&next| operand(next) || next == '(');
+                    if !(before && after) {
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(ch);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_direction_from_the_first_strong_character() {
+        assert!(starts_rtl("مرحبا Hello"));
+        assert!(starts_rtl("123 שלום"));
+        assert!(!starts_rtl("Hello مرحبا"));
+        assert!(!starts_rtl("123"));
+        assert!(!starts_rtl(""));
+    }
+
+    #[test]
+    fn newer_functions_lose_their_prefix() {
+        assert_eq!(
+            formula_for_people("_xlfn.CONCAT(A1,_xlfn._xlws.FILTER(B:B,C:C))"),
+            "CONCAT(A1,FILTER(B:B,C:C))"
+        );
+    }
+
+    #[test]
+    fn a_parsed_formula_reads_as_excel_shows_it() {
+        assert_eq!(formula_for_people("1 + 1"), "1+1");
+        assert_eq!(
+            formula_for_people(r#"IF(D1 > 100, "a b", 'My Sheet'!A1 - 1)"#),
+            r#"IF(D1>100,"a b",'My Sheet'!A1-1)"#
+        );
+        assert_eq!(formula_for_people("A1:A3 B1:B3"), "A1:A3 B1:B3");
+    }
+
+    #[test]
+    fn a_pattern_fill_mixes_its_two_colours() {
+        assert_eq!(mix(0x000000, 0xFFFFFF, 50), 0x808080);
+        assert_eq!(mix(0xFF0000, 0x0000FF, 100), 0xFF0000);
+    }
+}
