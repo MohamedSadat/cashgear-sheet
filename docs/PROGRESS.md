@@ -7,7 +7,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Planning | Done 2026-11-01 | |
 | Track U: components in `CashGear.React.UI` | Not started | |
 | Phase 0: Scaffold, toolchain, CI | Done 2026-11-01 | `phase-0` |
-| Phase 1: Formula engine bake-off | Measured; neither engine reaches the accuracy target, waiting for your decision | |
+| Phase 1: Formula engine bake-off | Done 2026-11-02: Formualizer, with the accuracy target moved to Phase 4 | `phase-1` |
 | Phase 2: Open xlsx | Not started | |
 | Phase 3: Preserving save | Not started | |
 | Phase 4: Editing, formulas, undo | Not started | |
@@ -60,31 +60,31 @@ A canvas tile drawn in a worker from WASM engine data shows in the browser and i
 
 ## Phase 1: Formula engine bake-off
 
-Measured 2026-11-02. Neither engine reaches the 99.5% target, so this phase stops here for your decision and isn't tagged. The full results and the per-function report are in [phase1-report.md](phase1-report.md).
+Measured 2026-11-02. Neither engine reached the 99.5% target, so the phase stopped for a decision. You chose Formualizer and moved the target to Phase 4, for real documents including your private workbooks. The full results and the per-function report are in [phase1-report.md](phase1-report.md).
 
 **Exit criteria**
 
 | Criterion | Result | Evidence |
 | --- | --- | --- |
 | 200+ files run, with a per-function report | Pass | 2,989 public and 10 generated workbooks ran in Chrome 156 WASM. 696 files have scored cells on Formualizer and 690 on IronCalc. The report covers 524 and 525 functions |
-| Winner matches 99.5% of formula cells | **Fail, both** | All Excel-saved files, 10% cap: Formualizer 86.05%, IronCalc 94.67%. Real documents only: Formualizer 98.22% (pooled 98.45%), IronCalc 98.51% (pooled 98.75%) |
-| Winner has slice p99 of 50 ms or less | Formualizer passes, IronCalc fails | Every slice measured: Formualizer 13.9 ms, longest 1,343 ms. IronCalc 99.9 ms, longest 15,318 ms, and 2 of 10 scale workbooks timed out at 5 minutes |
-| Decision logged | **Waiting for you** | The evidence and a recommendation are in `decisions.md` |
+| Winner matches 99.5% of formula cells | **Not met; moved to Phase 4 by your decision** | All Excel-saved files, 10% cap: Formualizer 86.05%, IronCalc 94.67%. Real documents only: Formualizer 98.22% (pooled 98.45%), IronCalc 98.51% (pooled 98.75%) |
+| Winner has slice p99 of 50 ms or less | Pass | Every slice measured: Formualizer 13.9 ms, longest 1,343 ms. IronCalc failed at 99.9 ms, longest 15,318 ms, and 2 of 10 scale workbooks timed out at 5 minutes |
+| Decision logged | Pass | Formualizer, in `decisions.md` |
 
 **Other evidence**
 
 - **Structural edits against Excel over COM:** 2 seeds, 1,000 edits each, compared with Excel after every edit. Formualizer matched 2,000 of 2,000, comparing about 2.36M cells. IronCalc matched 484 of 2,000.
 - **Cached values without calculating:** both engines read them back with nothing calculated. Formualizer in every file, IronCalc except 28 cells in one file. Formualizer then recalculates only what an edit touches, and a contract test proves it with a deliberately wrong cached value.
-- **`calc_slice`:** proven with evaluation that stops and carries on, which both forks add. Contract tests run a 2,000-formula chain at a zero budget on both engines, with visible cells first.
+- **`calc_slice`:** proven with evaluation that stops and carries on, which both forks added. Contract tests ran a 2,000-formula chain at a zero budget on both engines, with visible cells first, and still run it on Formualizer.
 - **WASM size:** engine and adapter, 2.21 MB gzipped for Formualizer and 0.62 MB for IronCalc, against the 5 MB budget.
 - **Licences:** both engines and all their dependencies pass `pnpm deny`.
-- **CI:** [run 41361716745](https://github.com/MohamedSadat/cashgear-sheet/actions/runs/41361716745) at `01f895f`, green with both forks pinned.
+- **CI:** [run 41369440155](https://github.com/MohamedSadat/cashgear-sheet/actions/runs/41369440155) at `30c7281`, green with Formualizer alone, on the fork pin.
 - **Track U:** no new commits on `claude/cashgear-react-ui-library-xq8tsz`, so the `@cashgear/ui` pin stays at `96d2499`.
 
 **Known gaps**
 
-- Your private workbooks aren't in this run. The harness is ready for them (`CGS_PRIVATE_WORKBOOKS`, `--set=private`).
-- No upstream PR is open yet. The patches are public on the forks, and PRs wait for the engine decision, so that only the chosen engine's maintainers get them.
+- Your private workbooks aren't in this run. The harness is ready for them (`CGS_PRIVATE_WORKBOOKS`, `--set=private`), and Phase 4 needs them.
+- The fork stays pinned until the upstream PRs land: [#556](https://github.com/PSU3D0/formualizer/pull/556), [#557](https://github.com/PSU3D0/formualizer/pull/557) and [#558](https://github.com/PSU3D0/formualizer/pull/558). The last one's public API snapshot can't be generated on Windows, so that PR's CI check may need it from Linux.
 - Spilled arrays after structural edits go wrong in Formualizer, and the structural test's seed has no arrays. See the report.
 - Formualizer's graph build on the first edit can't be divided: 4 s at 1,000,000 formulas.
 - Timings were measured with another project's benchmark running on this PC, so they are on the pessimistic side.
@@ -92,5 +92,5 @@ Measured 2026-11-02. Neither engine reaches the 99.5% target, so this phase stop
 **Findings**
 
 - Formualizer's own importer scores spilled cells by leaving the saved values in place, so comparing against it makes the engine look better than it is at arrays. Our adapter clears them.
-- A published crate can stop building against its own dependency range: `formualizer-workbook` 0.13.0's `xlsx-recalc` feature doesn't compile with `zip` 7.4, which is why `Cargo.lock` holds `zip` at 7.2.0 for the comparison tool.
+- A published crate can stop building against its own dependency range: `formualizer-workbook` 0.13.0's `xlsx-recalc` feature doesn't compile with `zip` 7.4. We don't enable that feature, but it matters if Phase 2 ever does.
 - `SheetJS/test_files` is blocked on GitHub, so it isn't in the corpus.

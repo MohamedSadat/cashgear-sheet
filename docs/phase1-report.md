@@ -6,6 +6,8 @@ Engines: Formualizer 0.13.0 at `MohamedSadat/formualizer@7efd060` and IronCalc 0
 
 **Neither engine reaches the 99.5% target.** Formualizer passes everything else, by a wide margin. IronCalc is closer on accuracy, but fails the slice target and most of the structural test.
 
+**Decision:** Formualizer, on our fork. The 99.5% target moves to Phase 4, for real documents including your private workbooks. See `decisions.md`.
+
 ## Results
 
 | Measure | Target | Formualizer | IronCalc |
@@ -72,7 +74,7 @@ The target pools every Excel-saved file, and that pool is dominated by function 
 
 ## Patches in the forks
 
-No upstream PR is open yet; they wait for the engine decision.
+Formualizer's are proposed upstream: [#556](https://github.com/PSU3D0/formualizer/pull/556), [#557](https://github.com/PSU3D0/formualizer/pull/557) and [#558](https://github.com/PSU3D0/formualizer/pull/558). IronCalc's stays on its fork.
 
 **Formualizer (`cashgear/0.13.0`):**
 - `evaluate_slice`: stops and carries on, keeping what it finished. A cancelled `evaluate_all_cancellable` marks everything dirty again, and chunking through `evaluate_cells` was 200 times slower. The browser-safe clock already existed as the `js-runtime` feature, and a cancel token already existed too.

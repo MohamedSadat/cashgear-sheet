@@ -62,6 +62,12 @@ pnpm deny && pnpm licenses:check && pnpm licenses:selftest
 
 ## Gotchas
 
+Found in Phase 1, measured in `docs/phase1-report.md`:
+
+- Formualizer comes from our fork at an exact commit, through `[patch.crates-io]` in the root `Cargo.toml`. To take an upstream release, rebase the fork and move the pin, then rerun `bench/`.
+- Formualizer's own xlsx importer leaves saved spill values in place, so it can look right without calculating. Compare against Excel, not against it.
+- The first edit after opening builds the graph in one step that can't be divided: 4 s at 1,000,000 formulas. Start it right after opening.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

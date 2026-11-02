@@ -97,9 +97,16 @@ Every answer and default, with its date. Newest section last.
 | `CalcEngine` additions | `begin_load`, `finish_load`, `recalc_all`, and `first` is `&[SheetRect]` | Names and tables must exist before cells, and Ctrl+Alt+F9 needs a way in |
 | Forks | `MohamedSadat/formualizer` branch `cashgear/0.13.0` at `7efd060`, and `MohamedSadat/IronCalc` branch `cashgear/0.9.1` at `c91da93`, pinned in the root `Cargo.toml` and allowed in `deny.toml` | `main` must build from public code, and the adapters need the patches. The loser's pin and adapter go when you decide |
 
-**Waiting for your decision: which engine, and what happens to the accuracy target**
+## 2026-11-02: Phase 1 decision
 
-Neither engine reaches 99.5%, so by the phase's rule this stops here. Full results are in [phase1-report.md](phase1-report.md).
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Neither engine reaches 99.5%. Which engine, and what happens to the target? | Formualizer, on our fork. `phase-1` is tagged with 98.22% on real documents as the result. 99.5% on real documents, including your private workbooks, moves to Phase 4's exit, before the MVP |
+| When do your private workbooks join? | Later, by Phase 4, before the accuracy target is judged |
+
+**The evidence**
 
 | | Formualizer | IronCalc |
 | --- | --- | --- |
@@ -109,7 +116,17 @@ Neither engine reaches 99.5%, so by the phase's rule this stops here. Full resul
 | Structural edits matching Excel | 2,000 of 2,000 | 484 of 2,000 |
 | A later edit on 1,000,000 formulas, p99 | 1.3 ms | 1,297 ms |
 | 10,000 lookups or 6,000 aggregates | Seconds at most | Over 5 minutes |
-| Corrupts data on row insert | No | Yes: text that looks numeric turns into numbers |
+| Text that looks numeric, after a row insert | Unchanged | Turned into numbers |
 | WASM, gzipped | 2.21 MB | 0.62 MB |
 
-Recommendation: Formualizer. Its misses are mostly specific functions, which can be fixed one at a time on the fork. IronCalc's are in how it works: no dependency graph, scanning lookups, and structural edits that corrupt data.
+Formualizer's misses are mostly specific functions, which can be fixed one at a time. IronCalc's gaps are in how it works. Full results are in [phase1-report.md](phase1-report.md).
+
+**What follows from it**
+
+| Item | Result |
+| --- | --- |
+| Engine pin | `=0.13.0` crates, taken from `MohamedSadat/formualizer` branch `cashgear/0.13.0` at `7efd060` by `[patch.crates-io]` in the root `Cargo.toml`. A new upstream release is taken by rebasing the fork on it |
+| Upstream PRs | Opened from your account, as you agreed: table references [#556](https://github.com/PSU3D0/formualizer/pull/556), smaller Excel differences [#557](https://github.com/PSU3D0/formualizer/pull/557), time-boxed evaluation [#558](https://github.com/PSU3D0/formualizer/pull/558). The fork stays pinned until they land |
+| IronCalc | Adapter, pin and own-importer comparison removed. Commit `720a89e` is the last that can run it. The public fork `MohamedSadat/IronCalc` is no longer used, and deleting it is your call |
+| `TEXT` format codes | Formualizer has 991 misses here, so `cgs-numfmt` should replace `TEXT` as a custom function in Phase 2 |
+| Scalar functions over ranges | The largest known gap, tracked upstream as PSU3D0/formualizer#529 |

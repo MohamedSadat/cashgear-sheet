@@ -14,7 +14,7 @@ It follows the pattern of CashGear Video (`cashgear-moviepro`) in layout, WASM b
 | --- | --- | --- |
 | Core location | One Rust core as WASM in a worker, on web and inside Tauri | One code path and one test suite, as in CashGear Video. A native desktop host is decided by benchmarks in Phase 9 |
 | Saving xlsx | Unsupported content stays byte-for-byte | Charts, pivots and macros still show in Excel after our save |
-| Formula engine | Wrap an existing MIT/Apache engine behind a trait; Phase 1 benchmark picks | Hundreds of Excel functions without writing them. Leaning Formualizer: IronCalc recalculates every formula each time |
+| Formula engine | Formualizer behind a trait, on our fork at an exact commit | Phase 1 measured it against IronCalc. See `phase1-report.md` |
 | v1 scope | Editing, formulas, formatting, multiple sheets, sort, filter, tables, conditional formatting, data validation, charts, pivots | Print and PDF come after v1 |
 | Arabic | Arabic and mixed text display correctly; grid stays left to right | Direction stays in one place, so RTL sheets can come later |
 | Theme | Light and dark mode everywhere, following the system with a manual switch | Uses `data-cg-theme` from `@cashgear/ui`; the grid follows it too |
@@ -160,9 +160,9 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 6. Try upstream patches for a browser-safe clock and a cancel token. Pin the winner exactly: Formualizer moved from 0.10.1 to 0.13.0 in 25 days.
 
 **Exit**
-- [ ] 200+ files run, with a per-function report.
-- [ ] Winner matches 99.5% of formula cells and has slice p99 of 50 ms or less.
-- [ ] Decision logged. If neither passes, stop and ask.
+- [x] 200+ files run, with a per-function report.
+- [x] Slice p99 of 50 ms or less. The 99.5% match wasn't reached by either engine, so you moved it to Phase 4 for real documents. See `decisions.md`.
+- [x] Decision logged: Formualizer.
 
 ### Phase 2: Open xlsx
 **Goal:** real `.xlsx` files open and look right, read-only, on web and desktop.
@@ -216,6 +216,7 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 - [ ] 1,000 random edits match Excel via COM.
 - [ ] Input stays under 100 ms during recalculation.
 - [ ] Files saved after structural edits open with no repair prompts.
+- [ ] Formula cells match Excel's stored values at 99.5% on real documents, with your private workbooks in the set (`bench/`, moved here from Phase 1, which measured 98.22%).
 
 ### Phase 5: Ribbon and formatting (tag `v0.1.0-mvp`)
 **Goal:** it looks and feels like Excel for daily work.
@@ -280,12 +281,12 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 Print and PDF export; RTL sheets; `.xls`, `.xlsb` and `.ods` import; collaboration only if that changes. Macros are preserved on save but never run.
 
 ## Top risks, by the earliest phase that exposes them
-- **Phase 1:** wrong formula values, no way to yield during calculation, memory use, fast-changing upstream.
+- **Phase 1:** settled for yielding during calculation. Still open: wrong formula values (98.22% on real documents), spilled arrays after structural edits, memory use (936 MiB at 1,000,000 formulas), and a fast-changing upstream that the fork must follow.
 - **Phase 2:** font metric drift when Calibri isn't installed.
 - **Phase 3:** Excel repair prompts; whether `refreshOnLoad` is enough for pivots.
 - **Phase 4:** stale references in retained parts after structural edits.
 
-Engine facts above were read from published packages and source on 2026-11-01. Nothing has been compiled yet, which is why Phase 1 exists.
+Phase 1 measured the engine facts above on 2026-11-02.
 
 ## Verification
 Each phase's exit criteria are the test. Evidence goes in `docs/PROGRESS.md`. All UI and grid golden images run in both light and dark. Standing checks from Phase 0 on:
