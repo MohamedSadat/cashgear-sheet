@@ -7,11 +7,12 @@
 //! `evaluate_slice` keeps what it finished, unlike a cancelled full evaluation, which
 //! puts everything it did back to dirty.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use formualizer_common::{DateSystem, ExcelError, ExcelErrorKind, LiteralValue};
-use formualizer_eval::arrow_store::IngestBuilder;
+use formualizer_eval::arrow_store::{
+    map_error_code, ArrowSheet, CellIngest, IngestBuilder, OverlayValue,
+};
 use formualizer_eval::engine::eval::{Engine, EvaluationSlice};
 use formualizer_eval::engine::named_range::{NameScope, NamedDefinition};
 use formualizer_eval::engine::{EvalConfig, FormulaParsePolicy, TemporalEgress};
@@ -24,18 +25,34 @@ use formualizer_workbook::workbook::WBResolver;
 use formualizer_workbook::{Workbook, WorkbookConfig};
 
 use crate::{
-    err, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef, CellSink,
-    FormulaShape, Rect, Result, SheetCells, SheetRect, StructuralOp, StructuralUndo,
+    err, wants_sparse, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef,
+    CellSink, FormulaShape, LoadEntry, LoadValue, Rect, Result, SheetCells, SheetRect, SheetShape,
+    StructuralOp, StructuralUndo,
 };
+
+/// Rows in one chunk of the Arrow store.
+const CHUNK_ROWS: usize = 32 * 1024;
+
+/// A sheet on its way into the Arrow store.
+enum SheetLoad {
+    /// Full columns, written row by row. Costs bytes for every cell in the area.
+    Dense {
+        builder: Box<IngestBuilder>,
+        next_row: u32,
+        cols: usize,
+    },
+    /// Cell by cell, for few cells over a large area.
+    Sparse(Box<ArrowSheet>),
+}
 
 pub struct FormualizerEngine {
     workbook: Workbook,
     sheets: Vec<String>,
-    /// Constants and cached values wait here until `finish_load` builds each sheet.
-    loading: Vec<HashMap<(u32, u32), LiteralValue>>,
+    /// Sheets between `begin_sheet` and `finish_sheet`.
+    loads: Vec<Option<SheetLoad>>,
+    /// What `load_batch` holds until `finish_load`.
+    pending: Vec<Vec<(u32, u32, CellInput)>>,
     extents: Vec<(u32, u32)>,
-    /// Every formula cell, kept in sheet order for full recalculation.
-    formulas: Vec<Vec<(u32, u32)>>,
     /// Array formulas, which must run again to rebuild their spills.
     array_anchors: Vec<(CellRef, String)>,
     /// Cells showing a saved spill. A stored value would block the real spill, so
@@ -43,6 +60,10 @@ pub struct FormualizerEngine {
     cached_spills: Vec<CellRef>,
     /// Staged formulas haven't been adopted or calculated yet.
     fresh: bool,
+    /// The next sheet `prepare_step` builds a graph for.
+    prepare_next: usize,
+    /// The graph is built and its saved values count as current.
+    prepared: bool,
     slice: EvaluationSlice,
     idle: bool,
     changed: Vec<SheetRect>,
@@ -158,12 +179,14 @@ impl FormualizerEngine {
         Self {
             workbook: Workbook::new_with_config(config(false)),
             sheets: Vec::new(),
-            loading: Vec::new(),
+            loads: Vec::new(),
+            pending: Vec::new(),
             extents: Vec::new(),
-            formulas: Vec::new(),
             array_anchors: Vec::new(),
             cached_spills: Vec::new(),
             fresh: true,
+            prepare_next: 0,
+            prepared: false,
             slice: EvaluationSlice::default(),
             idle: true,
             changed: Vec::new(),
@@ -252,7 +275,7 @@ impl FormualizerEngine {
             return Ok(());
         }
         self.fresh = false;
-        self.engine().adopt_stored_values().map_err(err)?;
+        while self.prepare_step()? {}
         self.rearm_arrays()
     }
 
@@ -272,40 +295,51 @@ impl FormualizerEngine {
         Ok(())
     }
 
-    fn install_values(&mut self) -> Result<()> {
-        let date_system = self.workbook.eval_config().date_system;
-        let loading = std::mem::take(&mut self.loading);
-        for (index, values) in loading.into_iter().enumerate() {
-            let (rows, cols) = self.extents[index];
-            if rows == 0 || cols == 0 {
-                continue;
-            }
-            let name = self.sheets[index].clone();
-            let mut builder = IngestBuilder::new(&name, cols as usize, 32 * 1024, date_system);
-            let mut by_row: HashMap<u32, Vec<(u32, LiteralValue)>> = HashMap::new();
-            for ((row, col), value) in values {
-                by_row.entry(row).or_default().push((col, value));
-            }
-            for row in 1..=rows {
-                let mut cells = vec![LiteralValue::Empty; cols as usize];
-                if let Some(entries) = by_row.remove(&row) {
-                    for (col, value) in entries {
-                        cells[(col - 1) as usize] = value;
-                    }
-                }
-                builder.append_row(&cells).map_err(err)?;
-            }
-            let sheet = builder.finish();
-            let store = self.engine().sheet_store_mut();
-            match store.sheets.iter().position(|s| s.name.as_ref() == name) {
-                Some(position) => store.sheets[position] = sheet,
-                None => store.sheets.push(sheet),
-            }
-            self.engine().finalize_sheet_index(&name);
+    fn date_system(&self) -> DateSystem {
+        self.workbook.eval_config().date_system
+    }
+
+    /// Puts a finished sheet in the store, in place of any empty one.
+    fn install_sheet(&mut self, sheet: ArrowSheet) {
+        let name = sheet.name.to_string();
+        let store = self.engine().sheet_store_mut();
+        match store.sheets.iter().position(|s| s.name.as_ref() == name) {
+            Some(position) => store.sheets[position] = sheet,
+            None => store.sheets.push(sheet),
         }
-        self.engine().set_first_load_assume_new(false);
-        self.engine().reset_ensure_touched();
-        Ok(())
+        self.engine().finalize_sheet_index(&name);
+    }
+}
+
+fn error_code(text: &str) -> u8 {
+    map_error_code(error_kind(text))
+}
+
+fn to_ingest<'a>(value: &LoadValue<'a>) -> CellIngest<'a> {
+    match *value {
+        LoadValue::Number(number) => CellIngest::Number(number),
+        LoadValue::Bool(flag) => CellIngest::Boolean(flag),
+        LoadValue::Text(text) => CellIngest::Text(text),
+        LoadValue::Error(text) => CellIngest::ErrorCode(error_code(text)),
+    }
+}
+
+fn to_overlay(value: &LoadValue<'_>) -> OverlayValue {
+    match *value {
+        LoadValue::Number(number) => OverlayValue::Number(number),
+        LoadValue::Bool(flag) => OverlayValue::Boolean(flag),
+        LoadValue::Text(text) => OverlayValue::Text(text.into()),
+        LoadValue::Error(text) => OverlayValue::Error(error_code(text)),
+    }
+}
+
+fn borrow_value(value: &CalcValue) -> Option<LoadValue<'_>> {
+    match value {
+        CalcValue::Empty => None,
+        CalcValue::Number(number) => Some(LoadValue::Number(*number)),
+        CalcValue::Bool(flag) => Some(LoadValue::Bool(*flag)),
+        CalcValue::Text(text) => Some(LoadValue::Text(text)),
+        CalcValue::Error(text) => Some(LoadValue::Error(text)),
     }
 }
 
@@ -313,12 +347,14 @@ impl CalcEngine for FormualizerEngine {
     fn begin_load(&mut self, book: &BookInfo) -> Result<()> {
         self.workbook = Workbook::new_with_config(config(book.date1904));
         self.sheets = book.sheets.clone();
-        self.loading = vec![HashMap::new(); book.sheets.len()];
+        self.loads = book.sheets.iter().map(|_| None).collect();
+        self.pending = vec![Vec::new(); book.sheets.len()];
         self.extents = vec![(0, 0); book.sheets.len()];
-        self.formulas = vec![Vec::new(); book.sheets.len()];
         self.array_anchors.clear();
         self.cached_spills.clear();
         self.fresh = true;
+        self.prepare_next = 0;
+        self.prepared = false;
         self.slice.reset();
         self.idle = true;
         let names: Vec<&str> = book.sheets.iter().map(String::as_str).collect();
@@ -364,58 +400,208 @@ impl CalcEngine for FormualizerEngine {
     }
 
     fn load_batch(&mut self, cells: &SheetCells<'_>) -> Result<()> {
-        let index = cells.sheet as usize;
-        let name = self.sheet_name(cells.sheet)?.to_string();
-        for (row, col, input) in cells.cells {
-            let extent = &mut self.extents[index];
-            extent.0 = extent.0.max(*row);
-            extent.1 = extent.1.max(*col);
-            match input {
-                CellInput::Value(value) => {
-                    self.loading[index].insert((*row, *col), to_literal(value));
-                }
-                CellInput::Formula {
-                    text,
-                    shape,
-                    cached,
-                } => {
-                    if let Some(value) = cached {
-                        self.loading[index].insert((*row, *col), to_literal(value));
-                    }
-                    self.formulas[index].push((*row, *col));
-                    if !matches!(shape, FormulaShape::Normal) {
-                        self.array_anchors.push((
-                            CellRef {
-                                sheet: cells.sheet,
-                                row: *row,
-                                col: *col,
-                            },
-                            format!("={text}"),
-                        ));
-                    }
-                    let source = match shape {
-                        FormulaShape::Normal => implicit_intersection(text),
-                        _ => None,
-                    };
-                    let staged = source.unwrap_or_else(|| format!("={text}"));
-                    self.engine().stage_formula_text(&name, *row, *col, staged);
-                }
-                CellInput::Spill { cached, .. } => {
-                    self.loading[index].insert((*row, *col), to_literal(cached));
-                    self.cached_spills.push(CellRef {
-                        sheet: cells.sheet,
-                        row: *row,
-                        col: *col,
-                    });
-                }
-                CellInput::Clear => {}
-            }
-        }
+        self.sheet_name(cells.sheet)?;
+        self.pending[cells.sheet as usize].extend_from_slice(cells.cells);
         Ok(())
     }
 
     fn finish_load(&mut self) -> Result<()> {
-        self.install_values()
+        for index in 0..self.pending.len() {
+            let mut cells = std::mem::take(&mut self.pending[index]);
+            if cells.is_empty() {
+                continue;
+            }
+            let sheet = index as u32;
+            // The sort is stable, so that a later write to a cell still wins.
+            cells.sort_by_key(|&(row, _, _)| row);
+            let rows = cells.iter().map(|&(row, _, _)| row).max().unwrap_or(1);
+            let cols = cells.iter().map(|&(_, col, _)| col).max().unwrap_or(1);
+            let sparse = wants_sparse(cells.len() as u64, rows, cols);
+            self.begin_sheet(sheet, SheetShape { rows, cols, sparse })?;
+            let mut entries = Vec::with_capacity(cells.len());
+            for (row, col, input) in &cells {
+                let value = match input {
+                    CellInput::Value(value) => borrow_value(value),
+                    CellInput::Formula { cached, .. } => cached.as_ref().and_then(borrow_value),
+                    CellInput::Spill { cached, .. } => borrow_value(cached),
+                    CellInput::Clear => None,
+                };
+                if let Some(value) = value {
+                    entries.push(LoadEntry {
+                        row: *row,
+                        col: *col,
+                        value,
+                    });
+                }
+            }
+            self.load_rows(sheet, &entries)?;
+            for (row, col, input) in &cells {
+                match input {
+                    CellInput::Formula { text, shape, .. } => {
+                        self.load_formula(sheet, *row, *col, text, *shape)?;
+                    }
+                    CellInput::Spill { .. } => self.mark_spill(sheet, *row, *col)?,
+                    _ => {}
+                }
+            }
+            self.finish_sheet(sheet, &[])?;
+        }
+        self.engine().set_first_load_assume_new(false);
+        self.engine().reset_ensure_touched();
+        Ok(())
+    }
+
+    fn begin_sheet(&mut self, sheet: u32, shape: SheetShape) -> Result<()> {
+        let name = self.sheet_name(sheet)?.to_string();
+        let date_system = self.date_system();
+        let cols = shape.cols.max(1) as usize;
+        self.array_anchors.retain(|(cell, _)| cell.sheet != sheet);
+        self.cached_spills.retain(|cell| cell.sheet != sheet);
+        self.loads[sheet as usize] = Some(if shape.sparse {
+            SheetLoad::Sparse(Box::new(ArrowSheet::new_sparse_with_date_system(
+                &name,
+                cols,
+                shape.rows.max(1) as usize,
+                CHUNK_ROWS,
+                date_system,
+            )))
+        } else {
+            SheetLoad::Dense {
+                builder: Box::new(IngestBuilder::new(&name, cols, CHUNK_ROWS, date_system)),
+                next_row: 1,
+                cols,
+            }
+        });
+        Ok(())
+    }
+
+    fn load_rows(&mut self, sheet: u32, cells: &[LoadEntry<'_>]) -> Result<()> {
+        let index = sheet as usize;
+        let mut load = self
+            .loads
+            .get_mut(index)
+            .and_then(Option::take)
+            .ok_or_else(|| err(format!("sheet {sheet} has not begun")))?;
+        let extent = &mut self.extents[index];
+        match &mut load {
+            SheetLoad::Dense {
+                builder,
+                next_row,
+                cols,
+            } => {
+                let empty: Vec<CellIngest<'_>> = (0..*cols).map(|_| CellIngest::Empty).collect();
+                let mut row: Vec<CellIngest<'_>> = (0..*cols).map(|_| CellIngest::Empty).collect();
+                let mut filled = Vec::new();
+                let mut at = 0;
+                while at < cells.len() {
+                    let number = cells[at].row;
+                    if number < *next_row {
+                        return Err(err(format!("row {number} arrived out of order")));
+                    }
+                    while *next_row < number {
+                        builder.append_row_cells(&empty).map_err(err)?;
+                        *next_row += 1;
+                    }
+                    while at < cells.len() && cells[at].row == number {
+                        let cell = &cells[at];
+                        let slot = (cell.col as usize).wrapping_sub(1);
+                        let target = row
+                            .get_mut(slot)
+                            .ok_or_else(|| err("a cell is outside the sheet's shape"))?;
+                        *target = to_ingest(&cell.value);
+                        filled.push(slot);
+                        extent.1 = extent.1.max(cell.col);
+                        at += 1;
+                    }
+                    builder.append_row_cells(&row).map_err(err)?;
+                    *next_row += 1;
+                    extent.0 = extent.0.max(number);
+                    for slot in filled.drain(..) {
+                        row[slot] = CellIngest::Empty;
+                    }
+                }
+            }
+            SheetLoad::Sparse(store) => {
+                for cell in cells {
+                    store.set_sparse_overlay_value(
+                        (cell.row - 1) as usize,
+                        (cell.col - 1) as usize,
+                        to_overlay(&cell.value),
+                    );
+                    extent.0 = extent.0.max(cell.row);
+                    extent.1 = extent.1.max(cell.col);
+                }
+            }
+        }
+        self.loads[index] = Some(load);
+        Ok(())
+    }
+
+    fn load_formula(
+        &mut self,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        text: &str,
+        shape: FormulaShape,
+    ) -> Result<()> {
+        let name = self.sheet_name(sheet)?.to_string();
+        let extent = &mut self.extents[sheet as usize];
+        extent.0 = extent.0.max(row);
+        extent.1 = extent.1.max(col);
+        let staged = match shape {
+            FormulaShape::Normal => {
+                implicit_intersection(text).unwrap_or_else(|| format!("={text}"))
+            }
+            FormulaShape::Array(_) | FormulaShape::Dynamic(_) => {
+                let staged = format!("={text}");
+                self.array_anchors
+                    .push((CellRef { sheet, row, col }, staged.clone()));
+                staged
+            }
+        };
+        self.engine().stage_formula_text(&name, row, col, staged);
+        Ok(())
+    }
+
+    fn mark_spill(&mut self, sheet: u32, row: u32, col: u32) -> Result<()> {
+        self.cached_spills.push(CellRef { sheet, row, col });
+        Ok(())
+    }
+
+    fn finish_sheet(&mut self, sheet: u32, hidden_rows: &[u32]) -> Result<()> {
+        let name = self.sheet_name(sheet)?.to_string();
+        let load = self
+            .loads
+            .get_mut(sheet as usize)
+            .and_then(Option::take)
+            .ok_or_else(|| err(format!("sheet {sheet} has not begun")))?;
+        let store = match load {
+            SheetLoad::Dense { builder, .. } => builder.finish(),
+            SheetLoad::Sparse(store) => *store,
+        };
+        self.install_sheet(store);
+        for &row in hidden_rows {
+            let _ = self.workbook.set_row_hidden(&name, row, true);
+        }
+        Ok(())
+    }
+
+    fn prepare_step(&mut self) -> Result<bool> {
+        if self.prepared {
+            return Ok(false);
+        }
+        if self.prepare_next < self.sheets.len() {
+            let name = self.sheets[self.prepare_next].clone();
+            self.prepare_next += 1;
+            self.engine()
+                .build_graph_for_sheets([name.as_str()])
+                .map_err(err)?;
+            return Ok(true);
+        }
+        self.engine().adopt_stored_values().map_err(err)?;
+        self.prepared = true;
+        Ok(false)
     }
 
     fn set_cells(&mut self, edits: &[CellEdit]) -> Result<Vec<CellEdit>> {
@@ -443,24 +629,18 @@ impl CalcEngine for FormualizerEngine {
                     None => CellInput::Value(old_value),
                 },
             });
-            let sheet_formulas = &mut self.formulas[edit.at.sheet as usize];
             match &edit.input {
                 CellInput::Value(value) => {
-                    sheet_formulas.retain(|&at| at != (row, col));
                     self.workbook
                         .set_value(&name, row, col, to_literal(value))
                         .map_err(err)?;
                 }
                 CellInput::Clear => {
-                    sheet_formulas.retain(|&at| at != (row, col));
                     self.workbook
                         .set_value(&name, row, col, LiteralValue::Empty)
                         .map_err(err)?;
                 }
                 CellInput::Formula { text, .. } => {
-                    if !sheet_formulas.contains(&(row, col)) {
-                        sheet_formulas.push((row, col));
-                    }
                     self.workbook
                         .set_formula(&name, row, col, &format!("={text}"))
                         .map_err(err)?;
@@ -515,8 +695,12 @@ impl CalcEngine for FormualizerEngine {
         self.slice.reset();
         self.idle = false;
         if self.fresh {
-            // Everything staged is dirty when it is built, so nothing needs marking.
+            // Everything staged is dirty when it is built, so nothing needs marking
+            // unless `prepare_step` has already adopted the saved values.
             self.fresh = false;
+            if self.prepared {
+                self.engine().mark_all_formulas_dirty();
+            }
             return self.rearm_arrays();
         }
         self.engine().mark_all_formulas_dirty();

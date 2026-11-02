@@ -24,6 +24,12 @@ pub(crate) fn err(error: impl std::fmt::Display) -> CalcError {
     CalcError(error.to_string())
 }
 
+/// Whether a sheet of this many cells over this area should go in cell by cell.
+pub fn wants_sparse(cells: u64, rows: u32, cols: u32) -> bool {
+    let area = u64::from(rows) * u64::from(cols);
+    area > 4_000_000 && area > cells.saturating_mul(32)
+}
+
 /// A cell's value. Errors keep Excel's spelling, such as `#N/A`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CalcValue {
@@ -120,6 +126,34 @@ pub struct TableInfo {
     pub columns: Vec<String>,
 }
 
+/// A value as the file reader hands it over, borrowing its text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LoadValue<'a> {
+    Number(f64),
+    Bool(bool),
+    Text(&'a str),
+    /// As stored, such as `#N/A`.
+    Error(&'a str),
+}
+
+/// A constant, or the value last saved with a formula.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadEntry<'a> {
+    pub row: u32,
+    pub col: u32,
+    pub value: LoadValue<'a>,
+}
+
+/// The bounds a sheet's cells stay within, known before they arrive. Going past them
+/// means calling `begin_sheet` again with larger ones and sending the sheet again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheetShape {
+    pub rows: u32,
+    pub cols: u32,
+    /// Few cells over a large area: stored cell by cell rather than in full columns.
+    pub sparse: bool,
+}
+
 /// What the engine must know before cells arrive.
 #[derive(Debug, Clone, Default)]
 pub struct BookInfo {
@@ -163,9 +197,32 @@ pub trait CellSink {
 pub trait CalcEngine {
     /// Starts a workbook. Cached values stay as they are until something dirties them.
     fn begin_load(&mut self, book: &BookInfo) -> Result<()>;
+    /// Cells in any order, held until `finish_load`. The file reader uses `load_rows`
+    /// instead, which holds nothing back; tests and the bench use this.
     fn load_batch(&mut self, cells: &SheetCells<'_>) -> Result<()>;
     /// Ends the load. Nothing is calculated, and cached values are readable after it.
     fn finish_load(&mut self) -> Result<()>;
+    /// Starts one sheet, or starts it over.
+    fn begin_sheet(&mut self, sheet: u32, shape: SheetShape) -> Result<()>;
+    /// Constants and saved formula values in ascending row order, each batch ending
+    /// with a complete row.
+    fn load_rows(&mut self, sheet: u32, cells: &[LoadEntry<'_>]) -> Result<()>;
+    /// Stages a formula for a cell whose saved value `load_rows` has or will have.
+    fn load_formula(
+        &mut self,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        text: &str,
+        shape: FormulaShape,
+    ) -> Result<()>;
+    /// Marks a cell as showing a saved spill rather than holding a constant.
+    fn mark_spill(&mut self, sheet: u32, row: u32, col: u32) -> Result<()>;
+    /// Makes the sheet's cells readable. `hidden_rows` are 1-based.
+    fn finish_sheet(&mut self, sheet: u32, hidden_rows: &[u32]) -> Result<()>;
+    /// Does one piece of the work that would otherwise fall on the first edit, and
+    /// calculates nothing. Returns whether more remains. One piece can't be interrupted.
+    fn prepare_step(&mut self) -> Result<bool>;
     /// Applies edits and returns the pre-images, for undo.
     fn set_cells(&mut self, edits: &[CellEdit]) -> Result<Vec<CellEdit>>;
     fn structural(&mut self, op: &StructuralOp) -> Result<StructuralUndo>;

@@ -570,6 +570,7 @@ name = "cgs-bench"
 version = "0.0.0"
 dependencies = [
  "cgs-calc",
+ "cgs-refs",
  "quick-xml 0.39.4",
  "serde",
  "serde_json",

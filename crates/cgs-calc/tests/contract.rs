@@ -672,3 +672,194 @@ fn deleting_a_row_a_formula_needs_gives_ref_error() {
         );
     }
 }
+
+fn stream(engine: &mut dyn CalcEngine, sparse: bool) {
+    use cgs_calc::{LoadEntry, LoadValue, SheetShape};
+    engine.begin_load(&info()).unwrap();
+    let shape = SheetShape {
+        rows: 3,
+        cols: 3,
+        sparse,
+    };
+    engine.begin_sheet(0, shape).unwrap();
+    engine
+        .load_rows(
+            0,
+            &[
+                LoadEntry {
+                    row: 1,
+                    col: 1,
+                    value: LoadValue::Number(2.0),
+                },
+                LoadEntry {
+                    row: 1,
+                    col: 2,
+                    value: LoadValue::Number(999.0),
+                },
+            ],
+        )
+        .unwrap();
+    engine
+        .load_rows(
+            0,
+            &[LoadEntry {
+                row: 3,
+                col: 3,
+                value: LoadValue::Text("later"),
+            }],
+        )
+        .unwrap();
+    engine
+        .load_formula(0, 1, 2, "A1*10", FormulaShape::Normal)
+        .unwrap();
+    engine.finish_sheet(0, &[]).unwrap();
+    engine.begin_sheet(1, shape).unwrap();
+    engine
+        .load_rows(
+            1,
+            &[LoadEntry {
+                row: 1,
+                col: 1,
+                value: LoadValue::Number(1998.0),
+            }],
+        )
+        .unwrap();
+    engine
+        .load_formula(1, 1, 1, "Sheet1!B1*2", FormulaShape::Normal)
+        .unwrap();
+    engine.finish_sheet(1, &[]).unwrap();
+    engine.finish_load().unwrap();
+}
+
+#[test]
+fn streamed_rows_read_back_without_calculating() {
+    for sparse in [false, true] {
+        for (name, mut engine) in engines() {
+            stream(engine.as_mut(), sparse);
+            assert_eq!(
+                at(engine.as_ref(), 0, 1, 2),
+                CalcValue::Number(999.0),
+                "{name}"
+            );
+            assert_eq!(
+                at(engine.as_ref(), 0, 3, 3),
+                CalcValue::Text("later".to_string()),
+                "{name}"
+            );
+            assert_eq!(
+                engine.formula_text(CellRef {
+                    sheet: 0,
+                    row: 1,
+                    col: 2
+                }),
+                Some("A1*10".to_string()),
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn preparing_changes_no_value_and_an_edit_still_reaches_every_sheet() {
+    for (name, mut engine) in engines() {
+        stream(engine.as_mut(), false);
+        let mut steps = 0;
+        while engine.prepare_step().unwrap() {
+            steps += 1;
+        }
+        assert!(steps >= 2, "{name}: one step per sheet");
+        assert!(!engine.prepare_step().unwrap(), "{name}: stays finished");
+        // The saved value is deliberately wrong, so a calculation would show here.
+        settle(engine.as_mut());
+        assert_eq!(
+            at(engine.as_ref(), 0, 1, 2),
+            CalcValue::Number(999.0),
+            "{name}"
+        );
+
+        engine
+            .set_cells(&[CellEdit {
+                at: CellRef {
+                    sheet: 0,
+                    row: 1,
+                    col: 1,
+                },
+                input: num(3.0),
+            }])
+            .unwrap();
+        settle(engine.as_mut());
+        assert_eq!(
+            at(engine.as_ref(), 0, 1, 2),
+            CalcValue::Number(30.0),
+            "{name}"
+        );
+        assert_eq!(
+            at(engine.as_ref(), 1, 1, 1),
+            CalcValue::Number(60.0),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_full_recalculation_after_preparing_still_runs() {
+    for (name, mut engine) in engines() {
+        stream(engine.as_mut(), false);
+        while engine.prepare_step().unwrap() {}
+        engine.recalc_all().unwrap();
+        settle(engine.as_mut());
+        assert_eq!(
+            at(engine.as_ref(), 0, 1, 2),
+            CalcValue::Number(20.0),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_sparse_sheet_keeps_a_far_corner() {
+    use cgs_calc::{LoadEntry, LoadValue, SheetShape};
+    for (name, mut engine) in engines() {
+        engine.begin_load(&info()).unwrap();
+        engine
+            .begin_sheet(
+                0,
+                SheetShape {
+                    rows: 1_048_576,
+                    cols: 16_384,
+                    sparse: true,
+                },
+            )
+            .unwrap();
+        engine
+            .load_rows(
+                0,
+                &[LoadEntry {
+                    row: 1_048_576,
+                    col: 16_384,
+                    value: LoadValue::Number(7.0),
+                }],
+            )
+            .unwrap();
+        engine.finish_sheet(0, &[]).unwrap();
+        engine.finish_load().unwrap();
+        let mut out = Grid::default();
+        engine.read_block(
+            SheetRect {
+                sheet: 0,
+                rect: Rect {
+                    top: 1_048_570,
+                    left: 16_380,
+                    bottom: 1_048_576,
+                    right: 16_384,
+                },
+            },
+            &mut out,
+        );
+        assert_eq!(
+            out.0.get(&(1_048_576, 16_384)),
+            Some(&CalcValue::Number(7.0)),
+            "{name}"
+        );
+    }
+}

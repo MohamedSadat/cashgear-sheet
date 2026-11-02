@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cgs-calc = { path = "../../crates/cgs-calc" }
+cgs-refs = { path = "../../crates/cgs-refs" }
 quick-xml = "0.39"
 serde.workspace = true
 serde_json = "1"
