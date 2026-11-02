@@ -20,3 +20,22 @@ node bench/run-structural.mjs
 ```
 
 Set `CGS_PRIVATE_WORKBOOKS` and pass `--set=private` to include a private folder. Those results hold no file names or cell values.
+
+# Phase 2 checks
+
+What the shipped reader and grid are held to. Nothing here ships either.
+
+- `harness/src/bin/fidelity.rs`: opens each file through the shipped reader and engine, and compares every cell with `calamine`.
+- `run-excel-text.mjs`, `excel-text.ps1`, `harness/src/bin/exceltext.rs`: compares what we show with what Excel shows over COM, on generated and private workbooks only. Public files never open in Excel.
+- `generate-speed-books.mjs`, `measure-speed.mjs`: the size and scrolling targets, in the real app in Chrome. Timings mean something only on the reference machine.
+
+```bash
+cargo build -p cgs-bench --profile fast --bin fidelity --bin exceltext
+./target/fast/fidelity bench/results/fidelity-public.jsonl tests/workbooks/public
+node bench/run-excel-text.mjs tests/workbooks/generated bench/results/excel-text-generated.json
+node bench/generate-speed-books.mjs
+pnpm build
+node bench/measure-speed.mjs
+```
+
+Add `--private` to `fidelity` and `run-excel-text.mjs` for a private folder: results then hold no file names or cell values.

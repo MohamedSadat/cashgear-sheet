@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cgs-calc = { path = "../../crates/cgs-calc" }
+cgs-engine = { path = "../../crates/cgs-engine" }
 cgs-model = { path = "../../crates/cgs-model" }
 cgs-refs = { path = "../../crates/cgs-refs" }
 cgs-xlsx = { path = "../../crates/cgs-xlsx" }
