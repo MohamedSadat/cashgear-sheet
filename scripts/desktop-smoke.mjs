@@ -89,7 +89,7 @@ async function launch() {
       ...process.env,
       WEBVIEW2_USER_DATA_FOLDER: profile,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments,
-      CGS_DESKTOP_SMOKE: '1',
+      CGS_DESKTOP_SMOKE: profile,
     },
     stdio: 'inherit',
   });
@@ -114,7 +114,16 @@ async function launch() {
     if (Date.now() > deadline) throw new Error('WebView2 debugging endpoint timed out');
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  const browser = await chromium.connectOverCDP(endpoint);
+  // The endpoint can answer and then go, if the browser it belongs to is on its way out.
+  let browser;
+  while (!browser) {
+    try {
+      browser = await chromium.connectOverCDP(endpoint);
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
   const context = browser.contexts()[0];
   const page = context.pages()[0] ?? (await context.waitForEvent('page'));
   // Page errors show in the smoke's output, so a failure says what went wrong inside.
@@ -140,8 +149,9 @@ async function kill(app) {
       await fetch('http://127.0.0.1:' + port + '/json/version', {
         signal: AbortSignal.timeout(500),
       });
-    } catch {
-      break;
+    } catch (error) {
+      // A timeout means it is only busy. Only a refused connection means it has gone.
+      if (error.name !== 'TimeoutError') break;
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }

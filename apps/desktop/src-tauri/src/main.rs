@@ -121,7 +121,11 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(FileRegistry::default())
         .setup(|app| {
-            let folder = app.path().app_data_dir()?;
+            // The smoke test keeps its files apart from the real app's list.
+            let folder = match std::env::var_os("CGS_DESKTOP_SMOKE") {
+                Some(folder) => PathBuf::from(folder),
+                None => app.path().app_data_dir()?,
+            };
             app.manage(RecentStore::new(&folder));
             Ok(())
         })

@@ -162,3 +162,4 @@ Calamine also couldn't open 28 files or read 22 sheets that ours reads, and 3 sh
 - XML line endings need normalizing by hand, as `quick-xml` leaves `\r\n` in text.
 - Excel's digit widths are uneven by size, from hinting, and the default column's padding is `2 * ceil(d / 4) + 1`.
 - Excel refuses a workbook whose drawing parts have no content types, so test fixtures must be complete.
+- The desktop smoke test failed once in CI on a docs-only commit: on restart it took a busy old WebView2 for a dead one, and attached as that browser exited. It now tells a timeout from a refused connection, and retries attaching. It also keeps its recent files apart from the real app's.
