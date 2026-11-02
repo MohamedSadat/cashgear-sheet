@@ -130,3 +130,37 @@ Formualizer's misses are mostly specific functions, which can be fixed one at a 
 | IronCalc | Adapter, pin and own-importer comparison removed. Commit `720a89e` is the last that can run it. The public fork `MohamedSadat/IronCalc` is no longer used, and deleting it is your call |
 | `TEXT` format codes | Formualizer has 991 misses here, so `cgs-numfmt` should replace `TEXT` as a custom function in Phase 2 |
 | Scalar functions over ranges | The largest known gap, tracked upstream as PSU3D0/formualizer#529 |
+
+## 2026-11-02: Phase 2
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Largest file that must open smoothly | A 25 MB file (about 3M cells) is showing and scrollable within 10 s on the reference machine. A 100 MB file of mostly values opens within 60 s with progress showing. A file that runs out of memory gets a clear message. Phase 9 deals with the 4 GB limit |
+| Calibri fallback | Bundle Carlito (OFL): four faces as WOFF2 with the notice, used only when Calibri is missing. Aptos has no free match, so it falls back to Carlito too |
+| Recent files | Now: the last 10, in the File menu, on this device only. Safari and Firefox get no list, because they have no file handles |
+| Explicit colours in dark mode | Fills stay as stored. Text changes on screen only when its contrast against its own background is under 3:1. Display only; it never reaches the saved file |
+| Selection and formula bar (new) | In Phase 2, read-only: selection by click, drag and arrow keys, a name box, and a formula bar. Phase 4 makes them editable |
+| Regional conventions (new) | Built-in date and number formats follow the browser's language through `Intl`. Tags inside a format code always win, including Arabic names and Hijri dates |
+| Your private workbooks (new) | Now, not by Phase 4. Same rules as Phase 1: read on this PC only, and only counts reach the repo. Path to come |
+| Exit thresholds (new) | Values: every cell matches `calamine` across the test set, with any difference explained. Display text: 99.5% matches Excel's own text over COM, with misses listed, on a generated workbook holding every built-in format and every format code found in the public files. The public files themselves never open in Excel. Scrolling: on a 1M-row sheet on the reference machine, 95% of frames within 17 ms and none over 50 ms, and a fast scrollbar drag can show empty cells until 100 ms after it stops |
+
+**Evidence for those answers**
+
+| Item | Finding |
+| --- | --- |
+| Phase 1's reader in Chrome | 14.0 MB of values: 7.1 s, 549 MiB. 15.5 MB with 1,000,002 formulas: 14.4 s, 936 MiB. By simple scaling, 100 MB would take 50 to 100 s and 4 to 6 GiB |
+| Public test files (3,361 with styles) | Default font: Calibri 78%, Arial 10%, Aptos Narrow 6%. Fixed black font colour: 12.6%. A locale tag in a format code: 1.5%. Arabic text in shared strings: 4 files |
+| This PC | en-US, Calibri installed, Aptos not, Excel 16.0 build 19127 |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default | Reason |
+| --- | --- | --- |
+| `@cashgear/ui` | Build only `CgStatusBar` and `CgSlider` now, and bump the pin. The rest of Track U waits for the phases that need it | No new commits on the branch since `96d2499`, and Phase 2 uses only these two |
+| What "open" means | The active sheet shows correct values and scrolls. Other sheets carry on loading behind it, and a tab that isn't ready shows progress | The plan's lazy per-sheet parsing |
+| File types | `.xlsx`, `.xlsm`, `.xltx` and `.xltm` open, and macros never run. `.xls`, `.xlsb`, `.ods`, password-protected and damaged files get a clear message, not a crash | The plan leaves other formats until after v1. The test set has 25 damaged files |
+| Graph build after opening | Starts in the engine worker once tiles around the viewport are ready, one sheet at a time. Tiles asked for meanwhile wait for the current sheet | `build_graph_for_sheets` lets the build stop between sheets, though not within one |
+| Not shown in Phase 2 | Conditional formatting and table banding wait for Phase 6, and charts and images are placeholders until Phase 7. Rich text shows in one style until a later phase needs it | The plan's scope |
+| Other fonts | Only Carlito is bundled. Any other missing font, including for Arabic, uses the browser's fallback | Windows and macOS ship Arabic fonts |
