@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 cgs-native.workspace = true
 # The same minor as @tauri-apps/api and @tauri-apps/cli, which the Tauri CLI checks.
 tauri = { version = "~2.12", features = [] }
+tauri-plugin-dialog = "2"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
