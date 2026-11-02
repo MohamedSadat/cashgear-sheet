@@ -415,6 +415,16 @@ fn a_part_cut_short_keeps_what_it_read() {
 }
 
 #[test]
+fn a_stray_closing_tag_or_a_cell_off_the_sheet_is_ignored() {
+    let sheet = r#"<worksheet><sheetData><row r="1"></c><c r="A1"><v>1</v></c></row>
+      <row r="2"><c r="XFE2"><v>2</v></c><c r="B2"><v>3</v></c></row></sheetData></worksheet>"#;
+    let opened = open(workbook(&[("S", sheet)], NO_STRINGS, NO_STYLES));
+    let grid = read(&opened.engine, 0);
+    assert_eq!(grid.0.len(), 2);
+    assert_eq!(grid.0[&(2, 2)], number(3.0));
+}
+
+#[test]
 fn files_it_cannot_read_say_why() {
     let error = |bytes: Vec<u8>| Loader::open(Rc::new(bytes)).err().unwrap();
     assert!(matches!(

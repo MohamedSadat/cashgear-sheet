@@ -333,7 +333,8 @@ impl SheetLoader {
                 Event::End(ref element) => {
                     if self.in_sheet_data {
                         match element.local_name().as_ref() {
-                            b"c" => {
+                            // A damaged file can close a cell it never opened.
+                            b"c" if self.in_cell => {
                                 self.finish_cell(context)?;
                                 self.in_cell = false;
                             }
@@ -519,6 +520,7 @@ impl SheetLoader {
             self.row = 1;
         }
         if self.col == 0 || self.col > cgs_model::MAX_COLS || self.row > cgs_model::MAX_ROWS {
+            self.in_cell = false;
             return None;
         }
         if let Some(shape) = self.shape.filter(|shape| !shape.sparse) {
