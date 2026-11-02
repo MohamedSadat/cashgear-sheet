@@ -1,7 +1,10 @@
 import type { TileImage, TilePalette, TileRequest } from './types';
 
-/** Tiles drawn at once. More would only queue in the workers, where they can't be taken back. */
-const MAX_IN_FLIGHT = 4;
+/**
+ * Tiles asked for at once: one being drawn, and one ready to follow it. More would only queue
+ * in the workers, where they can't be taken back, and hold up the tiles in view after a jump.
+ */
+const MAX_IN_FLIGHT = 2;
 /** What the cache keeps by default. Tiles in view are kept whatever this says. */
 const DEFAULT_LIMIT_BYTES = 512 * 1024 * 1024;
 

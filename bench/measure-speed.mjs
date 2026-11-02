@@ -17,7 +17,8 @@ const openList = option('open')
       join(root, 'tests/workbooks/generated/row-model-333k.xlsx'),
       join(root, 'tests/workbooks/public/exceljs/spec__integration__data__huge.xlsx'),
       ...readdirSync(speedFolder)
-        .filter((name) => name.endsWith('.xlsx'))
+        // This one is for bench/measure-out-of-memory.mjs.
+        .filter((name) => name.endsWith('.xlsx') && !name.includes('past-memory'))
         .map((name) => join(speedFolder, name)),
     ];
 const scrollFile = option('scroll') ?? join(speedFolder, 'rows-1m.xlsx');

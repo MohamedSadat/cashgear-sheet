@@ -42,7 +42,9 @@ const api: TileWorkerApi = {
     const width = tileEdges(block.colPx, scale)[block.cols]!;
     const height = tileEdges(block.rowPx, scale)[block.rows]!;
     const canvas = new OffscreenCanvas(Math.max(1, width), Math.max(1, height));
-    const context = canvas.getContext('2d', { alpha: false });
+    // In software, so that text rasters here. An accelerated canvas sends it to the GPU process's
+    // one main thread, which then has no time left to composite the visible canvas.
+    const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
     if (!context) throw new Error('The tile worker could not get a 2D canvas.');
     drawTile(context, block, palette, scale);
     const bitmap = canvas.transferToImageBitmap();

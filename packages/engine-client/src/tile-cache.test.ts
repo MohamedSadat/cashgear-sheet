@@ -81,15 +81,15 @@ describe('TileCache', () => {
   it('draws only a few at once, and forgets tiles nobody wants any more', async () => {
     const { cache, pending } = setup();
     cache.setStyle({ scale: 1, palette: palette('#fff') });
-    cache.want([tile(0), tile(64), tile(128), tile(192), tile(256), tile(320)]);
-    expect(pending).toHaveLength(4);
+    cache.want([tile(0), tile(64), tile(128), tile(192)]);
+    expect(pending).toHaveLength(2);
     // The view moved on, so what's left of the old list is never drawn.
     cache.want([tile(6400)]);
-    for (const { finish } of pending.slice(0, 4)) {
+    for (const { finish } of pending.slice(0, 2)) {
       finish({ bitmap: bitmap(), hash: 0, ready: true });
     }
     await settle();
-    expect(pending.map(({ request }) => request.firstRow)).toEqual([0, 64, 128, 192, 6400]);
+    expect(pending.map(({ request }) => request.firstRow)).toEqual([0, 64, 6400]);
   });
 
   it('draws a tile again once its sheet is read', async () => {
