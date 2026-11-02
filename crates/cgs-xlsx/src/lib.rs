@@ -31,6 +31,8 @@ pub enum ReadError {
     NotAPackage(String),
     /// A zip file with no workbook in it.
     NotAWorkbook,
+    /// More than this app can hold in memory.
+    TooLarge,
     Damaged(String),
     Engine(String),
 }
@@ -42,6 +44,7 @@ impl std::fmt::Display for ReadError {
             Self::OldFormat => f.write_str("This is an old-format Excel file (.xls)."),
             Self::NotAPackage(_) => f.write_str("This isn't an Excel workbook, or it is damaged."),
             Self::NotAWorkbook => f.write_str("This file has no workbook in it."),
+            Self::TooLarge => f.write_str("This workbook is too large to open here."),
             Self::Damaged(detail) => write!(f, "This workbook is damaged: {detail}"),
             Self::Engine(detail) => write!(f, "The workbook couldn't be loaded: {detail}"),
         }

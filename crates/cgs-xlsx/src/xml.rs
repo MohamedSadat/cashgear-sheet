@@ -139,17 +139,27 @@ pub fn parse_rect(text: &str) -> Option<cgs_model::Rect> {
     })
 }
 
+/// XML parsers turn line endings into `\n` before anyone sees the text, and so does Excel.
+/// A real carriage return is written as `_x000D_`, which survives this.
+fn push_normalized(text: &str, out: &mut String) {
+    if !text.contains('\r') {
+        out.push_str(text);
+        return;
+    }
+    out.push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+}
+
 /// Appends an element's text, including entity references.
 pub fn push_text(event: &Event<'_>, out: &mut String) {
     match event {
         Event::Text(text) => {
             if let Ok(decoded) = text.decode() {
-                out.push_str(&decoded);
+                push_normalized(&decoded, out);
             }
         }
         Event::CData(text) => {
             if let Ok(decoded) = text.decode() {
-                out.push_str(&decoded);
+                push_normalized(&decoded, out);
             }
         }
         Event::GeneralRef(reference) => {

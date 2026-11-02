@@ -179,7 +179,17 @@ impl Package {
 
 const COMPRESSED_CHUNK: usize = 256 * 1024;
 
-/// A part's bytes, inflated on the way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Encoding {
+    /// Not looked at yet.
+    Unknown,
+    Utf8,
+    Utf16 {
+        big_endian: bool,
+    },
+}
+
+/// A part's bytes, inflated on the way out. XML in UTF-16 comes out as UTF-8.
 pub struct PartStream {
     source: Rc<dyn ByteSource>,
     next: u64,
@@ -189,6 +199,11 @@ pub struct PartStream {
     input: Vec<u8>,
     input_at: usize,
     finished: bool,
+    encoding: Encoding,
+    /// UTF-8 ready to hand out, and a trailing byte or surrogate of UTF-16 not yet decoded.
+    decoded: Vec<u8>,
+    decoded_at: usize,
+    carry: Vec<u8>,
 }
 
 impl PartStream {
@@ -202,6 +217,10 @@ impl PartStream {
             input: Vec::new(),
             input_at: 0,
             finished: false,
+            encoding: Encoding::Unknown,
+            decoded: Vec::new(),
+            decoded_at: 0,
+            carry: Vec::new(),
         }
     }
 
@@ -225,9 +244,92 @@ impl PartStream {
     }
 }
 
+/// Finds UTF-16 from a byte order mark, or from `<` with a zero beside it.
+fn sniff(bytes: &[u8]) -> (Encoding, usize) {
+    match bytes {
+        [0xFE, 0xFF, ..] => (Encoding::Utf16 { big_endian: true }, 2),
+        [0xFF, 0xFE, ..] => (Encoding::Utf16 { big_endian: false }, 2),
+        [0x00, b'<', ..] => (Encoding::Utf16 { big_endian: true }, 0),
+        [b'<', 0x00, ..] => (Encoding::Utf16 { big_endian: false }, 0),
+        _ => (Encoding::Utf8, 0),
+    }
+}
+
+impl PartStream {
+    /// Decodes `carry` plus `raw`, keeping any part of a character for next time.
+    fn decode_utf16(&mut self, raw: &[u8], big_endian: bool) {
+        self.carry.extend_from_slice(raw);
+        let unit = |pair: &[u8]| {
+            if big_endian {
+                u16::from_be_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_le_bytes([pair[0], pair[1]])
+            }
+        };
+        let mut usable = self.carry.len() & !1;
+        // A high surrogate at the end waits for its partner.
+        if usable >= 2 && (0xD800..0xDC00).contains(&unit(&self.carry[usable - 2..usable])) {
+            usable -= 2;
+        }
+        let (pairs, _) = self.carry[..usable].as_chunks::<2>();
+        let units = pairs.iter().map(|pair| unit(pair));
+        let text: String = char::decode_utf16(units)
+            .map(|ch| ch.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        self.decoded.clear();
+        self.decoded_at = 0;
+        self.decoded.extend_from_slice(text.as_bytes());
+        self.carry.drain(..usable);
+    }
+}
+
 impl Read for PartStream {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        if self.finished || out.is_empty() {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.decoded_at < self.decoded.len() {
+                let count = (self.decoded.len() - self.decoded_at).min(out.len());
+                out[..count]
+                    .copy_from_slice(&self.decoded[self.decoded_at..self.decoded_at + count]);
+                self.decoded_at += count;
+                return Ok(count);
+            }
+            if self.encoding == Encoding::Utf8 {
+                return self.read_raw(out);
+            }
+            let mut raw = vec![0u8; 64 * 1024];
+            let count = self.read_raw(&mut raw)?;
+            raw.truncate(count);
+            let mut skip = 0;
+            if self.encoding == Encoding::Unknown {
+                let (encoding, bom) = sniff(&raw);
+                self.encoding = encoding;
+                skip = bom;
+            }
+            match self.encoding {
+                Encoding::Utf16 { big_endian } => {
+                    if count == 0 {
+                        return Ok(0);
+                    }
+                    self.decode_utf16(&raw[skip..], big_endian);
+                }
+                _ => {
+                    self.decoded = raw;
+                    self.decoded_at = 0;
+                    if count == 0 {
+                        return Ok(0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl PartStream {
+    fn read_raw(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.finished {
             return Ok(0);
         }
         loop {

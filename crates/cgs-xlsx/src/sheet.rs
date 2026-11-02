@@ -24,6 +24,9 @@ use crate::ReadError;
 const BATCH_CELLS: usize = 8 * 1024;
 /// Dense storage reserves this many cells before any file is too sparse for it.
 const MAX_DENSE_AREA: u64 = 256_000_000;
+/// More text than one sheet can hold in WASM's memory, which a crafted file can ask for by
+/// pointing many cells at one huge shared string.
+const MAX_SHEET_TEXT: u64 = 1_500_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellType {
@@ -116,6 +119,7 @@ pub struct SheetLoader {
     pending: Vec<(u32, u32, Pending)>,
     heap: String,
     row_ended: bool,
+    text_bytes: u64,
     hidden: Vec<u32>,
     pub drawing_rel: Option<String>,
 }
@@ -139,6 +143,9 @@ fn entry<'a>(
 
 /// An ISO 8601 date (`t="d"`) as a serial, in the 1900 system.
 fn iso_serial(text: &str) -> Option<f64> {
+    if !text.contains('-') {
+        return iso_time(text);
+    }
     let (date, time) = text.split_once('T').unwrap_or((text, ""));
     let mut parts = date.split('-');
     let year: i64 = parts.next()?.parse().ok()?;
@@ -158,15 +165,19 @@ fn iso_serial(text: &str) -> Option<f64> {
     if serial < 61.0 {
         serial -= 1.0;
     }
-    let time = time.trim_end_matches('Z');
     if !time.is_empty() {
-        let mut clock = time.split(':');
-        let hours: f64 = clock.next()?.parse().ok()?;
-        let minutes: f64 = clock.next().unwrap_or("0").parse().ok()?;
-        let seconds: f64 = clock.next().unwrap_or("0").parse().ok()?;
-        serial += (hours + minutes / 60.0 + seconds / 3600.0) / 24.0;
+        serial += iso_time(time)?;
     }
     Some(serial)
+}
+
+/// `10:30:15.5` as a share of a day.
+fn iso_time(text: &str) -> Option<f64> {
+    let mut clock = text.trim_end_matches('Z').split(':');
+    let hours: f64 = clock.next()?.parse().ok()?;
+    let minutes: f64 = clock.next().unwrap_or("0").parse().ok()?;
+    let seconds: f64 = clock.next().unwrap_or("0").parse().ok()?;
+    Some((hours + minutes / 60.0 + seconds / 3600.0) / 24.0)
 }
 
 impl SheetLoader {
@@ -220,6 +231,7 @@ impl SheetLoader {
             pending: Vec::with_capacity(BATCH_CELLS),
             heap: String::new(),
             row_ended: false,
+            text_bytes: 0,
             hidden: Vec::new(),
             drawing_rel: None,
         }
@@ -575,7 +587,12 @@ impl SheetLoader {
         let stored = match self.cell_type {
             CellType::Number => value.trim().parse().ok().map(Pending::Number),
             CellType::Shared => value.trim().parse().ok().map(Pending::Shared),
-            CellType::Bool => Some(Pending::Bool(matches!(value.trim(), "1" | "true" | "TRUE"))),
+            CellType::Bool => {
+                let text = value.trim();
+                Some(Pending::Bool(
+                    text == "1" || text.eq_ignore_ascii_case("true"),
+                ))
+            }
             CellType::Error => {
                 let (from, to) = self.push_heap(value.trim());
                 Some(Pending::Error(from, to))
@@ -691,6 +708,14 @@ impl SheetLoader {
             .iter()
             .filter_map(|&(row, col, value)| entry(row, col, value, &heap, context.strings))
             .collect();
+        for entry in &entries {
+            if let LoadValue::Text(text) = entry.value {
+                self.text_bytes += text.len() as u64;
+            }
+        }
+        if self.text_bytes > MAX_SHEET_TEXT {
+            return Err(ReadError::TooLarge);
+        }
         let result = context
             .engine
             .load_rows(self.sheet, &entries)
@@ -850,6 +875,7 @@ mod tests {
         assert_eq!(iso_serial("2024-01-15"), Some(45306.0));
         assert_eq!(iso_serial("1900-03-01"), Some(61.0));
         assert_eq!(iso_serial("2024-01-15T12:00:00Z"), Some(45306.5));
+        assert_eq!(iso_serial("12:00:00"), Some(0.5));
         assert_eq!(iso_serial("nonsense"), None);
     }
 }

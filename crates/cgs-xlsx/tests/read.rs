@@ -434,6 +434,80 @@ fn files_it_cannot_read_say_why() {
 }
 
 #[test]
+fn line_endings_normalize_and_true_is_true_in_any_case() {
+    let sheet = "<worksheet><sheetData><row r=\"1\">\
+      <c r=\"A1\" t=\"inlineStr\"><is><t>a\r\nb\rc_x000D_d</t></is></c>\
+      <c r=\"B1\" t=\"b\"><v>True</v></c><c r=\"C1\" t=\"b\"><v>false</v></c>\
+      <c r=\"D1\"><v>    0.5000</v></c></row></sheetData></worksheet>";
+    let opened = open(workbook(&[("S", sheet)], NO_STRINGS, NO_STYLES));
+    let grid = read(&opened.engine, 0);
+    assert_eq!(grid.0[&(1, 1)], text("a\nb\nc\rd"));
+    assert_eq!(grid.0[&(1, 2)], CalcValue::Bool(true));
+    assert_eq!(grid.0[&(1, 3)], CalcValue::Bool(false));
+    assert_eq!(grid.0[&(1, 4)], number(0.5));
+}
+
+#[test]
+fn reads_parts_written_in_utf16() {
+    let utf16 = |text: &str, big_endian: bool, bom: bool| -> Vec<u8> {
+        let mut out = Vec::new();
+        if bom {
+            out.extend_from_slice(if big_endian {
+                &[0xFE, 0xFF]
+            } else {
+                &[0xFF, 0xFE]
+            });
+        }
+        for unit in text.encode_utf16() {
+            out.extend_from_slice(&if big_endian {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            });
+        }
+        out
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut out);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let parts: [(&str, Vec<u8>); 3] = [
+            (
+                "xl/workbook.xml",
+                utf16(
+                    r#"<?xml version="1.0" encoding="UTF-16"?><workbook><sheets><sheet name="ورقة" sheetId="1" r:id="r1"/></sheets></workbook>"#,
+                    true,
+                    false,
+                ),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships><Relationship Id="r1" Type="http://x/worksheet" Target="s.xml"/></Relationships>"#
+                    .as_bytes()
+                    .to_vec(),
+            ),
+            (
+                "xl/s.xml",
+                utf16(
+                    r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>نص 𝄞</t></is></c></row></sheetData></worksheet>"#,
+                    false,
+                    true,
+                ),
+            ),
+        ];
+        for (name, bytes) in &parts {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    let opened = open(out.into_inner());
+    assert_eq!(opened.book.sheets[0].name, "ورقة");
+    assert_eq!(read(&opened.engine, 0).0[&(1, 1)], text("نص 𝄞"));
+}
+
+#[test]
 fn another_sheet_can_be_asked_for_first() {
     let sheet =
         r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData></worksheet>"#;
