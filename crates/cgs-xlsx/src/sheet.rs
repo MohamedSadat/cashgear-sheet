@@ -488,12 +488,16 @@ impl SheetLoader {
         info: &mut SheetInfo,
         empty: bool,
     ) -> Option<SheetShape> {
+        let mut named = false;
         let mut at = None;
         let mut style = 0;
         let mut cell_type = CellType::Number;
         let mut dynamic = false;
         each_attr(element, |key, value| match key {
-            b"r" => at = parse_cell(value),
+            b"r" => {
+                named = true;
+                at = parse_cell(value);
+            }
             b"s" => style = parse_u32(value).unwrap_or(0),
             b"t" => {
                 cell_type = match value {
@@ -519,7 +523,9 @@ impl SheetLoader {
         if self.row == 0 {
             self.row = 1;
         }
-        if self.col == 0 || self.col > cgs_model::MAX_COLS || self.row > cgs_model::MAX_ROWS {
+        // An address off the sheet: skip the cell, as there's nowhere to put it.
+        let off_sheet = self.col > cgs_model::MAX_COLS || self.row > cgs_model::MAX_ROWS;
+        if off_sheet || (named && at.is_none()) {
             self.in_cell = false;
             return None;
         }
