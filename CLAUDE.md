@@ -68,6 +68,14 @@ Found in Phase 1, measured in `docs/phase1-report.md`:
 - Formualizer's own xlsx importer leaves saved spill values in place, so it can look right without calculating. Compare against Excel, not against it.
 - The first edit after opening builds the graph in one step that can't be divided: 4 s at 1,000,000 formulas. Start it right after opening.
 
+Found in Phase 2:
+
+- Calamine builds a full matrix of its cells, so a value at a far corner makes it ask for terabytes. `fidelity` skips such sheets, and the reader's own tests cover them.
+- Excel refuses `0.00e+00` in a file's format but `TEXT` accepts it, so `cgs-numfmt` allows it only for `TEXT`.
+- Office on this PC has an Arabic UI on en-US Windows: `Range.NumberFormat` refuses `[Red]`, and `TEXT` wants colour names in Arabic. Check a format by opening a file that holds it.
+- PowerShell can't run `.ps1` files here. Pass the script as `-Command`, as `bench/run-excel-text.mjs` does.
+- Excel won't open a workbook whose drawing parts have no content types, so fixtures in `tests/fixtures/workbooks.mjs` must stay valid. Run `bench/run-excel-text.mjs` on them after changing them.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

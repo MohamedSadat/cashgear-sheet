@@ -70,7 +70,7 @@ cashgear-sheet/
 **Threads**
 - **Main:** React shell and input. It composites `ImageBitmap` tiles and draws selection, and never waits on the engine. The cell editor is a DOM overlay, so IME and bidirectional input work natively.
 - **Engine worker:** runs `cgs-wasm`. Priority order is commands, then reads, then 8 ms calculation slices.
-- **Tile worker:** draws text and cells on `OffscreenCanvas`. Main starts it, because WebView2 can't load a worker started by a worker (see `nested-worker.ts` in moviepro). It talks to the engine over a `MessageChannel`.
+- **Tile worker:** draws text and cells on a software `OffscreenCanvas`, because an accelerated one holds up the GPU process's main thread. Main starts it, because WebView2 can't load a worker started by a worker (see `nested-worker.ts` in moviepro). It talks to the engine over a `MessageChannel`.
 
 **Engine boundary.** The engine is the only cell store, so there are never two copies of every cell. `cgs-model` holds everything else. Our command stack owns undo, because Formualizer's has open bugs (#303, #412).
 
@@ -92,9 +92,9 @@ trait CalcEngine {
 Neither published engine could yield during a calculation in browser WASM. Phase 1 added evaluation that stops and carries on to both engines' forks, and `calc_slice` runs it with visible cells first. One formula, one cycle or one schedule build still can't be divided, so a slice can run over its budget by as much as the slowest of those.
 
 **Grid data path**
-- Binary `ViewBlock` tiles of 64 rows by 16 columns (24-byte cells plus a UTF-8 heap) are transferred, not sent as JSON. Stale tiles stay visible during recalculation.
+- Binary `ViewBlock` tiles of 64 rows by 16 columns (24-byte cells, styles, extra text records and a UTF-8 heap, in one theme's colours) are transferred, not sent as JSON. Stale tiles stay visible during recalculation.
 - Scrollbars are self-drawn, because browsers can't size an element for 1M rows.
-- Offset lookups use a lazy Fenwick tree over `Float64Array`, with hidden rows as 0. The direction flag lives here.
+- Offset lookups use sorted overrides with running totals, with hidden rows as 0. The direction flag lives here.
 - Display text comes from Rust `cgs-numfmt`. `####` and General shortening finish in the tile worker, which knows measured widths.
 - Theme: canvas colours come from a palette built from `--cg-*` tokens and passed to the tile worker, because workers can't read CSS. Switching theme redraws tiles. Background, gridlines, headers and selection follow the theme. In dark mode, the workbook's `dk1`/`lt1` theme colours and automatic colours swap for display only, so default black text stays readable. The saved file never changes.
 - Model to reuse: moviepro's `packages/ui/src/timeline/` (`controller.ts`, pure `geometry.ts`, pure `draw.ts`). `draw.ts` takes any 2D context, so drawing can move threads if needed.
@@ -178,10 +178,10 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 6. Placeholders for charts and images. Pivot output already shows, because it is ordinary cells.
 
 **Exit**
-- [ ] The test set opens without recalculation, and visible values match `calamine` and Excel.
-- [ ] Size target met; 60 fps scrolling on 1M rows.
-- [ ] Arabic and mixed-text golden images pass in light and dark, and web and desktop match.
-- [ ] Default-styled workbooks are readable in dark mode.
+- [x] The test set opens without recalculation, and visible values match `calamine` and Excel.
+- [x] Size target met; 60 fps scrolling on 1M rows. The target became 25 MB in 10 s, and 100 MB of values in 60 s. See `decisions.md`.
+- [x] Arabic and mixed-text golden images pass in light and dark, and web and desktop match.
+- [x] Default-styled workbooks are readable in dark mode.
 
 ### Phase 3: Preserving save
 **Goal:** save writes a valid `.xlsx` where everything untouched survives. This comes before editing so the riskiest promise is proven early, driven by test edits through the Rust API.

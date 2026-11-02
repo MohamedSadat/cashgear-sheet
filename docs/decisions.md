@@ -143,7 +143,7 @@ Formualizer's misses are mostly specific functions, which can be fixed one at a 
 | Explicit colours in dark mode | Fills stay as stored. Text changes on screen only when its contrast against its own background is under 3:1. Display only; it never reaches the saved file |
 | Selection and formula bar (new) | In Phase 2, read-only: selection by click, drag and arrow keys, a name box, and a formula bar. Phase 4 makes them editable |
 | Regional conventions (new) | Built-in date and number formats follow the browser's language through `Intl`. Tags inside a format code always win, including Arabic names and Hijri dates |
-| Your private workbooks (new) | Now, not by Phase 4. Same rules as Phase 1: read on this PC only, and only counts reach the repo. Path to come |
+| Your private workbooks (new) | Now, not by Phase 4. Same rules as Phase 1: read on this PC only, and only counts reach the repo. The folder was given in the session and stays out of this repo. No screenshots of them are taken, because those would leave this PC |
 | Exit thresholds (new) | Values: every cell matches `calamine` across the test set, with any difference explained. Display text: 99.5% matches Excel's own text over COM, with misses listed, on a generated workbook holding every built-in format and every format code found in the public files. The public files themselves never open in Excel. Scrolling: on a 1M-row sheet on the reference machine, 95% of frames within 17 ms and none over 50 ms, and a fast scrollbar drag can show empty cells until 100 ms after it stops |
 
 **Evidence for those answers**
@@ -164,3 +164,26 @@ Formualizer's misses are mostly specific functions, which can be fixed one at a 
 | Graph build after opening | Starts in the engine worker once tiles around the viewport are ready, one sheet at a time. Tiles asked for meanwhile wait for the current sheet | `build_graph_for_sheets` lets the build stop between sheets, though not within one |
 | Not shown in Phase 2 | Conditional formatting and table banding wait for Phase 6, and charts and images are placeholders until Phase 7. Rich text shows in one style until a later phase needs it | The plan's scope |
 | Other fonts | Only Carlito is bundled. Any other missing font, including for Arabic, uses the browser's fallback | Windows and macOS ship Arabic fonts |
+| Formulas with no saved value, and `fullCalcOnLoad` | Show what the file stores: blank or the old value, until Phase 4 schedules calculation | "Opening must not recalculate" is an exit criterion, and files Excel saved always have values. Files from other writers can look empty until then |
+| Rows with no stored height | Use the sheet's default, even if wrapped or large text would need more | Excel stores the height of rows it fitted. Only files from other writers are affected. Fitting needs text measurement the engine doesn't have, so it comes with row resizing in Phase 5 |
+| Contrast rule in dark mode | Text under 3:1 moves to 4.5:1, not just to 3:1, keeping its hue where it can. Automatic text on a pale fill stays black. Borders follow the same rule against the sheet's background | 3:1 was the trigger you chose. Moving only that far leaves grey text that barely reads, and fixed black borders would vanish |
+| Fills the grid can't draw yet | Pattern fills draw as a flat mix of their two colours, and gradients as their first colour | Excel's patterns are tiny and rare. Gradients wait until a phase needs them |
+
+**What changed from the plan's design, and why**
+
+| Item | Plan | Built | Reason |
+| --- | --- | --- | --- |
+| Offset lookups | Lazy Fenwick tree over `Float64Array` | Sorted overrides with running totals (`Axis` in `packages/ui/src/grid/geometry.ts`) | Costs nothing until a row differs, and the grid is read-only until Phase 5 resizes rows, when it can be rebuilt or replaced |
+| `ViewBlock` | Header, cells, heap, with 8 spare bytes per cell | Version 2: a tile describes itself, with its row and column sizes, its own table of styles and borders, and extra records for merged and overflowing text. Colours are resolved for one theme | Drawing then needs nothing but the tile, and the colour rules live in Rust where they are tested. Switching theme asks for tiles again, with the old ones showing until the new ones arrive |
+| `CalcEngine` | `load_batch` of owned cells | Adds `begin_sheet`, `load_rows` (borrowed values, in row order), `load_formula`, `mark_spill`, `finish_sheet` and `prepare_step` | Rows go straight into Formualizer's Arrow builder. A 15.5 MB file with 1M formulas now takes 356 MiB and 4.6 s to show, against 936 MiB and 14.4 s through `load_batch` in Phase 1 |
+| Spills when the graph is built | Re-armed by `adopt` | Re-armed only by the first real edit | Otherwise preparing the graph would blank saved array results and calculate them |
+| Large sparse sheets | Not covered | Stored cell by cell when the area is over 4M cells and more than 32 times the cells it holds | Formualizer's dense builder costs bytes for every cell in the area, so a value at `XFD1048576` would ask for terabytes |
+| Column widths | Not covered | Excel's measured digit widths for 15 fonts at 7 sizes, in `cgs-model` | Hinting makes them uneven, so a formula gets some sizes wrong. Measured over COM on this PC. Aptos isn't installed here, so its width comes from files Excel saved |
+
+**Found on the way**
+
+| Item | Finding |
+| --- | --- |
+| Excel and lowercase exponents | A file's format code `0.00e+00` is refused, but `TEXT` accepts it, so `cgs-numfmt` allows it only for `TEXT` |
+| Calendar `0E` | Excel shows it as an East Asian lunisolar calendar. Um Al-Qura is `0x17`. Both use the tabular Hijri calculation here for now, which is a known gap |
+| This PC's Office | The UI language is Arabic on en-US Windows, so `Range.NumberFormat` refuses `[Red]` and `TEXT` wants colour names in Arabic. The format comparison works around it by opening files |
