@@ -292,6 +292,23 @@ fn keeps_sizes_styles_merges_and_the_view() {
 }
 
 #[test]
+fn a_row_with_no_stored_height_fits_its_largest_font() {
+    let sheet = r#"<worksheet><sheetData>
+      <row r="1"><c r="A1" s="1"><v>1</v></c></row>
+      <row r="2" ht="15"><c r="A2" s="1"><v>2</v></c></row>
+      <row r="3" hidden="1"><c r="A3" s="1"><v>3</v></c></row>
+      <row r="4"><c r="A4"><v>4</v></c></row>
+    </sheetData></worksheet>"#;
+    let styles = r#"<styleSheet><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><sz val="24"/><name val="Calibri"/></font></fonts><cellXfs count="2"><xf/><xf fontId="1"/></cellXfs></styleSheet>"#;
+    let opened = open(workbook(&[("S", sheet)], NO_STRINGS, styles));
+    let info = &opened.book.sheets[0];
+    assert_eq!(info.rows.px(1), 42);
+    assert_eq!(info.rows.px(2), 20, "a stored height wins");
+    assert_eq!(info.rows.px(3), 0, "hidden stays hidden");
+    assert_eq!(info.rows.px(4), 20);
+}
+
+#[test]
 fn hidden_rows_reach_the_engine() {
     let sheet = r#"<worksheet><sheetData>
       <row r="1"><c r="A1"><v>1</v></c></row>

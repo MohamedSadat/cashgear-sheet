@@ -109,8 +109,15 @@ pub struct Loader {
     /// Sheets set aside because another one was asked for first.
     paused: Vec<SheetLoader>,
     digit: f64,
+    /// How tall a row must be for each cell format's font, in pixels at 100%.
+    xf_heights: Vec<u32>,
     finished_bytes: u64,
     total_bytes: u64,
+}
+
+/// The height Excel fits a row to for a font of this size, in pixels at 100%.
+fn fitted_row_px(points: f32) -> u32 {
+    (f64::from(points) * 1.75).ceil() as u32
 }
 
 impl Loader {
@@ -123,6 +130,13 @@ impl Loader {
             sheet.rows.default_px = 20;
             sheet.cols.default_px = cgs_model::style::base_col_width_to_px(8.0, digit);
         }
+
+        let xf_heights = book
+            .styles
+            .xfs
+            .iter()
+            .map(|xf| fitted_row_px(book.styles.font(xf).size))
+            .collect();
 
         let mut total_bytes = 0;
         let strings_part = workbook::shared_strings_part(&package);
@@ -159,6 +173,7 @@ impl Loader {
                 current: None,
                 paused: Vec::new(),
                 digit,
+                xf_heights,
                 finished_bytes: 0,
                 total_bytes,
             },
@@ -241,6 +256,7 @@ impl Loader {
                 engine: &mut *engine,
                 strings: &self.strings,
                 digit: self.digit,
+                xf_heights: &self.xf_heights,
             };
             match current.step(&mut context, info, keep_going)? {
                 Step::More => return Ok(false),
@@ -296,6 +312,20 @@ impl Loader {
                 info.drawings = workbook::read_drawing(&xml);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fitted_row_px;
+
+    #[test]
+    fn rows_fit_large_fonts_as_excel_fits_them() {
+        assert_eq!(fitted_row_px(11.0), 20);
+        assert_eq!(fitted_row_px(14.0), 25);
+        assert_eq!(fitted_row_px(16.0), 28);
+        assert_eq!(fitted_row_px(20.0), 35);
+        assert_eq!(fitted_row_px(24.0), 42);
     }
 }
 

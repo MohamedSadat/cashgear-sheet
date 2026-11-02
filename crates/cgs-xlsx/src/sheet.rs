@@ -73,6 +73,8 @@ pub struct LoadContext<'a> {
     pub strings: &'a SharedStrings,
     /// The widest digit of the Normal font, in pixels at 100%.
     pub digit: f64,
+    /// How tall a row must be for each cell format's font, in pixels at 100%.
+    pub xf_heights: &'a [u32],
 }
 
 pub struct SheetLoader {
@@ -119,6 +121,9 @@ pub struct SheetLoader {
     pending: Vec<(u32, u32, Pending)>,
     heap: String,
     row_ended: bool,
+    /// The row has a stored height, so its fonts don't decide it.
+    row_has_height: bool,
+    row_tallest: u32,
     text_bytes: u64,
     hidden: Vec<u32>,
     pub drawing_rel: Option<String>,
@@ -231,6 +236,8 @@ impl SheetLoader {
             pending: Vec::with_capacity(BATCH_CELLS),
             heap: String::new(),
             row_ended: false,
+            row_has_height: false,
+            row_tallest: 0,
             text_bytes: 0,
             hidden: Vec::new(),
             drawing_rel: None,
@@ -335,6 +342,9 @@ impl SheetLoader {
                         match element.local_name().as_ref() {
                             // A damaged file can close a cell it never opened.
                             b"c" if self.in_cell => {
+                                let needs = context.xf_heights.get(self.cell_style as usize);
+                                self.row_tallest =
+                                    self.row_tallest.max(needs.copied().unwrap_or(0));
                                 self.finish_cell(context)?;
                                 self.in_cell = false;
                             }
@@ -342,7 +352,10 @@ impl SheetLoader {
                             b"v" => self.in_value = false,
                             b"t" => self.in_inline_text = false,
                             b"rPh" => self.in_phonetic = false,
-                            b"row" => self.row_ended = true,
+                            b"row" => {
+                                self.row_ended = true;
+                                self.fit_row(info);
+                            }
                             b"sheetData" => {
                                 self.in_sheet_data = false;
                                 self.flush(context)?;
@@ -421,6 +434,25 @@ impl SheetLoader {
         None
     }
 
+    /// A row with no stored height is as tall as its largest font, as Excel fits it.
+    fn fit_row(&mut self, info: &mut SheetInfo) {
+        if self.row_has_height || self.row_tallest <= info.rows.default_px {
+            return;
+        }
+        let row = self.row;
+        match info.rows.rows.last_mut() {
+            Some((last, line)) if *last == row => line.size = Some(self.row_tallest),
+            _ => info.rows.rows.push((
+                row,
+                LineInfo {
+                    size: Some(self.row_tallest),
+                    hidden: false,
+                    style: None,
+                },
+            )),
+        }
+    }
+
     fn start_row(&mut self, element: &BytesStart<'_>, info: &mut SheetInfo) -> Option<SheetShape> {
         let mut number = None;
         let mut height = None;
@@ -441,6 +473,8 @@ impl SheetLoader {
         });
         let row = number.unwrap_or(self.row + 1);
         self.col = 0;
+        self.row_has_height = height.is_some();
+        self.row_tallest = 0;
         // Rows out of order can't go into the row-by-row builder, so the sheet starts
         // over and goes in cell by cell, which takes them in any order.
         if row < self.last_row {

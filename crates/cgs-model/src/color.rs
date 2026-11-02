@@ -189,11 +189,13 @@ pub fn contrast(a: Rgb, b: Rgb) -> f64 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
-/// The contrast dark mode keeps between text and its background.
+/// Dark mode leaves text alone unless its contrast with its background is under this.
 pub const MIN_CONTRAST: f64 = 3.0;
+/// Text that had to move goes this far, so that it reads comfortably, not barely.
+const MOVED_CONTRAST: f64 = 4.5;
 
-/// Moves `color` towards white or black, keeping its hue where it can, until it reaches
-/// `MIN_CONTRAST` against `background`. A colour that already does stays exactly as it is.
+/// Leaves a colour with `MIN_CONTRAST` against `background` exactly as it is. Otherwise moves
+/// it towards white or black, keeping its hue where it can, until it reads comfortably.
 pub fn ensure_contrast(color: Rgb, background: Rgb) -> Rgb {
     if contrast(color, background) >= MIN_CONTRAST {
         return color;
@@ -208,7 +210,7 @@ pub fn ensure_contrast(color: Rgb, background: Rgb) -> Rgb {
         let mixed = (mix((color >> 16) & 0xFF, share) << 16)
             | (mix((color >> 8) & 0xFF, share) << 8)
             | mix(color & 0xFF, share);
-        if contrast(mixed, background) >= MIN_CONTRAST {
+        if contrast(mixed, background) >= MOVED_CONTRAST {
             return mixed;
         }
     }
