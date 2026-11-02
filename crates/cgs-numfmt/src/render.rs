@@ -411,7 +411,6 @@ fn write_scientific(
                 past_point = true;
             }
             Item::Exp { plus, width } => {
-                out.push('E');
                 if exponent < 0 {
                     out.push('-');
                 } else if *plus {

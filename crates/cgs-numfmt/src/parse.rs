@@ -109,7 +109,7 @@ pub(crate) enum Item {
     Colon,
     Fixed(u8),
     /// `E` before its kind is known.
-    ExpMark(bool),
+    ExpMark(bool, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +206,7 @@ pub(crate) struct Code {
 }
 
 struct Parser {
+    lower_exponent: bool,
     chars: Vec<char>,
     at: usize,
     tag: Tag,
@@ -226,12 +227,18 @@ const COLORS: [(&str, FormatColor); 8] = [
 ];
 
 pub(crate) fn parse_code(code: &str) -> Option<Code> {
+    parse_code_with(code, false)
+}
+
+/// `lower_exponent` is for `TEXT`, which takes `0.00e+00` where a file's formats can't.
+pub(crate) fn parse_code_with(code: &str, lower_exponent: bool) -> Option<Code> {
     let mut parser = Parser {
         chars: code.chars().collect(),
         at: 0,
         tag: Tag::default(),
         prefix: false,
         section_index: 0,
+        lower_exponent,
     };
     let mut sections = Vec::new();
     loop {
@@ -510,13 +517,18 @@ impl Parser {
                 items.push(Item::Date(Part::Second(run.min(2) as u8)));
             }
             'e' => {
-                if c == 'E' {
+                // For `TEXT`, `e-` after digit places is an exponent, as `E-` is. On its own it
+                // is the era year of a date, as in `e-mm-dd`.
+                let after_digits = items.iter().any(|item| matches!(item, Item::Digit(_)));
+                if c == 'E' || (self.lower_exponent && after_digits) {
                     if let Some(sign @ ('+' | '-')) = self.peek(1) {
                         self.at += 2;
-                        items.push(Item::ExpMark(sign == '+'));
+                        items.push(Item::ExpMark(sign == '+', c == 'e'));
                         return Some(());
                     }
-                    return None;
+                    if c == 'E' {
+                        return None;
+                    }
                 }
                 let run = self.run('e');
                 self.at += run;
@@ -593,7 +605,7 @@ fn finish_section(
     let has_digit = has(|i| matches!(i, Item::Digit(_)), &items);
     let has_text = has(|i| matches!(i, Item::Text), &items);
     let has_general = has(|i| matches!(i, Item::General), &items);
-    let has_exp = has(|i| matches!(i, Item::ExpMark(_)), &items);
+    let has_exp = has(|i| matches!(i, Item::ExpMark(..)), &items);
     let has_fixed = has(|i| matches!(i, Item::Fixed(_)), &items);
     let has_point = has(|i| matches!(i, Item::Point), &items);
     let generals = items.iter().filter(|i| matches!(i, Item::General)).count();
@@ -689,7 +701,7 @@ fn finish_date(items: &mut Vec<Item>) -> Option<DateInfo> {
                 at = end;
                 continue;
             }
-            Item::Digit(_) | Item::Percent | Item::ExpMark(_) => return None,
+            Item::Digit(_) | Item::Percent | Item::ExpMark(..) => return None,
             Item::Comma => out.push(Item::Lit(",".into())),
             Item::Slash => {
                 if !out.iter().any(|item| matches!(item, Item::Date(_))) {
@@ -830,7 +842,7 @@ fn finish_number(items: &mut Vec<Item>) -> Option<Number> {
                 out.push(Item::Lit("%".into()));
             }
             Item::Colon => return None,
-            Item::ExpMark(plus) => {
+            Item::ExpMark(plus, lower) => {
                 if after_exp {
                     return None;
                 }
@@ -840,16 +852,24 @@ fn finish_number(items: &mut Vec<Item>) -> Option<Number> {
                 {
                     return None;
                 }
-                let mut end = at + 1;
+                // Literals can stand between the mark and its digits. The letter stays where
+                // it was written, and the sign goes with the digits.
+                let mut first = at + 1;
+                while matches!(items.get(first), Some(Item::Lit(_))) {
+                    first += 1;
+                }
+                let mut end = first;
                 while matches!(items.get(end), Some(Item::Digit(_))) {
                     end += 1;
                 }
-                if end == at + 1 {
+                if end == first {
                     return None;
                 }
+                out.push(Item::Lit(if *lower { "e" } else { "E" }.into()));
+                out.extend(items[at + 1..first].iter().cloned());
                 out.push(Item::Exp {
                     plus: *plus,
-                    width: (end - at - 1) as u8,
+                    width: (end - first) as u8,
                 });
                 number.scientific = true;
                 after_exp = true;

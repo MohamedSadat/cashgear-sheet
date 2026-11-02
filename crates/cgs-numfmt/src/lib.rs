@@ -10,7 +10,7 @@ mod render;
 pub use date::{serial_to_datetime, DateTimeParts};
 pub use locale::Locale;
 
-use parse::{parse_code, Code, Item, Kind, Part, System};
+use parse::{parse_code, parse_code_with, Code, Item, Kind, Part, System};
 
 /// What goes through a format.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -203,10 +203,10 @@ impl NumFmt {
 /// The TEXT() worksheet function: `Err(())` is `#VALUE!`.
 #[allow(clippy::result_unit_err)]
 pub fn text_function(value: Value<'_>, code: &str, options: &Options<'_>) -> Result<String, ()> {
-    let format = NumFmt::parse(code);
-    if !format.is_valid() {
-        return Err(());
-    }
+    let format = NumFmt {
+        code: parse_code_with(code, true).ok_or(())?,
+        valid: true,
+    };
     let mut out = String::new();
     let display = format.format(value, options, &mut out);
     if display.hashes {

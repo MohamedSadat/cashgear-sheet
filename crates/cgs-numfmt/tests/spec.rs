@@ -1530,3 +1530,16 @@ fn no_code_or_value_can_make_it_panic() {
         format.format(Value::Bool(true), &plain, &mut out);
     }
 }
+
+#[test]
+fn text_takes_a_lowercase_exponent_mark_unless_it_starts_a_date() {
+    let locale = Locale::en_us();
+    let options = Options {
+        locale: &locale,
+        date1904: false,
+    };
+    let text = |value: f64, code: &str| text_function(Value::Number(value), code, &options);
+    assert_eq!(text(12345.0, "0.00e+00").as_deref(), Ok("1.23e+04"));
+    assert_eq!(text(1.2e142, "|#.#|e+|000|").as_deref(), Ok("|1.2|e|+142|"));
+    assert_eq!(text(45306.0, "e-mm-dd").as_deref(), Ok("2024-01-15"));
+}
