@@ -1,10 +1,11 @@
-//! Desktop-only native side: identifying the host, serving byte ranges of chosen files, and
-//! the recent files list. Phase 9 adds the file association.
-use std::collections::HashMap;
+//! Desktop-only native side: identifying the host, serving byte ranges of chosen files, saving
+//! them atomically, working copies, and the recent files list. Phase 9 adds the file association.
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -48,11 +49,33 @@ pub struct RecentFile {
     pub detail: String,
 }
 
+/// What a file looked like when it was registered. A read can't lock the file, so it compares
+/// this instead: reading other bytes at old offsets would silently damage a save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    size: u64,
+    modified: Option<SystemTime>,
+}
+
+fn stamp_of(path: &Path) -> std::io::Result<Stamp> {
+    let metadata = fs::metadata(path)?;
+    Ok(Stamp {
+        size: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct Registered {
+    path: PathBuf,
+    stamp: Stamp,
+}
+
 /// Files the webview may read. Only what the user chose gets in, so the protocol can't reach
 /// anything else on the disk.
 #[derive(Debug, Default)]
 pub struct FileRegistry {
-    files: Mutex<HashMap<String, PathBuf>>,
+    files: Mutex<HashMap<String, Registered>>,
     next: Mutex<u64>,
 }
 
@@ -64,9 +87,8 @@ fn file_name(path: &Path) -> String {
 impl FileRegistry {
     /// Makes a file readable, and returns how the webview can ask for it.
     pub fn register(&self, path: &Path) -> Result<NativeFile, String> {
-        let size = fs::metadata(path)
-            .map_err(|error| format!("{}: {error}", path.display()))?
-            .len();
+        let stamp = stamp_of(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let size = stamp.size;
         let id = {
             let mut next = self.next.lock().map_err(|error| error.to_string())?;
             *next += 1;
@@ -75,7 +97,13 @@ impl FileRegistry {
         self.files
             .lock()
             .map_err(|error| error.to_string())?
-            .insert(id.clone(), path.to_path_buf());
+            .insert(
+                id.clone(),
+                Registered {
+                    path: path.to_path_buf(),
+                    stamp,
+                },
+            );
         Ok(NativeFile {
             id,
             name: file_name(path),
@@ -86,15 +114,23 @@ impl FileRegistry {
 
     /// Reads a range of a registered file, capped at `MAX_READ_BYTES`: (bytes, whole size).
     pub fn read_range(&self, id: &str, start: u64, end: u64) -> Result<(Vec<u8>, u64), ReadRange> {
-        let path = self
+        let entry = self
             .files
             .lock()
             .map_err(|_| ReadRange::NotFound)?
             .get(id)
             .cloned()
             .ok_or(ReadRange::NotFound)?;
-        let mut file = fs::File::open(&path).map_err(|_| ReadRange::NotFound)?;
-        let size = file.metadata().map_err(|_| ReadRange::NotFound)?.len();
+        let mut file = fs::File::open(&entry.path).map_err(|_| ReadRange::NotFound)?;
+        let metadata = file.metadata().map_err(|_| ReadRange::NotFound)?;
+        let now = Stamp {
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        if now != entry.stamp {
+            return Err(ReadRange::Changed);
+        }
+        let size = now.size;
         if start >= size || end < start {
             return Err(ReadRange::Unsatisfiable(size));
         }
@@ -106,12 +142,201 @@ impl FileRegistry {
             .map_err(|_| ReadRange::NotFound)?;
         Ok((body, size))
     }
+
+    /// Whether this path was opened in this run.
+    pub fn is_registered(&self, path: &Path) -> bool {
+        self.files
+            .lock()
+            .is_ok_and(|files| files.values().any(|entry| entry.path == path))
+    }
+
+    /// Forgets a file, so the webview can no longer read it.
+    pub fn forget(&self, id: &str) -> Option<PathBuf> {
+        let mut files = self.files.lock().ok()?;
+        files.remove(id).map(|entry| entry.path)
+    }
+
+    /// Copies a file to `folder` and registers the copy, so that what happens to the original no
+    /// longer matters. Refuses a file that isn't what was opened, before or after the copy.
+    pub fn working_copy(&self, id: &str, folder: &Path) -> Result<NativeFile, String> {
+        let entry = self
+            .files
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "That file is no longer open.".to_string())?;
+        let changed = || "The file has changed since it was opened.".to_string();
+        if stamp_of(&entry.path).ok() != Some(entry.stamp) {
+            return Err(changed());
+        }
+        fs::create_dir_all(folder).map_err(|error| error.to_string())?;
+        let copy = folder.join(format!("{}-{id}.xlsx", std::process::id()));
+        fs::copy(&entry.path, &copy).map_err(|error| error.to_string())?;
+        if stamp_of(&entry.path).ok() != Some(entry.stamp) {
+            let _ = fs::remove_file(&copy);
+            return Err(changed());
+        }
+        self.register(&copy)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadRange {
     NotFound,
     Unsatisfiable(u64),
+    /// The file on disk is no longer the one that was opened.
+    Changed,
+}
+
+/// Deletes working copies left by a run that didn't get to clean up. Each starts with its
+/// process id, so one still in use by another window of the app stays.
+pub fn sweep_working_copies(folder: &Path, running: impl Fn(u32) -> bool) {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let owner = name.split('-').next().and_then(|text| text.parse().ok());
+        if owner.is_none_or(|owner: u32| !running(owner)) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Saves in progress. Bytes go to a new file beside the target, which replaces the target in one
+/// step only when all of them have reached the disk, so a failed save leaves the original as it
+/// was. Only paths the user chose can be written, for the same reason the registry exists.
+#[derive(Debug, Default)]
+pub struct SaveStore {
+    allowed: Mutex<HashSet<PathBuf>>,
+    open: Mutex<HashMap<String, OpenSave>>,
+    next: Mutex<u64>,
+}
+
+#[derive(Debug)]
+struct OpenSave {
+    target: PathBuf,
+    temporary: PathBuf,
+    file: fs::File,
+    written: u64,
+}
+
+impl SaveStore {
+    /// Lets a path be saved to, because the user chose it.
+    pub fn allow(&self, path: &Path) -> Result<(), String> {
+        self.allowed
+            .lock()
+            .map_err(|error| error.to_string())?
+            .insert(path.to_path_buf());
+        Ok(())
+    }
+
+    /// Starts a save, and returns the token its bytes and its finish go under.
+    pub fn begin(&self, target: &Path) -> Result<String, String> {
+        if !self
+            .allowed
+            .lock()
+            .map_err(|error| error.to_string())?
+            .contains(target)
+        {
+            return Err("That file wasn't chosen for saving.".to_string());
+        }
+        if fs::metadata(target).is_ok_and(|metadata| metadata.permissions().readonly()) {
+            return Err(
+                "That file is read-only, so it can't be replaced. Save it under another name."
+                    .to_string(),
+            );
+        }
+        let number = {
+            let mut next = self.next.lock().map_err(|error| error.to_string())?;
+            *next += 1;
+            *next
+        };
+        let name = target
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        let temporary = target.with_file_name(format!(
+            "~{name}.{}-{number}.cgs-saving",
+            std::process::id()
+        ));
+        let file = fs::File::create(&temporary).map_err(|error| error.to_string())?;
+        let token = format!("save-{number}");
+        self.open.lock().map_err(|error| error.to_string())?.insert(
+            token.clone(),
+            OpenSave {
+                target: target.to_path_buf(),
+                temporary,
+                file,
+                written: 0,
+            },
+        );
+        Ok(token)
+    }
+
+    /// Adds the next bytes of a save.
+    pub fn append(&self, token: &str, bytes: &[u8]) -> Result<(), String> {
+        let mut open = self.open.lock().map_err(|error| error.to_string())?;
+        let save = open
+            .get_mut(token)
+            .ok_or_else(|| "That save isn't in progress.".to_string())?;
+        save.file
+            .write_all(bytes)
+            .map_err(|error| error.to_string())?;
+        save.written += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Ends a save: its bytes reach the disk, and then the file takes the target's place.
+    pub fn finish(&self, token: &str, size: u64) -> Result<PathBuf, String> {
+        let save = self
+            .open
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(token)
+            .ok_or_else(|| "That save isn't in progress.".to_string())?;
+        let OpenSave {
+            target,
+            temporary,
+            file,
+            written,
+        } = save;
+        let synced = if written == size {
+            file.sync_all().map_err(|error| error.to_string())
+        } else {
+            Err("Part of the file didn't arrive.".to_string())
+        };
+        // Closed first, as Windows won't always move a file that is open.
+        drop(file);
+        let moved = synced.and_then(|()| {
+            fs::rename(&temporary, &target).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    "Another program has the file open, so it can't be replaced. Close it, or save under another name.".to_string()
+                } else {
+                    error.to_string()
+                }
+            })
+        });
+        if let Err(message) = moved {
+            let _ = fs::remove_file(&temporary);
+            return Err(message);
+        }
+        Ok(target)
+    }
+
+    /// Gives up on a save and removes what it wrote.
+    pub fn abort(&self, token: &str) -> Result<(), String> {
+        let save = self
+            .open
+            .lock()
+            .map_err(|error| error.to_string())?
+            .remove(token);
+        if let Some(save) = save {
+            drop(save.file);
+            let _ = fs::remove_file(&save.temporary);
+        }
+        Ok(())
+    }
 }
 
 /// Parses `bytes=a-b` or `bytes=a-`. No header means the whole file.
@@ -228,6 +453,100 @@ mod tests {
             registry.read_range("file-99", 0, 1),
             Err(ReadRange::NotFound)
         );
+    }
+
+    #[test]
+    fn a_file_that_changed_is_refused_rather_than_misread() {
+        let dir = temp_dir("changed");
+        let path = dir.join("book.xlsx");
+        fs::write(&path, b"0123456789").unwrap();
+        let registry = FileRegistry::default();
+        let file = registry.register(&path).unwrap();
+        fs::write(&path, b"0123456789AB").unwrap();
+        assert_eq!(registry.read_range(&file.id, 0, 3), Err(ReadRange::Changed));
+        assert!(registry
+            .working_copy(&file.id, &dir.join("working"))
+            .is_err());
+    }
+
+    #[test]
+    fn a_working_copy_outlives_the_original() {
+        let dir = temp_dir("working");
+        let path = dir.join("book.xlsx");
+        fs::write(&path, b"0123456789").unwrap();
+        let registry = FileRegistry::default();
+        let file = registry.register(&path).unwrap();
+        let folder = dir.join("copies");
+        let copy = registry.working_copy(&file.id, &folder).unwrap();
+        fs::write(&path, b"something else").unwrap();
+        assert_eq!(
+            registry.read_range(&copy.id, 2, 4).unwrap(),
+            (b"234".to_vec(), 10)
+        );
+        assert_eq!(registry.forget(&copy.id), Some(PathBuf::from(&copy.path)));
+        assert_eq!(
+            registry.read_range(&copy.id, 2, 4),
+            Err(ReadRange::NotFound)
+        );
+    }
+
+    #[test]
+    fn sweeping_leaves_copies_that_a_running_app_owns() {
+        let dir = temp_dir("sweep");
+        fs::write(dir.join("100-file-1.xlsx"), b"x").unwrap();
+        fs::write(dir.join("200-file-1.xlsx"), b"x").unwrap();
+        fs::write(dir.join("stray.xlsx"), b"x").unwrap();
+        sweep_working_copies(&dir, |id| id == 100);
+        assert!(dir.join("100-file-1.xlsx").exists());
+        assert!(!dir.join("200-file-1.xlsx").exists());
+        assert!(!dir.join("stray.xlsx").exists());
+    }
+
+    #[test]
+    fn saving_replaces_the_file_only_when_it_finishes() {
+        let dir = temp_dir("save");
+        let target = dir.join("book.xlsx");
+        fs::write(&target, b"old").unwrap();
+        let store = SaveStore::default();
+        assert!(store.begin(&target).is_err(), "not chosen by the user");
+        store.allow(&target).unwrap();
+
+        let token = store.begin(&target).unwrap();
+        store.append(&token, b"new ").unwrap();
+        store.append(&token, b"bytes").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        assert_eq!(store.finish(&token, 9).unwrap(), target);
+        assert_eq!(fs::read(&target).unwrap(), b"new bytes");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        // Bytes that went missing leave the original, and nothing beside it.
+        let token = store.begin(&target).unwrap();
+        store.append(&token, b"short").unwrap();
+        assert!(store.finish(&token, 99).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"new bytes");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        let token = store.begin(&target).unwrap();
+        store.append(&token, b"given up").unwrap();
+        store.abort(&token).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new bytes");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_read_only_file_is_not_replaced() {
+        let dir = temp_dir("readonly");
+        let target = dir.join("book.xlsx");
+        fs::write(&target, b"old").unwrap();
+        let mut permissions = fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&target, permissions.clone()).unwrap();
+        let store = SaveStore::default();
+        store.allow(&target).unwrap();
+        assert!(store.begin(&target).is_err());
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&target, permissions).unwrap();
     }
 
     #[test]
