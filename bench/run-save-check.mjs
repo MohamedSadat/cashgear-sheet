@@ -98,7 +98,8 @@ try {
     }
     if (!report.ok) {
       summary.failed++;
-      add(summary.failures, String(report.error ?? '?').slice(0, 70));
+      // An error can name a sheet, so a private run only counts them.
+      add(summary.failures, isPrivate ? 'failed' : String(report.error ?? '?').slice(0, 70));
       if (!isPrivate) detail.push({ file: record.file, error: report.error });
       continue;
     }

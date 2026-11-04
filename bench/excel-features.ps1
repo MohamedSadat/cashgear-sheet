@@ -23,6 +23,8 @@ try {
     $readOnly = $Mode -ne 'pivot'
     $book = $excel.Workbooks.Open($Workbook, 0, $readOnly)
     $result.opened = $true
+    # A refresh on opening can finish just after Open returns.
+    Start-Sleep -Seconds 1
     switch ($Mode) {
       'chart' {
         $charts = 0

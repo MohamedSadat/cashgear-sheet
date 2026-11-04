@@ -198,3 +198,37 @@ Formualizer's misses are mostly specific functions, which can be fixed one at a 
 | Keep macros when saving `.xlsm`, and how is it proved? | Keep them, byte for byte. To prove it, Excel runs one macro over COM, with macros on only for that session and only in a fixture whose macro we generated. This is the one exception to Phase 1's rule. Every other file stays macros-off |
 | Recalculate on open in saved files? | Only when cells changed: a save with edits sets `fullCalcOnLoad`, and a save with no edits leaves `workbook.xml` untouched |
 | Copy the source to keep it readable? | On the first edit, not on open. Viewing costs nothing. The first edit copies the source to OPFS on web and app temp on desktop, and later saves read that copy. If the source has already changed by then, you are told at once. Copies are deleted on close or at the next launch |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default | Reason |
+| --- | --- | --- |
+| Save As and file types | A workbook keeps its own type: `.xlsm` stays `.xlsm`, and the dialog offers nothing else | Excel refuses a file whose name and contents disagree, and turning macros into `.xlsx` is a separate feature |
+| Save with nothing changed | Save does nothing and stays disabled. Save As writes a file identical to the source | There's nothing to write, and it's the simplest proof that nothing is lost |
+| What calculates | An edit through `edit_cells` calculates at once, in one call, and returns exactly which cells changed. Phase 4 brings this into slices | Saving needs the exact list, where a slice only knows which sheets moved |
+| A cell in a table's header | The table part and the cell are kept in step. An empty or duplicate header gets a name of Excel's form, and a number or formula becomes text | Excel refuses a file where they disagree |
+| A new cell's style | The row's if it has `customFormat`, or else the column's, as Excel does | The cell would otherwise lose the look of its row or column |
+| Errors in saved cells | Only the classic errors go in as `t="e"`. Any other error result, such as `#SPILL!`, is left with no value for Excel to work out, and as a constant it's stored as text | Excel refuses these as plain error cells, because it only stores them with rich value metadata. The matrix found this |
+| Formulas that read another workbook | They keep their saved value and aren't given to the engine, and the formula bar still shows them. Their bytes aren't touched | The engine refused them and took the whole sheet with them. Excel also keeps the saved value until links are updated |
+| A workbook whose formulas the engine can't ready | It stays open and showing, and editing says why it can't | Getting ready for a first edit shouldn't take away a workbook that opened fine |
+| Damaged parts | A sheet whose XML never ends can't be patched, so that save is refused with a message and the file stays as it is. Saves that don't touch it still work | Patching something unreadable would be guessing |
+| Parts nothing links to | A new part takes a free name instead of the usual one, and a stale content type for that name is replaced | The file holds them, and they aren't ours to replace |
+| Pivots after a cell edit | No `refreshOnLoad` | Excel leaves a pivot alone after an edit too. `refresh_pivots_on_load` is there for Phase 4's structural edits and Phase 8 |
+| Excel's file metadata | `docProps` and the thumbnail stay as they are, so a file's "last modified by" doesn't name us | Only what an edit requires changes |
+| Report | A status bar line, and a report in a `CgMessageBox` when it's clicked | A dialog after every save would get in the way |
+| New workbook's shortcut | Ctrl+Alt+N | Browsers keep Ctrl+N, and a page never sees it |
+| Validator | `DocumentFormat.OpenXml` 3.3.0 (MIT) in `tests/validator`, test-only, against `Microsoft365` | The current schema, so nothing passes for being too new. A .NET test tool never reaches the app's dependency tree |
+| CI | `pnpm test:save` runs the fixtures through the save check and the validator. The COM matrix runs on the reference machine | GitHub's runners have .NET and no Excel |
+
+**What changed from the plan's design, and why**
+
+| Item | Plan | Built | Reason |
+| --- | --- | --- | --- |
+| Raw copy | `zip`'s `raw_copy_file` | Our own copy of each entry's bytes, from its local header up to the next entry | It needs no seekable output, so a save can stream to the browser, and it can't lose a header field the crate doesn't model. Output for an unedited file is byte-identical |
+| Reading XML on the save path | `quick-xml` | A small tokenizer in `scan.rs` whose tokens are exact byte spans | Rebuilding tags from parsed events can't promise the same bytes |
+| Writer's input | Values passed in | Patches say which cells differ, and values come from the engine when saving | The engine stays the only cell store |
+| Styles | Appended at save | The whole of `styles.xml` is held and grown as styles are added | The model reads new styles back from it at once, and the part is small |
+
+**The `refreshOnLoad` spike**
+
+`refreshOnLoad="1"` on the cache definition is enough for Excel to bring a pivot up to date by itself. After changing a source cell from 10 to 1000, the file opened with the pivot's total at 1090, with no repair prompt and with the cache's records left as they were, so regenerating records isn't needed. Excel does this on a read-only open too. A pivot that only has the flag and no data change comes out the same. The very first read over COM right after opening came back empty twice in about ten opens, and every later read was right, so Excel seems to finish the refresh just after `Workbooks.Open` returns. Excel's Protected View can't be driven over COM, so what a downloaded file does until someone enables editing wasn't measured.

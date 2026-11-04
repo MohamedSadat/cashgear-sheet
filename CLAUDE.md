@@ -55,6 +55,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p cgs-wasm --target wasm32-unknown-unknown -- -D warnings
 cargo test --workspace
 pnpm typecheck && pnpm lint && pnpm format:check && pnpm test
+pnpm test:save
 pnpm test:e2e
 pnpm desktop:build && pnpm desktop:smoke
 pnpm deny && pnpm licenses:check && pnpm licenses:selftest
@@ -75,6 +76,13 @@ Found in Phase 2:
 - Office on this PC has an Arabic UI on en-US Windows: `Range.NumberFormat` refuses `[Red]`, and `TEXT` wants colour names in Arabic. Check a format by opening a file that holds it.
 - PowerShell can't run `.ps1` files here. Pass the script as `-Command`, as `bench/run-excel-text.mjs` does.
 - Excel won't open a workbook whose drawing parts have no content types, so fixtures in `tests/fixtures/workbooks.mjs` must stay valid. Run `bench/run-excel-text.mjs` on them after changing them.
+
+Found in Phase 3:
+
+- Excel refuses a damaged or invalid workbook over COM where a person would get a repair prompt, so `Workbooks.Open` throwing is the signal. `bench/run-excel-matrix.mjs` opens broken fixtures first to prove it still sees that. Add a broken fixture when you find a new way to upset Excel.
+- `#SPILL!`, `#CALC!` and other newer errors can't go in a cell as plain `t="e"`: Excel refuses the file. They need rich value metadata.
+- Formualizer's `evaluate_all_with_delta` can miss a changed cell: 2 distinct workbooks in the public set, each one cell, both `IF` or `SUM` formulas. Excel recalculates them on opening. Don't treat the list as complete until Phase 4 has looked at why.
+- `tests/fixtures/vba.mjs` builds a real VBA project. A storage's children sort by code unit, not by locale, or Excel can't find `_VBA_PROJECT`.
 
 Carried over from CashGear Video, where they were measured:
 
