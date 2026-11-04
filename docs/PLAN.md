@@ -195,10 +195,10 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 4. Spike `refreshOnLoad` for pivots.
 
 **Exit**
-- [ ] Clean entries are hash-identical.
-- [ ] No new Open XML SDK validator errors compared with the source.
-- [ ] Zero Excel repair prompts across the COM-open matrix.
-- [ ] Chart, pivot and macro fixtures still work in Excel after saving.
+- [x] Clean entries are hash-identical.
+- [x] No new Open XML SDK validator errors compared with the source.
+- [x] Zero Excel repair prompts across the COM-open matrix.
+- [x] Chart, pivot and macro fixtures still work in Excel after saving.
 
 ### Phase 4: Editing, formulas, undo
 **Goal:** a working spreadsheet: type, calculate, undo, save, reopen in Excel.

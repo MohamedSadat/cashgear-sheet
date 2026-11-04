@@ -9,7 +9,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 0: Scaffold, toolchain, CI | Done 2026-11-01 | `phase-0` |
 | Phase 1: Formula engine bake-off | Done 2026-11-02: Formualizer, with the accuracy target moved to Phase 4 | `phase-1` |
 | Phase 2: Open xlsx | Done 2026-11-02 | `phase-2` |
-| Phase 3: Preserving save | Not started | |
+| Phase 3: Preserving save | Done 2026-11-05 | `phase-3` |
 | Phase 4: Editing, formulas, undo | Not started | |
 | Phase 5: Ribbon and formatting | Not started | |
 | Phase 6: Data tools | Not started | |
@@ -163,3 +163,58 @@ Calamine also couldn't open 28 files or read 22 sheets that ours reads, and 3 sh
 - Excel's digit widths are uneven by size, from hinting, and the default column's padding is `2 * ceil(d / 4) + 1`.
 - Excel refuses a workbook whose drawing parts have no content types, so test fixtures must be complete.
 - The desktop smoke test failed once in CI on a docs-only commit: on restart it took a busy old WebView2 for a dead one, and attached as that browser exited. It now tells a timeout from a refused connection, and retries attaching. It also keeps its recent files apart from the real app's.
+
+## Phase 3: Preserving save
+
+Save writes a valid `.xlsx` where everything untouched survives, on web and desktop. There is no editing in the UI yet, so edits come through the Rust API, as planned. Measured on 2026-11-05 on the reference machine, with Excel 16.0.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Clean entries are hash-identical | Pass | 0 of 31,260 entries differ across 3,367 edited public files, compared by SHA-256 of their raw bytes and again through the `zip` crate, which shares no code with the writer. Also 0 of 62 on generated files and 0 of 16 on your private files. With no edits, all 3,376 public files that open save byte for byte |
+| No new Open XML SDK validator errors compared with the source | Pass | `DocumentFormat.OpenXml` 3.3.0 against `Microsoft365`: 0 files with new errors out of 3,367 public, 16 generated and 5 private. Public errors fell from 2,494 to 2,188. No file the SDK could open stopped opening |
+| Zero Excel repair prompts across the COM-open matrix | Pass | 22 of 22 edits chosen to provoke a repair, 16 of 16 generated files and 5 of 5 of your private files open clean. Excel refuses a bad file over COM where a person sees a repair prompt, and the matrix proves it can see that: 7 of 7 deliberately broken files are refused on every run |
+| Chart, pivot and macro fixtures still work in Excel after saving | Pass | Chart and picture: 4 of 4 parts identical, 1 chart and 2 shapes present, and the chart reads the sheet. Pivot: 5 of 5 parts identical, and a refresh gives 1,030 and 1,090 from the edited data. Macro: `vbaProject.bin` identical, and Excel ran it from the source and the no-edit save (42) and from the edited save (200). All from `bench/run-excel-matrix.mjs` |
+| CI is green | Pass | [Run 41928189717](https://github.com/MohamedSadat/cashgear-sheet/actions/runs/41928189717) at `3be2c86`, in 20 minutes: browser tests, the desktop smoke test, and the save check on fixtures. Excel isn't on the runner, so the matrix runs here |
+
+**Other evidence**
+
+- **Values read back:** every cell of each saved file is compared with what the edited engine holds. Generated: 3,271,294 of 3,271,294. Your private files: 5,107 of 5,107. Public: 4,348,241 of 4,362,012. All 13,771 public differences are explained below, and none is a value the writer lost.
+- **On the web:** Save overwrites through the browser's swap file, Save As moves on to the new file, and a second save reads from the first's result. A failed write leaves the file and the edits alone. A browser with no file handles gets a download. 16 of the 64 browser tests, 8 each in Chrome and Edge.
+- **On the desktop:** bytes go through the protocol to a file beside the target, reach the disk, and replace it in one step. `pnpm desktop:smoke` covers overwrite, a second save, Save As, a changed file being refused, and a working copy rescuing edits when the file changes after the first edit.
+- **Working copy:** nothing is copied until the first edit. After that the source can change or vanish, and the save still has what it needs. A file that changed before the first edit refuses the edit and says why.
+- **A check before every swap:** what a save wrote is read back against its plan, by sum and length for every part and by parsing every changed part, before anything replaces the original.
+- **Pivots:** `refreshOnLoad` is enough. See `decisions.md`.
+- **Speed, native, one edited sheet of each:** a 16 MB file in 5.5 s, 25 MB with 4.3M cells in 13.5 s, 25 MB of values in 8.6 s, and 100 MB of values in 19.4 s, where one of its two sheets changed. Parts a save doesn't change are only copied.
+- **WASM size:** 8.15 MB, 2.73 MB gzipped, against the 5 MB budget.
+- **Unit tests:** 265 in Rust and 70 in Vitest. Browser tests: 64, 32 each in Chrome and Edge.
+- **Your private workbooks:** 5 files, read on this PC only, with temporary saves deleted afterwards. Only these counts reached the repo.
+
+**The 13,771 differences between the engine and the saved file**
+
+| Cells | What | Why |
+| --- | --- | --- |
+| 13,451 | The saved file has a value and the engine has none | Array results. The first edit makes the engine calculate arrays again, and where it can't rebuild one, the file keeps what Excel saved. 53 of the 55 files showing this have array formulas. The other 2 are copies of one file holding a string index past the end of its table, which a new string then fills. Our broken fixture for that case shows Excel refuses such a file |
+| 314 | The engine has a value and the file has none | Results the file can't hold, such as `#SPILL!`, `#CIRC!` and `#N/IMPL!`, and spills that grew. Excel works them out when it opens the file |
+| 3 | A number in a table header reads back as text | Excel requires that, so it is what we write |
+| 3 | A formula that depends on the edit kept its old saved value | Known gap below. These are the same 2 workbooks' cells |
+
+**Known gaps**
+
+- Formualizer's change list missed a changed cell in 2 distinct public workbooks, one cell each. Their saved values stay as they were until Excel recalculates on opening, which it does. Phase 4 should find out why before relying on that list.
+- 4 public files can't be edited, because the engine can't get their formulas ready: one self-reference, one parser failure and two `#REF!`. They stay open and showing, and editing says why. 2 crafted or damaged files refuse a save that would touch their broken part, and say so.
+- A dynamic array that grows isn't stored past its old area, as the file's `ref` isn't updated yet. Excel rebuilds it on opening.
+- Saving holds the engine worker for the whole save, so tiles wait meanwhile. The status bar says "Saving…". Bringing this into slices is left for Phase 9's scale work. WASM timings weren't measured.
+- A sheet can have a new `mergeCells` only if it has none. Phase 5 needs to extend an existing one.
+- The edit hook is only for tests, so the status bar still says Read-only, and grid tiles aren't redrawn after an edit, until Phase 4.
+- Protected View can't be driven over COM, so what a downloaded file does with `refreshOnLoad` until someone enables editing wasn't measured.
+- macOS, Safari and Firefox weren't run.
+
+**Findings**
+
+- Excel refuses `#SPILL!` and `#CALC!` as plain error cells, because it only stores them with rich value metadata. The matrix found this.
+- A storage's children must sort by code unit. A locale-aware sort put `_VBA_PROJECT` in the wrong place, and Excel refused the file with no clue why.
+- Workbooks that link to other workbooks failed in the engine's graph build, which could have closed a business file just after opening. Such a formula now keeps its saved value and stays out of the engine.
+- Public files showed more than the fixtures did: styles with a namespace prefix, a part named twice, a part nothing links to, a content type for a part that isn't there, UTF-16 declarations, and rows with no addresses.
+- A 256 KB buffer per cell took a 16 MB save to 21 s. Timing a large file is what showed it.
