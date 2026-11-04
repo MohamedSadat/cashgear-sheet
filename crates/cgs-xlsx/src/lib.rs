@@ -1,15 +1,24 @@
-//! Reads `.xlsx` packages. Phase 3 adds the span-patching writer here.
+//! Reads and saves `.xlsx` packages.
 //!
 //! Opening reads what is small and needed at once (`workbook.xml`, styles, theme, tables).
 //! `Loader` then reads shared strings and worksheets a little at a time, sending values
 //! straight to the formula engine and everything else to the model. Nothing calculates.
+//!
+//! Saving is in `save`: it patches changed parts at source byte spans and copies every other
+//! entry as the bytes it is, so what this app can't edit survives.
 
+pub mod blank;
 pub mod package;
+pub mod patch_parts;
+pub mod patch_sheet;
+pub mod save;
+pub mod scan;
 pub mod sheet;
 pub mod strings;
 pub mod styles;
 pub mod workbook;
 pub mod xml;
+pub mod zipdir;
 
 use std::rc::Rc;
 
@@ -100,7 +109,7 @@ pub struct LoadProgress {
 
 /// One workbook's way into the engine and the model.
 pub struct Loader {
-    package: Package,
+    package: Rc<Package>,
     strings_loader: Option<StringsLoader>,
     strings: SharedStrings,
     /// Worksheets still to read, the next one last.
@@ -123,7 +132,7 @@ fn fitted_row_px(points: f32) -> u32 {
 impl Loader {
     /// Opens the package, and reads what must come before any cell.
     pub fn open(source: Rc<dyn ByteSource>) -> Result<(Self, Book), ReadError> {
-        let package = Package::open(source)?;
+        let package = Rc::new(Package::open(source)?);
         let mut book = workbook::read_workbook(&package)?;
         let digit = cgs_model::style::max_digit_width(book.styles.normal_font());
         for sheet in &mut book.sheets {
@@ -181,8 +190,8 @@ impl Loader {
         ))
     }
 
-    pub fn package(&self) -> &Package {
-        &self.package
+    pub fn package(&self) -> Rc<Package> {
+        Rc::clone(&self.package)
     }
 
     pub fn progress(&self) -> LoadProgress {

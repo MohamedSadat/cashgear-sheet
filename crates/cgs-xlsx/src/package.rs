@@ -153,6 +153,11 @@ impl Package {
         })
     }
 
+    /// The bytes the package reads from.
+    pub fn source(&self) -> &Rc<dyn ByteSource> {
+        &self.source
+    }
+
     pub fn part(&self, name: &str) -> Option<&PartInfo> {
         self.by_name
             .get(&normalize(name))

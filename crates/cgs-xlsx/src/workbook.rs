@@ -83,6 +83,16 @@ pub fn shared_strings_part(package: &Package) -> Option<String> {
         .filter(|target| package.part(target).is_some())
 }
 
+/// The styles part, if the workbook has one.
+pub fn styles_part(package: &Package) -> Option<String> {
+    let part = workbook_part(package)?;
+    read_relationships(package, &part)
+        .into_values()
+        .find(|(kind, _)| kind.ends_with("/styles"))
+        .map(|(_, target)| target)
+        .filter(|target| package.part(target).is_some())
+}
+
 /// Reads everything but the cells. `Book::sheets` holds names and parts, not yet any cells.
 pub fn read_workbook(package: &Package) -> Result<Book, ReadError> {
     let part = workbook_part(package).ok_or(ReadError::NotAWorkbook)?;
