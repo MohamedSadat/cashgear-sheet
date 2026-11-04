@@ -231,6 +231,10 @@ pub trait CalcEngine {
     /// Calculates for about `ms` milliseconds, cells in `first` before others. A single
     /// engine call can't be interrupted, so a slice can run over; the bake-off measures by how much.
     fn calc_slice(&mut self, ms: u32, first: &[SheetRect]) -> Result<CalcProgress>;
+    /// Calculates everything that is due, in one go, and returns the cells whose values changed.
+    /// Saving needs to know exactly which, where a slice only says which sheets. A single call
+    /// can't be interrupted; Phase 4's scheduling is what will bring this into slices.
+    fn calc_all_changes(&mut self) -> Result<Vec<CellRef>>;
     fn take_changed(&mut self) -> Vec<SheetRect>;
     fn read_block(&self, r: SheetRect, out: &mut dyn CellSink);
     fn formula_text(&self, at: CellRef) -> Option<String>;

@@ -1,6 +1,8 @@
-//! Ties the workbook together: opening, reading in slices, viewport tiles and what the UI
-//! asks about a cell. Calculation scheduling comes in Phase 4; nothing calculates yet.
+//! Ties the workbook together: opening, reading in slices, viewport tiles, what the UI asks
+//! about a cell, and saving. Calculation scheduling comes in Phase 4; until then only an edit
+//! through `edit_cells` calculates, and opening never does.
 
+pub mod edit;
 mod json;
 pub mod tile;
 pub mod view_block;
@@ -13,8 +15,10 @@ use cgs_model::{
     Anchor, AnchorPoint, Book, DrawingKind, SheetInfo, SheetKind, SheetState, TILE_COLS, TILE_ROWS,
 };
 use cgs_numfmt::{Locale, Options};
-use cgs_xlsx::{book_info, ByteSource, Loader, ReadError};
+use cgs_xlsx::save::{SavePlan, WorkbookEdits};
+use cgs_xlsx::{book_info, ByteSource, Loader, Package, ReadError};
 
+pub use edit::{report_json, EditCell, EditInput, NewStyle};
 pub use tile::Screen;
 pub use view_block::ViewBlock;
 
@@ -43,6 +47,12 @@ pub struct LoadStatus {
 struct Session {
     book: Book,
     calc: FormualizerEngine,
+    /// The file saves copy from, which an overwrite or a working copy replaces.
+    package: Rc<Package>,
+    /// What differs from that file.
+    edits: WorkbookEdits,
+    /// What the last save should have written, until it has been checked and used.
+    pending_save: Option<SavePlan>,
     loader: Option<Loader>,
     cache: tile::TileCache,
     phase: LoadPhase,
@@ -158,6 +168,9 @@ impl Engine {
         self.session = Some(Session {
             book,
             calc,
+            package: loader.package(),
+            edits: WorkbookEdits::default(),
+            pending_save: None,
             loader: Some(loader),
             cache: tile::TileCache::default(),
             phase: LoadPhase::Reading,

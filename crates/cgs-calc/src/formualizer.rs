@@ -849,6 +849,38 @@ impl CalcEngine for FormualizerEngine {
         Ok(CalcProgress::More { remaining: None })
     }
 
+    fn calc_all_changes(&mut self) -> Result<Vec<CellRef>> {
+        self.slice.reset();
+        self.idle = true;
+        let (_, delta) = self
+            .workbook
+            .engine_mut()
+            .evaluate_all_with_delta()
+            .map_err(err)?;
+        let mut sheets = std::collections::HashMap::new();
+        let mut cells = Vec::with_capacity(delta.changed_cells.len());
+        for cell in &delta.changed_cells {
+            let id = cell.sheet_id();
+            let index = match sheets.get(&id) {
+                Some(&index) => index,
+                None => {
+                    let name = self.workbook.engine().sheet_name(id).to_string();
+                    let index = self.sheets.iter().position(|sheet| *sheet == name);
+                    sheets.insert(id, index);
+                    index
+                }
+            };
+            if let Some(index) = index {
+                cells.push(CellRef {
+                    sheet: index as u32,
+                    row: cell.row0() + 1,
+                    col: cell.col0() + 1,
+                });
+            }
+        }
+        Ok(cells)
+    }
+
     fn take_changed(&mut self) -> Vec<SheetRect> {
         std::mem::take(&mut self.changed)
     }
