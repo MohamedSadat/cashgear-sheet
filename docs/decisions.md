@@ -187,3 +187,14 @@ Formualizer's misses are mostly specific functions, which can be fixed one at a 
 | Excel and lowercase exponents | A file's format code `0.00e+00` is refused, but `TEXT` accepts it, so `cgs-numfmt` allows it only for `TEXT` |
 | Calendar `0E` | Excel shows it as an East Asian lunisolar calendar. Um Al-Qura is `0x17`. Both use the tabular Hijri calculation here for now, which is a known gap |
 | This PC's Office | The UI language is Arabic on en-US Windows, so `Range.NumberFormat` refuses `[Red]` and `TEXT` wants colour names in Arabic. The format comparison works around it by opening files |
+
+## 2026-11-04: Phase 3
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| What does Save do on a file opened from disk? | Overwrite, like Excel, through an atomic swap, with a save report. A new blank workbook, or a file with no writable handle, goes to Save As |
+| Keep macros when saving `.xlsm`, and how is it proved? | Keep them, byte for byte. To prove it, Excel runs one macro over COM, with macros on only for that session and only in a fixture whose macro we generated. This is the one exception to Phase 1's rule. Every other file stays macros-off |
+| Recalculate on open in saved files? | Only when cells changed: a save with edits sets `fullCalcOnLoad`, and a save with no edits leaves `workbook.xml` untouched |
+| Copy the source to keep it readable? | On the first edit, not on open. Viewing costs nothing. The first edit copies the source to OPFS on web and app temp on desktop, and later saves read that copy. If the source has already changed by then, you are told at once. Copies are deleted on close or at the next launch |
