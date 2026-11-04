@@ -253,7 +253,7 @@ pub fn normalize(name: &str) -> String {
 }
 
 /// The order entries sit in the file, each with where it ends.
-fn physical_order(directory: &Directory) -> Vec<(usize, u64)> {
+pub fn physical_order(directory: &Directory) -> Vec<(usize, u64)> {
     let mut order: Vec<usize> = (0..directory.entries.len()).collect();
     order.sort_by_key(|&index| directory.entries[index].local);
     let mut spans = Vec::with_capacity(order.len());

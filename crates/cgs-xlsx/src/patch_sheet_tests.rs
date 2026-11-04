@@ -251,7 +251,7 @@ fn a_result_that_matches_changes_nothing_and_keeps_shared_formulas() {
 fn a_result_with_no_cell_is_left_for_excel() {
     let (out, _, outcome) = run_with(&sheet(""), &[((1, 1), result(3.0))], &[]);
     assert_eq!(out, sheet(""));
-    assert_eq!(outcome.spills_skipped, 1);
+    assert_eq!(outcome.results_skipped, 1);
     assert!(!outcome.changed);
 }
 
@@ -433,6 +433,59 @@ fn a_damaged_sheet_fails_rather_than_saving_something_wrong() {
         false
     )
     .is_err());
+}
+
+#[test]
+fn errors_only_rich_values_can_hold_never_reach_a_plain_cell() {
+    let error = |text: &str| CalcValue::Error(text.to_string());
+    let xml =
+        sheet(r#"<row r="1"><c r="A1"><f>1/0</f><v>1</v></c><c r="B1"><f>2</f><v>2</v></c></row>"#);
+    let (out, strings, outcome) = run_with(
+        &xml,
+        &[
+            (
+                (1, 1),
+                CellPatch {
+                    change: CellChange::Result(error("#DIV/0!")),
+                    style: None,
+                },
+            ),
+            (
+                (1, 2),
+                CellPatch {
+                    change: CellChange::Result(error("#SPILL!")),
+                    style: None,
+                },
+            ),
+            (
+                (2, 1),
+                CellPatch {
+                    change: CellChange::Value(error("#CALC!")),
+                    style: None,
+                },
+            ),
+            (
+                (2, 2),
+                CellPatch {
+                    change: CellChange::Formula {
+                        text: "SEQUENCE(0)".to_string(),
+                        value: error("#CALC!"),
+                    },
+                    style: None,
+                },
+            ),
+        ],
+        &[],
+    );
+    assert_eq!(
+        out,
+        sheet(concat!(
+            r#"<row r="1"><c r="A1" t="e"><f>1/0</f><v>#DIV/0!</v></c><c r="B1"><f>2</f></c></row>"#,
+            r#"<row r="2"><c r="A2" t="s"><v>0</v></c><c r="B2"><f>SEQUENCE(0)</f></c></row>"#,
+        ))
+    );
+    assert_eq!(strings.added, ["#CALC!"]);
+    assert_eq!(outcome.results_skipped, 2);
 }
 
 #[test]

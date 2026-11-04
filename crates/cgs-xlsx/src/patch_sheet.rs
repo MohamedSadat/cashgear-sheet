@@ -10,7 +10,8 @@ use cgs_refs::SharedFormula;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::scan::{
-    attr_value, closed, edit_tag, escape_text, escape_x, local_name, opened, prefix, Kind, Scanner,
+    attr_value, closed, edit_tag, escape_text, escape_x, local_name, opened, prefix,
+    utf8_declaration, Kind, Scanner,
 };
 use crate::xml::{parse_cell, parse_rect, parse_u32, unescape_attr, unescape_x};
 use crate::zipdir::{Packed, Packer};
@@ -152,8 +153,9 @@ enum Pass {
 pub struct Outcome {
     pub changed: bool,
     pub cells_written: u64,
-    /// New results outside the area a dynamic array's file entry covers, left to Excel.
-    pub spills_skipped: u64,
+    /// New results the file can't hold, left for Excel to work out when it opens the file: outside
+    /// the area a dynamic array's file entry covers, or errors only rich value metadata can hold.
+    pub results_skipped: u64,
 }
 
 /// A cell of the row being looked at, as ranges of `Pass`'s row buffer.
@@ -204,6 +206,14 @@ pub fn number_text(number: f64) -> String {
     }
 }
 
+/// An error a file can store as `t="e"` with nothing else. See `bench/run-excel-matrix.mjs`.
+fn is_plain_error(text: &str) -> bool {
+    matches!(
+        text,
+        "#NULL!" | "#DIV/0!" | "#VALUE!" | "#REF!" | "#NAME?" | "#NUM!" | "#N/A" | "#GETTING_DATA"
+    )
+}
+
 fn has_value(value: &CalcValue) -> bool {
     !matches!(value, CalcValue::Empty)
 }
@@ -240,8 +250,9 @@ struct Patcher<'a> {
     applied_elsewhere: FxHashSet<(u32, u32)>,
 }
 
+/// The part's XML doesn't make sense, which a save reports as damage.
 fn io_err(error: impl std::fmt::Display) -> io::Error {
-    io::Error::other(error.to_string())
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
 impl Patcher<'_> {
@@ -290,10 +301,22 @@ impl Patcher<'_> {
                 body.push(if *flag { b'1' } else { b'0' });
                 Some("b")
             }
-            CalcValue::Error(text) => {
+            CalcValue::Error(text) if is_plain_error(text) => {
                 open_value(&mut body, &name);
                 self.escape_into(text, &mut body);
                 Some("e")
+            }
+            // Excel refuses these as plain error cells, as it only stores them with rich value
+            // metadata. As a result it works them out again; as a constant, it reads them as text.
+            CalcValue::Error(_) if formula => {
+                self.outcome.results_skipped += 1;
+                return (None, body);
+            }
+            CalcValue::Error(text) => {
+                open_value(&mut body, &name);
+                let index = self.strings.intern(text);
+                body.extend_from_slice(index.to_string().as_bytes());
+                Some("s")
             }
             CalcValue::Text(text) if formula => {
                 open_value(&mut body, &name);
@@ -343,7 +366,7 @@ impl Patcher<'_> {
             // A result with no cell is a spill that grew. Excel rebuilds it on opening.
             CellChange::Result(value) => {
                 if has_value(value) {
-                    self.outcome.spills_skipped += 1;
+                    self.outcome.results_skipped += 1;
                 }
                 return out;
             }
@@ -1183,6 +1206,10 @@ impl Patcher<'_> {
                         out.write_all(token)?;
                     }
                 }
+                Kind::Other => match utf8_declaration(token) {
+                    Some(fixed) => out.write_all(&fixed)?,
+                    None => out.write_all(token)?,
+                },
                 _ => out.write_all(token)?,
             }
         }

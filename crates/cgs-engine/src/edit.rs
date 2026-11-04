@@ -90,6 +90,9 @@ impl Engine {
     /// file. Each new value and result can then be saved.
     pub fn edit_cells(&mut self, edits: &[EditCell]) -> Result<(), String> {
         let session = self.editable()?;
+        if let Some(reason) = &session.cannot_edit {
+            return Err(format!("This workbook can't be edited here: {reason}"));
+        }
         for edit in edits {
             let sheet = session
                 .book
@@ -227,6 +230,13 @@ impl Engine {
         Ok(())
     }
 
+    /// The non-empty values in an area, for comparing what a save wrote with what is held.
+    pub fn read_cells(&self, area: SheetRect, out: &mut dyn CellSink) {
+        if let Some(session) = &self.session {
+            session.calc.read_block(area, out);
+        }
+    }
+
     /// Whether the workbook differs from the file it came from.
     pub fn has_changes(&self) -> bool {
         self.session
@@ -326,13 +336,13 @@ pub fn report_json(report: &SaveReport) -> String {
         out.push(']');
     };
     let mut out = format!(
-        "{{\"keptParts\":{},\"cellsWritten\":{},\"stringsAdded\":{},\"recalculatesOnOpen\":{},\"pivotsRefreshOnOpen\":{},\"spillsLeftToExcel\":{},\"tableHeadersFixed\":{},\"changedParts\":",
+        "{{\"keptParts\":{},\"cellsWritten\":{},\"stringsAdded\":{},\"recalculatesOnOpen\":{},\"pivotsRefreshOnOpen\":{},\"resultsLeftToExcel\":{},\"tableHeadersFixed\":{},\"changedParts\":",
         report.kept_parts,
         report.cells_written,
         report.strings_added,
         report.recalculates_on_open,
         report.pivots_refresh_on_open,
-        report.spills_left_to_excel,
+        report.results_left_to_excel,
         report.table_headers_fixed,
     );
     list(&mut out, &report.changed_parts);

@@ -53,6 +53,8 @@ struct Session {
     edits: WorkbookEdits,
     /// What the last save should have written, until it has been checked and used.
     pending_save: Option<SavePlan>,
+    /// Why this workbook's formulas can't be made ready for an edit, if they can't.
+    cannot_edit: Option<String>,
     loader: Option<Loader>,
     cache: tile::TileCache,
     phase: LoadPhase,
@@ -171,6 +173,7 @@ impl Engine {
             package: loader.package(),
             edits: WorkbookEdits::default(),
             pending_save: None,
+            cannot_edit: None,
             loader: Some(loader),
             cache: tile::TileCache::default(),
             phase: LoadPhase::Reading,
@@ -236,14 +239,21 @@ impl Engine {
         if session.phase != LoadPhase::Preparing {
             return Ok(false);
         }
-        let more = session
-            .calc
-            .prepare_step()
-            .map_err(|error| ReadError::Engine(error.0))?;
-        if !more {
-            session.phase = LoadPhase::Ready;
+        // This only readies the first edit, and the workbook is already showing, so a failure here
+        // takes away editing and not the workbook. `edit_cells` says why.
+        match session.calc.prepare_step() {
+            Ok(more) => {
+                if !more {
+                    session.phase = LoadPhase::Ready;
+                }
+                Ok(more)
+            }
+            Err(error) => {
+                session.cannot_edit = Some(error.0);
+                session.phase = LoadPhase::Ready;
+                Ok(false)
+            }
         }
-        Ok(more)
     }
 
     /// Reads this sheet next, if it isn't read yet.

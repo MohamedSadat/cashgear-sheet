@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 use crate::patch_sheet::StringTable;
 use crate::scan::{
     attr_value, edit_tag, escape_attr, escape_text, escape_x, local_name, opened, prefix, splice,
-    Kind, Scanner,
+    utf8_declaration, Kind, Scanner,
 };
 use crate::xml::{parse_u32, unescape_attr, unescape_x};
 
@@ -153,8 +153,10 @@ pub fn remove_overrides(xml: &[u8], parts: &[String]) -> Vec<u8> {
     splice(xml, &changes)
 }
 
-/// Adds an `Override` for a new part to `[Content_Types].xml`.
+/// Adds an `Override` for a new part to `[Content_Types].xml`, in place of one naming a part the
+/// file claims and doesn't have.
 pub fn add_override(xml: &[u8], part: &str, content_type: &str) -> Vec<u8> {
+    let xml = &remove_overrides(xml, &[part.to_string()]);
     let name = root_prefix(xml, &tokens(xml));
     let text = format!(
         "<{name}Override PartName=\"/{}\" ContentType=\"{}\"/>",
@@ -366,13 +368,20 @@ pub fn append_strings<R: Read>(
                     out.write_all(token)?;
                 }
             }
+            Kind::Other => match utf8_declaration(token) {
+                Some(fixed) => out.write_all(&fixed)?,
+                None => out.write_all(token)?,
+            },
             _ => out.write_all(token)?,
         }
     }
     if written {
         Ok(())
     } else {
-        Err(io::Error::other("the shared strings part never ends"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the shared strings part never ends",
+        ))
     }
 }
 
@@ -495,6 +504,32 @@ struct ListAt {
     empty: bool,
 }
 
+/// XML written with no prefix, as it must read in a part that has one.
+fn with_prefix(xml: &[u8], name: &str) -> String {
+    if name.is_empty() {
+        return String::from_utf8_lossy(xml).into_owned();
+    }
+    let mut out = Vec::with_capacity(xml.len() + 16);
+    let mut scanner = Scanner::new(xml);
+    while let Ok(Some(kind)) = scanner.next() {
+        let token = scanner.token();
+        match kind {
+            Kind::Start | Kind::Empty => {
+                out.push(b'<');
+                out.extend_from_slice(name.as_bytes());
+                out.extend_from_slice(&token[1..]);
+            }
+            Kind::End => {
+                out.extend_from_slice(b"</");
+                out.extend_from_slice(name.as_bytes());
+                out.extend_from_slice(&token[2..]);
+            }
+            _ => out.extend_from_slice(token),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Standard number formats end at 163, and files number their own from there.
 const FIRST_CUSTOM_FORMAT: u32 = 164;
 
@@ -599,9 +634,10 @@ impl StylesXml {
         root_prefix(&self.bytes, &tokens(&self.bytes))
     }
 
-    /// Adds a font, written without a prefix. Returns its index.
+    /// Adds a font, whose children are written without a prefix. Returns its index.
     pub fn add_font(&mut self, inner: &str) -> u32 {
         let name = self.root();
+        let inner = with_prefix(inner.as_bytes(), &name);
         self.append(
             "fonts",
             "font",
@@ -711,6 +747,17 @@ impl StylesXml {
         for (key, apply, value) in &values {
             edits.push((*key, Some(value.as_str())));
             edits.push((*apply, Some("1")));
+        }
+        // A style list the file doesn't have can't be referred to, by this new format at least.
+        let has_style_list = self
+            .find_list(&list, b"cellStyleXfs", b"xf")
+            .is_some_and(|found| {
+                attr_value(&template[..tag_end], b"xfId")
+                    .and_then(parse_u32)
+                    .is_some_and(|index| (index as usize) < found.entries.len())
+            });
+        if !has_style_list {
+            edits.push(("xfId", None));
         }
         let mut xml = edit_tag(&template[..tag_end], &edits);
         xml.extend_from_slice(&template[tag_end..]);
@@ -831,6 +878,47 @@ mod tests {
         let table = crate::styles::read_styles(&styles.bytes);
         assert_eq!(table.xfs.len(), 3);
         assert!(table.fonts[1].bold);
+    }
+
+    #[test]
+    fn a_prefixed_style_sheet_gets_prefixed_fonts() {
+        let mut styles = StylesXml::new(
+            br#"<x:styleSheet xmlns:x="s"><x:fonts count="1"><x:font/></x:fonts></x:styleSheet>"#
+                .to_vec(),
+        );
+        assert_eq!(styles.add_font(r#"<b/><name val="Calibri"></name>"#), 1);
+        assert_eq!(
+            text(&styles.bytes),
+            r#"<x:styleSheet xmlns:x="s"><x:fonts count="2"><x:font/><x:font><x:b/><x:name val="Calibri"></x:name></x:font></x:fonts></x:styleSheet>"#
+        );
+    }
+
+    #[test]
+    fn a_new_format_does_not_copy_a_reference_to_a_style_that_is_not_there() {
+        let mut styles = StylesXml::new(
+            br#"<styleSheet xmlns="s"><cellXfs count="1"><xf fontId="0" xfId="0"/></cellXfs></styleSheet>"#
+                .to_vec(),
+        );
+        styles.add_xf(0, XfChanges::default());
+        assert!(text(&styles.bytes).ends_with(r#"<xf fontId="0"/></cellXfs></styleSheet>"#));
+        let mut with_list = StylesXml::new(
+            br#"<styleSheet xmlns="s"><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf fontId="0" xfId="0"/></cellXfs></styleSheet>"#
+                .to_vec(),
+        );
+        with_list.add_xf(0, XfChanges::default());
+        assert!(
+            text(&with_list.bytes).ends_with(r#"<xf fontId="0" xfId="0"/></cellXfs></styleSheet>"#)
+        );
+    }
+
+    #[test]
+    fn a_new_part_replaces_a_content_type_that_named_it_with_no_part() {
+        let xml =
+            br#"<Types xmlns="t"><Override PartName="/xl/styles.xml" ContentType="old"/></Types>"#;
+        assert_eq!(
+            text(&add_override(xml, "xl/styles.xml", "new")),
+            r#"<Types xmlns="t"><Override PartName="/xl/styles.xml" ContentType="new"/></Types>"#
+        );
     }
 
     #[test]

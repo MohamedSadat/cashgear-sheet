@@ -382,6 +382,45 @@ pub fn escape_x(text: &str) -> String {
     out
 }
 
+/// An XML declaration that says UTF-16, as it should now say UTF-8. A part in UTF-16 reaches us
+/// decoded, so its bytes go out in UTF-8. `None` means the token is fine as it is.
+pub fn utf8_declaration(token: &[u8]) -> Option<Vec<u8>> {
+    if !token.starts_with(b"<?xml") {
+        return None;
+    }
+    let at = find(token, b"encoding")?;
+    let mut quote = at;
+    while quote < token.len() && token[quote] != b'"' && token[quote] != b'\'' {
+        quote += 1;
+    }
+    let mark = *token.get(quote)?;
+    let end = quote + 1 + token[quote + 1..].iter().position(|&byte| byte == mark)?;
+    let name = &token[quote + 1..end];
+    if !name.eq_ignore_ascii_case(b"utf-16") && !name.eq_ignore_ascii_case(b"utf16") {
+        return None;
+    }
+    let mut out = token[..quote + 1].to_vec();
+    out.extend_from_slice(b"UTF-8");
+    out.extend_from_slice(&token[end..]);
+    Some(out)
+}
+
+/// A small part with any UTF-16 declaration corrected.
+pub fn utf8_part(mut xml: Vec<u8>) -> Vec<u8> {
+    let end = xml
+        .iter()
+        .position(|&byte| byte == b'>')
+        .map_or(0, |at| at + 1);
+    let start = xml[..end]
+        .iter()
+        .position(|&byte| byte == b'<')
+        .unwrap_or(0);
+    if let Some(fixed) = utf8_declaration(&xml[start..end]) {
+        xml.splice(start..end, fixed);
+    }
+    xml
+}
+
 /// Replaces byte ranges of `source`. The ranges must be in order and must not overlap.
 pub fn splice(source: &[u8], changes: &[(usize, usize, Vec<u8>)]) -> Vec<u8> {
     let added: usize = changes.iter().map(|(_, _, text)| text.len()).sum();
@@ -492,6 +531,25 @@ mod tests {
         assert_eq!(edit_tag(br#"<c t="b">"#, &[("t", None)]), b"<c>");
         assert_eq!(opened(br#"<c r="A1"/>"#), br#"<c r="A1">"#);
         assert_eq!(closed(br#"<c r="A1">"#), br#"<c r="A1"/>"#);
+    }
+
+    #[test]
+    fn a_declaration_of_utf16_becomes_utf8() {
+        assert_eq!(
+            utf8_declaration(br#"<?xml version="1.0" encoding="UTF-16" standalone="yes"?>"#),
+            Some(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#.to_vec())
+        );
+        assert_eq!(
+            utf8_declaration(b"<?xml version='1.0' encoding='utf-8'?>"),
+            None
+        );
+        assert_eq!(utf8_declaration(b"<?xml version='1.0'?>"), None);
+        assert_eq!(utf8_declaration(b"<!-- encoding=\"UTF-16\" -->"), None);
+        assert_eq!(
+            utf8_part(br#"<?xml encoding='utf-16'?><a/>"#.to_vec()),
+            br#"<?xml encoding='UTF-8'?><a/>"#
+        );
+        assert_eq!(utf8_part(b"<a/>".to_vec()), b"<a/>");
     }
 
     #[test]

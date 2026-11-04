@@ -449,3 +449,61 @@ fn a_new_blank_workbook_saves_and_reopens() {
     let mut again = opened(out);
     assert_eq!(again.display_text(0, 1, 1), "1.5");
 }
+
+/// A workbook with a formula that reads another one, as business files often have.
+fn linked_book() -> Vec<u8> {
+    let types = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#;
+    let root = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#
+    );
+    let workbook = format!(
+        r#"<workbook xmlns="{MAIN}" xmlns:r="{RELS}"><sheets><sheet name="One" sheetId="1" r:id="rId1"/></sheets></workbook>"#
+    );
+    let rels = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELS}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#
+    );
+    let sheet = format!(
+        r#"<worksheet xmlns="{MAIN}"><sheetData><row r="1"><c r="A1"><f>[1]Sheet1!A1</f><v>5</v></c><c r="B1"><f>A1*2</f><v>10</v></c><c r="C1"><v>1</v></c></row></sheetData></worksheet>"#
+    );
+    zip_of(&[
+        ("[Content_Types].xml", types.as_bytes()),
+        ("_rels/.rels", root.as_bytes()),
+        ("xl/workbook.xml", workbook.as_bytes()),
+        ("xl/_rels/workbook.xml.rels", rels.as_bytes()),
+        ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+    ])
+}
+
+#[test]
+fn a_link_to_another_workbook_keeps_its_value_and_saves_as_it_was() {
+    let mut engine = opened(linked_book());
+    while engine.prepare_step().unwrap() {}
+    assert_eq!(engine.display_text(0, 1, 1), "5");
+    assert_eq!(engine.edit_text(0, 1, 1), "=[1]Sheet1!A1");
+
+    // What reads the link recalculates from its saved value, and the link itself isn't touched.
+    engine
+        .edit_cells(&[value(0, 1, 3, CalcValue::Number(2.0))])
+        .unwrap();
+    assert_eq!(engine.display_text(0, 1, 2), "10");
+    engine
+        .edit_cells(&[EditCell {
+            sheet: 0,
+            row: 1,
+            col: 2,
+            input: Some(EditInput::Formula("A1*3".to_string())),
+            style: None,
+        }])
+        .unwrap();
+    assert_eq!(engine.display_text(0, 1, 2), "15");
+    let (out, _) = saved(&mut engine);
+    let sheet = text(&parts(&out), "xl/worksheets/sheet1.xml");
+    assert!(
+        sheet.contains("<c r=\"A1\"><f>[1]Sheet1!A1</f><v>5</v></c>"),
+        "{sheet}"
+    );
+    assert!(
+        sheet.contains("<c r=\"B1\"><f>A1*3</f><v>15</v></c>"),
+        "{sheet}"
+    );
+}

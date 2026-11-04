@@ -7,6 +7,7 @@
 //! `evaluate_slice` keeps what it finished, unlike a cancelled full evaluation, which
 //! puts everything it did back to dirty.
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -63,6 +64,9 @@ pub struct FormualizerEngine {
     /// Cells showing a saved spill. A stored value would block the real spill, so
     /// these empty out when calculation first starts.
     cached_spills: Vec<CellRef>,
+    /// Formulas that read another workbook, which keep their saved value, as they do in Excel
+    /// until its links are updated. The engine would refuse them, and the whole sheet with them.
+    linked: HashMap<CellRef, String>,
     /// Staged formulas haven't been adopted or calculated yet.
     fresh: bool,
     /// The next sheet `prepare_step` builds a graph for.
@@ -258,6 +262,77 @@ fn wrap_ranges(node: &mut ASTNode) -> bool {
     }
 }
 
+/// Whether a formula reads a workbook other than this one: `[1]Sheet1!A1`, `[1]!Name`, or
+/// `'C:\\files\\[book.xlsx]Sheet 1'!A1`. A table's `Table1[Column]` doesn't count.
+fn reads_another_workbook(text: &str) -> bool {
+    if !text.contains('[') {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' => {
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += 1;
+                }
+            }
+            b'\'' => {
+                let start = at + 1;
+                at += 1;
+                while at < bytes.len() {
+                    if bytes[at] == b'\'' {
+                        // Two quotes in a row are one quote in the name.
+                        if bytes.get(at + 1) == Some(&b'\'') {
+                            at += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    at += 1;
+                }
+                if bytes.get(at + 1) == Some(&b'!')
+                    && bytes[start..at.min(bytes.len())].contains(&b'[')
+                {
+                    return true;
+                }
+            }
+            b'[' => {
+                let after_name = at > 0
+                    && (bytes[at - 1].is_ascii_alphanumeric()
+                        || bytes[at - 1] == b'_'
+                        || bytes[at - 1] == b'.'
+                        || bytes[at - 1] == b']'
+                        || bytes[at - 1] >= 0x80);
+                let Some(length) = bytes[at..].iter().position(|&byte| byte == b']') else {
+                    return false;
+                };
+                let end = at + length;
+                if !after_name {
+                    // From the bracket's end, a sheet name and then `!` make this a workbook.
+                    let mut next = end + 1;
+                    while next < bytes.len()
+                        && (bytes[next].is_ascii_alphanumeric()
+                            || bytes[next] == b'_'
+                            || bytes[next] == b'.'
+                            || bytes[next] >= 0x80)
+                    {
+                        next += 1;
+                    }
+                    if bytes.get(next) == Some(&b'!') {
+                        return true;
+                    }
+                }
+                at = end;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    false
+}
+
 impl FormualizerEngine {
     pub fn new() -> Self {
         let locale = Arc::new(RwLock::new(Locale::en_us()));
@@ -270,6 +345,7 @@ impl FormualizerEngine {
             extents: Vec::new(),
             array_anchors: Vec::new(),
             cached_spills: Vec::new(),
+            linked: HashMap::new(),
             fresh: true,
             prepare_next: 0,
             prepared: false,
@@ -445,6 +521,7 @@ impl CalcEngine for FormualizerEngine {
         self.extents = vec![(0, 0); book.sheets.len()];
         self.array_anchors.clear();
         self.cached_spills.clear();
+        self.linked.clear();
         self.fresh = true;
         self.prepare_next = 0;
         self.prepared = false;
@@ -550,6 +627,7 @@ impl CalcEngine for FormualizerEngine {
         let cols = shape.cols.max(1) as usize;
         self.array_anchors.retain(|(cell, _)| cell.sheet != sheet);
         self.cached_spills.retain(|cell| cell.sheet != sheet);
+        self.linked.retain(|cell, _| cell.sheet != sheet);
         self.loads[sheet as usize] = Some(if shape.sparse {
             SheetLoad::Sparse(Box::new(ArrowSheet::new_sparse_with_date_system(
                 &name,
@@ -642,6 +720,11 @@ impl CalcEngine for FormualizerEngine {
         let extent = &mut self.extents[sheet as usize];
         extent.0 = extent.0.max(row);
         extent.1 = extent.1.max(col);
+        if reads_another_workbook(text) {
+            self.linked
+                .insert(CellRef { sheet, row, col }, text.to_string());
+            return Ok(());
+        }
         let staged = match shape {
             FormulaShape::Normal => {
                 implicit_intersection(text).unwrap_or_else(|| format!("={text}"))
@@ -705,6 +788,7 @@ impl CalcEngine for FormualizerEngine {
         for edit in edits {
             let name = self.sheet_name(edit.at.sheet)?.to_string();
             let (row, col) = (edit.at.row, edit.at.col);
+            self.linked.remove(&edit.at);
             let old_formula = self.workbook.get_formula(&name, row, col);
             let old_value = self
                 .workbook
@@ -910,9 +994,48 @@ impl CalcEngine for FormualizerEngine {
     }
 
     fn formula_text(&self, at: CellRef) -> Option<String> {
+        if let Some(text) = self.linked.get(&at) {
+            return Some(text.clone());
+        }
         let name = self.sheets.get(at.sheet as usize)?;
         self.workbook
             .get_formula(name, at.row, at.col)
             .map(|text| text.trim_start_matches('=').to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_another_workbook;
+
+    #[test]
+    fn tells_a_link_to_another_workbook_from_a_table_reference() {
+        for linked in [
+            "[1]Sheet1!A1",
+            "[1]Sheet1!$A$1:$B$2+1",
+            "SUM([2]Data!A1:A6)",
+            "[1]!Total",
+            "'[1]Params Tab 1'!$B$1",
+            "'C:\\files\\[book.xlsx]Sheet 1'!A1",
+            "[link-external-workbook-a.xlsx]Sheet0!A1",
+            "'[1](0)泰州市'!B8",
+            "[1]Лист1!A3",
+        ] {
+            assert!(reads_another_workbook(linked), "{linked}");
+        }
+        for local in [
+            "A1+1",
+            "Table1[Column]",
+            "SUM(Table1[[#All],[Sales]])",
+            "Table1[@Sales]*2",
+            "\"[1]Sheet1!A1\"",
+            "'Sheet [1]'&\"x\"",
+            "'It''s'!A1",
+            "[@Sales]",
+            "[Sales]*2",
+            "'My [Sheet'&\"!\"",
+        ] {
+            assert!(!reads_another_workbook(local), "{local}");
+        }
     }
 }

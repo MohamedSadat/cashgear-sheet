@@ -18,10 +18,10 @@ use crate::patch_parts::{
     set_refresh_on_load, set_table_columns, StylesXml,
 };
 use crate::patch_sheet::{patch_into, patch_sheet, CellChange, CellPatch, NewElement, StringTable};
-use crate::scan::{attr_value, Kind, Scanner};
+use crate::scan::{attr_value, utf8_part, Kind, Scanner};
 use crate::workbook::read_relationships;
 use crate::xml::{parse_rect, rels_path};
-use crate::zipdir::{normalize, pack, rewrite, Directory, Packer, ZipChanges};
+use crate::zipdir::{normalize, pack, rewrite, Directory, Packed, Packer, ZipChanges};
 
 const STRINGS_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml";
@@ -201,16 +201,17 @@ pub struct SaveReport {
     pub strings_added: usize,
     pub recalculates_on_open: bool,
     pub pivots_refresh_on_open: bool,
-    /// New array results left for Excel to rebuild, as the file's array area doesn't cover them.
-    pub spills_left_to_excel: u64,
+    /// New results the file can't hold, which Excel works out when it opens the file.
+    pub results_left_to_excel: u64,
     /// Table headers rewritten so that the table part and its cells agree.
     pub table_headers_fixed: u64,
     /// What the workbook holds that this app keeps without editing, with how many parts.
     pub kept_content: Vec<(Kept, usize)>,
 }
 
-/// What a saved file must hold: a part's name to its sum, length and how it was written.
-pub type SavedParts = HashMap<String, (u32, u64)>;
+/// What a saved file must hold: a part's name to the sum and length of each entry with that name.
+/// A file can name a part twice, and it is copied as it is.
+pub type SavedParts = HashMap<String, Vec<(u32, u64)>>;
 
 /// A saved part's expected state, kept until the file has been checked.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -222,8 +223,23 @@ pub struct SavePlan {
     copied: Vec<(String, u32, u64)>,
 }
 
+/// A failure reading a part while patching it. Its bytes not making sense says the file is damaged,
+/// and anything else says it can't be read.
+fn part_error(error: io::Error) -> SaveError {
+    if error.kind() == io::ErrorKind::InvalidData {
+        SaveError::Damaged(error.to_string())
+    } else {
+        SaveError::read(error)
+    }
+}
+
 fn zip_error(error: io::Error) -> SaveError {
     SaveError::Damaged(error.to_string())
+}
+
+/// Packs a small part, which `Package::read` has decoded if it was in UTF-16.
+fn pack_part(xml: &[u8]) -> Result<Packed, SaveError> {
+    pack(&utf8_part(xml.to_vec())).map_err(zip_error)
 }
 
 /// The workbook part's name, and its relationships part's.
@@ -272,6 +288,30 @@ fn is_utf(name: &[u8]) -> bool {
         || name.eq_ignore_ascii_case(b"utf8")
         || name.eq_ignore_ascii_case(b"utf-16")
         || name.eq_ignore_ascii_case(b"utf16")
+}
+
+/// A name for a new part beside the workbook part. A file can hold a part nothing links to, which
+/// isn't ours to replace, so the name has to be free.
+fn free_part_name(package: &Package, main: &str, base: &str) -> String {
+    let folder = main.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let path = |file: String| {
+        if folder.is_empty() {
+            file
+        } else {
+            format!("{folder}/{file}")
+        }
+    };
+    let mut name = path(format!("{base}.xml"));
+    let mut number = 1;
+    while package.part(&name).is_some() {
+        name = path(format!("{base}{number}.xml"));
+        number += 1;
+    }
+    name
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, file)| file)
 }
 
 /// Text a table header holds, which Excel requires to be a string that matches the table part.
@@ -370,7 +410,7 @@ fn sync_table_headers(
             let updated = set_table_columns(&xml, &names);
             changes
                 .replace
-                .insert(normalize(&target), pack(&updated).map_err(zip_error)?);
+                .insert(normalize(&target), pack_part(&updated)?);
             report.changed_parts.push(target);
         }
     }
@@ -430,9 +470,9 @@ pub fn save_workbook(
                     .ok_or_else(|| io::Error::other("a part went missing"))
             };
             let (packed, outcome) = patch_sheet(open, patches, elements, &mut strings, ascii_only)
-                .map_err(SaveError::read)?;
+                .map_err(part_error)?;
             report.cells_written += outcome.cells_written;
-            report.spills_left_to_excel += outcome.spills_skipped;
+            report.results_left_to_excel += outcome.results_skipped;
             if let Some(packed) = packed {
                 changes.replace.insert(normalize(&part), packed);
                 report.changed_parts.push(part);
@@ -455,7 +495,7 @@ pub fn save_workbook(
             };
             let none = BTreeMap::new();
             let (packed, _) =
-                patch_sheet(open, &none, elements, &mut strings, false).map_err(SaveError::read)?;
+                patch_sheet(open, &none, elements, &mut strings, false).map_err(part_error)?;
             if let Some(packed) = packed {
                 changes.replace.insert(normalize(&part), packed);
                 report.changed_parts.push(part);
@@ -485,19 +525,14 @@ pub fn save_workbook(
                         .ok_or_else(|| SaveError::Damaged(format!("no {part}")))?;
                     let mut packer = Packer::default();
                     append_strings(stream, &strings, ascii_only, &mut packer)
-                        .map_err(SaveError::read)?;
+                        .map_err(part_error)?;
                     changes
                         .replace
                         .insert(normalize(part), packer.finish().map_err(zip_error)?);
                     report.changed_parts.push(part.clone());
                 }
                 None => {
-                    let folder = main.rsplit_once('/').map_or("", |(folder, _)| folder);
-                    let name = if folder.is_empty() {
-                        "sharedStrings.xml".to_string()
-                    } else {
-                        format!("{folder}/sharedStrings.xml")
-                    };
+                    let name = free_part_name(package, &main, "sharedStrings");
                     changes.add.push((
                         name.clone(),
                         pack(&new_strings_part(&strings)).map_err(zip_error)?,
@@ -505,7 +540,7 @@ pub fn save_workbook(
                     content_types = add_override(&content_types, &name, STRINGS_TYPE);
                     types_changed = true;
                     if let Some(rels) = &mut main_rels {
-                        *rels = add_relationship(rels, STRINGS_REL, "sharedStrings.xml");
+                        *rels = add_relationship(rels, STRINGS_REL, file_name(&name));
                         rels_changed = true;
                     }
                     report.added_parts.push(name);
@@ -520,24 +555,19 @@ pub fn save_workbook(
                 .find(|(kind, _)| kind.ends_with("/styles"))
                 .map(|(_, target)| target.clone())
                 .filter(|target| package.part(target).is_some());
-            let packed = pack(&styles.bytes).map_err(zip_error)?;
+            let packed = pack_part(&styles.bytes)?;
             match found {
                 Some(part) => {
                     changes.replace.insert(normalize(&part), packed);
                     report.changed_parts.push(part);
                 }
                 None => {
-                    let folder = main.rsplit_once('/').map_or("", |(folder, _)| folder);
-                    let name = if folder.is_empty() {
-                        "styles.xml".to_string()
-                    } else {
-                        format!("{folder}/styles.xml")
-                    };
+                    let name = free_part_name(package, &main, "styles");
                     changes.add.push((name.clone(), packed));
                     content_types = add_override(&content_types, &name, STYLES_TYPE);
                     types_changed = true;
                     if let Some(rels) = &mut main_rels {
-                        *rels = add_relationship(rels, STYLES_REL, "styles.xml");
+                        *rels = add_relationship(rels, STYLES_REL, file_name(&name));
                         rels_changed = true;
                     }
                     report.added_parts.push(name);
@@ -578,9 +608,7 @@ pub fn save_workbook(
             report.recalculates_on_open = true;
         }
         if let Some(xml) = main_xml {
-            changes
-                .replace
-                .insert(normalize(&main), pack(&xml).map_err(zip_error)?);
+            changes.replace.insert(normalize(&main), pack_part(&xml)?);
             report.changed_parts.push(main.clone());
         }
         if edits.refresh_pivots {
@@ -593,23 +621,22 @@ pub fn save_workbook(
                     let edited = set_refresh_on_load(&xml);
                     changes
                         .replace
-                        .insert(normalize(&part.name), pack(&edited).map_err(zip_error)?);
+                        .insert(normalize(&part.name), pack_part(&edited)?);
                     report.changed_parts.push(part.name.clone());
                     report.pivots_refresh_on_open = true;
                 }
             }
         }
         if types_changed {
-            changes.replace.insert(
-                normalize("[Content_Types].xml"),
-                pack(&content_types).map_err(zip_error)?,
-            );
+            changes
+                .replace
+                .insert(normalize("[Content_Types].xml"), pack_part(&content_types)?);
             report.changed_parts.push("[Content_Types].xml".to_string());
         }
         if let (true, Some(rels)) = (rels_changed, &main_rels) {
             changes
                 .replace
-                .insert(normalize(&main_rels_name), pack(rels).map_err(zip_error)?);
+                .insert(normalize(&main_rels_name), pack_part(rels)?);
             report.changed_parts.push(main_rels_name.clone());
         }
     }
@@ -625,10 +652,14 @@ pub fn save_workbook(
             continue;
         }
         if let Some(part) = changes.replace.get(&key) {
-            plan.expected.insert(key.clone(), (part.crc, part.size));
+            plan.expected
+                .insert(key.clone(), vec![(part.crc, part.size)]);
             plan.changed.push(key);
         } else {
-            plan.expected.insert(key, (entry.crc, entry.size));
+            plan.expected
+                .entry(key)
+                .or_default()
+                .push((entry.crc, entry.size));
             plan.copied
                 .push((entry.name.clone(), entry.crc, entry.size));
             report.kept_parts += 1;
@@ -641,7 +672,8 @@ pub fn save_workbook(
     }
     for (name, part) in &changes.add {
         let key = normalize(name);
-        plan.expected.insert(key.clone(), (part.crc, part.size));
+        plan.expected
+            .insert(key.clone(), vec![(part.crc, part.size)]);
         plan.changed.push(key);
     }
     report.kept_content = kept.into_iter().collect();
@@ -671,10 +703,10 @@ pub fn verify_directory(saved: &dyn ByteSource, plan: &SavePlan) -> Result<Direc
     let mut found = HashSet::new();
     for entry in &directory.entries {
         let key = normalize(&entry.name);
-        let Some(&(crc, size)) = plan.expected.get(&key) else {
+        let Some(expected) = plan.expected.get(&key) else {
             return Err(wrong(format!("{} shouldn't be there", entry.name)));
         };
-        if entry.crc != crc || entry.size != size {
+        if !expected.contains(&(entry.crc, entry.size)) {
             return Err(wrong(format!("{} isn't what was written", entry.name)));
         }
         found.insert(key);
