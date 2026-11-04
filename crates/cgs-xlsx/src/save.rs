@@ -284,10 +284,11 @@ fn pi_as_tag(token: &[u8]) -> Vec<u8> {
 }
 
 fn is_utf(name: &[u8]) -> bool {
-    name.eq_ignore_ascii_case(b"utf-8")
-        || name.eq_ignore_ascii_case(b"utf8")
-        || name.eq_ignore_ascii_case(b"utf-16")
-        || name.eq_ignore_ascii_case(b"utf16")
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with(b"utf-8")
+        || lower.starts_with(b"utf8")
+        || lower.starts_with(b"utf-16")
+        || lower.starts_with(b"utf16")
 }
 
 /// A name for a new part beside the workbook part. A file can hold a part nothing links to, which
@@ -502,9 +503,10 @@ pub fn save_workbook(
             }
         }
 
-        let mut content_types = package
-            .read("[Content_Types].xml")
-            .ok_or_else(|| SaveError::Damaged("no content types".to_string()))?;
+        // A package with no content types isn't one Excel would open, but we do, and it can be saved
+        // as what it is.
+        let had_types = package.part("[Content_Types].xml").is_some();
+        let mut content_types = package.read("[Content_Types].xml").unwrap_or_default();
         let mut types_changed = false;
         let main_rels_name = rels_path(&main);
         let mut main_rels = package.read(&main_rels_name);
@@ -627,7 +629,7 @@ pub fn save_workbook(
                 }
             }
         }
-        if types_changed {
+        if types_changed && had_types {
             changes
                 .replace
                 .insert(normalize("[Content_Types].xml"), pack_part(&content_types)?);

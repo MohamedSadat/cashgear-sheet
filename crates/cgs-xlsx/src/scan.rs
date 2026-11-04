@@ -34,9 +34,14 @@ pub struct Scanner<R> {
 
 impl<R: Read> Scanner<R> {
     pub fn new(reader: R) -> Self {
+        Self::with_buffer(reader, FIRST_BUFFER)
+    }
+
+    /// For something small, like a cell's body, of which a sheet has millions. It grows if it must.
+    pub fn with_buffer(reader: R, bytes: usize) -> Self {
         Self {
             reader,
-            buf: vec![0; FIRST_BUFFER],
+            buf: vec![0; bytes.max(64)],
             from: 0,
             token_end: 0,
             to: 0,
@@ -396,7 +401,9 @@ pub fn utf8_declaration(token: &[u8]) -> Option<Vec<u8>> {
     let mark = *token.get(quote)?;
     let end = quote + 1 + token[quote + 1..].iter().position(|&byte| byte == mark)?;
     let name = &token[quote + 1..end];
-    if !name.eq_ignore_ascii_case(b"utf-16") && !name.eq_ignore_ascii_case(b"utf16") {
+    if !name.to_ascii_lowercase().starts_with(b"utf-16")
+        && !name.to_ascii_lowercase().starts_with(b"utf16")
+    {
         return None;
     }
     let mut out = token[..quote + 1].to_vec();
@@ -535,6 +542,10 @@ mod tests {
 
     #[test]
     fn a_declaration_of_utf16_becomes_utf8() {
+        assert_eq!(
+            utf8_declaration(br#"<?xml version="1.0" encoding="UTF-16BE"?>"#),
+            Some(br#"<?xml version="1.0" encoding="UTF-8"?>"#.to_vec())
+        );
         assert_eq!(
             utf8_declaration(br#"<?xml version="1.0" encoding="UTF-16" standalone="yes"?>"#),
             Some(br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#.to_vec())

@@ -531,7 +531,7 @@ impl Patcher<'_> {
             cell.end
         };
         let body = &self.row_buffer[cell.tag_end..closing];
-        let mut scanner = Scanner::new(body);
+        let mut scanner = Scanner::with_buffer(body, body.len());
         let mut depth = 0;
         let mut current: Option<(u8, usize)> = None;
         while let Some(kind) = scanner.next()? {
