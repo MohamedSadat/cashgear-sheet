@@ -16,6 +16,8 @@ tests/workbooks/
 tests/private/
 
 # Test and benchmark output
+tests/validator/bin/
+tests/validator/obj/
 test-results/
 playwright-report/
 bench/results/

@@ -1,7 +1,8 @@
 // Builds test workbooks with their saved values already in them, so no Excel is needed and
 // nothing binary is checked in. Used by the browser specs, the desktop smoke test and the
 // speed checks. Run directly, it writes them to tests/workbooks/fixtures, which git ignores.
-import { crc32, deflateRawSync } from 'node:zlib';
+import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
+import { vbaProject } from './vba.mjs';
 
 /** A zip of (name, text or bytes) entries. */
 export function zip(entries) {
@@ -575,4 +576,260 @@ export function manyRowsBook(rows, columns = 6) {
     ],
     ['xl/worksheets/sheet1.xml', sheet],
   ]);
+}
+
+const PLAIN_STYLES = `<styleSheet xmlns="${MAIN}"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+
+const SALES = [
+  ['North', 10],
+  ['South', 20],
+  ['North', 30],
+  ['South', 40],
+];
+
+function rowsXml(rows) {
+  return rows
+    .map(
+      ([number, cells]) =>
+        `<row r="${number}">${cells.map(([col, value]) => cellXml(column(col) + number, value)).join('')}</row>`,
+    )
+    .join('');
+}
+
+/**
+ * A pivot table over a sheet of sales, whose saved output is already right: North 40, South 60,
+ * Grand Total 100. Excel can read and refresh it, so a save can be shown to leave it working.
+ */
+export function pivotBook() {
+  const data = [
+    [
+      1,
+      [
+        [1, 'Region'],
+        [2, 'Sales'],
+      ],
+    ],
+    ...SALES.map(([region, sales], index) => [
+      index + 2,
+      [
+        [1, region],
+        [2, sales],
+      ],
+    ]),
+  ];
+  const output = [
+    [
+      3,
+      [
+        [1, 'Row Labels'],
+        [2, 'Sum of Sales'],
+      ],
+    ],
+    [
+      4,
+      [
+        [1, 'North'],
+        [2, 40],
+      ],
+    ],
+    [
+      5,
+      [
+        [1, 'South'],
+        [2, 60],
+      ],
+    ],
+    [
+      6,
+      [
+        [1, 'Grand Total'],
+        [2, 100],
+      ],
+    ],
+  ];
+  const records = SALES.map(
+    ([region, sales]) => `<r><x v="${region === 'North' ? 0 : 1}"/><n v="${sales}"/></r>`,
+  ).join('');
+  return zip([
+    [
+      '[Content_Types].xml',
+      `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/><Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/><Override PartName="/xl/pivotCache/pivotCacheRecords1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml"/></Types>`,
+    ],
+    [
+      '_rels/.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ],
+    [
+      'xl/workbook.xml',
+      `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Pivot" sheetId="2" r:id="rId2"/></sheets><pivotCaches><pivotCache cacheId="1" r:id="rId4"/></pivotCaches></workbook>`,
+    ],
+    [
+      'xl/_rels/workbook.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${RELS}/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="${RELS}/styles" Target="styles.xml"/><Relationship Id="rId4" Type="${RELS}/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/></Relationships>`,
+    ],
+    ['xl/styles.xml', HEADER + PLAIN_STYLES],
+    [
+      'xl/worksheets/sheet1.xml',
+      `${HEADER}<worksheet xmlns="${MAIN}"><dimension ref="A1:B5"/><sheetData>${rowsXml(data)}</sheetData></worksheet>`,
+    ],
+    [
+      'xl/worksheets/sheet2.xml',
+      `${HEADER}<worksheet xmlns="${MAIN}"><dimension ref="A3:B6"/><sheetData>${rowsXml(output)}</sheetData></worksheet>`,
+    ],
+    [
+      'xl/worksheets/_rels/sheet2.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>`,
+    ],
+    [
+      'xl/pivotTables/pivotTable1.xml',
+      `${HEADER}<pivotTableDefinition xmlns="${MAIN}" name="Sales" cacheId="1" applyNumberFormats="0" applyBorderFormats="0" applyFontFormats="0" applyPatternFormats="0" applyAlignmentFormats="0" applyWidthHeightFormats="1" dataCaption="Values" updatedVersion="6" minRefreshableVersion="3" useAutoFormatting="1" itemPrintTitles="1" createdVersion="6" indent="0" outline="1" outlineData="1" multipleFieldFilters="0"><location ref="A3:B6" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/><pivotFields count="2"><pivotField axis="axisRow" showAll="0"><items count="3"><item x="0"/><item x="1"/><item t="default"/></items></pivotField><pivotField dataField="1" showAll="0"/></pivotFields><rowFields count="1"><field x="0"/></rowFields><rowItems count="3"><i><x/></i><i><x v="1"/></i><i t="grand"><x/></i></rowItems><colItems count="1"><i/></colItems><dataFields count="1"><dataField name="Sum of Sales" fld="1" baseField="0" baseItem="0"/></dataFields><pivotTableStyleInfo name="PivotStyleLight16" showRowHeaders="1" showColHeaders="1" showRowStripes="0" showColStripes="0" showLastColumn="1"/></pivotTableDefinition>`,
+    ],
+    [
+      'xl/pivotTables/_rels/pivotTable1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/pivotCacheDefinition" Target="../pivotCache/pivotCacheDefinition1.xml"/></Relationships>`,
+    ],
+    [
+      'xl/pivotCache/pivotCacheDefinition1.xml',
+      `${HEADER}<pivotCacheDefinition xmlns="${MAIN}" xmlns:r="${RELS}" r:id="rId1" refreshedBy="CashGear" refreshedDate="45000" createdVersion="6" refreshedVersion="6" minRefreshableVersion="3" recordCount="4"><cacheSource type="worksheet"><worksheetSource ref="A1:B5" sheet="Data"/></cacheSource><cacheFields count="2"><cacheField name="Region" numFmtId="0"><sharedItems count="2"><s v="North"/><s v="South"/></sharedItems></cacheField><cacheField name="Sales" numFmtId="0"><sharedItems containsSemiMixedTypes="0" containsString="0" containsNumber="1" containsInteger="1" minValue="10" maxValue="40"/></cacheField></cacheFields></pivotCacheDefinition>`,
+    ],
+    [
+      'xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/pivotCacheRecords" Target="pivotCacheRecords1.xml"/></Relationships>`,
+    ],
+    [
+      'xl/pivotCache/pivotCacheRecords1.xml',
+      `${HEADER}<pivotCacheRecords xmlns="${MAIN}" xmlns:r="${RELS}" count="4">${records}</pivotCacheRecords>`,
+    ],
+  ]);
+}
+
+/** The macro the check runs: it reads a cell, so a save's edit shows in what it returns. */
+export const MACRO_CODE = `Public Function Probe() As Double
+    Probe = Worksheets("Data").Range("A1").Value * 2
+End Function`;
+
+/** A macro workbook whose whole VBA project is built from `MACRO_CODE` here. */
+export function macroBook() {
+  return zip([
+    [
+      '[Content_Types].xml',
+      `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.ms-excel.sheet.macroEnabled.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+    ],
+    [
+      '_rels/.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ],
+    [
+      'xl/workbook.xml',
+      `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><workbookPr codeName="ThisWorkbook"/><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    ],
+    [
+      'xl/_rels/workbook.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${RELS}/styles" Target="styles.xml"/><Relationship Id="rId3" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"/></Relationships>`,
+    ],
+    ['xl/styles.xml', HEADER + PLAIN_STYLES],
+    [
+      'xl/worksheets/sheet1.xml',
+      `${HEADER}<worksheet xmlns="${MAIN}"><sheetPr codeName="Sheet1"/><dimension ref="A1"/><sheetData><row r="1"><c r="A1"><v>21</v></c></row></sheetData></worksheet>`,
+    ],
+    ['xl/vbaProject.bin', vbaProject(MACRO_CODE)],
+  ]);
+}
+
+/** A table, a shared formula, an array, a merge, a calculation chain and shared strings. */
+export function structuresBook() {
+  const sheet = `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}"><dimension ref="A1:E9"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetData><row r="1" spans="1:3"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row><row r="2" spans="1:3"><c r="A2"><v>1</v></c><c r="B2"><v>2</v></c><c r="C2"><f>A2+B2</f><v>3</v></c></row><row r="3" spans="1:3"><c r="A3"><v>3</v></c><c r="B3"><v>4</v></c><c r="C3"><f>A3+B3</f><v>7</v></c></row><row r="5"><c r="A5"><v>1</v></c><c r="B5"><f t="shared" ref="B5:B7" si="0">A5*2</f><v>2</v></c></row><row r="6"><c r="A6"><v>2</v></c><c r="B6"><f t="shared" si="0"/><v>4</v></c></row><row r="7"><c r="A7"><v>3</v></c><c r="B7"><f t="shared" si="0"/><v>6</v></c></row><row r="9"><c r="D9"><f t="array" ref="D9:E9">{1,2}*A5</f><v>1</v></c><c r="E9"><v>2</v></c></row></sheetData><mergeCells count="1"><mergeCell ref="D2:E3"/></mergeCells><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><tableParts count="1"><tablePart r:id="rId1"/></tableParts></worksheet>`;
+  return zip([
+    [
+      '[Content_Types].xml',
+      `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/calcChain.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/></Types>`,
+    ],
+    [
+      '_rels/.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ],
+    [
+      'xl/workbook.xml',
+      `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="191029"/></workbook>`,
+    ],
+    [
+      'xl/_rels/workbook.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${RELS}/styles" Target="styles.xml"/><Relationship Id="rId3" Type="${RELS}/sharedStrings" Target="sharedStrings.xml"/><Relationship Id="rId4" Type="${RELS}/calcChain" Target="calcChain.xml"/></Relationships>`,
+    ],
+    ['xl/styles.xml', HEADER + PLAIN_STYLES],
+    [
+      'xl/sharedStrings.xml',
+      `${HEADER}<sst xmlns="${MAIN}" count="3" uniqueCount="3"><si><t>First</t></si><si><t>Second</t></si><si><t>Total</t></si></sst>`,
+    ],
+    [
+      'xl/calcChain.xml',
+      `${HEADER}<calcChain xmlns="${MAIN}"><c r="C2" i="1"/><c r="C3"/><c r="B5"/><c r="B6"/><c r="B7"/><c r="D9" a="1"/></calcChain>`,
+    ],
+    ['xl/worksheets/sheet1.xml', sheet],
+    [
+      'xl/worksheets/_rels/sheet1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/table" Target="../tables/table1.xml"/></Relationships>`,
+    ],
+    [
+      'xl/tables/table1.xml',
+      `${HEADER}<table xmlns="${MAIN}" id="1" name="Table1" displayName="Table1" ref="A1:C3" totalsRowShown="0"><autoFilter ref="A1:C3"/><tableColumns count="3"><tableColumn id="1" name="First"/><tableColumn id="2" name="Second"/><tableColumn id="3" name="Total"><calculatedColumnFormula>A2+B2</calculatedColumnFormula></tableColumn></tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>`,
+    ],
+  ]);
+}
+
+/**
+ * Files Excel must not open cleanly, one each way a save could go wrong. The open matrix runs
+ * them first: a check that can't see these can't say a saved file had no repair prompt.
+ */
+export function brokenBooks() {
+  const good = structuresBook();
+  const parts = readZip(good);
+  const change = (name, make) =>
+    zip(parts.map(([part, body]) => [part, part === name ? make(body.toString('utf8')) : body]));
+  return {
+    'table-header-mismatch': change('xl/tables/table1.xml', (xml) =>
+      xml.replace('name="First"', 'name="Not the header"'),
+    ),
+    'chain-names-a-constant': change('xl/calcChain.xml', (xml) =>
+      xml.replace('<c r="C3"/>', '<c r="A2"/>'),
+    ),
+    'string-index-off-the-end': change('xl/worksheets/sheet1.xml', (xml) =>
+      xml.replace('<c r="A1" t="s"><v>0</v></c>', '<c r="A1" t="s"><v>99</v></c>'),
+    ),
+    'rows-out-of-order': change('xl/worksheets/sheet1.xml', (xml) =>
+      xml.replace('<row r="6">', '<row r="2">'),
+    ),
+    'elements-out-of-order': change('xl/worksheets/sheet1.xml', (xml) =>
+      xml
+        .replace('<mergeCells count="1"><mergeCell ref="D2:E3"/></mergeCells>', '')
+        .replace(
+          '</sheetData>',
+          '</sheetData><tableParts count="0"/><mergeCells count="1"><mergeCell ref="D2:E3"/></mergeCells>',
+        ),
+    ),
+    'style-index-off-the-end': change('xl/worksheets/sheet1.xml', (xml) =>
+      xml.replace('<c r="A2"><v>1</v></c>', '<c r="A2" s="99"><v>1</v></c>'),
+    ),
+    'missing-content-type': change('[Content_Types].xml', (xml) =>
+      xml.replace(
+        '<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>',
+        '',
+      ),
+    ),
+  };
+}
+
+/** Reads a zip this file wrote: (name, bytes) in order. */
+export function readZip(bytes) {
+  const parts = [];
+  for (let at = 0; bytes.readUInt32LE(at) === 0x04034b50;) {
+    const packed = bytes.readUInt32LE(at + 18);
+    const nameLength = bytes.readUInt16LE(at + 26);
+    const extra = bytes.readUInt16LE(at + 28);
+    const name = bytes.toString('utf8', at + 30, at + 30 + nameLength);
+    const start = at + 30 + nameLength + extra;
+    parts.push([name, inflateRawSync(bytes.subarray(start, start + packed))]);
+    at = start + packed;
+  }
+  return parts;
 }

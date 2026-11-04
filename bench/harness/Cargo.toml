@@ -27,3 +27,4 @@ wasm-bindgen.workspace = true
 # Test tools, which never ship: an independent reader to compare with.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 calamine = "0.34"
+sha2 = "0.10"

@@ -77,6 +77,9 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm test
+      # Saves the fixtures, and compares them with their sources and the Open XML SDK. Excel
+      # isn't on the runner, so the COM-open matrix runs on the reference machine.
+      - run: pnpm test:save
       # Browser tests use the runner's installed Chrome and Edge.
       - run: pnpm test:e2e
       - run: pnpm --filter @cgs/desktop build

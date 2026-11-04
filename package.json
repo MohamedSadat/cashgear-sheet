@@ -19,6 +19,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:save": "node scripts/write-fixtures.mjs && node bench/run-save-check.mjs bench/results/save-fixtures.json tests/workbooks/fixtures",
     "desktop:build": "pnpm build && pnpm --filter @cgs/desktop build",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "deny": "cargo deny check licenses sources",

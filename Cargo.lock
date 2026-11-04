@@ -604,6 +604,7 @@ dependencies = [
  "quick-xml 0.39.4",
  "serde",
  "serde_json",
+ "sha2",
  "wasm-bindgen",
  "zip 9.2.1",
 ]
@@ -677,6 +678,7 @@ dependencies = [
 name = "cgs-wasm"
 version = "0.0.0"
 dependencies = [
+ "cgs-calc",
  "cgs-engine",
  "cgs-numfmt",
  "cgs-xlsx",

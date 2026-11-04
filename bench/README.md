@@ -39,3 +39,19 @@ node bench/measure-speed.mjs
 ```
 
 Add `--private` to `fidelity` and `run-excel-text.mjs` for a private folder: results then hold no file names or cell values.
+
+# Phase 3 checks
+
+What saving is held to. Nothing here ships either, and saved files only ever go in a temporary folder that is deleted afterwards.
+
+- `harness/src/bin/savecheck.rs`: saves each file through the shipped engine, with no edits and then with test edits through the Rust API. Clean entries are compared by SHA-256 of their raw spans and through the `zip` crate, which shares no code with the writer, and every cell of the saved file is compared with what the edited engine holds.
+- `run-save-check.mjs` and `../tests/validator`: runs that over folders of workbooks, then has the Open XML SDK compare each saved file's errors with its source's. `pnpm test:save` runs it on the fixtures, and CI runs that.
+- `run-excel-matrix.mjs`, `excel-open.ps1`, `excel-features.ps1`: the COM-open matrix on generated and private workbooks. Excel refuses a workbook over COM where a person would see a repair prompt, and the matrix starts with deliberately broken files (`tests/workbooks/broken`) to prove it can see that. Then come edits chosen to provoke a repair, and the chart, pivot and macro checks. Macros run only in `excel-features.ps1 -Mode macro`, on the fixture whose VBA project `tests/fixtures/vba.mjs` builds. Everything else stays macros-off.
+
+```bash
+node scripts/write-fixtures.mjs
+node bench/run-save-check.mjs bench/results/save-public.json tests/workbooks/public
+node bench/run-excel-matrix.mjs bench/results/excel-matrix.json
+```
+
+Add `--private` to `run-save-check.mjs`, or `--private=<folder>` to `run-excel-matrix.mjs`, for a private folder: results then hold counts only. Excel opens the originals read-only and never saves them.
