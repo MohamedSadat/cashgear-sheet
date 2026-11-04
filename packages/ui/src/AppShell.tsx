@@ -12,6 +12,7 @@ import {
 import {
   CgButtonGroup,
   CgMenu,
+  CgMessageBox,
   CgSlider,
   CgStatusBadge,
   CgStatusBar,
@@ -22,8 +23,10 @@ import {
   createEngineClient,
   localeData,
   type BookSummary,
+  type CellContent,
   type EngineClient,
   type LoadEvent,
+  type SaveReport,
 } from '@cgs/engine-client';
 import { FormulaBar } from './FormulaBar';
 import { type GridController, type GridEvents, type GridSelection } from './grid/controller';
@@ -34,8 +37,11 @@ import {
   type NativeInfo,
   type OpenedFile,
   type RecentFile,
+  type SaveTarget,
   type SheetPlatform,
+  type WorkingCopy,
 } from './platform';
+import { saveReportLines, saveSummary, workbookExtension } from './save-report';
 import { readGridColors, readPalette, type ThemeController, type ThemePreference } from './theme';
 
 const themeChoices = [
@@ -78,6 +84,16 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const [zoom, setZoom] = useState(100);
   const [cell, setCell] = useState<CellDetail>(noCell);
   const [dragOver, setDragOver] = useState(false);
+  const [canSave, setCanSave] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [lastSave, setLastSave] = useState<SaveReport | null>(null);
+  const [showReport, setShowReport] = useState(false);
+  const fileRef = useRef<OpenedFile | null>(null);
+  /** The source has been copied, or there's nowhere to copy it, so edits can go ahead. */
+  const protectedRef = useRef(false);
+  const workingRef = useRef<WorkingCopy | null>(null);
+  const savingRef = useRef(false);
+  const untitled = useRef(0);
   const controller = useRef<GridController | null>(null);
   const openToken = useRef(0);
   const cellToken = useRef(0);
@@ -85,9 +101,13 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const clientRef = useRef<EngineClient | null>(null);
   const sheetRef = useRef(0);
   const loadRef = useRef<LoadState['phase']>('idle');
+  const lastSaveRef = useRef<SaveReport | null>(null);
+  const problemRef = useRef<string | null>(null);
   sheetRef.current = sheet;
   clientRef.current = client;
   loadRef.current = load.phase;
+  lastSaveRef.current = lastSave;
+  problemRef.current = problem;
 
   const preference = useSyncExternalStore(theme.subscribe, () => theme.preference);
   const current = useSyncExternalStore(theme.subscribe, () => theme.theme);
@@ -197,11 +217,23 @@ export function AppShell({ platform, theme }: AppShellProps) {
     [report, showSheet],
   );
 
+  /** A working copy on the native side isn't needed once something else is the source. */
+  const releaseWorking = useCallback(() => {
+    const copy = workingRef.current;
+    workingRef.current = null;
+    if (copy) void copy.release().catch((error) => console.warn('Working copy:', error));
+  }, []);
+
   const openFile = useCallback(
     async (file: OpenedFile) => {
       const engine = clientRef.current;
       if (!engine) return;
       const token = ++openToken.current;
+      fileRef.current = file;
+      protectedRef.current = false;
+      releaseWorking();
+      setCanSave(Boolean(file.isNew));
+      setLastSave(null);
       setProblem(null);
       setCell(noCell);
       setLoadedSheets(new Set());
@@ -230,6 +262,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
         refreshRecent();
       } catch (error) {
         if (token !== openToken.current) return;
+        fileRef.current = null;
         setBook(null);
         setFileName(null);
         setLoad({ phase: 'idle', done: 0, total: 0 });
@@ -239,7 +272,101 @@ export function AppShell({ platform, theme }: AppShellProps) {
         }
       }
     },
-    [onLoadEvent, platform, refreshRecent, report],
+    [onLoadEvent, platform, refreshRecent, releaseWorking, report],
+  );
+
+  const newWorkbook = useCallback(async () => {
+    const engine = clientRef.current;
+    if (!engine) return;
+    try {
+      const bytes = await engine.blankWorkbook();
+      untitled.current += 1;
+      await openFile({
+        name: `Book${untitled.current}.xlsx`,
+        source: { kind: 'blob', blob: new Blob([bytes as BlobPart]) },
+        isNew: true,
+      });
+    } catch (error) {
+      report(error);
+    }
+  }, [openFile, report]);
+
+  /** Saves to a place that already has permission, and moves the workbook on to the new file. */
+  const writeTo = useCallback(
+    async (target: SaveTarget) => {
+      const engine = clientRef.current;
+      const file = fileRef.current;
+      if (!engine || !file || savingRef.current) return;
+      savingRef.current = true;
+      setSaving(true);
+      setProblem(null);
+      try {
+        const { blob, report: saved } = await engine.save();
+        const written = await target.write(blob);
+        await engine.commitSaved(written.source);
+        // The old file's working copy has nothing left to do, and the next edit makes a new one.
+        protectedRef.current = false;
+        releaseWorking();
+        fileRef.current = written;
+        setFileName(written.name);
+        setCanSave(false);
+        setLastSave(saved);
+        await platform.rememberFile(written);
+        refreshRecent();
+      } catch (error) {
+        report(error);
+      } finally {
+        savingRef.current = false;
+        setSaving(false);
+      }
+    },
+    [platform, refreshRecent, releaseWorking, report],
+  );
+
+  const saveAs = useCallback(async () => {
+    const file = fileRef.current;
+    if (!file || loadRef.current === 'reading') return;
+    try {
+      const target = await platform.pickSaveTarget(file.name, workbookExtension(file.name));
+      if (target) await writeTo(target);
+    } catch (error) {
+      report(error);
+    }
+  }, [platform, report, writeTo]);
+
+  const save = useCallback(async () => {
+    const file = fileRef.current;
+    if (!file || loadRef.current === 'reading') return;
+    try {
+      // Nothing to write, so the file stays as it is.
+      if (!file.isNew && !(await clientRef.current?.hasChanges())) return;
+      const target = await platform.saveTarget(file);
+      if (target) await writeTo(target);
+      else await saveAs();
+    } catch (error) {
+      report(error);
+    }
+  }, [platform, report, saveAs, writeTo]);
+
+  /**
+   * The way in for anything that edits. Phase 4's commands come through here too, so that the
+   * first edit always finds the source safe. A file that has changed refuses the edit.
+   */
+  const editCell = useCallback(
+    async (sheet: number, row: number, col: number, content: CellContent) => {
+      const engine = clientRef.current;
+      const file = fileRef.current;
+      if (!engine || !file) return;
+      if (!protectedRef.current) {
+        const copy = await platform.workingCopy(file);
+        await engine.protectSource(copy?.source);
+        workingRef.current = copy;
+        protectedRef.current = true;
+      }
+      await engine.editCell(sheet, row, col, content);
+      setCanSave(true);
+    },
+    [platform],
   );
 
   const pick = useCallback(async () => {
@@ -274,6 +401,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
         cellText: (row: number, col: number) => Promise<string>;
         loadPhase: () => LoadState['phase'];
         memoryBytes: () => Promise<number>;
+        edit: typeof editCell;
+        hasChanges: () => Promise<boolean>;
+        writeTo: (target: SaveTarget) => Promise<void>;
+        lastSave: () => SaveReport | null;
+        problem: () => string | null;
       };
     };
     hooks.cgsTest = {
@@ -286,8 +418,13 @@ export function AppShell({ platform, theme }: AppShellProps) {
       },
       loadPhase: () => loadRef.current,
       memoryBytes: () => clientRef.current?.memoryBytes() ?? Promise.resolve(0),
+      edit: editCell,
+      hasChanges: () => clientRef.current?.hasChanges() ?? Promise.resolve(false),
+      writeTo,
+      lastSave: () => lastSaveRef.current,
+      problem: () => problemRef.current,
     };
-  }, [openFile]);
+  }, [editCell, openFile, writeTo]);
 
   const chooseSheet = useCallback(
     (key: string | null) => {
@@ -344,13 +481,37 @@ export function AppShell({ platform, theme }: AppShellProps) {
     [openFile, platform, report],
   );
 
+  // Sheets still being read hold on to the source, which a save is about to replace.
+  const saveReady = Boolean(book) && !saving && load.phase !== 'reading';
+
   const menu = useMemo<CgMenuItem[]>(
     () => [
       {
         key: 'file',
         text: 'File',
         children: [
+          {
+            key: 'new',
+            text: 'New',
+            shortcut: 'Ctrl+Alt+N',
+            disabled: saving,
+            onActivate: () => void newWorkbook(),
+          },
           { key: 'open', text: 'Open…', shortcut: 'Ctrl+O', onActivate: () => void pick() },
+          {
+            key: 'save',
+            text: 'Save',
+            shortcut: 'Ctrl+S',
+            disabled: !saveReady || !canSave,
+            onActivate: () => void save(),
+          },
+          {
+            key: 'save-as',
+            text: 'Save As…',
+            shortcut: 'Ctrl+Shift+S',
+            disabled: !saveReady,
+            onActivate: () => void saveAs(),
+          },
           {
             key: 'recent',
             text: 'Recent',
@@ -387,19 +548,42 @@ export function AppShell({ platform, theme }: AppShellProps) {
         ],
       },
     ],
-    [openFromRecent, pick, preference, recent, theme],
+    [
+      canSave,
+      newWorkbook,
+      openFromRecent,
+      pick,
+      preference,
+      recent,
+      save,
+      saveAs,
+      saveReady,
+      saving,
+      theme,
+    ],
   );
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const key = event.key.toLowerCase();
+      if (key === 'o') {
         event.preventDefault();
         void pick();
+      } else if (key === 's') {
+        // Always ours, so that the browser never offers to save the page.
+        event.preventDefault();
+        if (event.shiftKey) void saveAs();
+        else void save();
+      } else if (key === 'n' && event.altKey) {
+        // Browsers keep Ctrl+N for a new window, and a page never sees it.
+        event.preventDefault();
+        void newWorkbook();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [pick]);
+  }, [newWorkbook, pick, save, saveAs]);
 
   const host = native ? `Desktop ${native.version}` : 'Web';
   const sheets = book?.sheets ?? [];
@@ -413,7 +597,9 @@ export function AppShell({ platform, theme }: AppShellProps) {
       ? 'Starting the engine…'
       : reading
         ? `Reading ${percent}%`
-        : 'Ready';
+        : saving
+          ? 'Saving…'
+          : 'Ready';
   const tabs = sheets.flatMap((entry, index) =>
     entry.state === 'visible'
       ? [
@@ -518,7 +704,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
             content: (
               <CgStatusBadge
                 data-testid="engine-status"
-                type={problem ? 'error' : engineReady && !reading ? 'success' : 'info'}
+                type={problem ? 'error' : engineReady && !reading && !saving ? 'success' : 'info'}
                 text={statusText}
               />
             ),
@@ -528,6 +714,24 @@ export function AppShell({ platform, theme }: AppShellProps) {
                 {
                   key: 'read-only',
                   content: <span data-testid="read-only">Read-only</span>,
+                },
+              ]
+            : []),
+          ...(lastSave
+            ? [
+                {
+                  key: 'last-save',
+                  content: (
+                    <button
+                      type="button"
+                      className="cgs-save-status"
+                      data-testid="save-status"
+                      title="Show the save report"
+                      onClick={() => setShowReport(true)}
+                    >
+                      {saveSummary(lastSave)}
+                    </button>
+                  ),
                 },
               ]
             : []),
@@ -579,6 +783,20 @@ export function AppShell({ platform, theme }: AppShellProps) {
           },
         ]}
       />
+      {lastSave && (
+        <CgMessageBox
+          open={showReport}
+          onOpenChange={setShowReport}
+          title="Save report"
+          data-testid="save-report"
+        >
+          <ul className="cgs-save-report">
+            {saveReportLines(lastSave).map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </CgMessageBox>
+      )}
     </div>
   );
 }

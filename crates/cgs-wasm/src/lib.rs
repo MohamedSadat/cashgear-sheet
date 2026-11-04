@@ -2,10 +2,11 @@
 #![cfg(target_arch = "wasm32")]
 
 use std::cell::RefCell;
-use std::io;
+use std::io::{self, Write};
 use std::rc::Rc;
 
-use cgs_engine::{LoadPhase, Screen};
+use cgs_calc::CalcValue;
+use cgs_engine::{report_json, EditCell, EditInput, LoadPhase, Screen};
 use cgs_numfmt::Locale;
 use cgs_xlsx::ByteSource;
 use js_sys::{Function, Uint8Array};
@@ -66,6 +67,52 @@ impl ByteSource for JsSource {
     }
 }
 
+/// How much a save hands to JS at a time. It leaves WASM's memory there, so a large file costs
+/// no more here than its largest changed part.
+const WRITE_CHUNK: usize = 1024 * 1024;
+
+/// Passes a save's bytes to a JS function `(chunk: Uint8Array) => void`.
+struct JsSink {
+    write: Function,
+    buffer: Vec<u8>,
+}
+
+impl JsSink {
+    fn send(&mut self) -> io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let chunk = Uint8Array::from(self.buffer.as_slice());
+        self.buffer.clear();
+        self.write
+            .call1(&JsValue::NULL, &chunk)
+            .map_err(|error| io::Error::other(format!("{error:?}")))?;
+        Ok(())
+    }
+}
+
+impl Write for JsSink {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.buffer.extend_from_slice(bytes);
+        if self.buffer.len() >= WRITE_CHUNK {
+            self.send()?;
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.send()
+    }
+}
+
+fn js_source(read: Function, size: f64) -> Rc<dyn ByteSource> {
+    Rc::new(JsSource {
+        read,
+        size: size as u64,
+        window: RefCell::new((0, Vec::new())),
+    })
+}
+
 #[wasm_bindgen]
 pub struct Engine(cgs_engine::Engine);
 
@@ -124,15 +171,97 @@ impl Engine {
 
     /// Opens a workbook, read through `read(offset, length)`. Returns its sheets as JSON.
     pub fn open(&mut self, read: Function, size: f64) -> Result<String, JsError> {
-        let source = JsSource {
-            read,
-            size: size as u64,
-            window: RefCell::new((0, Vec::new())),
-        };
         self.0
-            .open(Rc::new(source))
+            .open(js_source(read, size))
             .map_err(|error| JsError::new(&error.to_string()))?;
         Ok(self.0.book_json())
+    }
+
+    /// Whether the workbook differs from the file it came from.
+    pub fn has_changes(&self) -> bool {
+        self.0.has_changes()
+    }
+
+    /// Sets a cell to a number, or to text when `number` is missing. `row` and `col` are 1-based.
+    pub fn edit_value(
+        &mut self,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        number: Option<f64>,
+        text: Option<String>,
+    ) -> Result<(), JsError> {
+        let value = match (number, text) {
+            (Some(number), _) => EditInput::Value(CalcValue::Number(number)),
+            (None, Some(text)) => EditInput::Value(CalcValue::Text(text)),
+            (None, None) => EditInput::Clear,
+        };
+        self.apply_edit(sheet, row, col, value)
+    }
+
+    /// Sets a cell to a formula, as a file stores it: no leading `=`.
+    pub fn edit_formula(
+        &mut self,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        text: String,
+    ) -> Result<(), JsError> {
+        self.apply_edit(sheet, row, col, EditInput::Formula(text))
+    }
+
+    fn apply_edit(
+        &mut self,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        input: EditInput,
+    ) -> Result<(), JsError> {
+        self.0
+            .edit_cells(&[EditCell {
+                sheet,
+                row,
+                col,
+                input: Some(input),
+                style: None,
+            }])
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Writes the workbook through `write(chunk)`, and returns its save report as JSON.
+    pub fn save(&mut self, write: Function) -> Result<String, JsError> {
+        let mut sink = JsSink {
+            write,
+            buffer: Vec::with_capacity(WRITE_CHUNK + 64 * 1024),
+        };
+        let report = self
+            .0
+            .save(&mut sink)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        sink.flush()
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(report_json(&report))
+    }
+
+    /// Checks what the last save wrote, before it replaces anything.
+    pub fn verify_saved(&self, read: Function, size: f64) -> Result<(), JsError> {
+        self.0
+            .verify_saved(js_source(read, size).as_ref())
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Reads from the saved file from now on, with nothing left to save.
+    pub fn commit_saved(&mut self, read: Function, size: f64) -> Result<(), JsError> {
+        self.0
+            .commit_saved(js_source(read, size))
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Reads from a copy of the file from now on.
+    pub fn use_source(&mut self, read: Function, size: f64) -> Result<(), JsError> {
+        self.0
+            .use_source(js_source(read, size))
+            .map_err(|error| JsError::new(&error.to_string()))
     }
 
     pub fn close(&mut self) {
@@ -222,6 +351,12 @@ impl Default for Engine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The bytes of a new blank workbook.
+#[wasm_bindgen]
+pub fn blank_workbook() -> Result<Vec<u8>, JsError> {
+    cgs_xlsx::blank::blank_workbook().map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// The crate version this module was built from.

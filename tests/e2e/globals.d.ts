@@ -25,5 +25,15 @@ interface Window {
     cellText(row: number, col: number): Promise<string>;
     loadPhase(): string;
     memoryBytes(): Promise<number>;
+    edit(
+      sheet: number,
+      row: number,
+      col: number,
+      content: { number?: number; text?: string; formula?: string },
+    ): Promise<void>;
+    hasChanges(): Promise<boolean>;
+    writeTo(target: unknown): Promise<void>;
+    lastSave(): unknown;
+    problem(): string | null;
   };
 }

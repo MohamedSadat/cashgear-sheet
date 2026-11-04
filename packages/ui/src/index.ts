@@ -6,6 +6,8 @@ export {
   type OpenedFile,
   type RecentFile,
   type RecentHandle,
+  type SaveTarget,
   type SheetPlatform,
+  type WorkingCopy,
 } from './platform';
 export { ThemeController, type Theme, type ThemePreference } from './theme';

@@ -14,6 +14,22 @@ export interface OpenedFile {
   source: FileSource;
   /** What the recent list needs to find it again, if it can. */
   recent?: RecentHandle;
+  /** How the native side knows this file, on the desktop. */
+  nativeId?: string;
+  /** Never saved: a new workbook, which has nowhere to save to yet. */
+  isNew?: boolean;
+}
+
+/** Somewhere a save can go, with permission already given. */
+export interface SaveTarget {
+  /** Replaces the file in one step and returns it opened again, or fails with it unchanged. */
+  write(blob: Blob): Promise<OpenedFile>;
+}
+
+/** A private copy of a file on the native side. */
+export interface WorkingCopy {
+  source: FileSource;
+  release(): Promise<void>;
 }
 
 /** A way back to a file, which only the platform that made it understands. */
@@ -46,6 +62,18 @@ export interface SheetPlatform {
   openRecent(id: string): Promise<OpenedFile | null>;
   /** Puts a file at the top of the recent list. */
   rememberFile(file: OpenedFile): Promise<void>;
+  /**
+   * Where Save puts this file, asking for permission if it must, so this has to come before
+   * anything slow while the user's click still counts. Null means it needs a name: Save As.
+   */
+  saveTarget(file: OpenedFile): Promise<SaveTarget | null>;
+  /** Asks for a new place to save, in this file type. Null if they changed their mind. */
+  pickSaveTarget(suggestedName: string, extension: string): Promise<SaveTarget | null>;
+  /**
+   * Copies a file on the native side, for the first edit. Null means the platform has nothing to
+   * do, and the engine worker copies a browser file itself. Rejects if the file has changed.
+   */
+  workingCopy(file: OpenedFile): Promise<WorkingCopy | null>;
 }
 
 /** The file types the app opens. Macros stay in the file and never run. */

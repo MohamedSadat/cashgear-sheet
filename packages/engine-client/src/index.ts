@@ -5,12 +5,15 @@ export { TileCache, type TileAddress, type TileStyle } from './tile-cache';
 export { devicePx, TILE_COLS, TILE_ROWS } from './tile-draw';
 export type {
   BookSummary,
+  CellContent,
   CellText,
   DrawingBox,
   EngineInfo,
   FileSource,
   LoadEvent,
   LocaleData,
+  SavedFile,
+  SaveReport,
   SheetSummary,
   TileImage,
   TilePalette,

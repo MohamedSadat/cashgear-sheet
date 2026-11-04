@@ -167,3 +167,20 @@ body {
 .cgs-zoom {
   inline-size: 140px;
 }
+
+.cgs-save-status {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.cgs-save-report {
+  margin: 0;
+  padding-inline-start: 1.25em;
+  overflow-wrap: anywhere;
+}

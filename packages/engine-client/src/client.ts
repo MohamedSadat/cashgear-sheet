@@ -1,6 +1,7 @@
 import { proxy, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import type {
   BookSummary,
+  CellContent,
   CellText,
   DrawingBox,
   EngineApi,
@@ -8,6 +9,7 @@ import type {
   FileSource,
   LoadEvent,
   LocaleData,
+  SavedFile,
   TileImage,
   TileRequest,
   TileWorkerApi,
@@ -23,6 +25,17 @@ export interface EngineClient {
   /** Opens a workbook. Its sheets become readable through `onEvent`. */
   open(source: FileSource, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
   close(): Promise<void>;
+  /** The bytes of a new blank workbook. */
+  blankWorkbook(): Promise<Uint8Array>;
+  /** Makes saves independent of the file on disk, before the first edit. See `EngineApi`. */
+  protectSource(source?: FileSource): Promise<boolean>;
+  /** `row` and `col` are 1-based. */
+  editCell(sheet: number, row: number, col: number, content: CellContent): Promise<void>;
+  hasChanges(): Promise<boolean>;
+  /** Writes the workbook to a checked blob, and leaves the file on disk alone. */
+  save(): Promise<SavedFile>;
+  /** The save now stands in `source`, which the workbook reads from from now on. */
+  commitSaved(source: FileSource): Promise<void>;
   /** Reads this sheet next, if it isn't read yet. */
   prioritize(sheet: number): Promise<void>;
   layout(sheet: number): Promise<SheetLayout>;
@@ -84,6 +97,12 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     setLocale: (locale) => engine.setLocale(locale),
     open: (source, onEvent) => engine.open(source, proxy(onEvent)),
     close: () => engine.close(),
+    blankWorkbook: () => engine.blankWorkbook(),
+    protectSource: (source) => engine.protectSource(source),
+    editCell: (sheet, row, col, content) => engine.editCell(sheet, row, col, content),
+    hasChanges: () => engine.hasChanges(),
+    save: () => engine.save(),
+    commitSaved: (source) => engine.commitSaved(source),
     prioritize: (sheet) => engine.prioritize(sheet),
     async layout(sheet) {
       return decodeLayout(await engine.layout(sheet));

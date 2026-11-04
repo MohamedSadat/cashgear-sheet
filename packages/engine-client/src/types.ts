@@ -45,6 +45,35 @@ export type FileSource =
   /** The desktop's read protocol, which serves byte ranges. */
   | { kind: 'url'; url: string; size: number };
 
+/** A cell's new contents, for `editCell`. An empty one clears it. */
+export interface CellContent {
+  number?: number;
+  text?: string;
+  /** As a file stores it: no leading `=`. */
+  formula?: string;
+}
+
+/** What a save did. See `SaveReport` in `crates/cgs-xlsx/src/save.rs`. */
+export interface SaveReport {
+  keptParts: number;
+  cellsWritten: number;
+  stringsAdded: number;
+  recalculatesOnOpen: boolean;
+  pivotsRefreshOnOpen: boolean;
+  resultsLeftToExcel: number;
+  tableHeadersFixed: number;
+  changedParts: string[];
+  removedParts: string[];
+  addedParts: string[];
+  keptContent: { what: string; parts: number }[];
+}
+
+/** A checked save, ready to replace the file. */
+export interface SavedFile {
+  blob: Blob;
+  report: SaveReport;
+}
+
 export interface SheetSummary {
   name: string;
   state: 'visible' | 'hidden' | 'veryHidden';
@@ -113,6 +142,22 @@ export interface EngineApi {
   /** Opens a workbook and starts reading it. Rejects with a message people can read. */
   open(source: FileSource, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
   close(): void;
+  /** The bytes of a new blank workbook. */
+  blankWorkbook(): Promise<Uint8Array>;
+  /**
+   * Makes saves independent of the file on disk before the first edit. With a source, the
+   * workbook reads from that copy. With none, the worker copies a browser file to OPFS itself.
+   * Rejects if the file has changed since it was opened. Resolves false if there is nowhere to
+   * copy it, as saving then still works unless the file changes.
+   */
+  protectSource(source?: FileSource): Promise<boolean>;
+  /** `row` and `col` are 1-based. */
+  editCell(sheet: number, row: number, col: number, content: CellContent): Promise<void>;
+  hasChanges(): Promise<boolean>;
+  /** Writes the workbook to a checked blob, and leaves the file on disk alone. */
+  save(): Promise<SavedFile>;
+  /** The save now stands in `source`, which the workbook reads from from now on. */
+  commitSaved(source: FileSource): Promise<void>;
   prioritize(sheet: number): void;
   /** The numbers `decodeLayout` reads. */
   layout(sheet: number): Promise<Uint32Array>;

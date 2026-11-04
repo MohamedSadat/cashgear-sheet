@@ -3,6 +3,7 @@ import {
   WORKBOOK_EXTENSIONS,
   type OpenedFile,
   type RecentFile,
+  type SaveTarget,
   type SheetPlatform,
 } from '@cgs/ui';
 
@@ -23,11 +24,18 @@ interface PickerWindow {
     excludeAcceptAllOption?: boolean;
     multiple?: boolean;
   }) => Promise<FileSystemFileHandle[]>;
+  showSaveFilePicker?: (options: {
+    suggestedName?: string;
+    types: { description: string; accept: Record<string, string[]> }[];
+    excludeAcceptAllOption?: boolean;
+  }) => Promise<FileSystemFileHandle>;
 }
 
+type HandleMode = { mode: 'read' | 'readwrite' };
+
 interface PermissionHandle extends FileSystemFileHandle {
-  queryPermission?: (options: { mode: 'read' }) => Promise<PermissionState>;
-  requestPermission?: (options: { mode: 'read' }) => Promise<PermissionState>;
+  queryPermission?: (options: HandleMode) => Promise<PermissionState>;
+  requestPermission?: (options: HandleMode) => Promise<PermissionState>;
 }
 
 interface HandleItem extends DataTransferItem {
@@ -99,6 +107,47 @@ const opened = (file: File, handle?: FileSystemFileHandle): OpenedFile => ({
   recent: handle,
 });
 
+const MIME_TYPES: Record<string, string> = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+  xltx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
+  xltm: 'application/vnd.ms-excel.template.macroEnabled.12',
+};
+
+/**
+ * Writes through the browser's own swap file, which only replaces the real file on `close`. A
+ * failure at any point before that leaves the original as it was.
+ */
+const handleTarget = (handle: FileSystemFileHandle): SaveTarget => ({
+  async write(blob) {
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(blob);
+      await writable.close();
+    } catch (error) {
+      await writable.abort().catch(() => undefined);
+      throw error;
+    }
+    return opened(await handle.getFile(), handle);
+  },
+});
+
+/** For a browser with no file handles: a download, which the workbook then reads from. */
+const downloadTarget = (name: string): SaveTarget => ({
+  async write(blob) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    link.style.display = 'none';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return { name, source: { kind: 'blob', blob } };
+  },
+});
+
 export const webPlatform: SheetPlatform = {
   kind: 'web',
   nativeInfo: () => Promise.resolve(null),
@@ -158,6 +207,41 @@ export const webPlatform: SheetPlatform = {
       return null;
     }
   },
+  async saveTarget(file) {
+    const handle = file.recent as PermissionHandle | undefined;
+    if (!handle || file.isNew) return null;
+    try {
+      const options = { mode: 'readwrite' } as const;
+      let state = await handle.queryPermission?.(options);
+      if (state !== 'granted') state = await handle.requestPermission?.(options);
+      // Without permission to write here, it can still go somewhere else.
+      return state === 'granted' ? handleTarget(handle) : null;
+    } catch {
+      return null;
+    }
+  },
+  async pickSaveTarget(suggestedName, extension) {
+    const picker = (window as PickerWindow).showSaveFilePicker;
+    if (!picker) return downloadTarget(suggestedName);
+    try {
+      const handle = await picker({
+        suggestedName,
+        types: [
+          {
+            description: 'Excel workbook',
+            accept: { [MIME_TYPES[extension] ?? MIME_TYPES.xlsx!]: ['.' + extension] },
+          },
+        ],
+        excludeAcceptAllOption: true,
+      });
+      return handleTarget(handle);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return null;
+      throw error;
+    }
+  },
+  // A browser file goes to OPFS, which the engine worker reaches itself.
+  workingCopy: () => Promise.resolve(null),
   async rememberFile(file) {
     const handle = file.recent as FileSystemFileHandle | undefined;
     if (!handle) return;

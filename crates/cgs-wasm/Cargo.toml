@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cgs-engine.workspace = true
+cgs-calc = { path = "../cgs-calc" }
 cgs-numfmt = { path = "../cgs-numfmt" }
 cgs-xlsx = { path = "../cgs-xlsx" }
 js-sys = "=0.3.106"

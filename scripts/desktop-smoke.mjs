@@ -4,13 +4,19 @@
 // control, cross-origin isolation and shared memory. It also checks the native command,
 // the window's own theme, and that the choice survives a restart.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, expect } from '@playwright/test';
 import { controlColor, expectGolden, FONT_OVERRIDE, waitForGrid } from '../tests/e2e/helpers.mjs';
-import { arabicBook, defaultStyledBook, formattingBook } from '../tests/fixtures/workbooks.mjs';
+import {
+  arabicBook,
+  defaultStyledBook,
+  formattingBook,
+  readZip,
+  structuresBook,
+} from '../tests/fixtures/workbooks.mjs';
 import { root } from './lib.mjs';
 
 const appVersion = JSON.parse(
@@ -246,7 +252,83 @@ try {
   results.cellText = await page.evaluate(() => window.cgsTest.cellText(4, 2));
   if (results.cellText !== '12.50%') throw new Error('Cell B4 shows ' + results.cellText);
 
+  // Saving through the native side: the bytes go by protocol, and the file changes in one step.
+  const savePath = join(fixtures, 'saved.xlsx');
+  const sourceBook = structuresBook();
+  await writeFile(savePath, sourceBook);
+  await openPath(page, savePath);
+  await waitForGrid(page, 'dark');
+  await page.evaluate(() => window.cgsTest.edit(0, 5, 1, { number: 100 }));
+  const saveTo = (path) =>
+    page.evaluate(async (path) => {
+      await window.cgsTest.writeTo(await window.cgsSaveTarget(path));
+      return window.cgsTest.problem();
+    }, path);
+  const savedProblem = await saveTo(savePath);
+  if (savedProblem) throw new Error('The save failed: ' + savedProblem);
+  const contents = async (path) =>
+    new Map(readZip(await readFile(path)).map(([name, body]) => [name, body]));
+  const before = new Map(readZip(sourceBook));
+  let after = await contents(savePath);
+  if (!after.get('xl/worksheets/sheet1.xml').toString().includes('<c r="A5"><v>100</v></c>'))
+    throw new Error('The saved file does not hold the edit.');
+  if (after.has('xl/calcChain.xml')) throw new Error('The calculation chain is still there.');
+  if (!after.get('xl/tables/table1.xml').equals(before.get('xl/tables/table1.xml')))
+    throw new Error('A part the edit did not touch changed.');
+  const leftovers = (await readdir(fixtures)).filter((name) => name.includes('cgs-saving'));
+  if (leftovers.length) throw new Error('A save left files behind: ' + leftovers.join(', '));
+
+  // A second save reads from the file the first one wrote.
+  await page.evaluate(() => window.cgsTest.edit(0, 30, 1, { text: 'second' }));
+  const secondProblem = await saveTo(savePath);
+  if (secondProblem) throw new Error('The second save failed: ' + secondProblem);
+  after = await contents(savePath);
+  const secondSheet = after.get('xl/worksheets/sheet1.xml').toString();
+  if (!secondSheet.includes('<c r="A5"><v>100</v></c>') || !secondSheet.includes('<c r="A30"'))
+    throw new Error('The second save lost something.');
+
+  // Save As writes somewhere new, and the old file stays.
+  const copyPath = join(fixtures, 'copy.xlsx');
+  await page.evaluate(() => window.cgsTest.edit(0, 31, 1, { number: 1 }));
+  const copyProblem = await saveTo(copyPath);
+  if (copyProblem) throw new Error('Save As failed: ' + copyProblem);
+  if ((await contents(savePath)).get('xl/worksheets/sheet1.xml').toString().includes('A31'))
+    throw new Error('Save As changed the file it came from.');
+  if (!(await contents(copyPath)).get('xl/worksheets/sheet1.xml').toString().includes('A31'))
+    throw new Error('Save As did not write the edit.');
+
+  // A file that changed before the first edit is refused, rather than read at old offsets.
+  const changedPath = join(fixtures, 'changed.xlsx');
+  await writeFile(changedPath, sourceBook);
+  await openPath(page, changedPath);
+  await waitForGrid(page, 'dark');
+  await writeFile(changedPath, Buffer.concat([sourceBook, Buffer.from('more')]));
+  const refused = await page.evaluate(() =>
+    window.cgsTest.edit(0, 2, 1, { number: 9 }).then(
+      () => 'edited',
+      (error) => error.message ?? String(error),
+    ),
+  );
+  if (!/changed since it was opened/.test(refused))
+    throw new Error('A changed file was not refused: ' + refused);
+  // And a working copy protects a file that changes after the first edit.
+  await writeFile(changedPath, sourceBook);
+  await openPath(page, changedPath);
+  await waitForGrid(page, 'dark');
+  await page.evaluate(() => window.cgsTest.edit(0, 2, 1, { number: 9 }));
+  await writeFile(changedPath, Buffer.from('something else entirely'));
+  const protectedProblem = await saveTo(changedPath);
+  if (protectedProblem) throw new Error('The working copy did not help: ' + protectedProblem);
+  const rescued = await contents(changedPath);
+  if (!rescued.get('xl/worksheets/sheet1.xml').toString().includes('<c r="A2"><v>9</v></c>'))
+    throw new Error('The rescued file does not hold the edit.');
+  if (!rescued.get('xl/tables/table1.xml').equals(before.get('xl/tables/table1.xml')))
+    throw new Error('The rescued file lost a part.');
+  results.saving = 'overwrite, second save, save as, changed file refused, working copy used';
+
   // The file just opened is on the recent list, and the list survives a restart.
+  await openPath(page, books.formatting);
+  await waitForGrid(page, 'dark');
   const recent = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('recent_files', {}));
   if (!recent.some((file) => file.name === 'formatting.xlsx'))
     throw new Error('The recent list is missing a file: ' + JSON.stringify(recent));
