@@ -55,3 +55,19 @@ node bench/run-excel-matrix.mjs bench/results/excel-matrix.json
 ```
 
 Add `--private` to `run-save-check.mjs`, or `--private=<folder>` to `run-excel-matrix.mjs`, for a private folder: results then hold counts only. Excel opens the originals read-only and never saves them.
+
+# Phase 4 checks
+
+What editing is held to. Only generated workbooks and what we saved from them go through Excel here.
+
+- `run-edit-fuzz.mjs`, `excel-edits.ps1`, `harness/src/bin/editfuzz.rs`: random edits on a generated seed through the shipped command path and through Excel over COM, compared cell by cell after every step. An undo is judged by Excel's earlier state. Saved files then open in Excel, and are compared again.
+- `run-excel-input.mjs`, `excel-input.ps1`, `harness/src/bin/inputcheck.rs`: what typed text means, against Excel.
+- `measure-input.mjs`: key to painted frame while 1,000,000 formulas recalculate in Chrome, the longest wait for the engine, and how long saving takes in WASM. Needs `node bench/generate-speed-books.mjs --only=recalc-1m` and a release build.
+- `run-excel-matrix.mjs`: now also runs each structural edit over each fixture. `moving-parts.xlsx` holds one of each thing in a file that keeps a cell address.
+
+```bash
+cargo build -p cgs-bench --profile fast --bin editfuzz --bin inputcheck
+node bench/run-edit-fuzz.mjs --seed=1 --episodes=250 --steps=5 --fresh
+node bench/run-excel-input.mjs
+node bench/measure-input.mjs
+```

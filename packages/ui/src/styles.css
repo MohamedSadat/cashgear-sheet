@@ -92,6 +92,102 @@ body {
 
 .cgs-formula-text {
   flex: 1 1 auto;
+  overflow: hidden;
+  white-space: pre;
+  resize: none;
+  /* Whole pixels, or the canvas below sits between them and every cell blurs. */
+  height: 24px;
+  line-height: 22px;
+  box-sizing: border-box;
+}
+
+/* It waits off to one side when idle, so that a key can land in it, and the grid places it. */
+.cgs-cell-editor {
+  position: absolute;
+  inset-inline-start: auto;
+  left: -10000px;
+  top: 0;
+  z-index: 3;
+  display: flex;
+}
+
+.cgs-cell-editor textarea {
+  width: 100%;
+  min-width: inherit;
+  min-height: inherit;
+  padding: 0 2px;
+  overflow: hidden;
+  color: var(--cg-text);
+  font-family: Calibri, Carlito, var(--cg-font-family, sans-serif);
+  font-size: var(--cgs-cell-font, 15px);
+  line-height: 1.2;
+  white-space: pre;
+  background: var(--cg-surface);
+  border: 2px solid var(--cg-accent);
+  outline: none;
+  resize: none;
+  field-sizing: content;
+}
+
+.cgs-cell-editor:not(.cgs-cell-editor-open) textarea {
+  opacity: 0;
+}
+
+.cgs-completions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 4;
+  min-width: 14em;
+  margin: 2px 0 0;
+  padding: 2px 0;
+  font-size: var(--cg-font-size-sm);
+  list-style: none;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+  border-radius: var(--cg-radius-sm);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+}
+
+.cgs-completions li {
+  padding: 1px var(--cg-space-2);
+  cursor: default;
+}
+
+.cgs-completion-chosen {
+  color: #fff;
+  background: var(--cg-accent);
+}
+
+.cgs-sheet-name {
+  width: 100%;
+  padding: var(--cg-space-1) var(--cg-space-2);
+  color: var(--cg-text);
+  font: inherit;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+  border-radius: var(--cg-radius-sm);
+}
+
+.cgs-add-sheet {
+  flex: 0 0 auto;
+  padding: 0 var(--cg-space-3);
+  color: inherit;
+  font: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.cgs-discard {
+  margin-block-start: var(--cg-space-2);
+  padding: 0;
+  color: var(--cg-accent);
+  font: inherit;
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
 }
 
 .cgs-formula-mark {
@@ -154,6 +250,8 @@ body {
 }
 
 .cgs-tabs {
+  display: flex;
+  align-items: stretch;
   min-height: 0;
   background: var(--cg-surface-subtle);
   border-block-start: var(--cg-border-style);

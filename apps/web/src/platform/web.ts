@@ -1,6 +1,6 @@
 import {
   MAX_RECENT_FILES,
-  WORKBOOK_EXTENSIONS,
+  OPENABLE_EXTENSIONS,
   type OpenedFile,
   type RecentFile,
   type SaveTarget,
@@ -85,7 +85,7 @@ function pickWithInput(): Promise<File | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = WORKBOOK_EXTENSIONS.join(',');
+    input.accept = OPENABLE_EXTENSIONS.join(',');
     input.dataset.testid = 'file-input';
     input.style.display = 'none';
     input.addEventListener('change', () => {
@@ -109,6 +109,7 @@ const opened = (file: File, handle?: FileSystemFileHandle): OpenedFile => ({
 
 const MIME_TYPES: Record<string, string> = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  csv: 'text/csv',
   xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
   xltx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
   xltm: 'application/vnd.ms-excel.template.macroEnabled.12',
@@ -163,10 +164,10 @@ export const webPlatform: SheetPlatform = {
       const [handle] = await picker({
         types: [
           {
-            description: 'Excel workbooks',
+            description: 'Workbooks and CSV',
             accept: {
               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': [
-                ...WORKBOOK_EXTENSIONS,
+                ...OPENABLE_EXTENSIONS,
               ],
             },
           },

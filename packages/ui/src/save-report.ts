@@ -40,6 +40,11 @@ export function saveReportLines(report: SaveReport): string[] {
       `${plural(report.resultsLeftToExcel, 'result')} will be worked out by Excel when it opens the file.`,
     );
   }
+  if (report.leftExtensions.length) {
+    lines.push(
+      `${plural(report.leftExtensions.length, 'extension')} this app doesn't know stayed as ${report.leftExtensions.length === 1 ? 'it was' : 'they were'}, and won't follow rows or columns that moved: ${report.leftExtensions.join(', ')}.`,
+    );
+  }
   return lines;
 }
 

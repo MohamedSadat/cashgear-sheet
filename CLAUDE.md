@@ -81,8 +81,16 @@ Found in Phase 3:
 
 - Excel refuses a damaged or invalid workbook over COM where a person would get a repair prompt, so `Workbooks.Open` throwing is the signal. `bench/run-excel-matrix.mjs` opens broken fixtures first to prove it still sees that. Add a broken fixture when you find a new way to upset Excel.
 - `#SPILL!`, `#CALC!` and other newer errors can't go in a cell as plain `t="e"`: Excel refuses the file. They need rich value metadata.
-- Formualizer's `evaluate_all_with_delta` can miss a changed cell: 2 distinct workbooks in the public set, each one cell, both `IF` or `SUM` formulas. Excel recalculates them on opening. Don't treat the list as complete until Phase 4 has looked at why.
 - `tests/fixtures/vba.mjs` builds a real VBA project. A storage's children sort by code unit, not by locale, or Excel can't find `_VBA_PROJECT`.
+
+Found in Phase 4:
+
+- The Excel on this PC is 2016 (16.0): no dynamic arrays, XLOOKUP, LET, CONCAT, TEXTJOIN or IFS, and `Range.Formula2` doesn't exist. Compare with `.Formula`, and don't use those functions in anything Excel has to agree with.
+- A PowerShell function returning a Range unrolls it to cells, so use `return , $range`. COM needs `[double]` casts for numeric `.Value2`.
+- Over COM, setting part of a legacy array can be silently ignored rather than refused, typing beside a table expands it unless `AutoExpandListRange` is off, and `+A1` stays text where typing makes a formula. A new table column's default name is Arabic here.
+- `Workbooks.Open` refusing a file doesn't say why. A cell with a text result and no `t="str"` is enough.
+- Paste needs the browser's own `paste` event, so the grid must not `preventDefault` Ctrl+V on keydown.
+- The first edit's `protectSource` is asynchronous, so commands run through one queue in `AppShell`. Never call `engine.command` around it.
 
 Carried over from CashGear Video, where they were measured:
 

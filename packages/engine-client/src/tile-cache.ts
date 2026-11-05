@@ -22,6 +22,9 @@ interface Entry {
   ready: boolean;
   bytes: number;
   used: number;
+  /** When this last went out of date, and when the drawing on its way was asked for. */
+  staleAt: number;
+  askedAt: number;
 }
 
 export interface TileStyle {
@@ -94,12 +97,25 @@ export class TileCache {
   /** A sheet's tiles are out of date: it finished loading, say. Pictures stay until replaced. */
   invalidateSheet(sheet: number) {
     for (const entry of this.entries.values()) {
-      if (entry.sheet === sheet) {
-        entry.drawn = 0;
-        entry.ready = false;
-      }
+      if (entry.sheet === sheet) this.markStale(entry);
     }
     this.pump();
+  }
+
+  /** Some tiles are out of date, because cells on them changed. Pictures stay until replaced. */
+  invalidateTiles(tiles: TileAddress[]) {
+    for (const { sheet, firstRow, firstCol } of tiles) {
+      const entry = this.entries.get(keyOf(sheet, firstRow, firstCol));
+      if (entry) this.markStale(entry);
+    }
+    this.pump();
+  }
+
+  private markStale(entry: Entry) {
+    entry.drawn = 0;
+    entry.pending = 0;
+    entry.ready = false;
+    entry.staleAt = ++this.clock;
   }
 
   /** Drops every picture, for when a different workbook opens. */
@@ -134,6 +150,8 @@ export class TileCache {
           ready: false,
           bytes: 0,
           used: ++this.clock,
+          staleAt: 0,
+          askedAt: 0,
         };
         this.entries.set(key, entry);
       }
@@ -145,6 +163,8 @@ export class TileCache {
     const style = this.style;
     const current = this.current!;
     entry.pending = style;
+    entry.askedAt = ++this.clock;
+    const askedAt = entry.askedAt;
     this.inFlight++;
     const { sheet, firstRow, firstCol } = entry;
     this.draw({
@@ -167,9 +187,11 @@ export class TileCache {
         this.held -= entry.bytes;
         entry.bitmap = bitmap;
         entry.hash = hash;
-        entry.drawn = style;
-        entry.pending = 0;
-        entry.ready = ready;
+        // A change since this was asked for means it is already out of date, though it stands in.
+        const current = entry.staleAt < askedAt;
+        entry.drawn = current ? style : 0;
+        if (current || entry.pending === style) entry.pending = 0;
+        entry.ready = current && ready;
         entry.bytes = bitmap.width * bitmap.height * 4;
         entry.used = ++this.clock;
         this.held += entry.bytes;

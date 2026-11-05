@@ -22,18 +22,23 @@ import {
 import {
   createEngineClient,
   localeData,
+  type Applied,
   type BookSummary,
-  type CellContent,
+  type CalcStatus,
+  type Command,
   type EngineClient,
   type LoadEvent,
+  type Recoverable,
   type SaveReport,
+  type WorkbookChanges,
 } from '@cgs/engine-client';
+import { CellEditor, type CellEditorHandle, type CompletionControl } from './CellEditor';
 import { FormulaBar } from './FormulaBar';
 import { type GridController, type GridEvents, type GridSelection } from './grid/controller';
 import { sliderToZoom, zoomToSlider } from './grid/geometry';
 import { SheetCanvas } from './grid/SheetCanvas';
 import {
-  WORKBOOK_EXTENSIONS,
+  OPENABLE_EXTENSIONS,
   type NativeInfo,
   type OpenedFile,
   type RecentFile,
@@ -42,6 +47,7 @@ import {
   type WorkingCopy,
 } from './platform';
 import { saveReportLines, saveSummary, workbookExtension } from './save-report';
+import { fromArea, SheetEditing, toArea, type EditingHost } from './sheet-editing';
 import { readGridColors, readPalette, type ThemeController, type ThemePreference } from './theme';
 
 const themeChoices = [
@@ -68,6 +74,19 @@ interface AppShellProps {
 
 const noCell: CellDetail = { name: '', edit: '' };
 
+/** A CSV's bytes as text: UTF-8 if they can be, or else Windows' usual code page. */
+async function csvFileText(source: OpenedFile['source']) {
+  const bytes =
+    source.kind === 'blob'
+      ? await source.blob.arrayBuffer()
+      : await (await fetch(source.url)).arrayBuffer();
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return new TextDecoder('windows-1252').decode(bytes);
+  }
+}
+
 export function AppShell({ platform, theme }: AppShellProps) {
   const [client, setClient] = useState<EngineClient | null>(null);
   const [clientVersion, setClientVersion] = useState(0);
@@ -88,7 +107,26 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const [saving, setSaving] = useState(false);
   const [lastSave, setLastSave] = useState<SaveReport | null>(null);
   const [showReport, setShowReport] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [calc, setCalc] = useState<CalcStatus>({ calculating: false, manual: false });
+  const [undoLabels, setUndoLabels] = useState<{ undo: string | null; redo: string | null }>({
+    undo: null,
+    redo: null,
+  });
+  const [names, setNames] = useState<string[]>([]);
+  const [renaming, setRenaming] = useState<{ sheet: number; name: string } | null>(null);
+  const [recoverable, setRecoverable] = useState<Recoverable[]>([]);
   const fileRef = useRef<OpenedFile | null>(null);
+  /** Commands run in order, as the first has to make the source safe before any of them. */
+  const commands = useRef<Promise<unknown>>(Promise.resolve());
+  const editedRef = useRef(false);
+  const csvRef = useRef<string | null>(null);
+  const bookRef = useRef<BookSummary | null>(null);
+  const cellRef = useRef<CellDetail>(noCell);
+  const editorRef = useRef<CellEditorHandle | null>(null);
+  const completionRef = useRef<CompletionControl | null>(null);
+  const selectionRef = useRef<GridSelection | null>(null);
+  const loadedRef = useRef<ReadonlySet<number>>(new Set());
   /** The source has been copied, or there's nowhere to copy it, so edits can go ahead. */
   const protectedRef = useRef(false);
   const workingRef = useRef<WorkingCopy | null>(null);
@@ -108,6 +146,9 @@ export function AppShell({ platform, theme }: AppShellProps) {
   loadRef.current = load.phase;
   lastSaveRef.current = lastSave;
   problemRef.current = problem;
+  bookRef.current = book;
+  cellRef.current = cell;
+  loadedRef.current = loadedSheets;
 
   const preference = useSyncExternalStore(theme.subscribe, () => theme.preference);
   const current = useSyncExternalStore(theme.subscribe, () => theme.theme);
@@ -176,7 +217,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     if (sheetRef.current !== index) return;
     shownSheet.current = index;
     controller.current?.showSheet(index, layout, drawings);
-    controller.current?.focus();
+    if (!editingRef.current?.session.snapshot().active) controller.current?.focus();
   }, []);
 
   const onLoadEvent = useCallback(
@@ -199,6 +240,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
           break;
         case 'loaded':
           setLoad((state) => ({ ...state, phase: 'preparing' }));
+          if (csvRef.current !== null) {
+            const text = csvRef.current;
+            csvRef.current = null;
+            engine.loadCsv(text).catch(report);
+          }
           break;
         case 'prepared':
           setLoad((state) => ({ ...state, phase: 'ready' }));
@@ -224,15 +270,20 @@ export function AppShell({ platform, theme }: AppShellProps) {
     if (copy) void copy.release().catch((error) => console.warn('Working copy:', error));
   }, []);
 
-  const openFile = useCallback(
-    async (file: OpenedFile) => {
+  const openBook = useCallback(
+    async (file: OpenedFile, recovered?: string) => {
       const engine = clientRef.current;
       if (!engine) return;
       const token = ++openToken.current;
+      editingRef.current?.cancel();
       fileRef.current = file;
-      protectedRef.current = false;
+      // A recovered workbook already reads from its own private copy.
+      protectedRef.current = Boolean(recovered);
+      editedRef.current = Boolean(recovered);
       releaseWorking();
       setCanSave(Boolean(file.isNew));
+      setNotice(null);
+      setUndoLabels({ undo: null, redo: null });
       setLastSave(null);
       setProblem(null);
       setCell(noCell);
@@ -241,9 +292,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
       setLoad({ phase: 'reading', done: 0, total: 0 });
       controller.current?.reset();
       try {
-        const summary = await engine.open(file.source, (event) =>
-          onLoadEvent(token, engine, event),
-        );
+        const onEvent = (event: LoadEvent) => onLoadEvent(token, engine, event);
+        const summary = recovered
+          ? await engine.openRecovered(recovered, onEvent)
+          : await engine.open(file.source, onEvent, file.name);
         if (token !== openToken.current) return;
         const visible = summary.sheets.findIndex(
           (entry, index) => index === summary.active && entry.state === 'visible',
@@ -258,6 +310,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
         setLoadedSheets(
           new Set(summary.sheets.flatMap((entry, index) => (entry.loaded ? [index] : []))),
         );
+        void Promise.all([engine.functionNames(), engine.definedNames()])
+          .then(([functions, defined]) => {
+            if (token === openToken.current) setNames([...defined, ...functions]);
+          })
+          .catch(report);
         await platform.rememberFile(file);
         refreshRecent();
       } catch (error) {
@@ -273,6 +330,25 @@ export function AppShell({ platform, theme }: AppShellProps) {
       }
     },
     [onLoadEvent, platform, refreshRecent, releaseWorking, report],
+  );
+
+  const openFile = useCallback(
+    async (file: OpenedFile) => {
+      const engine = clientRef.current;
+      if (!engine || !/\.csv$/i.test(file.name)) {
+        await openBook(file);
+        return;
+      }
+      // A CSV is cells for a new workbook, and saving it asks where.
+      csvRef.current = await csvFileText(file.source);
+      const bytes = await engine.blankWorkbook();
+      await openBook({
+        name: file.name.replace(/\.csv$/i, '.xlsx'),
+        source: { kind: 'blob', blob: new Blob([bytes as BlobPart]) },
+        isNew: true,
+      });
+    },
+    [openBook],
   );
 
   const newWorkbook = useCallback(async () => {
@@ -301,9 +377,12 @@ export function AppShell({ platform, theme }: AppShellProps) {
       setSaving(true);
       setProblem(null);
       try {
+        // Whatever was typed before Save is part of what gets saved.
+        await commands.current.catch(() => undefined);
         const { blob, report: saved } = await engine.save();
         const written = await target.write(blob);
         await engine.commitSaved(written.source);
+        editedRef.current = false;
         // The old file's working copy has nothing left to do, and the next edit makes a new one.
         protectedRef.current = false;
         releaseWorking();
@@ -338,6 +417,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
     const file = fileRef.current;
     if (!file || loadRef.current === 'reading') return;
     try {
+      editingRef.current?.commit();
+      await commands.current.catch(() => undefined);
       // Nothing to write, so the file stays as it is.
       if (!file.isNew && !(await clientRef.current?.hasChanges())) return;
       const target = await platform.saveTarget(file);
@@ -348,26 +429,287 @@ export function AppShell({ platform, theme }: AppShellProps) {
     }
   }, [platform, report, saveAs, writeTo]);
 
-  /**
-   * The way in for anything that edits. Phase 4's commands come through here too, so that the
-   * first edit always finds the source safe. A file that has changed refuses the edit.
-   */
-  const editCell = useCallback(
-    async (sheet: number, row: number, col: number, content: CellContent) => {
+  /** Asks the engine what the active cell holds, for the formula bar. */
+  const refreshCell = useCallback(() => {
+    const engine = clientRef.current;
+    const selection = selectionRef.current;
+    if (!engine || !selection) return;
+    const token = ++cellToken.current;
+    setCell((previous) => ({ ...previous, name: selection.name }));
+    engine
+      .cellText(sheetRef.current, selection.row + 1, selection.col + 1)
+      .then((text) => {
+        if (token === cellToken.current) setCell({ name: selection.name, edit: text.edit });
+      })
+      .catch(report);
+  }, [report]);
+
+  /** The list of sheets as the engine now has it. */
+  const applySummary = useCallback((summary: BookSummary) => {
+    const loaded = new Set(summary.sheets.flatMap((entry, index) => (entry.loaded ? [index] : [])));
+    bookRef.current = summary;
+    loadedRef.current = loaded;
+    setBook(summary);
+    setLoadedSheets(loaded);
+  }, []);
+
+  const goToSheet = useCallback(
+    async (index: number) => {
       const engine = clientRef.current;
-      const file = fileRef.current;
-      if (!engine || !file) return;
-      if (!protectedRef.current) {
-        const copy = await platform.workingCopy(file);
-        await engine.protectSource(copy?.source);
-        workingRef.current = copy;
-        protectedRef.current = true;
-      }
-      await engine.editCell(sheet, row, col, content);
-      setCanSave(true);
+      if (!engine || sheetRef.current === index) return;
+      sheetRef.current = index;
+      setSheet(index);
+      if (loadedRef.current.has(index)) await showSheet(engine, index);
+      else await engine.prioritize(index);
     },
-    [platform],
+    [showSheet],
   );
+
+  /**
+   * The way in for anything that edits, so that the first edit always finds the source safe. A file
+   * that has changed refuses the edit.
+   */
+  const runCommand = useCallback(
+    (command: Command): Promise<Applied> => {
+      const job = commands.current
+        .catch(() => undefined)
+        .then(async () => {
+          const engine = clientRef.current;
+          const file = fileRef.current;
+          if (!engine || !file) throw new Error('Open a workbook first.');
+          if (!protectedRef.current) {
+            const copy = await platform.workingCopy(file);
+            await engine.protectSource(copy?.source);
+            workingRef.current = copy;
+            protectedRef.current = true;
+          }
+          const applied = await engine.command(command);
+          const changed = await engine.hasChanges();
+          editedRef.current = changed;
+          setCanSave(changed || Boolean(file.isNew));
+          setUndoLabels({ undo: applied.undo, redo: applied.redo });
+          if (applied.lost) setNotice('That change was too big to keep for undo.');
+          // The tabs have to be right before anything goes to a sheet.
+          let summary: BookSummary | null = null;
+          if (
+            command.kind === 'insertSheet' ||
+            command.kind === 'deleteSheet' ||
+            command.kind === 'renameSheet' ||
+            command.kind === 'undo' ||
+            command.kind === 'redo'
+          ) {
+            summary = await engine.bookSummary();
+            applySummary(summary);
+          }
+          if (summary && command.kind === 'insertSheet') {
+            const at = Math.min(command.position, summary.order.length - 1);
+            await goToSheet(summary.order[at] ?? 0);
+          } else if (summary?.sheets[sheetRef.current]?.deleted) {
+            const next = summary.order.find((index) => {
+              const entry = summary?.sheets[index];
+              return entry && !entry.deleted && entry.state === 'visible';
+            });
+            if (next !== undefined) await goToSheet(next);
+          }
+          // Typing has already moved on from the cell, and the next key may be on its way.
+          if (applied.selection && command.kind !== 'input') {
+            const { sheet: target, ...area } = applied.selection;
+            await goToSheet(target);
+            const grid = controller.current;
+            if (grid?.currentSheet() === target && !editingRef.current?.session.snapshot().active) {
+              grid.selectArea(fromArea(area));
+            }
+          }
+          refreshCell();
+          return applied;
+        });
+      commands.current = job;
+      return job;
+    },
+    [applySummary, goToSheet, platform, refreshCell],
+  );
+
+  const insertSheet = useCallback(
+    (after: boolean) => {
+      const order = bookRef.current?.order ?? [];
+      const at = order.indexOf(sheetRef.current);
+      setNotice(null);
+      runCommand({
+        kind: 'insertSheet',
+        position: at < 0 ? order.length : at + (after ? 1 : 0),
+      }).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+    },
+    [runCommand],
+  );
+
+  const calculate = useCallback(
+    (kind: 'now' | 'sheet' | 'all') => {
+      const engine = clientRef.current;
+      if (!engine) return;
+      const done =
+        kind === 'sheet'
+          ? engine.calculateSheet(sheetRef.current)
+          : engine.calculateNow(kind === 'all');
+      done.catch(report);
+    },
+    [report],
+  );
+
+  const editingRef = useRef<SheetEditing | null>(null);
+  const host = useRef<EditingHost | null>(null);
+  host.current = {
+    engine: () => clientRef.current,
+    grid: () => controller.current,
+    run: runCommand,
+    settled: () => commands.current.catch(() => undefined),
+    canEdit: () => {
+      const shown = bookRef.current?.sheets[sheetRef.current];
+      return (
+        loadedRef.current.has(sheetRef.current) && shown?.kind === 'worksheet' && !savingRef.current
+      );
+    },
+    activeText: () => cellRef.current.edit,
+    sheetName: (index) => bookRef.current?.sheets[index]?.name ?? '',
+    sheetIndex: (name) => {
+      const wanted = name.toLocaleLowerCase();
+      const found = bookRef.current?.sheets.findIndex(
+        (entry) => !entry.deleted && entry.name.toLocaleLowerCase() === wanted,
+      );
+      return found === undefined || found < 0 ? null : found;
+    },
+    showSheet: goToSheet,
+    nextSheet: (step) => {
+      const summary = bookRef.current;
+      if (!summary) return null;
+      const tabs = summary.order.filter((index) => {
+        const entry = summary.sheets[index];
+        return entry && !entry.deleted && entry.state === 'visible';
+      });
+      return tabs[tabs.indexOf(sheetRef.current) + step] ?? null;
+    },
+    notice: setNotice,
+    focusEditor: () => editorRef.current?.focus(),
+    editorElement: () => editorRef.current?.element()?.parentElement ?? null,
+    insertSheet: () => insertSheet(false),
+    calculate,
+    completionKey: (event) => completionRef.current?.key(event) ?? false,
+  };
+  if (!editingRef.current) {
+    const through: EditingHost = {
+      engine: () => host.current!.engine(),
+      grid: () => host.current!.grid(),
+      run: (command) => host.current!.run(command),
+      settled: () => host.current!.settled(),
+      canEdit: () => host.current!.canEdit(),
+      activeText: () => host.current!.activeText(),
+      sheetName: (index) => host.current!.sheetName(index),
+      sheetIndex: (name) => host.current!.sheetIndex(name),
+      showSheet: (index) => host.current!.showSheet(index),
+      nextSheet: (step) => host.current!.nextSheet(step),
+      notice: (message) => host.current!.notice(message),
+      focusEditor: () => host.current!.focusEditor(),
+      editorElement: () => host.current!.editorElement(),
+      insertSheet: () => host.current!.insertSheet(),
+      calculate: (kind) => host.current!.calculate(kind),
+      completionKey: (event) => host.current!.completionKey(event),
+    };
+    editingRef.current = new SheetEditing(through);
+  }
+  const editing = editingRef.current;
+  const edit = useSyncExternalStore(editing.session.subscribe, editing.session.snapshot);
+
+  // What changed comes back from the engine as it calculates, for as long as this engine lasts.
+  useEffect(() => {
+    if (!client || !engineReady) return;
+    const onChanges = (changes: WorkbookChanges) => {
+      controller.current?.invalidate(changes.sheets, changes.tiles);
+      if (changes.layouts.includes(sheetRef.current) || changes.sheets.includes(sheetRef.current)) {
+        void showSheet(client, sheetRef.current).catch(report);
+      }
+      if (changes.book) {
+        client.bookSummary().then(applySummary).catch(report);
+      }
+    };
+    client.watchChanges(onChanges, setCalc).catch(report);
+    client
+      .recoverable()
+      .then(setRecoverable)
+      .catch((error) => console.warn('Could not look for recovered edits:', error));
+  }, [applySummary, client, engineReady, report, showSheet]);
+
+  // On the web, closing a tab with unsaved edits asks first.
+  useEffect(() => {
+    if (platform.kind !== 'web') return;
+    const onLeave = (event: BeforeUnloadEvent) => {
+      if (editedRef.current) event.preventDefault();
+    };
+    window.addEventListener('beforeunload', onLeave);
+    return () => window.removeEventListener('beforeunload', onLeave);
+  }, [platform]);
+
+  // Only a paste event brings the clipboard without a permission prompt.
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const grid = controller.current;
+      const active = document.activeElement;
+      if (
+        !grid ||
+        !event.clipboardData ||
+        (active && active !== document.body && active.tagName !== 'CANVAS')
+      ) {
+        return;
+      }
+      event.preventDefault();
+      editing.paste(
+        event.clipboardData.getData('text/plain'),
+        event.clipboardData.getData('text/html') || undefined,
+      );
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [editing]);
+
+  const restoreRecovered = useCallback(
+    async (entry: Recoverable) => {
+      setRecoverable((list) => list.filter((other) => other.id !== entry.id));
+      const dot = entry.name.lastIndexOf('.');
+      const base = dot > 0 ? entry.name.slice(0, dot) : entry.name || 'Book';
+      const extension = dot > 0 ? entry.name.slice(dot) : '.xlsx';
+      await openBook(
+        {
+          name: `${base} (recovered)${extension}`,
+          source: { kind: 'blob', blob: new Blob([]) },
+          isNew: true,
+        },
+        entry.id,
+      );
+    },
+    [openBook],
+  );
+
+  const discardRecovered = useCallback(
+    (entry: Recoverable) => {
+      setRecoverable((list) => list.filter((other) => other.id !== entry.id));
+      clientRef.current?.discardRecovered(entry.id).catch(report);
+    },
+    [report],
+  );
+
+  const exportCsv = useCallback(async () => {
+    const engine = clientRef.current;
+    const file = fileRef.current;
+    if (!engine || !file) return;
+    try {
+      const name = file.name.replace(/\.[^.]*$/, '') + '.csv';
+      const target = await platform.pickSaveTarget(name, 'csv');
+      if (!target) return;
+      await commands.current.catch(() => undefined);
+      const text = await engine.csvText(sheetRef.current);
+      await target.write(new Blob([text], { type: 'text/csv' }));
+    } catch (error) {
+      report(error);
+    }
+  }, [platform, report]);
 
   const pick = useCallback(async () => {
     try {
@@ -401,7 +743,13 @@ export function AppShell({ platform, theme }: AppShellProps) {
         cellText: (row: number, col: number) => Promise<string>;
         loadPhase: () => LoadState['phase'];
         memoryBytes: () => Promise<number>;
-        edit: typeof editCell;
+        edit: (
+          sheet: number,
+          row: number,
+          col: number,
+          content: { number?: number; text?: string; formula?: string },
+        ) => Promise<void>;
+        command: (command: Command) => Promise<Applied>;
         hasChanges: () => Promise<boolean>;
         writeTo: (target: SaveTarget) => Promise<void>;
         lastSave: () => SaveReport | null;
@@ -418,18 +766,26 @@ export function AppShell({ platform, theme }: AppShellProps) {
       },
       loadPhase: () => loadRef.current,
       memoryBytes: () => clientRef.current?.memoryBytes() ?? Promise.resolve(0),
-      edit: editCell,
+      edit: async (sheet, row, col, content) => {
+        let text = '';
+        if (content.formula !== undefined) text = '=' + content.formula;
+        else if (content.number !== undefined) text = String(content.number);
+        else if (content.text !== undefined) text = "'" + content.text;
+        await runCommand({ kind: 'input', sheet, row, col, text });
+      },
+      command: runCommand,
       hasChanges: () => clientRef.current?.hasChanges() ?? Promise.resolve(false),
       writeTo,
       lastSave: () => lastSaveRef.current,
       problem: () => problemRef.current,
     };
-  }, [editCell, openFile, writeTo]);
+  }, [openFile, runCommand, writeTo]);
 
   const chooseSheet = useCallback(
     (key: string | null) => {
       if (key === null) return;
       const index = Number(key);
+      editingRef.current?.beforeSheetChange();
       sheetRef.current = index;
       setSheet(index);
       const engine = clientRef.current;
@@ -446,21 +802,20 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const events = useMemo<GridEvents>(
     () => ({
       onSelection: (selection: GridSelection) => {
-        const engine = clientRef.current;
-        if (!engine) return;
-        const token = ++cellToken.current;
-        setCell((previous) => ({ ...previous, name: selection.name }));
-        engine
-          .cellText(sheetRef.current, selection.row + 1, selection.col + 1)
-          .then((text) => {
-            if (token === cellToken.current) setCell({ name: selection.name, edit: text.edit });
-          })
-          .catch(report);
+        selectionRef.current = selection;
+        refreshCell();
       },
       onZoom: setZoom,
       onError: report,
+      onType: editing.type,
+      onAction: editing.action,
+      onJump: editing.jump,
+      onEditClick: editing.editClick,
+      onEditDrag: editing.editDrag,
+      onFill: editing.fill,
+      onViewport: (index, range) => clientRef.current?.setViewport(index, toArea(range)),
     }),
-    [report],
+    [editing, refreshCell, report],
   );
 
   const handController = useCallback((next: GridController | null) => {
@@ -483,6 +838,19 @@ export function AppShell({ platform, theme }: AppShellProps) {
 
   // Sheets still being read hold on to the source, which a save is about to replace.
   const saveReady = Boolean(book) && !saving && load.phase !== 'reading';
+  const send = useCallback(
+    (command: Command) => {
+      setNotice(null);
+      runCommand(command).catch((error) =>
+        setNotice(error instanceof Error ? error.message : String(error)),
+      );
+    },
+    [runCommand],
+  );
+  const openRename = useCallback(() => {
+    const entry = bookRef.current?.sheets[sheetRef.current];
+    if (entry) setRenaming({ sheet: sheetRef.current, name: entry.name });
+  }, []);
 
   const menu = useMemo<CgMenuItem[]>(
     () => [
@@ -513,6 +881,12 @@ export function AppShell({ platform, theme }: AppShellProps) {
             onActivate: () => void saveAs(),
           },
           {
+            key: 'export-csv',
+            text: 'Export sheet as CSV…',
+            disabled: !saveReady,
+            onActivate: () => void exportCsv(),
+          },
+          {
             key: 'recent',
             text: 'Recent',
             disabled: recent.length === 0,
@@ -522,6 +896,129 @@ export function AppShell({ platform, theme }: AppShellProps) {
               tooltip: file.detail,
               onActivate: () => void openFromRecent(file.id),
             })),
+          },
+        ],
+      },
+      {
+        key: 'edit',
+        text: 'Edit',
+        children: [
+          {
+            key: 'undo',
+            text: undoLabels.undo ? `Undo ${undoLabels.undo}` : 'Undo',
+            shortcut: 'Ctrl+Z',
+            disabled: !undoLabels.undo,
+            onActivate: () => send({ kind: 'undo' }),
+          },
+          {
+            key: 'redo',
+            text: undoLabels.redo ? `Redo ${undoLabels.redo}` : 'Redo',
+            shortcut: 'Ctrl+Y',
+            disabled: !undoLabels.redo,
+            onActivate: () => send({ kind: 'redo' }),
+          },
+          {
+            key: 'cut',
+            text: 'Cut',
+            shortcut: 'Ctrl+X',
+            disabled: !book,
+            onActivate: () => editing.copy(true),
+          },
+          {
+            key: 'copy',
+            text: 'Copy',
+            shortcut: 'Ctrl+C',
+            disabled: !book,
+            onActivate: () => editing.copy(false),
+          },
+          {
+            key: 'paste',
+            text: 'Paste',
+            shortcut: 'Ctrl+V',
+            disabled: !book,
+            onActivate: () => void editing.pasteFromMenu(),
+          },
+        ],
+      },
+      {
+        key: 'insert',
+        text: 'Insert',
+        children: [
+          {
+            key: 'insert-rows',
+            text: 'Rows',
+            disabled: !book,
+            onActivate: () => editing.axis('row', false),
+          },
+          {
+            key: 'insert-cols',
+            text: 'Columns',
+            disabled: !book,
+            onActivate: () => editing.axis('col', false),
+          },
+          {
+            key: 'delete-rows',
+            text: 'Delete rows',
+            disabled: !book,
+            onActivate: () => editing.axis('row', true),
+          },
+          {
+            key: 'delete-cols',
+            text: 'Delete columns',
+            disabled: !book,
+            onActivate: () => editing.axis('col', true),
+          },
+        ],
+      },
+      {
+        key: 'sheet',
+        text: 'Sheet',
+        children: [
+          {
+            key: 'sheet-insert',
+            text: 'Insert sheet',
+            shortcut: 'Shift+F11',
+            disabled: !book,
+            onActivate: () => insertSheet(false),
+          },
+          {
+            key: 'sheet-rename',
+            text: 'Rename…',
+            disabled: !book,
+            onActivate: openRename,
+          },
+          {
+            key: 'sheet-delete',
+            text: 'Delete sheet',
+            disabled: !book,
+            onActivate: () => send({ kind: 'deleteSheet', sheet: sheetRef.current }),
+          },
+        ],
+      },
+      {
+        key: 'formulas',
+        text: 'Formulas',
+        children: [
+          {
+            key: 'calculate-now',
+            text: 'Calculate now',
+            shortcut: 'F9',
+            disabled: !book,
+            onActivate: () => calculate('now'),
+          },
+          {
+            key: 'calculate-sheet',
+            text: 'Calculate sheet',
+            shortcut: 'Shift+F9',
+            disabled: !book,
+            onActivate: () => calculate('sheet'),
+          },
+          {
+            key: 'calc-manual',
+            text: 'Manual calculation',
+            checked: calc.manual,
+            disabled: !book,
+            onActivate: () => void clientRef.current?.setManualCalc(!calc.manual).catch(report),
           },
         ],
       },
@@ -549,17 +1046,27 @@ export function AppShell({ platform, theme }: AppShellProps) {
       },
     ],
     [
+      book,
+      calc.manual,
+      calculate,
       canSave,
+      editing,
+      exportCsv,
+      insertSheet,
       newWorkbook,
       openFromRecent,
+      openRename,
       pick,
       preference,
       recent,
+      report,
       save,
       saveAs,
       saveReady,
       saving,
+      send,
       theme,
+      undoLabels,
     ],
   );
 
@@ -585,7 +1092,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [newWorkbook, pick, save, saveAs]);
 
-  const host = native ? `Desktop ${native.version}` : 'Web';
+  const hostText = native ? `Desktop ${native.version}` : 'Web';
   const sheets = book?.sheets ?? [];
   const shown = sheets[sheet];
   const sheetLoaded = loadedSheets.has(sheet);
@@ -593,15 +1100,24 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const reading = load.phase === 'reading';
   const statusText = problem
     ? problem
-    : !engineReady
-      ? 'Starting the engine…'
-      : reading
-        ? `Reading ${percent}%`
-        : saving
-          ? 'Saving…'
-          : 'Ready';
-  const tabs = sheets.flatMap((entry, index) =>
-    entry.state === 'visible'
+    : notice
+      ? notice
+      : !engineReady
+        ? 'Starting the engine…'
+        : reading
+          ? `Reading ${percent}%`
+          : saving
+            ? 'Saving…'
+            : edit.active
+              ? edit.picked
+                ? 'Point'
+                : edit.mode === 'enter'
+                  ? 'Enter'
+                  : 'Edit'
+              : 'Ready';
+  const tabs = (book?.order ?? []).flatMap((index) => {
+    const entry = sheets[index];
+    return entry && !entry.deleted && entry.state === 'visible'
       ? [
           {
             key: String(index),
@@ -609,8 +1125,9 @@ export function AppShell({ platform, theme }: AppShellProps) {
             headerAttributes: { 'data-testid': 'sheet-tab-' + index } as Record<string, string>,
           },
         ]
-      : [],
-  );
+      : [];
+  });
+  const offered = recoverable[0];
 
   return (
     <div
@@ -648,7 +1165,33 @@ export function AppShell({ platform, theme }: AppShellProps) {
           onSelectedNameChange={(name) => theme.setPreference(name as ThemePreference)}
         />
       </header>
-      <FormulaBar name={cell.name} text={cell.edit} />
+      <FormulaBar
+        session={editing.session}
+        name={cell.name}
+        text={cell.edit}
+        readOnly={!book}
+        onBegin={() => void editing.edit('bar')}
+        onEditorKey={editing.key}
+        onGoTo={(text) => {
+          const engine = clientRef.current;
+          if (!engine) return;
+          engine
+            .resolveName(text, sheetRef.current)
+            .then(async (found) => {
+              if (!found) {
+                setNotice('That isn’t a cell or a name in this workbook.');
+                controller.current?.focus();
+                return;
+              }
+              const { sheet: target, ...area } = found;
+              await goToSheet(target);
+              controller.current?.selectArea(fromArea(area));
+              controller.current?.focus();
+            })
+            .catch(report);
+        }}
+        onLeave={() => controller.current?.focus()}
+      />
       <main className="cgs-grid">
         {client && (
           <SheetCanvas
@@ -659,13 +1202,20 @@ export function AppShell({ platform, theme }: AppShellProps) {
             onController={handController}
           />
         )}
+        <CellEditor
+          ref={editorRef}
+          session={editing.session}
+          names={names}
+          onKey={editing.key}
+          completionRef={completionRef}
+        />
         {!book && load.phase === 'idle' && (
           <div className="cgs-welcome" data-testid="welcome">
             <p>Open a workbook, or drop one here.</p>
             <button type="button" className="cgs-open-button" onClick={() => void pick()}>
               Open a workbook…
             </button>
-            <p className="cgs-welcome-note">{WORKBOOK_EXTENSIONS.join(', ')}</p>
+            <p className="cgs-welcome-note">{OPENABLE_EXTENSIONS.join(', ')}</p>
           </div>
         )}
         {book && !sheetLoaded && shown?.kind === 'worksheet' && (
@@ -681,7 +1231,13 @@ export function AppShell({ platform, theme }: AppShellProps) {
           </div>
         )}
       </main>
-      <div className="cgs-tabs">
+      <div
+        className="cgs-tabs"
+        onDoubleClick={(event) => {
+          const tab = (event.target as HTMLElement).closest('[data-testid^="sheet-tab-"]');
+          if (tab) openRename();
+        }}
+      >
         {tabs.length > 0 && (
           <CgTabs
             tabs={tabs}
@@ -694,6 +1250,18 @@ export function AppShell({ platform, theme }: AppShellProps) {
             data-testid="sheet-tabs"
           />
         )}
+        {tabs.length > 0 && (
+          <button
+            type="button"
+            className="cgs-add-sheet"
+            aria-label="Insert a sheet"
+            title="Insert a sheet"
+            data-testid="add-sheet"
+            onClick={() => insertSheet(true)}
+          >
+            +
+          </button>
+        )}
       </div>
       <CgStatusBar
         data-testid="status-strip"
@@ -704,16 +1272,28 @@ export function AppShell({ platform, theme }: AppShellProps) {
             content: (
               <CgStatusBadge
                 data-testid="engine-status"
-                type={problem ? 'error' : engineReady && !reading && !saving ? 'success' : 'info'}
+                type={
+                  problem
+                    ? 'error'
+                    : notice
+                      ? 'warning'
+                      : engineReady && !reading && !saving
+                        ? 'success'
+                        : 'info'
+                }
                 text={statusText}
               />
             ),
           },
-          ...(book
+          ...(calc.calculating
             ? [
                 {
-                  key: 'read-only',
-                  content: <span data-testid="read-only">Read-only</span>,
+                  key: 'calc',
+                  content: (
+                    <span data-testid="calc-status">
+                      {calc.manual ? 'Calculate' : 'Calculating…'}
+                    </span>
+                  ),
                 },
               ]
             : []),
@@ -752,7 +1332,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
           {
             key: 'host',
             align: 'end' as const,
-            content: <span data-testid="host-info">{host}</span>,
+            content: <span data-testid="host-info">{hostText}</span>,
           },
           {
             key: 'zoom',
@@ -783,6 +1363,57 @@ export function AppShell({ platform, theme }: AppShellProps) {
           },
         ]}
       />
+      {renaming && (
+        <CgMessageBox
+          defaultOpen
+          title="Rename sheet"
+          actionLabel="Rename"
+          data-testid="rename-sheet"
+          onClosed={(accepted) => {
+            const target = renaming;
+            setRenaming(null);
+            if (accepted) send({ kind: 'renameSheet', sheet: target.sheet, name: target.name });
+            controller.current?.focus();
+          }}
+        >
+          <input
+            className="cgs-sheet-name"
+            aria-label="Sheet name"
+            data-testid="sheet-name"
+            autoFocus
+            maxLength={31}
+            value={renaming.name}
+            onChange={(event) => setRenaming({ ...renaming, name: event.target.value })}
+          />
+        </CgMessageBox>
+      )}
+      {offered && (
+        <CgMessageBox
+          key={offered.id}
+          defaultOpen
+          title="Recover your edits?"
+          actionLabel="Recover"
+          data-testid="recover"
+          onClosed={(accepted) => {
+            if (accepted) void restoreRecovered(offered);
+            else setRecoverable((list) => list.filter((other) => other.id !== offered.id));
+          }}
+        >
+          <p>
+            {offered.name || 'A workbook'} has {offered.edits}{' '}
+            {offered.edits === 1 ? 'edit' : 'edits'} from a session that ended before it was saved.
+            Your file hasn’t changed.
+          </p>
+          <button
+            type="button"
+            className="cgs-discard"
+            data-testid="recover-discard"
+            onClick={() => discardRecovered(offered)}
+          >
+            Discard these edits
+          </button>
+        </CgMessageBox>
+      )}
       {lastSave && (
         <CgMessageBox
           open={showReport}

@@ -248,3 +248,37 @@ Formualizer's misses are mostly specific functions, which can be fixed one at a 
 | Engine fixes upstream | Fork only for now. Nothing public goes out this phase, and #556, #557 and #558 stay as they are. The report lists the fixes so you can decide on PRs later |
 | 1,000 random edits | 2 seeds, compared with Excel over COM after every edit, mixing typing, formulas, fill, paste, row, column and sheet changes, undo and redo, on a seed with names, tables and arrays |
 | Input under 100 ms | Keystroke or arrow key to painted result, p99, on the reference machine while 1,000,000 formulas recalculate. Commands queue behind at most one engine slice. If an undividable step runs over, the editor and selection stay live on the main thread, and the longest wait for the engine is reported separately |
+
+**Defaults and design choices, for you to overrule**
+
+| Choice | What it does, and why |
+| --- | --- |
+| Typed formulas | Always English names with comma separators, as files store them. Numbers and dates typed into cells follow the browser's language. Localised formulas belong with Phase 9's translations |
+| What typing means | Read off Excel: `bench/run-excel-input.mjs` puts 163 odd spellings through Excel and `parse_input`. `1,23` is text, `1,2345` is 12,345, `%5` is 5%, `1:60` is a plain 0.0833. Over COM, `+A1` stays text where typing makes it a formula, so those 10 go by what typing does |
+| Circular references | They come to 0 with the iterative setting off, and calculation carries on. Excel warns, which comes with Phase 5's dialogs. The edit fuzz stops an episode at a circle, as Excel's own answer then depends on the order it saw things |
+| Tables | No auto-expanding when typing beside a table until Phase 6's table work. Headings are text and unique, renaming one follows into formulas, and deleting a table's headings without its data is refused, as in Excel |
+| Arrays | Changing part of an array is refused, as in Excel. A new formula that returns many values spills and saves as a dynamic array with `xl/metadata.xml`, which Excel 2016 reads as a fixed one |
+| Shift+F9 | Calculates what the sheet needs, not every formula on it |
+| Saving during a calculation | The save finishes the calculation first, in slices, so a file never holds half of one |
+| Opening | Volatile functions run after opening without marking the workbook changed. `fullCalcOnLoad`, or formulas with no saved value, start a full calculation unless the file is manual |
+| CSV | A CSV opens as a new workbook, UTF-8 or else Windows-1252, with the delimiter worked out from the first lines, and saving it asks where. Export writes the sheet showing as its displayed text, as Excel's own CSV save does, with a byte-order mark so that Excel reads it as UTF-8 |
+| Pasting from elsewhere | HTML gives values and the common formats, not formulas, since Excel's HTML holds results. Pasting within the app keeps formulas. A row or column's own style is only followed onto new cells up to 200,000 of them |
+| Clipboard reading | Ctrl+V uses the browser's paste event, which asks for no permission. Paste from the menu has to ask the browser, and says to press Ctrl+V if refused |
+| A key never waits for the engine | Enter moves the selection at once and the command follows in order. A formula the engine refuses reopens the editor on it with the reason in the status bar, so nothing has to be typed again |
+| Inserting cells | Ctrl+- and Ctrl+Shift+= work on whole rows and columns. Shifting part of a sheet sideways, with its dialog, isn't in Phase 4's task list and comes with Phase 5's menus |
+| Saving structural edits | A first pass rewrites each changed sheet into its final coordinates, and the Phase 3 patcher then applies cell changes to the result. Untouched parts stay raw bytes, so a file with no structural edit goes through exactly as before |
+| Sheet numbers | A sheet keeps its number for life, and a deleted one stays as a hidden tombstone until the workbook closes, so undo and the tile cache need no renumbering. Tab order is a separate list |
+| Undo and saving | Undoing back past what was saved shortens the list of book changes against the same file rather than adding inverses, so a save after undo is as if the change was never made |
+| Extensions in a sheet | `sqref` and `xm:f` inside conditional formats, validation and sparklines follow moved cells. Any other extension stays as it was, and the save report names it |
+| Recovery on the desktop | The native side holds the working copy, and a second copy goes to OPFS with the journal, so that web and desktop recover the same way |
+| Comparing dynamic arrays | The Excel on this PC is 2016 (16.0), with no dynamic arrays, XLOOKUP, LET or `Formula2`. The fuzz can't compare those, so they're covered by contract tests and by opening saved files |
+
+**Engine fixes in our fork, for you to decide on upstream PRs later**
+
+Nothing public went out. These are on `MohamedSadat/formualizer`, branch `cashgear/0.13.0`:
+
+- Sheet names that look like an R1C1 reference, such as `R23`, are quoted when printed.
+- A table reference to a deleted sheet gives `#REF!` instead of a panic.
+- A fixed array can be declared with family execution on.
+- Volatile formulas can be marked dirty after opening.
+- The list of further fixes from the accuracy work is in `PROGRESS.md`.

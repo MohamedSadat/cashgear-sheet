@@ -203,7 +203,7 @@ test('the first edit copies the source, so a later change to the file costs noth
   expect(await workingCopies(page)).toEqual([]);
 
   await page.evaluate(() => window.cgsTest.edit(0, 2, 1, { number: 9 }));
-  expect(await workingCopies(page)).toHaveLength(1);
+  expect(await workingCopies(page)).toHaveLength(2);
 
   // Something else writes to the file, which would stop any read of it.
   await page.evaluate(async () => {

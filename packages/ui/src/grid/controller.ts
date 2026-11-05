@@ -8,12 +8,18 @@ import {
   type TileAddress,
   type TilePalette,
 } from '@cgs/engine-client';
+import { actionFor, startsTyping, type GridAction } from '../shortcuts';
 import {
+  drawCopied,
   drawCorner,
+  drawFillHandle,
+  drawFillPreview,
   drawHeaderCell,
   drawPlaceholder,
+  drawReference,
   drawScrollbar,
   drawSelection,
+  REFERENCE_COLORS,
   type GridColors,
   type ScrollbarShape,
 } from './draw';
@@ -50,6 +56,29 @@ export interface GridEvents {
   onSelection: (selection: GridSelection) => void;
   onZoom: (zoom: number) => void;
   onError: (error: unknown) => void;
+  /** A key that starts typing went down. Whatever gets focus now receives that key. */
+  onType?: () => void;
+  /** A shortcut in the map. */
+  onAction?: (action: GridAction) => void;
+  /** Ctrl+arrow: where it lands is the engine's to say. */
+  onJump?: (rows: number, cols: number, extend: boolean) => void;
+  /** A cell was clicked while editing. Returns whether it went in the formula as a reference. */
+  onEditClick?: (row: number, col: number) => boolean;
+  /** The pointer dragged on from `onEditClick`. */
+  onEditDrag?: (row: number, col: number) => void;
+  /** The fill handle was dragged out, or double-clicked with `to` null. */
+  onFill?: (from: CellRange, to: CellRange | null) => void;
+  /** What is in view changed. 0-based. */
+  onViewport?: (sheet: number, range: CellRange) => void;
+}
+
+export type { CellRange };
+
+/** A reference in the formula being typed. */
+export interface GridHighlight {
+  sheet: number;
+  range: CellRange;
+  color: number;
 }
 
 /** What a sheet remembers while another one is showing. */
@@ -60,6 +89,7 @@ interface SheetView {
   row: number;
   col: number;
   range: CellRange;
+  extra: CellRange[];
 }
 
 interface Pane {
@@ -103,9 +133,19 @@ export class GridController {
   private anchorRow = 0;
   private anchorCol = 0;
   private range: CellRange = { top: 0, left: 0, bottom: 0, right: 0 };
+  /** Earlier areas of a selection built up with Ctrl+click. */
+  private extra: CellRange[] = [];
   private readonly remembered = new Map<number, SheetView>();
+  private highlights: GridHighlight[] = [];
+  private copied: { sheet: number; range: CellRange } | null = null;
+  /** The cell being edited, whose box the editor element follows. */
+  private editing: { sheet: number; row: number; col: number } | null = null;
+  private editorElement: HTMLElement | null = null;
+  private fillTarget: CellRange | null = null;
+  private lastViewport = '';
 
-  private dragging: 'cells' | 'vertical' | 'horizontal' | null = null;
+  private dragging:
+    'cells' | 'rows' | 'cols' | 'point' | 'fill' | 'vertical' | 'horizontal' | null = null;
   private dragOffset = 0;
   private lastPointer = { x: 0, y: 0 };
   private autoScroll = 0;
@@ -134,6 +174,8 @@ export class GridController {
     canvas.addEventListener('pointerup', this.onPointerUp);
     canvas.addEventListener('pointercancel', this.onPointerUp);
     canvas.addEventListener('keydown', this.onKeyDown);
+    canvas.addEventListener('dblclick', this.onDoubleClick);
+    canvas.addEventListener('mousedown', this.onMouseDown);
     this.applyStyle();
   }
 
@@ -221,6 +263,7 @@ export class GridController {
       this.anchorRow = kept.row;
       this.anchorCol = kept.col;
       this.range = kept.range;
+      this.extra = kept.extra;
     } else if (!sameSheet) {
       this.scrollX = this.cols.offset(layout.leftCol - 1);
       this.scrollY = this.rows.offset(layout.topRow - 1);
@@ -236,6 +279,167 @@ export class GridController {
   sheetReady(sheet: number) {
     this.cache.invalidateSheet(sheet);
     this.schedule();
+  }
+
+  /** Cells changed. The pictures that show them stay until new ones arrive. */
+  invalidate(sheets: number[], tiles: { sheet: number; firstRow: number; firstCol: number }[]) {
+    for (const sheet of sheets) this.cache.invalidateSheet(sheet);
+    if (tiles.length) this.cache.invalidateTiles(tiles);
+    this.schedule();
+  }
+
+  /** The sheet showing now. */
+  currentSheet() {
+    return this.sheet;
+  }
+
+  /** The selection, 0-based: the active cell and every area. */
+  selection() {
+    return {
+      sheet: this.sheet,
+      row: this.row,
+      col: this.col,
+      range: this.range,
+      areas: [...this.extra, this.range],
+    };
+  }
+
+  /** Moves the selection, as a click there would. 0-based. */
+  selectArea(range: CellRange, row = range.top, col = range.left) {
+    this.extra = [];
+    this.row = row;
+    this.col = col;
+    this.anchorRow = row;
+    this.anchorCol = col;
+    this.range = this.growToMerges(range);
+    this.reveal(range.top, range.left);
+    this.notifySelection();
+    this.schedule();
+  }
+
+  /** The corner that Shift+arrow moves. */
+  movingCorner() {
+    return {
+      row: this.anchorRow === this.range.top ? this.range.bottom : this.range.top,
+      col: this.anchorCol === this.range.left ? this.range.right : this.range.left,
+    };
+  }
+
+  /** Scrolls a cell into view. */
+  revealCell(row: number, col: number) {
+    this.reveal(row, col);
+    this.schedule();
+  }
+
+  /** An area's address. */
+  addressOf(range: CellRange) {
+    return rangeName(range);
+  }
+
+  /** Goes one way from the active cell, as Enter or Tab does: around a selection of many. */
+  moveBy(rows: number, cols: number) {
+    const merge = this.mergeAt(this.row, this.col);
+    const { range } = this;
+    const many =
+      !this.extra.length &&
+      (range.top !== range.bottom || range.left !== range.right) &&
+      !(
+        merge &&
+        merge.top === range.top &&
+        merge.left === range.left &&
+        merge.bottom === range.bottom &&
+        merge.right === range.right
+      );
+    if (many) {
+      let row = this.row + rows;
+      let col = this.col + cols;
+      if (row > range.bottom) {
+        row = range.top;
+        col = col + 1 > range.right ? range.left : col + 1;
+      } else if (row < range.top) {
+        row = range.bottom;
+        col = col - 1 < range.left ? range.right : col - 1;
+      } else if (col > range.right) {
+        col = range.left;
+        row = row + 1 > range.bottom ? range.top : row + 1;
+      } else if (col < range.left) {
+        col = range.right;
+        row = row - 1 < range.top ? range.bottom : row - 1;
+      }
+      this.row = row;
+      this.col = col;
+      this.reveal(row, col);
+      this.notifySelection();
+      this.schedule();
+      return;
+    }
+    const fromRow = merge ? (rows > 0 ? merge.bottom : merge.top) : this.row;
+    const fromCol = merge ? (cols > 0 ? merge.right : merge.left) : this.col;
+    const row = rows ? this.stepped(this.rows, fromRow, rows, MAX_ROWS) : this.row;
+    const col = cols ? this.stepped(this.cols, fromCol, cols, MAX_COLS) : this.col;
+    this.select(row, col, false);
+  }
+
+  /** Extends the selection to a cell, keeping where it started. */
+  extendSelectionTo(row: number, col: number) {
+    this.select(row, col, true);
+  }
+
+  /** The references in the formula being typed. */
+  setHighlights(highlights: GridHighlight[]) {
+    this.highlights = highlights;
+    this.schedule();
+  }
+
+  /** What was copied or cut, which shows until it is pasted or let go. */
+  setCopied(copied: { sheet: number; range: CellRange } | null) {
+    this.copied = copied;
+    this.schedule();
+  }
+
+  /** Tells the grid which cell is being edited, and which element follows it. */
+  setEditing(
+    editing: { sheet: number; row: number; col: number } | null,
+    element: HTMLElement | null,
+  ) {
+    this.editing = editing;
+    this.editorElement = element;
+    this.placeEditor();
+    this.schedule();
+  }
+
+  /** Puts the editor element over its cell, in CSS pixels. */
+  private placeEditor() {
+    const element = this.editorElement;
+    const editing = this.editing;
+    if (!element) return;
+    if (!editing || editing.sheet !== this.sheet) {
+      element.style.left = '-10000px';
+      return;
+    }
+    const merge = this.mergeAt(editing.row, editing.col);
+    const top = merge ? merge.top : editing.row;
+    const left = merge ? merge.left : editing.col;
+    const bottom = merge ? merge.bottom : editing.row;
+    const right = merge ? merge.right : editing.col;
+    const frozen = this.frozen();
+    const view = this.view();
+    const pane = this.panes()[0]!;
+    const x =
+      left < frozen.firstCol + frozen.cols
+        ? view.x + this.cols.offset(left) - this.cols.offset(frozen.firstCol)
+        : pane.x + this.cols.offset(left) - this.scrollX;
+    const y =
+      top < frozen.firstRow + frozen.rows
+        ? view.y + this.rows.offset(top) - this.rows.offset(frozen.firstRow)
+        : pane.y + this.rows.offset(top) - this.scrollY;
+    const { dpr } = this;
+    element.style.left = x / dpr + 'px';
+    element.style.top = y / dpr + 'px';
+    element.style.minWidth = (this.cols.offset(right + 1) - this.cols.offset(left)) / dpr + 'px';
+    element.style.minHeight = (this.rows.offset(bottom + 1) - this.rows.offset(top)) / dpr + 'px';
+    element.style.maxWidth = Math.max(40, (view.x + view.width - x) / dpr) + 'px';
+    element.style.setProperty('--cgs-cell-font', Math.round((this.zoom / 100) * 14.67) + 'px');
   }
 
   setZoom(zoom: number) {
@@ -278,6 +482,8 @@ export class GridController {
     canvas.removeEventListener('pointerup', this.onPointerUp);
     canvas.removeEventListener('pointercancel', this.onPointerUp);
     canvas.removeEventListener('keydown', this.onKeyDown);
+    canvas.removeEventListener('dblclick', this.onDoubleClick);
+    canvas.removeEventListener('mousedown', this.onMouseDown);
     this.cache.dispose();
   }
 
@@ -290,6 +496,8 @@ export class GridController {
       zoom: this.zoom,
       row: this.row,
       col: this.col,
+      range: this.range,
+      areas: [...this.extra, this.range],
       topRow: this.rows.at(this.scrollY),
       contentHeight: this.contentHeight(),
       drawings: this.drawings,
@@ -331,6 +539,7 @@ export class GridController {
       row: this.row,
       col: this.col,
       range: this.range,
+      extra: this.extra,
     });
   }
 
@@ -584,6 +793,8 @@ export class GridController {
 
     this.drawHeaders();
     this.drawPaneLines();
+    this.placeEditor();
+    this.reportViewport(panes[0]!);
     drawScrollbar(context, colors, this.verticalBar());
     drawScrollbar(context, colors, this.horizontalBar());
     context.fillStyle = colors.scrollTrack;
@@ -599,6 +810,22 @@ export class GridController {
     canvas.dataset.tiles = String(visible.length);
     canvas.dataset.firstTileHash = String(cache.hash(sheet, 0, 0) ?? '');
   };
+
+  /** Says what is in view, which calculation gets to first. */
+  private reportViewport(pane: Pane) {
+    if (this.sheet < 0 || pane.width <= 0 || pane.height <= 0) return;
+    const range: CellRange = {
+      top: this.rows.at(pane.sheetY),
+      left: this.cols.at(pane.sheetX),
+      bottom: this.rows.at(pane.sheetY + pane.height - 1),
+      right: this.cols.at(pane.sheetX + pane.width - 1),
+    };
+    const key = [this.sheet, range.top, range.left, range.bottom, range.right].join(':');
+    if (key !== this.lastViewport) {
+      this.lastViewport = key;
+      this.events.onViewport?.(this.sheet, range);
+    }
+  }
 
   private drawDrawings(pane: Pane) {
     if (!this.drawings.length) return;
@@ -648,7 +875,40 @@ export class GridController {
           merged.right !== range.right
         : false;
     const pixel = Math.max(1, Math.round(this.dpr));
+    const boxOf = (area: CellRange) => ({
+      x: this.cols.offset(area.left) - pane.sheetX + pane.x,
+      y: this.rows.offset(area.top) - pane.sheetY + pane.y,
+      width: this.cols.offset(area.right + 1) - this.cols.offset(area.left),
+      height: this.rows.offset(area.bottom + 1) - this.rows.offset(area.top),
+    });
+    if (!this.editing) {
+      for (const area of this.extra) {
+        const box = boxOf(area);
+        this.context.fillStyle = this.colors.selectionFill;
+        this.context.fillRect(box.x, box.y, box.width, box.height);
+      }
+    }
     drawSelection(this.context, this.colors, { x, y, width, height }, active, many, pixel);
+    if (!this.editing && !this.extra.length) {
+      drawFillHandle(
+        this.context,
+        this.colors,
+        x + width,
+        y + height,
+        Math.max(5, Math.round(6 * this.dpr)),
+      );
+    }
+    if (this.copied?.sheet === this.sheet) {
+      drawCopied(this.context, this.colors, boxOf(this.copied.range), pixel);
+    }
+    if (this.fillTarget) {
+      drawFillPreview(this.context, this.colors, boxOf(this.fillTarget), pixel);
+    }
+    for (const highlight of this.highlights) {
+      if (highlight.sheet !== this.sheet) continue;
+      const color = REFERENCE_COLORS[highlight.color % REFERENCE_COLORS.length]!;
+      drawReference(this.context, color, boxOf(highlight.range), pixel);
+    }
   }
 
   private drawHeaders() {
@@ -777,9 +1037,11 @@ export class GridController {
     return out;
   }
 
-  private select(row: number, col: number, extend: boolean, reveal = true) {
+  private select(row: number, col: number, extend: boolean, reveal = true, adding = false) {
     const safeRow = Math.max(0, Math.min(MAX_ROWS - 1, row));
     const safeCol = Math.max(0, Math.min(MAX_COLS - 1, col));
+    if (adding) this.extra = [...this.extra, this.range];
+    else if (!extend) this.extra = [];
     if (extend) {
       this.range = this.growToMerges({
         top: Math.min(this.anchorRow, safeRow),
@@ -881,10 +1143,44 @@ export class GridController {
     return { row: this.rows.at(sheetY), col: this.cols.at(sheetX) };
   }
 
+  /** Whether a position is on the fill handle. */
+  private onFillHandle(x: number, y: number) {
+    if (this.editing || this.extra.length) return false;
+    const panes = this.panes();
+    const size = Math.max(6, Math.round(8 * this.dpr));
+    return panes.some((pane) => {
+      const cornerX = this.cols.offset(this.range.right + 1) - pane.sheetX + pane.x;
+      const cornerY = this.rows.offset(this.range.bottom + 1) - pane.sheetY + pane.y;
+      const inside =
+        cornerX >= pane.x &&
+        cornerX <= pane.x + pane.width + size &&
+        cornerY >= pane.y &&
+        cornerY <= pane.y + pane.height + size;
+      return inside && Math.abs(x - cornerX) <= size && Math.abs(y - cornerY) <= size;
+    });
+  }
+
+  /** While editing, a click on the sheet must leave the keyboard with the editor. */
+  private readonly onMouseDown = (event: MouseEvent) => {
+    if (this.editing) event.preventDefault();
+  };
+
+  private readonly onDoubleClick = (event: MouseEvent) => {
+    const bounds = this.canvas.getBoundingClientRect();
+    const x = (event.clientX - bounds.left) * this.dpr;
+    const y = (event.clientY - bounds.top) * this.dpr;
+    if (this.onFillHandle(x, y)) {
+      this.events.onFill?.(this.range, null);
+      return;
+    }
+    const view = this.view();
+    if (x >= view.x && y >= view.y && !this.editing) this.events.onAction?.('edit');
+  };
+
   private readonly onPointerDown = (event: PointerEvent) => {
     if (event.button !== 0) return;
     const { x, y } = this.pointerPosition(event);
-    this.focus();
+    if (!this.editing) this.focus();
     const vertical = this.verticalBar();
     const horizontal = this.horizontalBar();
     this.canvas.setPointerCapture(event.pointerId);
@@ -915,8 +1211,15 @@ export class GridController {
       return;
     }
     const view = this.view();
+    if (this.onFillHandle(x, y)) {
+      this.dragging = 'fill';
+      this.fillTarget = this.range;
+      this.lastPointer = { x, y };
+      return;
+    }
     if (x < view.x && y < view.y) {
       // The corner selects the whole sheet.
+      this.extra = [];
       this.row = 0;
       this.col = 0;
       this.anchorRow = 0;
@@ -927,29 +1230,41 @@ export class GridController {
       return;
     }
     const { row, col } = this.cellAt(Math.max(x, view.x), Math.max(y, view.y));
+    // While a formula is being typed, a click on the sheet is a reference.
+    if (this.editing && this.events.onEditClick?.(row, col)) {
+      this.dragging = 'point';
+      this.lastPointer = { x, y };
+      return;
+    }
     if (x < view.x) {
+      if (!event.ctrlKey && !event.metaKey) this.extra = [];
+      else this.extra = [...this.extra, this.range];
       this.row = row;
       this.col = this.cols.nextVisible(0);
       this.anchorRow = row;
       this.anchorCol = this.col;
       this.range = { top: row, left: 0, bottom: row, right: MAX_COLS - 1 };
+      this.dragging = 'rows';
       this.notifySelection();
       this.schedule();
       return;
     }
     if (y < view.y) {
+      if (!event.ctrlKey && !event.metaKey) this.extra = [];
+      else this.extra = [...this.extra, this.range];
       this.col = col;
       this.row = this.rows.nextVisible(0);
       this.anchorRow = this.row;
       this.anchorCol = col;
       this.range = { top: 0, left: col, bottom: MAX_ROWS - 1, right: col };
+      this.dragging = 'cols';
       this.notifySelection();
       this.schedule();
       return;
     }
     this.dragging = 'cells';
     this.lastPointer = { x, y };
-    this.select(row, col, event.shiftKey);
+    this.select(row, col, event.shiftKey, true, event.ctrlKey || event.metaKey);
   };
 
   private readonly onPointerMove = (event: PointerEvent) => {
@@ -988,9 +1303,77 @@ export class GridController {
       this.schedule();
       return;
     }
+    if (this.dragging === 'fill') {
+      this.fillTarget = this.fillTargetFor(x, y);
+      this.startAutoScroll();
+      this.schedule();
+      return;
+    }
+    if (this.dragging === 'point') {
+      const view = this.view();
+      const { row, col } = this.cellAt(
+        Math.max(view.x, Math.min(view.x + view.width - 1, x)),
+        Math.max(view.y, Math.min(view.y + view.height - 1, y)),
+      );
+      this.events.onEditDrag?.(row, col);
+      return;
+    }
+    if (this.dragging === 'rows' || this.dragging === 'cols') {
+      const view = this.view();
+      const { row, col } = this.cellAt(
+        Math.max(view.x, Math.min(view.x + view.width - 1, x)),
+        Math.max(view.y, Math.min(view.y + view.height - 1, y)),
+      );
+      if (this.dragging === 'rows') {
+        this.range = {
+          top: Math.min(this.anchorRow, row),
+          left: 0,
+          bottom: Math.max(this.anchorRow, row),
+          right: MAX_COLS - 1,
+        };
+      } else {
+        this.range = {
+          top: 0,
+          left: Math.min(this.anchorCol, col),
+          bottom: MAX_ROWS - 1,
+          right: Math.max(this.anchorCol, col),
+        };
+      }
+      this.notifySelection();
+      this.schedule();
+      return;
+    }
     this.extendTo(x, y);
     this.startAutoScroll();
   };
+
+  /** Where a fill reaches for this position: along whichever way the pointer has gone further. */
+  private fillTargetFor(x: number, y: number): CellRange {
+    const view = this.view();
+    const { row, col } = this.cellAt(
+      Math.max(view.x, Math.min(view.x + view.width - 1, x)),
+      Math.max(view.y, Math.min(view.y + view.height - 1, y)),
+    );
+    const { range } = this;
+    const below = row > range.bottom ? row - range.bottom : row < range.top ? range.top - row : 0;
+    const beside = col > range.right ? col - range.right : col < range.left ? range.left - col : 0;
+    if (!below && !beside) {
+      // Dragged back inside: what it leaves behind goes.
+      return { ...range, bottom: Math.max(range.top, row), right: range.right };
+    }
+    if (below >= beside) {
+      return {
+        ...range,
+        top: Math.min(range.top, row),
+        bottom: Math.max(range.bottom, row),
+      };
+    }
+    return {
+      ...range,
+      left: Math.min(range.left, col),
+      right: Math.max(range.right, col),
+    };
+  }
 
   private extendTo(x: number, y: number) {
     const view = this.view();
@@ -1006,7 +1389,7 @@ export class GridController {
     if (this.autoScroll) return;
     const tick = () => {
       this.autoScroll = 0;
-      if (this.dragging !== 'cells') return;
+      if (this.dragging !== 'cells' && this.dragging !== 'fill') return;
       const view = this.view();
       const { x, y } = this.lastPointer;
       const dy = y < view.y ? y - view.y : y > view.y + view.height ? y - view.y - view.height : 0;
@@ -1015,13 +1398,34 @@ export class GridController {
       this.scrollX += dx / 4;
       this.scrollY += dy / 4;
       this.clampScroll();
-      this.extendTo(x, y);
+      if (this.dragging === 'fill') {
+        this.fillTarget = this.fillTargetFor(x, y);
+        this.schedule();
+      } else {
+        this.extendTo(x, y);
+      }
       this.autoScroll = requestAnimationFrame(tick);
     };
     this.autoScroll = requestAnimationFrame(tick);
   }
 
   private readonly onPointerUp = () => {
+    if (this.dragging === 'fill' && this.fillTarget) {
+      const from = this.range;
+      const to = this.fillTarget;
+      this.fillTarget = null;
+      const same =
+        to.top === from.top &&
+        to.left === from.left &&
+        to.bottom === from.bottom &&
+        to.right === from.right;
+      if (!same) {
+        this.events.onFill?.(from, to);
+        this.range = to;
+        this.notifySelection();
+      }
+      this.schedule();
+    }
     this.dragging = null;
   };
 
@@ -1033,6 +1437,30 @@ export class GridController {
   }
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
+    const action = actionFor(event);
+    if (action) {
+      // The browser's paste event is what brings the clipboard, without asking for permission.
+      if (action !== 'paste' && action !== 'pasteValues') event.preventDefault();
+      this.events.onAction?.(action);
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.startsWith('Arrow')) {
+      event.preventDefault();
+      const rows = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+      const cols = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+      this.events.onJump?.(rows, cols, event.shiftKey);
+      return;
+    }
+    if (startsTyping(event)) {
+      // Not prevented: the key's default goes to the editor, which takes focus here.
+      this.events.onType?.();
+      return;
+    }
+    if (event.key === 'Backspace') {
+      this.events.onType?.();
+      event.preventDefault();
+      return;
+    }
     const extend = event.shiftKey;
     const focusRow = extend
       ? this.anchorRow === this.range.top
@@ -1062,24 +1490,12 @@ export class GridController {
         col = this.stepped(this.cols, merge ? merge.left : focusCol, -1, MAX_COLS);
         break;
       case 'Tab':
-        col = this.stepped(
-          this.cols,
-          merge ? (event.shiftKey ? merge.left : merge.right) : focusCol,
-          event.shiftKey ? -1 : 1,
-          MAX_COLS,
-        );
         event.preventDefault();
-        this.select(this.row, col, false);
+        this.moveBy(0, event.shiftKey ? -1 : 1);
         return;
       case 'Enter':
-        row = this.stepped(
-          this.rows,
-          merge ? (event.shiftKey ? merge.top : merge.bottom) : focusRow,
-          event.shiftKey ? -1 : 1,
-          MAX_ROWS,
-        );
         event.preventDefault();
-        this.select(row, this.col, false);
+        this.moveBy(event.shiftKey ? -1 : 1, 0);
         return;
       case 'PageDown': {
         const page = view.height;

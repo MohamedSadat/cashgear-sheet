@@ -124,6 +124,13 @@ export interface CellRange {
 }
 
 export function rangeName(range: CellRange) {
+  const wholeRows = range.left === 0 && range.right === MAX_COLS - 1;
+  const wholeCols = range.top === 0 && range.bottom === MAX_ROWS - 1;
+  if (wholeRows && !wholeCols) return `${range.top + 1}:${range.bottom + 1}`;
+  if (wholeCols && !wholeRows) {
+    const letters = (col: number) => cellName(0, col).replace(/\d+$/, '');
+    return `${letters(range.left)}:${letters(range.right)}`;
+  }
   const first = cellName(range.top, range.left);
   if (range.top === range.bottom && range.left === range.right) return first;
   return first + ':' + cellName(range.bottom, range.right);

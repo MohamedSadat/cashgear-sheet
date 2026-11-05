@@ -105,7 +105,6 @@ test.describe('opening', () => {
     });
     await waitForGrid(page);
     await expect(page.getByRole('heading', { name: 'picked.xlsx' })).toBeVisible();
-    await expect(page.getByTestId('read-only')).toBeVisible();
     await expect(page.getByTestId('engine-status')).toHaveText('Ready');
   });
 

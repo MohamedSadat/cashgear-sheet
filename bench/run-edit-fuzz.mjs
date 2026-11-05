@@ -168,7 +168,11 @@ function randomOp(sheets, nextId) {
     return { kind: 'insertSheet', position, name: 'New ' + nextId };
   }
   if (roll < 97 && sheets.length > 1) return { ...base, kind: 'deleteSheet' };
-  return { ...base, kind: 'renameSheet', name: pick(['Renamed', 'My Data', 'R2', 'New Name']) + nextId };
+  return {
+    ...base,
+    kind: 'renameSheet',
+    name: pick(['Renamed', 'My Data', 'R2', 'New Name']) + nextId,
+  };
 }
 
 const initialSheets = () => [
@@ -235,7 +239,12 @@ function excel(args) {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      '& {' + script + '} ' + Object.entries(args).map(([key, value]) => `-${key} ${quotePs(value)}`).join(' '),
+      '& {' +
+        script +
+        '} ' +
+        Object.entries(args)
+          .map(([key, value]) => `-${key} ${quotePs(value)}`)
+          .join(' '),
     ],
     { encoding: 'utf8', timeout: 3_600_000, windowsHide: true, maxBuffer: 1 << 26 },
   );
@@ -282,7 +291,8 @@ try {
     `seed ${seedNumber}: ${report.stepsPassed} of ${report.stepsScheduled} steps match Excel, ${report.stepsDiverged} diverged, ${report.stepsSkipped} not reached; ${report.refusedByBoth} refused by both, ${report.refusedByExcelOnly} by Excel only, ${report.refusedByEngineOnly} by the engine only, ${report.ignoredByExcel} ignored by Excel and refused here; ${report.circular} episodes stopped at a circular reference; ${report.cellsCompared} cells compared`,
   );
   console.log(
-    (run.stderr ? run.stderr.slice(0, 4000) + '\n' : '') + `saved: ${savedReport.opened} of ${savedReport.files} opened with no repair, ${savedReport.matched} match Excel's own result, ${savedReport.cellsCompared} cells compared`,
+    (run.stderr ? run.stderr.slice(0, 4000) + '\n' : '') +
+      `saved: ${savedReport.opened} of ${savedReport.files} opened with no repair, ${savedReport.matched} match Excel's own result, ${savedReport.cellsCompared} cells compared`,
   );
   for (const sample of report.divergences.slice(0, Number(option('show', '12')))) {
     console.log(

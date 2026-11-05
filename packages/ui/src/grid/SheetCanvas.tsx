@@ -25,6 +25,13 @@ export function SheetCanvas({ client, palette, colors, events, onController }: S
       onSelection: (selection) => latest.current.events.onSelection(selection),
       onZoom: (zoom) => latest.current.events.onZoom(zoom),
       onError: (error) => latest.current.events.onError(error),
+      onType: () => latest.current.events.onType?.(),
+      onAction: (action) => latest.current.events.onAction?.(action),
+      onJump: (rows, cols, extend) => latest.current.events.onJump?.(rows, cols, extend),
+      onEditClick: (row, col) => latest.current.events.onEditClick?.(row, col) ?? false,
+      onEditDrag: (row, col) => latest.current.events.onEditDrag?.(row, col),
+      onFill: (from, to) => latest.current.events.onFill?.(from, to),
+      onViewport: (sheet, range) => latest.current.events.onViewport?.(sheet, range),
     };
     const controller = new GridController(
       canvas,

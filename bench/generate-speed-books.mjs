@@ -172,6 +172,27 @@ function* formulasSheet(rows) {
   yield '</sheetData></worksheet>';
 }
 
+/** A million formulas that all read one cell, G1, so that changing it recalculates all of them. */
+function* recalculationSheet(rows) {
+  yield `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}"><dimension ref="A1:G${rows}"/><sheetData>`;
+  let batch = [];
+  for (let r = 1; r <= rows; r++) {
+    const a = r % 1000;
+    const f =
+      r === 1 ? `<f t="shared" ref="B1:B${rows}" si="0">A1*$G$1+1</f>` : '<f t="shared" si="0"/>';
+    const input = r === 1 ? '<c r="G1"><v>1</v></c>' : '';
+    batch.push(
+      `<row r="${r}"><c r="A${r}"><v>${a}</v></c><c r="B${r}">${f}<v>${a + 1}</v></c>${input}</row>`,
+    );
+    if (batch.length === 4096) {
+      yield batch.join('');
+      batch = [];
+    }
+  }
+  yield batch.join('');
+  yield '</sheetData></worksheet>';
+}
+
 async function writeBook(name, sheets) {
   const final = join(outRoot, name + '.xlsx');
   if (existsSync(final)) {
@@ -234,6 +255,8 @@ const books = {
   'formulas-past-memory': () => Array.from({ length: 5 }, () => formulasSheet(1_000_000)),
   // Scrolling.
   'rows-1m': () => [valuesSheet(1_048_576)],
+  // Typing during a long recalculation.
+  'recalc-1m': () => [recalculationSheet(1_000_000)],
 };
 for (const [name, sheet] of Object.entries(books)) {
   if (!only || only === name) await writeBook(name, sheet());

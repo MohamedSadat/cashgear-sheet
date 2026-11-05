@@ -1,6 +1,7 @@
 export { AppShell } from './AppShell';
 export {
   MAX_RECENT_FILES,
+  OPENABLE_EXTENSIONS,
   WORKBOOK_EXTENSIONS,
   type NativeInfo,
   type OpenedFile,

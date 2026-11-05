@@ -10,6 +10,7 @@ const nothing: SaveReport = {
   pivotsRefreshOnOpen: false,
   resultsLeftToExcel: 0,
   tableHeadersFixed: 0,
+  leftExtensions: [],
   changedParts: [],
   removedParts: [],
   addedParts: [],

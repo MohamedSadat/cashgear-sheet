@@ -45,12 +45,78 @@ export type FileSource =
   /** The desktop's read protocol, which serves byte ranges. */
   | { kind: 'url'; url: string; size: number };
 
-/** A cell's new contents, for `editCell`. An empty one clears it. */
-export interface CellContent {
-  number?: number;
-  text?: string;
-  /** As a file stores it: no leading `=`. */
-  formula?: string;
+/** A change to the workbook. See `Command` in `crates/cgs-engine/src/command.rs`. */
+export interface CellArea {
+  /** 1-based. */
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+}
+
+export type Command =
+  | { kind: 'input'; sheet: number; row: number; col: number; text: string; areas?: CellArea[] }
+  | { kind: 'arrayInput'; sheet: number; area: CellArea; text: string }
+  | { kind: 'clear'; sheet: number; areas: CellArea[] }
+  | { kind: 'fill'; sheet: number; from: CellArea; to: CellArea; copy?: boolean }
+  | {
+      kind: 'paste';
+      fromSheet: number;
+      from: CellArea;
+      sheet: number;
+      to: CellArea;
+      mode?: 'all' | 'values' | 'formulas' | 'formats';
+    }
+  | {
+      kind: 'move';
+      fromSheet: number;
+      from: CellArea;
+      sheet: number;
+      row: number;
+      col: number;
+    }
+  | { kind: 'pasteExternal'; sheet: number; row: number; col: number; text: string; html?: string }
+  | { kind: 'axis'; sheet: number; axis: 'row' | 'col'; at: number; count: number; delete: boolean }
+  | { kind: 'insertSheet'; position: number; name?: string }
+  | { kind: 'deleteSheet'; sheet: number }
+  | { kind: 'renameSheet'; sheet: number; name: string }
+  | { kind: 'undo' }
+  | { kind: 'redo' };
+
+/** What a command did. */
+export interface Applied {
+  selection: (CellArea & { sheet: number }) | null;
+  undo: string | null;
+  redo: string | null;
+  /** The last change couldn't be kept for undo. */
+  lost: boolean;
+}
+
+/** What changed for the UI, from `decodeChanges`. */
+export interface WorkbookChanges {
+  /** Sheets to draw again in full. */
+  sheets: number[];
+  /** Sheets whose sizes or merges changed. */
+  layouts: number[];
+  /** The list of sheets changed. */
+  book: boolean;
+  /** Tiles to draw again. */
+  tiles: { sheet: number; firstRow: number; firstCol: number }[];
+}
+
+/** Whether calculation is running or due. */
+export interface CalcStatus {
+  calculating: boolean;
+  manual: boolean;
+}
+
+/** Edits a crashed session left behind. */
+export interface Recoverable {
+  id: string;
+  name: string;
+  edits: number;
+  /** When its last edit was made, in ms since 1970. */
+  time: number;
 }
 
 /** What a save did. See `SaveReport` in `crates/cgs-xlsx/src/save.rs`. */
@@ -62,6 +128,7 @@ export interface SaveReport {
   pivotsRefreshOnOpen: boolean;
   resultsLeftToExcel: number;
   tableHeadersFixed: number;
+  leftExtensions: string[];
   changedParts: string[];
   removedParts: string[];
   addedParts: string[];
@@ -79,11 +146,14 @@ export interface SheetSummary {
   state: 'visible' | 'hidden' | 'veryHidden';
   kind: 'worksheet' | 'chart' | 'other';
   loaded: boolean;
+  deleted: boolean;
 }
 
 export interface BookSummary {
   active: number;
   sheets: SheetSummary[];
+  /** Sheets by index, in the order their tabs show. */
+  order: number[];
 }
 
 export type LoadEvent =
@@ -140,7 +210,11 @@ export interface EngineApi {
   touchSharedMemory(buffer: SharedArrayBuffer, value: number): void;
   setLocale(locale: LocaleData): void;
   /** Opens a workbook and starts reading it. Rejects with a message people can read. */
-  open(source: FileSource, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
+  open(
+    source: FileSource,
+    onEvent: (event: LoadEvent) => void,
+    name?: string,
+  ): Promise<BookSummary>;
   close(): void;
   /** The bytes of a new blank workbook. */
   blankWorkbook(): Promise<Uint8Array>;
@@ -151,8 +225,45 @@ export interface EngineApi {
    * copy it, as saving then still works unless the file changes.
    */
   protectSource(source?: FileSource): Promise<boolean>;
-  /** `row` and `col` are 1-based. */
-  editCell(sheet: number, row: number, col: number, content: CellContent): Promise<void>;
+  /** Runs a command. Rejects with a message people can read, changing nothing. */
+  command(command: Command): Promise<Applied>;
+  /** Tells the main thread what changed and whether calculation is running, from now on. */
+  watchChanges(
+    onChanges: (numbers: Uint32Array) => void,
+    onCalc: (status: CalcStatus) => void,
+  ): void;
+  /** Where the user is looking, which calculation gets to first. 1-based. */
+  setViewport(sheet: number, area: CellArea): void;
+  setManualCalc(manual: boolean): Promise<void>;
+  /** F9, Ctrl+Alt+F9 with `all`. */
+  calculateNow(all: boolean): Promise<void>;
+  /** Shift+F9. */
+  calculateSheet(sheet: number): Promise<void>;
+  /** What the clipboard gets for cells of this workbook. */
+  copyText(sheet: number, area: CellArea): Promise<{ text: string; html: string }>;
+  /** Opens CSV text as a new workbook's cells. */
+  loadCsv(text: string): Promise<void>;
+  /** A sheet as CSV text. */
+  csvText(sheet: number): Promise<string>;
+  /** Where Ctrl+arrow goes. 1-based. */
+  jumpTarget(
+    sheet: number,
+    row: number,
+    col: number,
+    rows: number,
+    cols: number,
+  ): Promise<[number, number]>;
+  /** What the name box's text refers to, or null. */
+  resolveName(text: string, sheet: number): Promise<(CellArea & { sheet: number }) | null>;
+  functionNames(): Promise<string[]>;
+  definedNames(): Promise<string[]>;
+  /** The list of sheets as it now stands. */
+  bookSummary(): Promise<BookSummary>;
+  /** Edits a crashed session left, for the next launch to offer back. */
+  recoverable(): Promise<Recoverable[]>;
+  /** Opens what a crash left, with its edits applied again. */
+  openRecovered(id: string, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
+  discardRecovered(id: string): Promise<void>;
   hasChanges(): Promise<boolean>;
   /** Writes the workbook to a checked blob, and leaves the file on disk alone. */
   save(): Promise<SavedFile>;

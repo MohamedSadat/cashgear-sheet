@@ -79,4 +79,7 @@ export interface SheetPlatform {
 /** The file types the app opens. Macros stay in the file and never run. */
 export const WORKBOOK_EXTENSIONS = ['.xlsx', '.xlsm', '.xltx', '.xltm'];
 
+/** What Open offers: a CSV becomes a new workbook's cells. */
+export const OPENABLE_EXTENSIONS = [...WORKBOOK_EXTENSIONS, '.csv'];
+
 export const MAX_RECENT_FILES = 10;

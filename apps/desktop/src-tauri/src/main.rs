@@ -21,7 +21,10 @@ async fn pick_file(
     let (sender, receiver) = std::sync::mpsc::channel();
     app.dialog()
         .file()
-        .add_filter("Excel workbooks", &["xlsx", "xlsm", "xltx", "xltm"])
+        .add_filter(
+            "Workbooks and CSV",
+            &["xlsx", "xlsm", "xltx", "xltm", "csv"],
+        )
         .pick_file(move |chosen| {
             let _ = sender.send(chosen);
         });
@@ -46,7 +49,14 @@ async fn pick_save_path(
     let (sender, receiver) = std::sync::mpsc::channel();
     app.dialog()
         .file()
-        .add_filter("Excel workbook", &[extension.as_str()])
+        .add_filter(
+            if extension.eq_ignore_ascii_case("csv") {
+                "CSV"
+            } else {
+                "Excel workbook"
+            },
+            &[extension.as_str()],
+        )
         .set_file_name(&suggested)
         .save_file(move |chosen| {
             let _ = sender.send(chosen);

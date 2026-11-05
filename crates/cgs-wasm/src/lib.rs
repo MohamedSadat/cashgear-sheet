@@ -5,8 +5,9 @@ use std::cell::RefCell;
 use std::io::{self, Write};
 use std::rc::Rc;
 
-use cgs_calc::CalcValue;
-use cgs_engine::{report_json, EditCell, EditInput, LoadPhase, Screen};
+use cgs_calc::{Rect, SheetRect};
+use cgs_engine::query::{applied_json, dirty_numbers};
+use cgs_engine::{report_json, Area, LoadPhase, Screen};
 use cgs_numfmt::Locale;
 use cgs_xlsx::ByteSource;
 use js_sys::{Function, Uint8Array};
@@ -182,50 +183,133 @@ impl Engine {
         self.0.has_changes()
     }
 
-    /// Sets a cell to a number, or to text when `number` is missing. `row` and `col` are 1-based.
-    pub fn edit_value(
+    /// Runs a command, given as JSON. See `Command` in `crates/cgs-engine/src/command.rs`. Returns
+    /// what to select and what undo would do next, as JSON.
+    pub fn apply_command(&mut self, json: &str) -> Result<String, JsError> {
+        let applied = self
+            .0
+            .apply_json(json)
+            .map_err(|error| JsError::new(&error))?;
+        Ok(applied_json(applied.selection, &self.0.undo_state()))
+    }
+
+    /// What the UI hasn't been told about yet: see `dirty_numbers`.
+    pub fn take_dirty(&mut self) -> Vec<u32> {
+        dirty_numbers(&self.0.take_dirty())
+    }
+
+    /// Calculates for about `budget_ms`, with an area first if `sheet` isn't negative. Returns
+    /// whether more remains.
+    #[allow(clippy::too_many_arguments)]
+    pub fn calc_step(
         &mut self,
-        sheet: u32,
-        row: u32,
-        col: u32,
-        number: Option<f64>,
-        text: Option<String>,
-    ) -> Result<(), JsError> {
-        let value = match (number, text) {
-            (Some(number), _) => EditInput::Value(CalcValue::Number(number)),
-            (None, Some(text)) => EditInput::Value(CalcValue::Text(text)),
-            (None, None) => EditInput::Clear,
+        budget_ms: u32,
+        sheet: i32,
+        top: u32,
+        left: u32,
+        bottom: u32,
+        right: u32,
+    ) -> Result<bool, JsError> {
+        let first: Vec<SheetRect> = if sheet >= 0 {
+            vec![SheetRect {
+                sheet: sheet as u32,
+                rect: Rect {
+                    top,
+                    left,
+                    bottom,
+                    right,
+                },
+            }]
+        } else {
+            Vec::new()
         };
-        self.apply_edit(sheet, row, col, value)
-    }
-
-    /// Sets a cell to a formula, as a file stores it: no leading `=`.
-    pub fn edit_formula(
-        &mut self,
-        sheet: u32,
-        row: u32,
-        col: u32,
-        text: String,
-    ) -> Result<(), JsError> {
-        self.apply_edit(sheet, row, col, EditInput::Formula(text))
-    }
-
-    fn apply_edit(
-        &mut self,
-        sheet: u32,
-        row: u32,
-        col: u32,
-        input: EditInput,
-    ) -> Result<(), JsError> {
         self.0
-            .edit_cells(&[EditCell {
-                sheet,
-                row,
-                col,
-                input: Some(input),
-                style: None,
-            }])
+            .calc_step(budget_ms, &first)
             .map_err(|error| JsError::new(&error))
+    }
+
+    pub fn is_calculating(&self) -> bool {
+        self.0.is_calculating()
+    }
+
+    pub fn is_manual(&self) -> bool {
+        self.0.is_manual()
+    }
+
+    pub fn set_manual(&mut self, manual: bool) {
+        self.0.set_manual(manual);
+    }
+
+    /// F9, or Ctrl+Alt+F9 with `all`.
+    pub fn calculate_now(&mut self, all: bool) -> Result<(), JsError> {
+        self.0
+            .calculate_now(all)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Shift+F9.
+    pub fn calculate_sheet(&mut self, sheet: u32) -> Result<(), JsError> {
+        self.0
+            .calculate_sheet(sheet)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Today's date serial, for dates typed with no year.
+    pub fn set_today(&mut self, serial: f64) {
+        self.0.set_today(serial);
+    }
+
+    /// The clipboard's text and HTML for an area, as two strings.
+    pub fn copy_text(
+        &mut self,
+        sheet: u32,
+        top: u32,
+        left: u32,
+        bottom: u32,
+        right: u32,
+    ) -> Vec<String> {
+        let (text, html) = self.0.copy_text(
+            sheet,
+            Area {
+                top,
+                left,
+                bottom,
+                right,
+            },
+        );
+        vec![text, html]
+    }
+
+    /// A new workbook's cells from CSV text.
+    pub fn load_csv(&mut self, text: &str) -> Result<(), JsError> {
+        self.0.load_csv(text).map_err(|error| JsError::new(&error))
+    }
+
+    /// A sheet as CSV text.
+    pub fn csv_text(&mut self, sheet: u32) -> String {
+        self.0.csv_text(sheet)
+    }
+
+    /// Where Ctrl+arrow goes, as a row and a column.
+    pub fn jump_target(&self, sheet: u32, row: u32, col: u32, rows: i32, cols: i32) -> Vec<u32> {
+        let (row, col) = self.0.jump_target(sheet, row, col, rows, cols);
+        vec![row, col]
+    }
+
+    /// What the name box's text refers to: sheet, top, left, bottom, right. Empty if nothing.
+    pub fn resolve_name(&self, text: &str, current: u32) -> Vec<u32> {
+        match self.0.resolve_name(text, current) {
+            Some((sheet, area)) => vec![sheet, area.top, area.left, area.bottom, area.right],
+            None => Vec::new(),
+        }
+    }
+
+    pub fn function_names(&self) -> Vec<String> {
+        self.0.function_names()
+    }
+
+    pub fn defined_names(&self) -> Vec<String> {
+        self.0.defined_names()
     }
 
     /// Writes the workbook through `write(chunk)`, and returns its save report as JSON.

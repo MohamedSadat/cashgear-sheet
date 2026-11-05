@@ -123,6 +123,72 @@ export function drawSelection(
   }
 }
 
+/** Colours for the references in a formula being typed, one each, as in Excel's. */
+export const REFERENCE_COLORS = [
+  '#2f6fdb',
+  '#d6373b',
+  '#7a3bc4',
+  '#18864b',
+  '#c4478f',
+  '#b4681a',
+  '#17879a',
+];
+
+/** A reference in the formula being typed, marked on the sheet. */
+export function drawReference(
+  context: GridContext,
+  color: string,
+  box: { x: number; y: number; width: number; height: number },
+  pixel: number,
+) {
+  context.strokeStyle = color;
+  context.setLineDash([]);
+  context.lineWidth = pixel * 2;
+  context.strokeRect(box.x, box.y, box.width - pixel, box.height - pixel);
+}
+
+/** What was copied or cut, with a dashed edge. */
+export function drawCopied(
+  context: GridContext,
+  colors: GridColors,
+  box: { x: number; y: number; width: number; height: number },
+  pixel: number,
+) {
+  context.strokeStyle = colors.accent;
+  context.lineWidth = pixel * 2;
+  context.setLineDash([pixel * 4, pixel * 3]);
+  context.strokeRect(box.x, box.y, box.width - pixel, box.height - pixel);
+  context.setLineDash([]);
+}
+
+/** The square at a selection's corner that starts a fill. */
+export function drawFillHandle(
+  context: GridContext,
+  colors: GridColors,
+  x: number,
+  y: number,
+  size: number,
+) {
+  context.fillStyle = colors.background;
+  context.fillRect(x - size / 2 - 1, y - size / 2 - 1, size + 2, size + 2);
+  context.fillStyle = colors.accent;
+  context.fillRect(x - size / 2, y - size / 2, size, size);
+}
+
+/** Where a fill would reach, while it is being dragged. */
+export function drawFillPreview(
+  context: GridContext,
+  colors: GridColors,
+  box: { x: number; y: number; width: number; height: number },
+  pixel: number,
+) {
+  context.strokeStyle = colors.textMuted;
+  context.lineWidth = pixel;
+  context.setLineDash([pixel * 3, pixel * 3]);
+  context.strokeRect(box.x, box.y, box.width - pixel, box.height - pixel);
+  context.setLineDash([]);
+}
+
 export const DRAWING_LABELS: Record<DrawingBox['kind'], string> = {
   chart: 'Chart',
   picture: 'Picture',
