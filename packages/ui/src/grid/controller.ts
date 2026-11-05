@@ -17,6 +17,7 @@ import {
   drawHeaderCell,
   drawPlaceholder,
   drawReference,
+  drawResizeLine,
   drawScrollbar,
   drawSelection,
   REFERENCE_COLORS,
@@ -70,6 +71,25 @@ export interface GridEvents {
   onFill?: (from: CellRange, to: CellRange | null) => void;
   /** What is in view changed. 0-based. */
   onViewport?: (sheet: number, range: CellRange) => void;
+  /** A drag or click that made a selection has finished. */
+  onSelectEnd?: () => void;
+  /** A line's edge was dragged, to this size in pixels at 100%. Lines are 1-based and inclusive. */
+  onResize?: (axis: 'row' | 'col', spans: [number, number][], px: number) => void;
+  /** A line's edge was double-clicked. */
+  onAutoFit?: (axis: 'row' | 'col', spans: [number, number][]) => void;
+  /** Right click or the menu key, in client coordinates. */
+  onContextMenu?: (x: number, y: number, region: GridRegion) => void;
+  /** A size being dragged, for showing what it comes to. Null when it ends. */
+  onResizeHint?: (hint: ResizeHint | null) => void;
+}
+
+export type GridRegion = 'cells' | 'rowHeader' | 'colHeader';
+
+export interface ResizeHint {
+  axis: 'row' | 'col';
+  px: number;
+  clientX: number;
+  clientY: number;
 }
 
 export type { CellRange };
@@ -145,8 +165,12 @@ export class GridController {
   private lastViewport = '';
 
   private dragging:
-    'cells' | 'rows' | 'cols' | 'point' | 'fill' | 'vertical' | 'horizontal' | null = null;
+    'cells' | 'rows' | 'cols' | 'point' | 'fill' | 'vertical' | 'horizontal' | 'resize' | null =
+    null;
   private dragOffset = 0;
+  /** A line's edge being dragged. Sizes are in canvas pixels. */
+  private resizing: { axis: 'row' | 'col'; line: number; start: number; at: number } | null = null;
+  private painter = false;
   private lastPointer = { x: 0, y: 0 };
   private autoScroll = 0;
 
@@ -176,6 +200,7 @@ export class GridController {
     canvas.addEventListener('keydown', this.onKeyDown);
     canvas.addEventListener('dblclick', this.onDoubleClick);
     canvas.addEventListener('mousedown', this.onMouseDown);
+    canvas.addEventListener('contextmenu', this.onContextMenu);
     this.applyStyle();
   }
 
@@ -285,6 +310,34 @@ export class GridController {
   invalidate(sheets: number[], tiles: { sheet: number; firstRow: number; firstCol: number }[]) {
     for (const sheet of sheets) this.cache.invalidateSheet(sheet);
     if (tiles.length) this.cache.invalidateTiles(tiles);
+    this.schedule();
+  }
+
+  /** The first row and column in view, 0-based, from which panes freeze. */
+  visibleCorner() {
+    const frozen = this.frozen();
+    if (frozen.rows || frozen.cols) {
+      return { row: frozen.firstRow, col: frozen.firstCol };
+    }
+    return { row: this.rows.at(this.scrollY), col: this.cols.at(this.scrollX) };
+  }
+
+  /** Shows that the format painter is on, by its cursor. */
+  setPainter(on: boolean) {
+    this.painter = on;
+    this.canvas.style.cursor = on ? 'copy' : '';
+  }
+
+  /** Makes an area fit the view, as far as zoom can. */
+  zoomToSelection() {
+    const { range } = this;
+    const width = (this.cols.offset(range.right + 1) - this.cols.offset(range.left)) / this.scale;
+    const height = (this.rows.offset(range.bottom + 1) - this.rows.offset(range.top)) / this.scale;
+    const view = this.view();
+    if (!width || !height) return;
+    const fit = Math.min(view.width / this.dpr / width, view.height / this.dpr / height) * 100;
+    this.setZoom(Math.floor(fit));
+    this.reveal(range.top, range.left);
     this.schedule();
   }
 
@@ -484,6 +537,7 @@ export class GridController {
     canvas.removeEventListener('keydown', this.onKeyDown);
     canvas.removeEventListener('dblclick', this.onDoubleClick);
     canvas.removeEventListener('mousedown', this.onMouseDown);
+    canvas.removeEventListener('contextmenu', this.onContextMenu);
     this.cache.dispose();
   }
 
@@ -793,6 +847,18 @@ export class GridController {
 
     this.drawHeaders();
     this.drawPaneLines();
+    if (this.resizing) {
+      const pixel = Math.max(1, Math.round(this.dpr));
+      const vertical = this.resizing.axis === 'col';
+      drawResizeLine(
+        context,
+        colors,
+        vertical,
+        this.resizing.at,
+        vertical ? this.height : this.width,
+        pixel,
+      );
+    }
     this.placeEditor();
     this.reportViewport(panes[0]!);
     drawScrollbar(context, colors, this.verticalBar());
@@ -1143,6 +1209,50 @@ export class GridController {
     return { row: this.rows.at(sheetY), col: this.cols.at(sheetX) };
   }
 
+  /** The line whose far edge is at a header position, if the pointer is close enough to it. */
+  private edgeAt(x: number, y: number): { axis: 'row' | 'col'; line: number } | null {
+    const view = this.view();
+    const reach = Math.max(3, Math.round(4 * this.dpr));
+    const frozen = this.frozen();
+    if (y < view.y && x >= view.x) {
+      const inFrozen = x < view.x + frozen.width;
+      const sheetX = inFrozen
+        ? x - view.x + this.cols.offset(frozen.firstCol)
+        : x - (view.x + frozen.width) + this.scrollX;
+      const col = this.cols.at(sheetX);
+      if (this.cols.offset(col + 1) - sheetX <= reach) return { axis: 'col', line: col };
+      if (sheetX - this.cols.offset(col) <= reach && col > 0) {
+        return { axis: 'col', line: this.cols.previousVisible(col - 1) };
+      }
+    }
+    if (x < view.x && y >= view.y) {
+      const inFrozen = y < view.y + frozen.height;
+      const sheetY = inFrozen
+        ? y - view.y + this.rows.offset(frozen.firstRow)
+        : y - (view.y + frozen.height) + this.scrollY;
+      const row = this.rows.at(sheetY);
+      if (this.rows.offset(row + 1) - sheetY <= reach) return { axis: 'row', line: row };
+      if (sheetY - this.rows.offset(row) <= reach && row > 0) {
+        return { axis: 'row', line: this.rows.previousVisible(row - 1) };
+      }
+    }
+    return null;
+  }
+
+  /** The lines a resize of this one applies to: all that are selected whole, if it's one of them. */
+  private linesFor(axis: 'row' | 'col', line: number): [number, number][] {
+    const areas = [...this.extra, this.range];
+    const whole = (area: CellRange) =>
+      axis === 'row'
+        ? area.left === 0 && area.right === MAX_COLS - 1
+        : area.top === 0 && area.bottom === MAX_ROWS - 1;
+    const first = (area: CellRange) => (axis === 'row' ? area.top : area.left);
+    const last = (area: CellRange) => (axis === 'row' ? area.bottom : area.right);
+    const holds = areas.some((area) => whole(area) && line >= first(area) && line <= last(area));
+    if (!holds) return [[line + 1, line + 1]];
+    return areas.filter(whole).map((area) => [first(area) + 1, last(area) + 1]);
+  }
+
   /** Whether a position is on the fill handle. */
   private onFillHandle(x: number, y: number) {
     if (this.editing || this.extra.length) return false;
@@ -1171,6 +1281,11 @@ export class GridController {
     const y = (event.clientY - bounds.top) * this.dpr;
     if (this.onFillHandle(x, y)) {
       this.events.onFill?.(this.range, null);
+      return;
+    }
+    const edge = this.edgeAt(x, y);
+    if (edge) {
+      this.events.onAutoFit?.(edge.axis, this.linesFor(edge.axis, edge.line));
       return;
     }
     const view = this.view();
@@ -1211,6 +1326,20 @@ export class GridController {
       return;
     }
     const view = this.view();
+    const edge = this.editing ? null : this.edgeAt(x, y);
+    if (edge) {
+      const axis = edge.axis === 'col' ? this.cols : this.rows;
+      const size = axis.size(edge.line);
+      this.dragging = 'resize';
+      this.resizing = {
+        axis: edge.axis,
+        line: edge.line,
+        start: edge.axis === 'col' ? x - size : y - size,
+        at: edge.axis === 'col' ? x : y,
+      };
+      this.schedule();
+      return;
+    }
     if (this.onFillHandle(x, y)) {
       this.dragging = 'fill';
       this.fillTarget = this.range;
@@ -1268,9 +1397,25 @@ export class GridController {
   };
 
   private readonly onPointerMove = (event: PointerEvent) => {
-    if (!this.dragging) return;
     const { x, y } = this.pointerPosition(event);
+    if (!this.dragging) {
+      if (event.buttons === 0) this.setCursor(x, y);
+      return;
+    }
     this.lastPointer = { x, y };
+    if (this.dragging === 'resize' && this.resizing) {
+      const { axis, start } = this.resizing;
+      const at = Math.max(start, axis === 'col' ? x : y);
+      this.resizing.at = at;
+      this.events.onResizeHint?.({
+        axis,
+        px: Math.round((at - start) / this.scale),
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
+      this.schedule();
+      return;
+    }
     if (this.dragging === 'vertical') {
       const bar = this.verticalBar();
       const low = this.minScroll().y;
@@ -1409,7 +1554,80 @@ export class GridController {
     this.autoScroll = requestAnimationFrame(tick);
   }
 
+  /** Says what a drag from here would do, by the cursor. */
+  private setCursor(x: number, y: number) {
+    const edge = this.editing ? null : this.edgeAt(x, y);
+    const view = this.view();
+    let cursor = '';
+    if (edge) cursor = edge.axis === 'col' ? 'col-resize' : 'row-resize';
+    else if (this.painter) cursor = 'copy';
+    else if (x >= view.x && y >= view.y && this.onFillHandle(x, y)) cursor = 'crosshair';
+    if (this.canvas.style.cursor !== cursor) this.canvas.style.cursor = cursor;
+  }
+
+  private readonly onContextMenu = (event: MouseEvent) => {
+    const bounds = this.canvas.getBoundingClientRect();
+    const x = (event.clientX - bounds.left) * this.dpr;
+    const y = (event.clientY - bounds.top) * this.dpr;
+    const view = this.view();
+    const bar = this.scrollbarSize();
+    if (x >= this.width - bar || y >= this.height - bar) return;
+    event.preventDefault();
+    if (this.editing || (x < view.x && y < view.y)) return;
+    const { row, col } = this.cellAt(Math.max(x, view.x), Math.max(y, view.y));
+    const inAny = (test: (area: CellRange) => boolean) => [...this.extra, this.range].some(test);
+    let region: GridRegion = 'cells';
+    if (x < view.x) {
+      region = 'rowHeader';
+      const held = inAny(
+        (area) =>
+          area.left === 0 && area.right === MAX_COLS - 1 && row >= area.top && row <= area.bottom,
+      );
+      if (!held) this.selectArea({ top: row, left: 0, bottom: row, right: MAX_COLS - 1 }, row, 0);
+    } else if (y < view.y) {
+      region = 'colHeader';
+      const held = inAny(
+        (area) =>
+          area.top === 0 && area.bottom === MAX_ROWS - 1 && col >= area.left && col <= area.right,
+      );
+      if (!held) this.selectArea({ top: 0, left: col, bottom: MAX_ROWS - 1, right: col }, 0, col);
+    } else {
+      const held = inAny(
+        (area) => row >= area.top && row <= area.bottom && col >= area.left && col <= area.right,
+      );
+      if (!held) this.select(row, col, false, false);
+    }
+    this.focus();
+    this.events.onContextMenu?.(event.clientX, event.clientY, region);
+  };
+
+  /** Opens the context menu from the keyboard, at the active cell. */
+  contextMenuAtActive() {
+    const point = this.pointForCell(this.row, this.col);
+    const bounds = this.canvas.getBoundingClientRect();
+    this.events.onContextMenu?.(bounds.left + point.x, bounds.top + point.y, 'cells');
+  }
+
   private readonly onPointerUp = () => {
+    if (this.dragging === 'resize' && this.resizing) {
+      const { axis, line, start, at } = this.resizing;
+      this.resizing = null;
+      this.dragging = null;
+      this.events.onResizeHint?.(null);
+      const size = (axis === 'col' ? this.cols : this.rows).size(line);
+      if (at - start !== size) {
+        this.events.onResize?.(
+          axis,
+          this.linesFor(axis, line),
+          Math.round((at - start) / this.scale),
+        );
+      }
+      this.schedule();
+      return;
+    }
+    const selecting =
+      this.dragging === 'cells' || this.dragging === 'rows' || this.dragging === 'cols';
+    if (selecting) this.events.onSelectEnd?.();
     if (this.dragging === 'fill' && this.fillTarget) {
       const from = this.range;
       const to = this.fillTarget;

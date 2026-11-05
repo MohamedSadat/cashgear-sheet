@@ -33,6 +33,17 @@ async function menu(page: Page, top: string, item: RegExp) {
   await page.getByRole('menuitem', { name: item }).click();
 }
 
+/** Picks from a command's menu on the Home tab. */
+async function homeMenu(page: Page, command: string, item: string) {
+  const ribbon = page.getByTestId('ribbon');
+  await ribbon.getByRole('tab', { name: 'Home', exact: true }).click();
+  await ribbon
+    .getByRole('button', { name: new RegExp('^' + command + '( ?▾)?$') })
+    .first()
+    .click();
+  await page.getByRole('menuitem', { name: item, exact: true }).click();
+}
+
 test.beforeEach(async ({ page, context, browserName }) => {
   void browserName;
   page.on('pageerror', (error) => {
@@ -240,9 +251,8 @@ test.describe('undo', () => {
     await shows(page, 1, 1).toBe('');
     await page.keyboard.press('Control+y');
     await shows(page, 1, 1).toBe('1');
-    await page.getByRole('menuitem', { name: 'Edit', exact: true }).click();
-    await expect(page.getByRole('menuitem', { name: /^Redo/ })).toBeEnabled();
-    await page.getByRole('menuitem', { name: /^Redo/ }).click();
+    await expect(page.getByTestId('quick-redo')).toBeEnabled();
+    await page.getByTestId('quick-redo').click();
     await shows(page, 2, 1).toBe('2');
   });
 
@@ -379,22 +389,23 @@ test.describe('structure', () => {
     await goTo(page, 'A3');
     await expect(bar(page)).toHaveValue('=A2*3');
     await goTo(page, 'A:A');
-    await menu(page, 'Insert', /^Columns/);
+    await homeMenu(page, 'Insert', 'Insert Sheet Columns');
     await shows(page, 3, 2).toBe('15');
     await goTo(page, 'B3');
     await expect(bar(page)).toHaveValue('=B2*3');
     await goTo(page, 'A:A');
-    await menu(page, 'Insert', /^Delete columns/);
+    await homeMenu(page, 'Delete', 'Delete Sheet Columns');
     await shows(page, 3, 1).toBe('15');
     await goTo(page, '1:1');
-    await menu(page, 'Insert', /^Delete rows/);
+    await homeMenu(page, 'Delete', 'Delete Sheet Rows');
     await shows(page, 2, 1).toBe('15');
   });
 
-  test('a part of a selection that is not whole rows says so', async ({ page }) => {
+  test('a part of a selection that is not whole rows asks which way', async ({ page }) => {
     await page.keyboard.press('Control+-');
-    await expect(status(page)).toHaveText(/whole rows or columns/);
+    await expect(page.getByTestId('shift-side')).toBeVisible();
     await page.keyboard.press('Escape');
+    await expect(page.getByTestId('shift-side')).toHaveCount(0);
     await expect(status(page)).toHaveText('Ready');
   });
 
@@ -414,7 +425,7 @@ test.describe('structure', () => {
     await goTo(page, 'A1');
     await expect(bar(page)).toHaveValue("='My Data'!A1*2");
     await page.getByTestId('sheet-tab-0').click();
-    await menu(page, 'Sheet', /^Delete sheet/);
+    await homeMenu(page, 'Delete', 'Delete Sheet');
     await expect(page.getByTestId('sheet-tab-0')).toHaveCount(0);
     await shows(page, 1, 1).toBe('#REF!');
     await page.keyboard.press('Control+z');
@@ -425,7 +436,7 @@ test.describe('structure', () => {
   });
 
   test('the last sheet stays', async ({ page }) => {
-    await menu(page, 'Sheet', /^Delete sheet/);
+    await homeMenu(page, 'Delete', 'Delete Sheet');
     await expect(status(page)).not.toHaveText('Ready');
     await expect(page.getByTestId('sheet-tab-0')).toBeVisible();
   });
@@ -478,8 +489,10 @@ test.describe('calculation', () => {
   test('manual calculation waits for F9', async ({ page }) => {
     await page.keyboard.type('1\n=A1+1\n');
     await shows(page, 2, 1).toBe('2');
-    await page.getByRole('menuitem', { name: 'Formulas', exact: true }).click();
-    await page.getByRole('menuitemcheckbox', { name: /Manual/ }).click();
+    const ribbon = page.getByTestId('ribbon');
+    await ribbon.getByRole('tab', { name: 'Formulas', exact: true }).click();
+    await ribbon.getByRole('button', { name: /Manual/ }).click();
+    await page.getByTestId('sheet-canvas').focus();
     await goTo(page, 'A1');
     await page.keyboard.type('10\n');
     await shows(page, 1, 1).toBe('10');

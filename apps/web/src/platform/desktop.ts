@@ -42,6 +42,12 @@ export const desktopPlatform: SheetPlatform = {
   kind: 'desktop',
   nativeInfo: () => invoke<NativeInfo>('native_info'),
   setWindowTheme: (theme) => getCurrentWindow().setTheme(theme),
+  onCloseRequested(ask) {
+    const listening = getCurrentWindow().onCloseRequested(async (event) => {
+      if (!(await ask())) event.preventDefault();
+    });
+    return () => void listening.then((stop) => stop());
+  },
   async pickFile() {
     const file = await invoke<NativeFile | null>('pick_file');
     return file && opened(file);

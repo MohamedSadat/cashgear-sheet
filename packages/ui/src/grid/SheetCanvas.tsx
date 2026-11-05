@@ -32,6 +32,11 @@ export function SheetCanvas({ client, palette, colors, events, onController }: S
       onEditDrag: (row, col) => latest.current.events.onEditDrag?.(row, col),
       onFill: (from, to) => latest.current.events.onFill?.(from, to),
       onViewport: (sheet, range) => latest.current.events.onViewport?.(sheet, range),
+      onSelectEnd: () => latest.current.events.onSelectEnd?.(),
+      onResize: (axis, spans, px) => latest.current.events.onResize?.(axis, spans, px),
+      onAutoFit: (axis, spans) => latest.current.events.onAutoFit?.(axis, spans),
+      onContextMenu: (x, y, region) => latest.current.events.onContextMenu?.(x, y, region),
+      onResizeHint: (hint) => latest.current.events.onResizeHint?.(hint),
     };
     const controller = new GridController(
       canvas,

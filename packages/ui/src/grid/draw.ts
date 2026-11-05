@@ -161,6 +161,20 @@ export function drawCopied(
   context.setLineDash([]);
 }
 
+/** A line showing where a resize would end, while it is dragged. */
+export function drawResizeLine(
+  context: GridContext,
+  colors: GridColors,
+  vertical: boolean,
+  at: number,
+  length: number,
+  pixel: number,
+) {
+  context.fillStyle = colors.accent;
+  if (vertical) context.fillRect(at, 0, pixel, length);
+  else context.fillRect(0, at, length, pixel);
+}
+
 /** The square at a selection's corner that starts a fill. */
 export function drawFillHandle(
   context: GridContext,

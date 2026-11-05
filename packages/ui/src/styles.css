@@ -29,9 +29,14 @@ body {
 }
 
 .cgs-shell {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-direction: column;
   height: 100%;
+}
+
+.cgs-shell > .cgs-grid {
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .cgs-shell-drop .cgs-grid {
@@ -281,4 +286,183 @@ body {
   margin: 0;
   padding-inline-start: 1.25em;
   overflow-wrap: anywhere;
+}
+
+.cgs-quick {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-1);
+}
+
+.cgs-ribbon {
+  flex: none;
+}
+
+.cgs-ribbon-combo input,
+.cgs-ribbon-select {
+  box-sizing: border-box;
+  inline-size: 100%;
+  block-size: 1.6rem;
+  padding-inline: var(--cg-space-1);
+  color: var(--cg-text);
+  font: inherit;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+  border-radius: 2px;
+}
+
+.cgs-ribbon-combo {
+  display: inline-block;
+}
+
+.cgs-ribbon-select {
+  inline-size: 9rem;
+}
+
+.cgs-resize-hint {
+  position: fixed;
+  z-index: 100;
+  padding: 2px 6px;
+  color: var(--cg-text);
+  font-size: var(--cg-font-size-xs);
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--cg-surface-raised);
+  border: var(--cg-border-style);
+}
+
+.cgs-dialog-split {
+  display: grid;
+  grid-template-columns: minmax(10rem, auto) minmax(0, 1fr);
+  gap: var(--cg-space-4);
+  min-block-size: 18rem;
+  padding-block-start: var(--cg-space-3);
+}
+
+.cgs-dialog-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  min-inline-size: 0;
+  padding-block-start: var(--cg-space-2);
+}
+
+.cgs-dialog-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--cg-space-3);
+}
+
+.cgs-dialog-grow {
+  flex: 1 1 10rem;
+}
+
+.cgs-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cgs-dialog-field input,
+.cgs-dialog-field select,
+.cgs-dialog-column select {
+  box-sizing: border-box;
+  inline-size: 100%;
+  padding: 2px 4px;
+  color: var(--cg-text);
+  font: inherit;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+}
+
+.cgs-dialog-check {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+}
+
+.cgs-dialog-sample {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: var(--cg-space-2);
+  overflow: hidden;
+  white-space: nowrap;
+  background: var(--cg-surface-subtle);
+}
+
+.cgs-dialog-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 4.5rem;
+  overflow: hidden;
+  border: var(--cg-border-style);
+}
+
+.cgs-dialog-edges {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--cg-space-1);
+}
+
+.cgs-edge {
+  padding: var(--cg-space-1);
+  color: var(--cg-text);
+  font: inherit;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+  cursor: pointer;
+}
+
+.cgs-edge-on {
+  color: var(--cg-text);
+  background: var(--cg-hover);
+  border-color: var(--cg-accent);
+}
+
+.cgs-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--cg-space-2);
+}
+
+.cgs-dialog-message {
+  margin: 0;
+}
+
+.cgs-color-chip {
+  display: inline-block;
+  inline-size: 0.9rem;
+  block-size: 0.9rem;
+  border: var(--cg-border-style);
+}
+
+.cgs-find-list {
+  max-block-size: 10rem;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  border: var(--cg-border-style);
+}
+
+.cgs-find-list button {
+  display: grid;
+  grid-template-columns: 6rem 4rem minmax(0, 1fr);
+  gap: var(--cg-space-2);
+  inline-size: 100%;
+  padding: 2px var(--cg-space-1);
+  color: var(--cg-text);
+  font: inherit;
+  text-align: start;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.cgs-find-list button:hover {
+  background: var(--cg-hover);
 }

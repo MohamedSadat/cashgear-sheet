@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The main window: core events, plus setting its theme. App commands need no permission.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-theme"]
+  "permissions": ["core:default", "core:window:allow-set-theme", "core:window:allow-destroy"]
 }

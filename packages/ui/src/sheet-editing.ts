@@ -33,6 +33,10 @@ export interface EditingHost {
   calculate(kind: 'now' | 'sheet' | 'all'): void;
   /** Autocomplete, which has first refusal on some keys. */
   completionKey(event: KeyboardEvent<HTMLElement>): boolean;
+  /** Fits columns to what they hold, through the same queue as commands. */
+  fitColumns(sheet: number, first: number, last: number): void;
+  /** A formatting shortcut, which the shell knows what to do with. */
+  formatAction(action: GridAction): void;
 }
 
 export function toArea(range: CellRange): CellArea {
@@ -457,6 +461,31 @@ export class SheetEditing {
     }
   }
 
+  /** Paste of one kind, from the ribbon. Only cells copied here can do it in full. */
+  pasteMode(mode: 'values' | 'formulas' | 'formats') {
+    const grid = this.host.grid();
+    const clip = this.clip;
+    if (!grid || !this.host.canEdit()) return;
+    if (clip) {
+      const { sheet, range } = grid.selection();
+      this.send({
+        kind: 'paste',
+        fromSheet: clip.sheet,
+        from: toArea(clip.range),
+        sheet,
+        to: toArea(range),
+        mode,
+      });
+      return;
+    }
+    if (mode === 'formats') {
+      this.host.notice('Copy cells in this workbook first, to paste their formatting.');
+      return;
+    }
+    this.pasteValues = true;
+    void this.pasteFromMenu();
+  }
+
   /** Paste from a menu, which has to ask for the clipboard. */
   async pasteFromMenu() {
     try {
@@ -496,15 +525,6 @@ export class SheetEditing {
       count: axis === 'row' ? range.bottom - range.top + 1 : range.right - range.left + 1,
       delete: remove,
     });
-  }
-
-  private axisFromKeys(remove: boolean) {
-    const grid = this.host.grid();
-    if (!grid) return;
-    const { range } = grid.selection();
-    if (range.left === 0 && range.right === MAX_COL - 1) this.axis('row', remove);
-    else if (range.top === 0 && range.bottom === MAX_ROW - 1) this.axis('col', remove);
-    else this.host.notice('Select whole rows or columns first.');
   }
 
   /** Ctrl+D and Ctrl+R copy the first line, or the line before a single one. */
@@ -601,11 +621,10 @@ export class SheetEditing {
       case 'fillRight':
         this.fillKey(false);
         break;
-      case 'insertCells':
-        this.axisFromKeys(false);
-        break;
-      case 'deleteCells':
-        this.axisFromKeys(true);
+      case 'cancel':
+        this.letGoOfClip();
+        this.host.notice(null);
+        this.host.formatAction(action);
         break;
       case 'insertSheet':
         this.host.insertSheet();
@@ -662,10 +681,8 @@ export class SheetEditing {
       case 'edit':
         void this.edit().catch((error) => this.refused(error));
         break;
-      case 'cancel':
-        this.letGoOfClip();
-        this.host.notice(null);
-        break;
+      default:
+        this.host.formatAction(action);
     }
   };
 }

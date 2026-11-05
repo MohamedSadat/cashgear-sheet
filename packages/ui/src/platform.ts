@@ -49,6 +49,8 @@ export interface RecentFile {
  */
 export interface SheetPlatform {
   kind: 'web' | 'desktop';
+  /** Asks `ask` before the app's window closes, on the desktop. Gives what stops asking. */
+  onCloseRequested?(ask: () => Promise<boolean>): () => void;
   /** The native host, or null on the web. */
   nativeInfo(): Promise<NativeInfo | null>;
   /** Sets the window's own theme, such as its title bar; null follows the system. */

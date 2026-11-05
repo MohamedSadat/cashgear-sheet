@@ -10,13 +10,22 @@ import {
   type DragEvent,
 } from 'react';
 import {
+  CgButton,
   CgButtonGroup,
+  CgContextMenu,
   CgMenu,
   CgMessageBox,
+  CgRibbon,
   CgSlider,
   CgStatusBadge,
   CgStatusBar,
   CgTabs,
+  CgWindow,
+  type CgBorderApplyDetails,
+  type CgBorderLineStyle,
+  type CgColorPickerValue,
+  type CgContextMenuActions,
+  type CgContextMenuItem,
   type CgMenuItem,
 } from '@cashgear/ui';
 import {
@@ -25,16 +34,27 @@ import {
   type Applied,
   type BookSummary,
   type CalcStatus,
+  type CellFormat,
   type Command,
   type EngineClient,
+  type FormatLists,
+  type FoundCell,
   type LoadEvent,
   type Recoverable,
   type SaveReport,
   type WorkbookChanges,
 } from '@cgs/engine-client';
 import { CellEditor, type CellEditorHandle, type CompletionControl } from './CellEditor';
+import { FindDialog } from './FindDialog';
+import { FormatCellsDialog } from './FormatCellsDialog';
 import { FormulaBar } from './FormulaBar';
-import { type GridController, type GridEvents, type GridSelection } from './grid/controller';
+import {
+  type GridController,
+  type GridEvents,
+  type GridRegion,
+  type GridSelection,
+  type ResizeHint,
+} from './grid/controller';
 import { sliderToZoom, zoomToSlider } from './grid/geometry';
 import { SheetCanvas } from './grid/SheetCanvas';
 import {
@@ -46,8 +66,11 @@ import {
   type SheetPlatform,
   type WorkingCopy,
 } from './platform';
+import { buildRibbonTabs, themeColors, type FormatTab, type RibbonActions } from './ribbon';
 import { saveReportLines, saveSummary, workbookExtension } from './save-report';
 import { fromArea, SheetEditing, toArea, type EditingHost } from './sheet-editing';
+import { bordersFromPicker, SheetFormat } from './sheet-format';
+import type { GridAction } from './shortcuts';
 import { readGridColors, readPalette, type ThemeController, type ThemePreference } from './theme';
 
 const themeChoices = [
@@ -73,6 +96,22 @@ interface AppShellProps {
 }
 
 const noCell: CellDetail = { name: '', edit: '' };
+
+/** A dialog the shell is showing. */
+type ShellDialog =
+  | { kind: 'format'; tab: FormatTab }
+  | { kind: 'find'; tab: 'find' | 'replace' }
+  | { kind: 'size'; axis: 'row' | 'col'; value: string }
+  | { kind: 'shift'; remove: boolean; choice: 'side' | 'down' | 'row' | 'col' }
+  | { kind: 'merge'; answer: (accepted: boolean) => void }
+  | { kind: 'close'; answer: (close: boolean) => void };
+
+/** How the sheet showing is set up, for the View tab. */
+interface SheetFlags {
+  frozen: boolean;
+  showGrid: boolean;
+  showHeadings: boolean;
+}
 
 /** A CSV's bytes as text: UTF-8 if they can be, or else Windows' usual code page. */
 async function csvFileText(source: OpenedFile['source']) {
@@ -116,6 +155,24 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const [names, setNames] = useState<string[]>([]);
   const [renaming, setRenaming] = useState<{ sheet: number; name: string } | null>(null);
   const [recoverable, setRecoverable] = useState<Recoverable[]>([]);
+  const [format, setFormat] = useState<CellFormat | null>(null);
+  const [lists, setLists] = useState<FormatLists | null>(null);
+  const [dialog, setDialog] = useState<ShellDialog | null>(null);
+  const [flags, setFlags] = useState<SheetFlags>({
+    frozen: false,
+    showGrid: true,
+    showHeadings: true,
+  });
+  const [showFormulaBar, setShowFormulaBar] = useState(true);
+  const [fontColor, setFontColor] = useState<CgColorPickerValue>({ kind: 'rgb', color: '#ff0000' });
+  const [fillColor, setFillColor] = useState<CgColorPickerValue>({ kind: 'rgb', color: '#ffff00' });
+  const [borderStyle, setBorderStyle] = useState<CgBorderLineStyle>('thin');
+  const [borderColor, setBorderColor] = useState<CgColorPickerValue>({ kind: 'automatic' });
+  const [borderPreset, setBorderPreset] = useState<CgBorderApplyDetails | null>(null);
+  const [resizeHint, setResizeHint] = useState<ResizeHint | null>(null);
+  const formatRef = useRef<CellFormat | null>(null);
+  formatRef.current = format;
+  const contextMenu = useRef<CgContextMenuActions<GridRegion | 'tab'> | null>(null);
   const fileRef = useRef<OpenedFile | null>(null);
   /** Commands run in order, as the first has to make the source safe before any of them. */
   const commands = useRef<Promise<unknown>>(Promise.resolve());
@@ -217,6 +274,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
     if (sheetRef.current !== index) return;
     shownSheet.current = index;
     controller.current?.showSheet(index, layout, drawings);
+    setFlags({
+      frozen: layout.frozenRows > 0 || layout.frozenCols > 0,
+      showGrid: layout.showGrid,
+      showHeadings: layout.showHeaders,
+    });
     if (!editingRef.current?.session.snapshot().active) controller.current?.focus();
   }, []);
 
@@ -443,6 +505,15 @@ export function AppShell({ platform, theme }: AppShellProps) {
         if (token === cellToken.current) setCell({ name: selection.name, edit: text.edit });
       })
       .catch(report);
+    engine
+      .cellFormat(sheetRef.current, selection.row + 1, selection.col + 1)
+      .then((next) => {
+        // The same look keeps the same object, so that the ribbon only draws again when it differs.
+        if (token === cellToken.current) {
+          setFormat((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
+        }
+      })
+      .catch(report);
   }, [report]);
 
   /** The list of sheets as the engine now has it. */
@@ -557,6 +628,9 @@ export function AppShell({ platform, theme }: AppShellProps) {
   );
 
   const editingRef = useRef<SheetEditing | null>(null);
+  const sheetFormatRef = useRef<SheetFormat | null>(null);
+  const throughRef = useRef<EditingHost | null>(null);
+  const formatActionRef = useRef<(action: GridAction) => void>(() => undefined);
   const host = useRef<EditingHost | null>(null);
   host.current = {
     engine: () => clientRef.current,
@@ -594,6 +668,30 @@ export function AppShell({ platform, theme }: AppShellProps) {
     insertSheet: () => insertSheet(false),
     calculate,
     completionKey: (event) => completionRef.current?.key(event) ?? false,
+    fitColumns: (index, first, last) => {
+      const job = commands.current
+        .catch(() => undefined)
+        .then(async () => {
+          const engine = clientRef.current;
+          const file = fileRef.current;
+          if (!engine || !file) return;
+          if (!protectedRef.current) {
+            const copy = await platform.workingCopy(file);
+            await engine.protectSource(copy?.source);
+            workingRef.current = copy;
+            protectedRef.current = true;
+          }
+          const applied = await engine.autoFitColumns(index, first, last);
+          if (!applied) return;
+          const changed = await engine.hasChanges();
+          editedRef.current = changed;
+          setCanSave(changed || Boolean(file.isNew));
+          setUndoLabels({ undo: applied.undo, redo: applied.redo });
+        });
+      commands.current = job;
+      job.catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+    },
+    formatAction: (action) => formatActionRef.current(action),
   };
   if (!editingRef.current) {
     const through: EditingHost = {
@@ -613,10 +711,18 @@ export function AppShell({ platform, theme }: AppShellProps) {
       insertSheet: () => host.current!.insertSheet(),
       calculate: (kind) => host.current!.calculate(kind),
       completionKey: (event) => host.current!.completionKey(event),
+      fitColumns: (index, first, last) => host.current!.fitColumns(index, first, last),
+      formatAction: (action) => host.current!.formatAction(action),
     };
     editingRef.current = new SheetEditing(through);
+    throughRef.current = through;
   }
   const editing = editingRef.current;
+  if (!sheetFormatRef.current) {
+    sheetFormatRef.current = new SheetFormat(throughRef.current!, editing, () => formatRef.current);
+  }
+  const sheetFormat = sheetFormatRef.current;
+  const painterOn = useSyncExternalStore(sheetFormat.subscribe, sheetFormat.painterOn);
   // Only what the status bar says, so that a keystroke redraws the two text boxes and not this.
   const editMode = useSyncExternalStore(editing.session.subscribe, () => {
     const state = editing.session.snapshot();
@@ -653,6 +759,17 @@ export function AppShell({ platform, theme }: AppShellProps) {
     window.addEventListener('beforeunload', onLeave);
     return () => window.removeEventListener('beforeunload', onLeave);
   }, [platform]);
+
+  // On the desktop, closing the window with unsaved edits asks the same.
+  useEffect(
+    () =>
+      platform.onCloseRequested?.(async () => {
+        await commands.current.catch(() => undefined);
+        if (!editedRef.current) return true;
+        return new Promise<boolean>((answer) => setDialog({ kind: 'close', answer }));
+      }),
+    [platform],
+  );
 
   // Only a paste event brings the clipboard without a permission prompt.
   useEffect(() => {
@@ -762,6 +879,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
         writeTo: (target: SaveTarget) => Promise<void>;
         lastSave: () => SaveReport | null;
         problem: () => string | null;
+        cellFormat: (row: number, col: number) => Promise<CellFormat | null>;
+        saveBytes: () => Promise<Uint8Array>;
       };
     };
     hooks.cgsTest = {
@@ -787,6 +906,12 @@ export function AppShell({ platform, theme }: AppShellProps) {
       writeTo,
       lastSave: () => lastSaveRef.current,
       problem: () => problemRef.current,
+      cellFormat: async (row, col) =>
+        (await clientRef.current?.cellFormat(sheetRef.current, row, col)) ?? null,
+      saveBytes: async () => {
+        const saved = await clientRef.current?.save();
+        return new Uint8Array((await saved?.blob.arrayBuffer()) ?? new ArrayBuffer(0));
+      },
     };
   }, [openFile, runCommand, writeTo]);
 
@@ -823,8 +948,26 @@ export function AppShell({ platform, theme }: AppShellProps) {
       onEditDrag: editing.editDrag,
       onFill: editing.fill,
       onViewport: (index, range) => clientRef.current?.setViewport(index, toArea(range)),
+      onSelectEnd: sheetFormat.selectionDone,
+      onResize: (axis, spans, px) => {
+        for (const [first, last] of spans) {
+          void runCommand({
+            kind: 'lines',
+            sheet: sheetRef.current,
+            axis,
+            first,
+            last,
+            size: px,
+          }).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+        }
+      },
+      onAutoFit: (axis, spans) => {
+        for (const span of spans) sheetFormat.autoFit(axis, span);
+      },
+      onResizeHint: setResizeHint,
+      onContextMenu: (x, y, region) => void contextMenu.current?.showAt(x, y, region),
     }),
-    [editing, refreshCell, report],
+    [editing, refreshCell, report, runCommand, sheetFormat],
   );
 
   const handController = useCallback((next: GridController | null) => {
@@ -908,175 +1051,370 @@ export function AppShell({ platform, theme }: AppShellProps) {
           },
         ],
       },
-      {
-        key: 'edit',
-        text: 'Edit',
-        children: [
-          {
-            key: 'undo',
-            text: undoLabels.undo ? `Undo ${undoLabels.undo}` : 'Undo',
-            shortcut: 'Ctrl+Z',
-            disabled: !undoLabels.undo,
-            onActivate: () => send({ kind: 'undo' }),
-          },
-          {
-            key: 'redo',
-            text: undoLabels.redo ? `Redo ${undoLabels.redo}` : 'Redo',
-            shortcut: 'Ctrl+Y',
-            disabled: !undoLabels.redo,
-            onActivate: () => send({ kind: 'redo' }),
-          },
-          {
-            key: 'cut',
-            text: 'Cut',
-            shortcut: 'Ctrl+X',
-            disabled: !book,
-            onActivate: () => editing.copy(true),
-          },
-          {
-            key: 'copy',
-            text: 'Copy',
-            shortcut: 'Ctrl+C',
-            disabled: !book,
-            onActivate: () => editing.copy(false),
-          },
-          {
-            key: 'paste',
-            text: 'Paste',
-            shortcut: 'Ctrl+V',
-            disabled: !book,
-            onActivate: () => void editing.pasteFromMenu(),
-          },
-        ],
-      },
-      {
-        key: 'insert',
-        text: 'Insert',
-        children: [
-          {
-            key: 'insert-rows',
-            text: 'Rows',
-            disabled: !book,
-            onActivate: () => editing.axis('row', false),
-          },
-          {
-            key: 'insert-cols',
-            text: 'Columns',
-            disabled: !book,
-            onActivate: () => editing.axis('col', false),
-          },
-          {
-            key: 'delete-rows',
-            text: 'Delete rows',
-            disabled: !book,
-            onActivate: () => editing.axis('row', true),
-          },
-          {
-            key: 'delete-cols',
-            text: 'Delete columns',
-            disabled: !book,
-            onActivate: () => editing.axis('col', true),
-          },
-        ],
-      },
-      {
-        key: 'sheet',
-        text: 'Sheet',
-        children: [
-          {
-            key: 'sheet-insert',
-            text: 'Insert sheet',
-            shortcut: 'Shift+F11',
-            disabled: !book,
-            onActivate: () => insertSheet(false),
-          },
-          {
-            key: 'sheet-rename',
-            text: 'Rename…',
-            disabled: !book,
-            onActivate: openRename,
-          },
-          {
-            key: 'sheet-delete',
-            text: 'Delete sheet',
-            disabled: !book,
-            onActivate: () => send({ kind: 'deleteSheet', sheet: sheetRef.current }),
-          },
-        ],
-      },
-      {
-        key: 'formulas',
-        text: 'Formulas',
-        children: [
-          {
-            key: 'calculate-now',
-            text: 'Calculate now',
-            shortcut: 'F9',
-            disabled: !book,
-            onActivate: () => calculate('now'),
-          },
-          {
-            key: 'calculate-sheet',
-            text: 'Calculate sheet',
-            shortcut: 'Shift+F9',
-            disabled: !book,
-            onActivate: () => calculate('sheet'),
-          },
-          {
-            key: 'calc-manual',
-            text: 'Manual calculation',
-            checked: calc.manual,
-            disabled: !book,
-            onActivate: () => void clientRef.current?.setManualCalc(!calc.manual).catch(report),
-          },
-        ],
-      },
-      {
-        key: 'view',
-        text: 'View',
-        children: [
-          {
-            key: 'theme',
-            text: 'Theme',
-            children: themeChoices.map((choice) => ({
-              key: 'theme-' + choice.name,
-              text: choice.text,
-              radioGroup: 'theme',
-              checked: preference === choice.name,
-              onActivate: () => theme.setPreference(choice.name as ThemePreference),
-            })),
-          },
-          {
-            key: 'zoom-100',
-            text: 'Zoom to 100%',
-            onActivate: () => controller.current?.setZoom(100),
-          },
-        ],
-      },
     ],
     [
-      book,
-      calc.manual,
-      calculate,
       canSave,
-      editing,
       exportCsv,
-      insertSheet,
       newWorkbook,
       openFromRecent,
-      openRename,
       pick,
-      preference,
       recent,
-      report,
       save,
       saveAs,
       saveReady,
       saving,
+    ],
+  );
+
+  // A workbook's theme and its own number formats, for the pickers and the dialog.
+  useEffect(() => {
+    const engine = clientRef.current;
+    if (!engine || !book) {
+      setLists(null);
+      return;
+    }
+    let live = true;
+    engine
+      .formatLists()
+      .then((next) => {
+        if (live) setLists(next);
+      })
+      .catch(report);
+    return () => {
+      live = false;
+    };
+  }, [book, load.phase, report]);
+
+  const openShift = useCallback(
+    (remove: boolean) => {
+      const whole = sheetFormat.wholeLines();
+      if (whole) {
+        editing.axis(whole, remove);
+        return;
+      }
+      setDialog({ kind: 'shift', remove, choice: remove ? 'side' : 'down' });
+    },
+    [editing, sheetFormat],
+  );
+
+  const openSize = useCallback((axis: 'row' | 'col') => {
+    setDialog({ kind: 'size', axis, value: '' });
+  }, []);
+
+  const goToBox = useCallback(() => {
+    const box = document.querySelector<HTMLInputElement>('[data-testid="name-box"]');
+    box?.focus();
+    box?.select();
+  }, []);
+
+  const mergeCells = useCallback(
+    (kind: 'center' | 'across' | 'cells') => {
+      void sheetFormat
+        .merge(
+          kind,
+          () =>
+            new Promise<boolean>((answer) => {
+              setDialog({ kind: 'merge', answer });
+            }),
+        )
+        .catch(report);
+    },
+    [report, sheetFormat],
+  );
+
+  const clearAll = useCallback(() => {
+    const selection = controller.current?.selection();
+    if (!selection) return;
+    send({ kind: 'clear', sheet: selection.sheet, areas: selection.areas.map(toArea) });
+    sheetFormat.format({ clear: true });
+  }, [send, sheetFormat]);
+
+  const clearContents = useCallback(() => {
+    const selection = controller.current?.selection();
+    if (!selection) return;
+    send({ kind: 'clear', sheet: selection.sheet, areas: selection.areas.map(toArea) });
+  }, [send]);
+
+  const ribbonActions = useMemo<RibbonActions>(
+    () => ({
+      format: sheetFormat,
+      editing,
+      openFormat: (tab) => setDialog({ kind: 'format', tab }),
+      openSize,
+      openShift,
+      openFind: (tab) => setDialog({ kind: 'find', tab }),
+      goTo: goToBox,
+      renameSheet: openRename,
+      insertSheet: () => insertSheet(false),
+      deleteSheet: () => send({ kind: 'deleteSheet', sheet: sheetRef.current }),
+      calculate,
+      setManual: (manual) => void clientRef.current?.setManualCalc(manual).catch(report),
+      setView: (next) => send({ kind: 'viewFlags', sheet: sheetRef.current, ...next }),
+      setFormulaBar: setShowFormulaBar,
+      zoom100: () => controller.current?.setZoom(100),
+      zoomToSelection: () => controller.current?.zoomToSelection(),
+      setFontColor,
+      setFillColor,
+      setBorderStyle,
+      setBorderColor,
+      applyBorders: (details) => {
+        setBorderPreset(details);
+        sheetFormat.format({ border: bordersFromPicker(details, borderStyle) });
+      },
+      mergeCells,
+      clearAll,
+      clearContents,
+    }),
+    [
+      borderStyle,
+      calculate,
+      clearAll,
+      clearContents,
+      editing,
+      goToBox,
+      insertSheet,
+      mergeCells,
+      openRename,
+      openShift,
+      openSize,
+      report,
       send,
-      theme,
+      sheetFormat,
+    ],
+  );
+
+  const ribbonTabs = useMemo(
+    () =>
+      buildRibbonTabs(
+        {
+          hasBook: Boolean(book),
+          format,
+          lists,
+          undo: undoLabels.undo,
+          redo: undoLabels.redo,
+          canSave,
+          painterOn,
+          manual: calc.manual,
+          frozen: flags.frozen,
+          showGrid: flags.showGrid,
+          showHeadings: flags.showHeadings,
+          showFormulaBar,
+          fontColor,
+          fillColor,
+          borderStyle,
+          borderColor,
+          borderPreset,
+        },
+        ribbonActions,
+      ),
+    [
+      book,
+      borderColor,
+      borderPreset,
+      borderStyle,
+      calc.manual,
+      canSave,
+      fillColor,
+      flags,
+      fontColor,
+      format,
+      lists,
+      painterOn,
+      ribbonActions,
+      showFormulaBar,
       undoLabels,
     ],
+  );
+
+  formatActionRef.current = (action) => {
+    switch (action) {
+      case 'cancel':
+        sheetFormat.stopPainter();
+        break;
+      case 'bold':
+        sheetFormat.toggleBold();
+        break;
+      case 'italic':
+        sheetFormat.toggleItalic();
+        break;
+      case 'underline':
+        sheetFormat.toggleUnderline('single');
+        break;
+      case 'strike':
+        sheetFormat.toggleStrike();
+        break;
+      case 'formatCells':
+        setDialog({ kind: 'format', tab: 'number' });
+        break;
+      case 'find':
+        setDialog({ kind: 'find', tab: 'find' });
+        break;
+      case 'replace':
+        setDialog({ kind: 'find', tab: 'replace' });
+        break;
+      case 'goTo':
+        goToBox();
+        break;
+      case 'hideRows':
+        sheetFormat.setHidden('row', true);
+        break;
+      case 'hideCols':
+        sheetFormat.setHidden('col', true);
+        break;
+      case 'unhideRows':
+        sheetFormat.setHidden('row', false);
+        break;
+      case 'unhideCols':
+        sheetFormat.setHidden('col', false);
+        break;
+      case 'formatGeneral':
+        sheetFormat.format({ numberFormatId: 0 });
+        break;
+      case 'formatNumber':
+        sheetFormat.format({ numberFormatId: 4 });
+        break;
+      case 'formatCurrency':
+        sheetFormat.format({ numberFormatId: 8 });
+        break;
+      case 'formatPercent':
+        sheetFormat.format({ numberFormatId: 9 });
+        break;
+      case 'formatScientific':
+        sheetFormat.format({ numberFormatId: 11 });
+        break;
+      case 'formatDate':
+        sheetFormat.format({ numberFormatId: 15 });
+        break;
+      case 'formatTime':
+        sheetFormat.format({ numberFormatId: 18 });
+        break;
+      case 'borderOutline':
+        sheetFormat.outline(true);
+        break;
+      case 'borderNone':
+        sheetFormat.outline(false);
+        break;
+      case 'contextMenu':
+        controller.current?.contextMenuAtActive();
+        break;
+      case 'insertCells':
+        openShift(false);
+        break;
+      case 'deleteCells':
+        openShift(true);
+        break;
+      default:
+        break;
+    }
+  };
+
+  const contextItems = useMemo<ReadonlyArray<CgContextMenuItem<GridRegion | 'tab'>>>(() => {
+    type Item = CgContextMenuItem<GridRegion | 'tab'>;
+    const only = (regions: (GridRegion | 'tab')[]) => regions;
+    void only;
+    const items: Item[] = [
+      {
+        key: 'cut',
+        text: 'Cut',
+        icon: 'cut',
+        shortcut: 'Ctrl+X',
+        command: () => editing.copy(true),
+      },
+      {
+        key: 'copy',
+        text: 'Copy',
+        icon: 'copy',
+        shortcut: 'Ctrl+C',
+        command: () => editing.copy(false),
+      },
+      {
+        key: 'paste',
+        text: 'Paste',
+        icon: 'paste',
+        shortcut: 'Ctrl+V',
+        command: () => void editing.pasteFromMenu(),
+      },
+      {
+        key: 'paste-special',
+        text: 'Paste Special',
+        children: [
+          { key: 'paste-values', text: 'Values', command: () => editing.pasteMode('values') },
+          { key: 'paste-formulas', text: 'Formulas', command: () => editing.pasteMode('formulas') },
+          { key: 'paste-formats', text: 'Formatting', command: () => editing.pasteMode('formats') },
+        ],
+      },
+      {
+        key: 'insert',
+        text: 'Insert…',
+        beginGroup: true,
+        command: () => openShift(false),
+      },
+      { key: 'delete', text: 'Delete…', command: () => openShift(true) },
+      { key: 'clear', text: 'Clear Contents', command: clearContents },
+      {
+        key: 'format-cells',
+        text: 'Format Cells…',
+        beginGroup: true,
+        shortcut: 'Ctrl+1',
+        command: () => setDialog({ kind: 'format', tab: 'number' }),
+      },
+      {
+        key: 'merge',
+        text: format?.merged ? 'Unmerge Cells' : 'Merge Cells',
+        command: () => {
+          if (format?.merged) sheetFormat.unmerge();
+          else mergeCells('cells');
+        },
+      },
+      {
+        key: 'row-height',
+        text: 'Row Height…',
+        beginGroup: true,
+        command: () => openSize('row'),
+      },
+      {
+        key: 'hide-rows',
+        text: 'Hide Rows',
+        shortcut: 'Ctrl+9',
+        command: () => sheetFormat.setHidden('row', true),
+      },
+      {
+        key: 'unhide-rows',
+        text: 'Unhide Rows',
+        command: () => sheetFormat.setHidden('row', false),
+      },
+      {
+        key: 'col-width',
+        text: 'Column Width…',
+        beginGroup: true,
+        command: () => openSize('col'),
+      },
+      {
+        key: 'hide-cols',
+        text: 'Hide Columns',
+        shortcut: 'Ctrl+0',
+        command: () => sheetFormat.setHidden('col', true),
+      },
+      {
+        key: 'unhide-cols',
+        text: 'Unhide Columns',
+        command: () => sheetFormat.setHidden('col', false),
+      },
+    ];
+    return items;
+  }, [clearContents, editing, format?.merged, mergeCells, openShift, openSize, sheetFormat]);
+
+  const tabItems = useMemo<ReadonlyArray<CgContextMenuItem<GridRegion | 'tab'>>>(
+    () => [
+      { key: 'tab-insert', text: 'Insert Sheet', command: () => insertSheet(false) },
+      {
+        key: 'tab-delete',
+        text: 'Delete Sheet',
+        command: () => send({ kind: 'deleteSheet', sheet: sheetRef.current }),
+      },
+      { key: 'tab-rename', text: 'Rename…', command: openRename },
+    ],
+    [insertSheet, openRename, send],
   );
 
   useEffect(() => {
@@ -1150,18 +1488,45 @@ export function AppShell({ platform, theme }: AppShellProps) {
     >
       <header className="cgs-header">
         <div className="cgs-header-start">
+          <div className="cgs-quick" role="toolbar" aria-label="Quick access">
+            <CgButton
+              icon="save"
+              aria-label="Save"
+              title="Save (Ctrl+S)"
+              data-testid="quick-save"
+              size="small"
+              appearance="ghost"
+              disabled={!saveReady || !canSave}
+              onClick={() => void save()}
+            >
+              {null}
+            </CgButton>
+            <CgButton
+              icon="undo"
+              aria-label={undoLabels.undo ? `Undo ${undoLabels.undo}` : 'Undo'}
+              title={undoLabels.undo ? `Undo ${undoLabels.undo} (Ctrl+Z)` : 'Undo (Ctrl+Z)'}
+              data-testid="quick-undo"
+              size="small"
+              appearance="ghost"
+              disabled={!undoLabels.undo}
+              onClick={() => send({ kind: 'undo' })}
+            >
+              {null}
+            </CgButton>
+            <CgButton
+              icon="redo"
+              aria-label={undoLabels.redo ? `Redo ${undoLabels.redo}` : 'Redo'}
+              title={undoLabels.redo ? `Redo ${undoLabels.redo} (Ctrl+Y)` : 'Redo (Ctrl+Y)'}
+              data-testid="quick-redo"
+              size="small"
+              appearance="ghost"
+              disabled={!undoLabels.redo}
+              onClick={() => send({ kind: 'redo' })}
+            >
+              {null}
+            </CgButton>
+          </div>
           <h1 className="cgs-title">{fileName ?? 'CashGear Sheet'}</h1>
-          <CgMenu
-            className="cgs-menu"
-            items={menu}
-            semanticMode="application-menu"
-            selectionMode="none"
-            submenuTrigger="click"
-            ariaLabel="Main menu"
-            size="small"
-            displayMode="desktop"
-            data-testid="main-menu"
-          />
         </div>
         <CgButtonGroup
           ariaLabel="Theme"
@@ -1173,33 +1538,55 @@ export function AppShell({ platform, theme }: AppShellProps) {
           onSelectedNameChange={(name) => theme.setPreference(name as ThemePreference)}
         />
       </header>
-      <FormulaBar
-        session={editing.session}
-        name={cell.name}
-        text={cell.edit}
-        readOnly={!book}
-        onBegin={() => void editing.edit('bar')}
-        onEditorKey={editing.key}
-        onGoTo={(text) => {
-          const engine = clientRef.current;
-          if (!engine) return;
-          engine
-            .resolveName(text, sheetRef.current)
-            .then(async (found) => {
-              if (!found) {
-                setNotice('That isn’t a cell or a name in this workbook.');
-                controller.current?.focus();
-                return;
-              }
-              const { sheet: target, ...area } = found;
-              await goToSheet(target);
-              controller.current?.selectArea(fromArea(area));
-              controller.current?.focus();
-            })
-            .catch(report);
-        }}
-        onLeave={() => controller.current?.focus()}
+      <CgRibbon
+        className="cgs-ribbon"
+        tabs={ribbonTabs}
+        defaultActiveKey="home"
+        ariaLabel="Ribbon"
+        data-testid="ribbon"
+        startContent={
+          <CgMenu
+            className="cgs-menu"
+            items={menu}
+            semanticMode="application-menu"
+            selectionMode="none"
+            submenuTrigger="click"
+            ariaLabel="File menu"
+            size="small"
+            displayMode="desktop"
+            data-testid="main-menu"
+          />
+        }
       />
+      {showFormulaBar && (
+        <FormulaBar
+          session={editing.session}
+          name={cell.name}
+          text={cell.edit}
+          readOnly={!book}
+          onBegin={() => void editing.edit('bar')}
+          onEditorKey={editing.key}
+          onGoTo={(text) => {
+            const engine = clientRef.current;
+            if (!engine) return;
+            engine
+              .resolveName(text, sheetRef.current)
+              .then(async (found) => {
+                if (!found) {
+                  setNotice('That isn’t a cell or a name in this workbook.');
+                  controller.current?.focus();
+                  return;
+                }
+                const { sheet: target, ...area } = found;
+                await goToSheet(target);
+                controller.current?.selectArea(fromArea(area));
+                controller.current?.focus();
+              })
+              .catch(report);
+          }}
+          onLeave={() => controller.current?.focus()}
+        />
+      )}
       <main className="cgs-grid">
         {client && (
           <SheetCanvas
@@ -1226,6 +1613,16 @@ export function AppShell({ platform, theme }: AppShellProps) {
             <p className="cgs-welcome-note">{OPENABLE_EXTENSIONS.join(', ')}</p>
           </div>
         )}
+        {resizeHint && (
+          <div
+            className="cgs-resize-hint"
+            role="status"
+            data-testid="resize-hint"
+            style={{ left: resizeHint.clientX + 12, top: resizeHint.clientY + 12 }}
+          >
+            {resizeHint.axis === 'col' ? 'Width' : 'Height'}: {resizeHint.px} pixels
+          </div>
+        )}
         {book && !sheetLoaded && shown?.kind === 'worksheet' && (
           <div className="cgs-sheet-note" data-testid="sheet-loading" role="status">
             Reading this sheet… {percent}%
@@ -1244,6 +1641,16 @@ export function AppShell({ platform, theme }: AppShellProps) {
         onDoubleClick={(event) => {
           const tab = (event.target as HTMLElement).closest('[data-testid^="sheet-tab-"]');
           if (tab) openRename();
+        }}
+        onContextMenu={(event) => {
+          const tab = (event.target as HTMLElement).closest<HTMLElement>(
+            '[data-testid^="sheet-tab-"]',
+          );
+          if (!tab) return;
+          event.preventDefault();
+          const index = Number(tab.dataset.testid?.replace('sheet-tab-', ''));
+          if (index !== sheetRef.current) chooseSheet(String(index));
+          void contextMenu.current?.showAt(event.clientX, event.clientY, 'tab');
         }}
       >
         {tabs.length > 0 && (
@@ -1371,6 +1778,213 @@ export function AppShell({ platform, theme }: AppShellProps) {
           },
         ]}
       />
+      <CgContextMenu<GridRegion | 'tab'>
+        actionsRef={contextMenu}
+        items={contextItems}
+        ariaLabel="Context menu"
+        data-testid="context-menu"
+        customizeMenu={({ invocation }) => {
+          const region = invocation.context;
+          if (region === 'tab') return tabItems;
+          const hidden =
+            region === 'rowHeader'
+              ? ['col-width', 'hide-cols', 'unhide-cols']
+              : region === 'colHeader'
+                ? ['row-height', 'hide-rows', 'unhide-rows']
+                : [
+                    'col-width',
+                    'hide-cols',
+                    'unhide-cols',
+                    'row-height',
+                    'hide-rows',
+                    'unhide-rows',
+                  ];
+          return contextItems.filter((item) => !hidden.includes(item.key));
+        }}
+      />
+      {dialog?.kind === 'format' && format && (
+        <FormatCellsDialog
+          open
+          tab={dialog.tab}
+          format={format}
+          theme={themeColors(lists)}
+          codes={lists?.codes ?? []}
+          sample={(code) => {
+            const selection = selectionRef.current;
+            const engine = clientRef.current;
+            if (!selection || !engine) return Promise.resolve('');
+            return engine.formatSample(
+              sheetRef.current,
+              selection.row + 1,
+              selection.col + 1,
+              code,
+            );
+          }}
+          onApply={(change, merge) => {
+            if (Object.keys(change).length) sheetFormat.format(change);
+            if (merge === true) mergeCells('cells');
+            if (merge === false) sheetFormat.unmerge();
+          }}
+          onClose={() => {
+            setDialog(null);
+            controller.current?.focus();
+          }}
+        />
+      )}
+      {dialog?.kind === 'find' && (
+        <FindDialog
+          open
+          tab={dialog.tab}
+          engine={() => clientRef.current}
+          selection={() => controller.current?.selection() ?? null}
+          sheetName={(index) => bookRef.current?.sheets[index]?.name ?? ''}
+          settled={() => commands.current.catch(() => undefined)}
+          run={runCommand}
+          goTo={async (found: FoundCell) => {
+            await goToSheet(found.sheet);
+            const at = { top: found.row - 1, left: found.col - 1 };
+            controller.current?.selectArea({ ...at, bottom: at.top, right: at.left });
+          }}
+          onClose={() => {
+            setDialog(null);
+            controller.current?.focus();
+          }}
+        />
+      )}
+      {dialog?.kind === 'size' && (
+        <CgMessageBox
+          defaultOpen
+          title={dialog.axis === 'row' ? 'Row Height' : 'Column Width'}
+          actionLabel="OK"
+          data-testid="size-dialog"
+          onClosed={(accepted) => {
+            const { axis, value } = dialog;
+            setDialog(null);
+            const size = Number(value);
+            if (accepted && value.trim() && Number.isFinite(size) && size >= 0) {
+              sheetFormat.setSize(axis, Math.round(size));
+            }
+            controller.current?.focus();
+          }}
+        >
+          <label className="cgs-dialog-field">
+            <span>{dialog.axis === 'row' ? 'Row height' : 'Column width'}, in pixels</span>
+            <input
+              data-testid="size-value"
+              autoFocus
+              inputMode="numeric"
+              value={dialog.value}
+              onChange={(event) => setDialog({ ...dialog, value: event.target.value })}
+            />
+          </label>
+        </CgMessageBox>
+      )}
+      {dialog?.kind === 'shift' && (
+        <CgMessageBox
+          defaultOpen
+          title={dialog.remove ? 'Delete' : 'Insert'}
+          actionLabel="OK"
+          data-testid="shift-dialog"
+          onClosed={(accepted) => {
+            const { choice, remove } = dialog;
+            setDialog(null);
+            if (accepted) {
+              if (choice === 'row' || choice === 'col') editing.axis(choice, remove);
+              else sheetFormat.shift(choice === 'down', remove);
+            }
+            controller.current?.focus();
+          }}
+        >
+          <div className="cgs-dialog-column" role="radiogroup" aria-label="Shift">
+            {(
+              [
+                ['side', dialog.remove ? 'Shift cells left' : 'Shift cells right'],
+                ['down', dialog.remove ? 'Shift cells up' : 'Shift cells down'],
+                ['row', 'Entire row'],
+                ['col', 'Entire column'],
+              ] as const
+            ).map(([value, text]) => (
+              <label key={value} className="cgs-dialog-check">
+                <input
+                  type="radio"
+                  name="cgs-shift"
+                  data-testid={'shift-' + value}
+                  checked={dialog.choice === value}
+                  onChange={() => setDialog({ ...dialog, choice: value })}
+                />
+                {text}
+              </label>
+            ))}
+          </div>
+        </CgMessageBox>
+      )}
+      {dialog?.kind === 'close' && (
+        <CgWindow
+          open
+          headerText="CashGear Sheet"
+          width={420}
+          data-testid="close-dialog"
+          onOpenChange={(next) => {
+            if (!next) {
+              dialog.answer(false);
+              setDialog(null);
+            }
+          }}
+          renderBody={() => (
+            <p>Do you want to save your changes to {fileName ?? 'this workbook'}?</p>
+          )}
+          renderFooter={() => (
+            <div className="cgs-dialog-actions">
+              <CgButton
+                intent="primary"
+                data-testid="close-save"
+                onClick={() => {
+                  const { answer } = dialog;
+                  setDialog(null);
+                  void save()
+                    .then(() => answer(!editedRef.current))
+                    .catch(() => answer(false));
+                }}
+              >
+                Save
+              </CgButton>
+              <CgButton
+                data-testid="close-discard"
+                onClick={() => {
+                  dialog.answer(true);
+                  setDialog(null);
+                }}
+              >
+                Don’t Save
+              </CgButton>
+              <CgButton
+                data-testid="close-cancel"
+                onClick={() => {
+                  dialog.answer(false);
+                  setDialog(null);
+                }}
+              >
+                Cancel
+              </CgButton>
+            </div>
+          )}
+        />
+      )}
+      {dialog?.kind === 'merge' && (
+        <CgMessageBox
+          defaultOpen
+          title="Merge cells"
+          actionLabel="OK"
+          data-testid="merge-dialog"
+          onClosed={(accepted) => {
+            const { answer } = dialog;
+            setDialog(null);
+            answer(accepted);
+          }}
+        >
+          <p>Merging cells only keeps the upper-left value, and discards the other values.</p>
+        </CgMessageBox>
+      )}
       {renaming && (
         <CgMessageBox
           defaultOpen
