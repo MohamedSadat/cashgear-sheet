@@ -966,6 +966,17 @@ export function brokenBooks() {
     'table-header-mismatch': change('xl/tables/table1.xml', (xml) =>
       xml.replace('name="First"', 'name="Not the header"'),
     ),
+    // A table's calculated column has to read columns it has. Renaming a heading has to say so.
+    'calculated-column-reads-a-gone-column': zip(
+      moving.map(([part, body]) => [
+        part,
+        part === 'xl/tables/table1.xml'
+          ? body.toString('utf8').replace('name="Amount"', 'name="Takings"')
+          : part === 'xl/worksheets/sheet1.xml'
+            ? body.toString('utf8').replace('<t>Amount</t>', '<t>Takings</t>')
+            : body,
+      ]),
+    ),
     'chain-names-a-constant': change('xl/calcChain.xml', (xml) =>
       xml.replace('<c r="C3"/>', '<c r="A2"/>'),
     ),

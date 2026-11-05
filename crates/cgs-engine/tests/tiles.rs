@@ -220,7 +220,11 @@ fn a_tile_shows_formatted_values_in_their_own_colours() {
     );
     let tile = Tile::new(&mut engine, 0, 0, 0, LIGHT);
     assert_eq!((tile.rows, tile.cols), (64, 16));
-    assert_eq!(tile.row_px(0), 25, "fitted to its 14-point font");
+    assert_eq!(
+        tile.row_px(0),
+        24,
+        "fitted to its 14-point Arial, as Excel fits it"
+    );
     assert_eq!(tile.row_px(1), 20);
     assert_eq!(tile.col_px(0), 64);
 

@@ -577,6 +577,14 @@ export class GridController {
     };
   }
 
+  /** For tests: a cell's box, in CSS pixels on the canvas. */
+  boxForCell(row: number, col: number) {
+    const middle = this.pointForCell(row, col);
+    const width = this.cols.size(col) / this.dpr;
+    const height = this.rows.size(row) / this.dpr;
+    return { x: middle.x - width / 2, y: middle.y - height / 2, width, height };
+  }
+
   /** For tests: moves the view as a scrollbar drag would. */
   scrollTo(x: number, y: number) {
     this.scrollX = x;

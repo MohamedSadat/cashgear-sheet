@@ -3,7 +3,7 @@
 
 const PATTERNS: Record<number, string[]> = {
   // gray125
-  1: ['#...', '....', '..#.', '....'],
+  1: ['..#.', '....', '#...', '....'],
   // gray0625
   2: [
     '#.......',
@@ -16,11 +16,11 @@ const PATTERNS: Record<number, string[]> = {
     '........',
   ],
   // lightGray
-  3: ['#...', '..#.'],
+  3: ['..#.', '#...'],
   // mediumGray
   4: ['#.', '.#'],
   // darkGray
-  5: ['###.', '#.##'],
+  5: ['#.##', '###.'],
   // darkHorizontal
   6: ['#', '#', '.', '.'],
   // darkVertical
@@ -32,7 +32,7 @@ const PATTERNS: Record<number, string[]> = {
   // darkGrid
   10: ['##..', '##..', '..##', '..##'],
   // darkTrellis
-  11: ['####', '.##.', '####', '##.#'].map((row, at) => (at === 3 ? '#..#' : row)),
+  11: ['####', '.##.', '####', '#..#'],
   // lightHorizontal
   12: ['#', '.', '.', '.'],
   // lightVertical
@@ -42,9 +42,9 @@ const PATTERNS: Record<number, string[]> = {
   // lightUp
   15: ['...#', '..#.', '.#..', '#...'],
   // lightGrid
-  16: ['####', '#...', '#...', '#...'],
+  16: ['####', '..#.', '..#.', '..#.'],
   // lightTrellis
-  17: ['#..#', '.##.', '.##.', '#..#'],
+  17: ['..#.', '.#.#', '#...', '.#.#'],
 };
 
 export function patternRows(pattern: number): string[] | undefined {

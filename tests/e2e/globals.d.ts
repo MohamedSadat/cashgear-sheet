@@ -13,6 +13,8 @@ interface GridForTests {
   };
   scrollTo(x: number, y: number): void;
   pointForCell(row: number, col: number): { x: number; y: number };
+  boxForCell(row: number, col: number): { x: number; y: number; width: number; height: number };
+  selectArea(range: { top: number; left: number; bottom: number; right: number }): void;
 }
 
 interface Window {

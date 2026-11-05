@@ -667,10 +667,12 @@ class Painter {
         : undefined;
 
     let line = singleLine(raw);
+    let shrink = 1;
     if (style.layout & LAYOUT_SHRINK) {
       const full = this.width(line);
       if (full > room) {
-        metrics = this.fontFor(cell.style, style, Math.max(0.1, room / full));
+        shrink = Math.max(0.1, room / full);
+        metrics = this.fontFor(cell.style, style, shrink);
       }
     }
     if (cell.fillAt) {
@@ -701,7 +703,8 @@ class Painter {
       }
     }
 
-    if (!rich) metrics = this.fontFor(cell.style, style);
+    // Measuring rich text left another font current.
+    if (!rich) metrics = this.fontFor(cell.style, style, shrink);
     const measured = rich ? rich.width : this.width(line);
     const start = this.textStart(style, left, right, measured, inset);
     let clipLeft = left;

@@ -464,6 +464,23 @@ fn sync_table_headers(
                 report.table_headers_fixed += 1;
             }
             let updated = set_table_columns(&xml, &names);
+            // Formulas the part holds for its columns follow the new names, or Excel refuses it.
+            let renames: Vec<(String, String)> = names
+                .iter()
+                .filter_map(|(index, name)| {
+                    let old = table.columns.get(*index)?;
+                    (old != name).then(|| (old.clone(), name.clone()))
+                })
+                .collect();
+            let updated = if renames.is_empty() {
+                updated
+            } else {
+                crate::patch_parts::rename_in_table_formulas(
+                    &updated,
+                    &table.display_name,
+                    &renames,
+                )
+            };
             overlay.insert(target, updated);
         }
     }

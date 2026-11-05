@@ -651,3 +651,23 @@ fn undoing_a_shift_saves_the_file_as_it_was() {
     undo(&mut engine);
     assert_eq!(saved(&mut engine), source);
 }
+
+#[test]
+fn a_cell_formatted_as_text_takes_what_is_typed_as_text() {
+    let mut engine = opened(book());
+    run(
+        &mut engine,
+        r#"{"kind":"format","sheet":0,"areas":[{"top":20,"left":1,"bottom":21,"right":1}],"change":{"numberFormatId":49}}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"input","sheet":0,"row":20,"col":1,"text":"007"}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"input","sheet":0,"row":21,"col":1,"text":"=1+1"}"#,
+    );
+    assert_eq!(engine.display_text(0, 20, 1), "007");
+    assert_eq!(engine.display_text(0, 21, 1), "=1+1");
+    assert_eq!(engine.edit_text(0, 21, 1), "=1+1");
+}

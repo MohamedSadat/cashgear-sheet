@@ -497,6 +497,42 @@ pub fn set_table_columns(xml: &[u8], names: &[(usize, String)]) -> Vec<u8> {
     splice(xml, &changes)
 }
 
+/// A table part with its calculated and totals formulas following renamed columns, as (old, new).
+pub fn rename_in_table_formulas(xml: &[u8], table: &str, renames: &[(String, String)]) -> Vec<u8> {
+    let list = tokens(xml);
+    let mut changes = Vec::new();
+    for (at, token) in list.iter().enumerate() {
+        if token.kind != Kind::Start {
+            continue;
+        }
+        let tag = &xml[token.start..token.end];
+        if !matches!(
+            local_name(tag),
+            b"calculatedColumnFormula" | b"totalsRowFormula"
+        ) {
+            continue;
+        }
+        let Some(text) = list.get(at + 1).filter(|next| next.kind == Kind::Text) else {
+            continue;
+        };
+        let formula = unescape_attr(&xml[text.start..text.end]);
+        let mut next = std::borrow::Cow::Borrowed(formula.as_str());
+        for (old, new) in renames {
+            if let std::borrow::Cow::Owned(changed) =
+                cgs_refs::rename_table_column(&next, table, old, new, true)
+            {
+                next = std::borrow::Cow::Owned(changed);
+            }
+        }
+        if let std::borrow::Cow::Owned(changed) = next {
+            let mut escaped = Vec::new();
+            escape_text(&changed, &mut escaped);
+            changes.push((text.start, text.end, escaped));
+        }
+    }
+    splice(xml, &changes)
+}
+
 /// A table's place and column names, read from its part.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TablePart {
@@ -1496,6 +1532,14 @@ mod tests {
                 .columns[0],
             "A\nB"
         );
+    }
+
+    #[test]
+    fn a_table_formula_follows_a_renamed_column() {
+        let xml = br#"<table name="Sales" displayName="Sales"><tableColumns count="2"><tableColumn id="1" name="Amount"/><tableColumn id="2" name="Twice"><calculatedColumnFormula>Sales[[#This Row],[Amount]]*2&amp;"x"</calculatedColumnFormula></tableColumn></tableColumns></table>"#;
+        let renames = vec![("Amount".to_string(), "Takings".to_string())];
+        let out = text(&rename_in_table_formulas(xml, "Sales", &renames));
+        assert!(out.contains(r#"<calculatedColumnFormula>Sales[[#This Row],[Takings]]*2&amp;"x"</calculatedColumnFormula>"#), "{out}");
     }
 
     #[test]

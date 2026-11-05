@@ -607,6 +607,14 @@ pub fn build_tile(
         }
     };
     let text_color = |xf: &Xf, shown: Option<FormatColor>, fill: Option<Rgb>| -> u32 {
+        // A fill stays as stored in dark mode, so text on it can stay as stored too, where it reads.
+        if let (None, true, Some(fill)) = (shown, screen.dark, fill) {
+            if let Some(light) = table.colors.resolve(table.font(xf).color, None) {
+                if cgs_model::color::contrast(light, fill) >= MIN_CONTRAST {
+                    return rgba(light);
+                }
+            }
+        }
         let base = match shown {
             Some(color) => Some(format_color(color, &table.colors)),
             None => table
@@ -651,10 +659,18 @@ pub fn build_tile(
                     let stored = font
                         .color
                         .and_then(|color| table.colors.resolve(color, screen.dark_colors()));
-                    let color = if font.color.is_some() {
-                        shown_color(stored, fill)
-                    } else {
-                        base_color
+                    let light = font
+                        .color
+                        .and_then(|color| table.colors.resolve(color, None));
+                    let color = match (font.color, light, fill) {
+                        (Some(_), Some(light), Some(fill))
+                            if screen.dark
+                                && cgs_model::color::contrast(light, fill) >= MIN_CONTRAST =>
+                        {
+                            rgba(light)
+                        }
+                        (Some(_), _, _) => shown_color(stored, fill),
+                        _ => base_color,
                     };
                     (styles.run_index(writer, xf, flags, starts_rtl, font), color)
                 }
@@ -709,6 +725,11 @@ pub fn build_tile(
                     &mut text,
                 );
                 flags |= shown.flags;
+                let text_format = xf.num_fmt == 49
+                    || table.num_fmts.get(&xf.num_fmt).map(String::as_str) == Some("@");
+                if text_format && matches!(value, CalcValue::Number(_)) {
+                    flags = (flags & !KIND_MASK) | KIND_TEXT;
+                }
                 record.fill_at = shown.fill_at;
                 text_starts_rtl = shown.starts_rtl;
                 has_text = !text.is_empty() || flags & CELL_HASHES != 0;

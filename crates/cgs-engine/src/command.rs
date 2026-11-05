@@ -1689,11 +1689,36 @@ impl Session {
             typed = Typed::Formula(fixed);
         }
         let mut edits = Vec::new();
+        // A cell formatted as text takes what's typed as text, formulas too, as in Excel.
+        let as_text = |session: &Self, r: u32, c: u32| {
+            let xf = session
+                .book
+                .styles
+                .xf(session.book.sheets[sheet as usize].style_at(r, c));
+            let text_format = xf.num_fmt == 49
+                || session
+                    .book
+                    .styles
+                    .num_fmts
+                    .get(&xf.num_fmt)
+                    .map(String::as_str)
+                    == Some("@");
+            (text_format && !matches!(typed, Typed::Clear)).then(|| EditCell {
+                sheet,
+                row: r,
+                col: c,
+                input: Some(EditInput::Value(CalcValue::Text(text.to_string()))),
+                style: None,
+            })
+        };
         if areas.is_empty() {
             if self.cuts_an_array(sheet, Area::cell(row, col)) {
                 return Err("You can't change part of an array.".to_string());
             }
-            edits.push(self.typed_edit(sheet, row, col, &typed, (row, col)));
+            match as_text(self, row, col) {
+                Some(edit) => edits.push(edit),
+                None => edits.push(self.typed_edit(sheet, row, col, &typed, (row, col))),
+            }
         } else {
             for area in areas {
                 if !area.valid() {
@@ -1704,7 +1729,10 @@ impl Session {
                 }
                 for r in area.top..=area.bottom {
                     for c in area.left..=area.right {
-                        edits.push(self.typed_edit(sheet, r, c, &typed, (row, col)));
+                        match as_text(self, r, c) {
+                            Some(edit) => edits.push(edit),
+                            None => edits.push(self.typed_edit(sheet, r, c, &typed, (row, col))),
+                        }
                     }
                 }
             }

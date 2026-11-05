@@ -7,6 +7,7 @@ import {
   zip,
 } from '../fixtures/workbooks.mjs';
 import { controlColor, expectGolden, FONT_OVERRIDE, openBytes, waitForGrid } from './helpers.mjs';
+import { showcaseCommands } from '../fixtures/showcase.mjs';
 
 const canvas = (page: Page) => page.getByTestId('sheet-canvas');
 
@@ -318,4 +319,25 @@ test('scrolls a sheet of 1,048,576 rows to its end', async ({ page }) => {
     1_048_000,
   );
   expect(await page.evaluate(() => window.cgsTest.cellText(1_048_576, 1))).toBe('Row 1048576');
+});
+
+test.describe('the formatting showcase', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    test(`matches its golden image in ${theme}`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.addInitScript(FONT_OVERRIDE);
+      await page.goto('/');
+      await expect(page.getByTestId('engine-status')).toHaveText('Ready');
+      await page.keyboard.press('Control+Alt+n');
+      await waitForGrid(page);
+      await page.evaluate(async (commands) => {
+        for (const command of commands) await window.cgsTest.command(command);
+        await window.cgsTest.settled();
+        window.cgsTest.grid()!.selectArea({ top: 200, left: 60, bottom: 200, right: 60 });
+        window.cgsTest.grid()!.scrollTo(0, 0);
+      }, showcaseCommands());
+      await waitForGrid(page, theme);
+      await expectGolden(page, `showcase-${theme}`);
+    });
+  }
 });
