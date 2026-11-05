@@ -941,20 +941,17 @@ impl CalcEngine for FormualizerEngine {
             .engine_mut()
             .evaluate_all_with_delta()
             .map_err(err)?;
+        // By the engine's own id for each sheet: it keeps its own spelling of a name that differs
+        // only in case, such as `Sheet1` for a file's `sheet1`.
         let mut sheets = std::collections::HashMap::new();
+        for (index, name) in self.sheets.iter().enumerate() {
+            if let Some(id) = self.workbook.engine().sheet_id(name) {
+                sheets.insert(id, index);
+            }
+        }
         let mut cells = Vec::with_capacity(delta.changed_cells.len());
         for cell in &delta.changed_cells {
-            let id = cell.sheet_id();
-            let index = match sheets.get(&id) {
-                Some(&index) => index,
-                None => {
-                    let name = self.workbook.engine().sheet_name(id).to_string();
-                    let index = self.sheets.iter().position(|sheet| *sheet == name);
-                    sheets.insert(id, index);
-                    index
-                }
-            };
-            if let Some(index) = index {
+            if let Some(&index) = sheets.get(&cell.sheet_id()) {
                 cells.push(CellRef {
                     sheet: index as u32,
                     row: cell.row0() + 1,

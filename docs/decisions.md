@@ -232,3 +232,19 @@ Formualizer's misses are mostly specific functions, which can be fixed one at a 
 **The `refreshOnLoad` spike**
 
 `refreshOnLoad="1"` on the cache definition is enough for Excel to bring a pivot up to date by itself. After changing a source cell from 10 to 1000, the file opened with the pivot's total at 1090, with no repair prompt and with the cache's records left as they were, so regenerating records isn't needed. Excel does this on a read-only open too. A pivot that only has the flag and no data change comes out the same. The very first read over COM right after opening came back empty twice in about ten opens, and every later read was right, so Excel seems to finish the refresh just after `Workbooks.Open` returns. Excel's Protected View can't be driven over COM, so what a downloaded file does until someone enables editing wasn't measured.
+
+## 2026-11-05: Phase 4
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Undo depth | 100 steps, with the oldest dropped once pre-images pass 256 MiB. Undo keeps working across a save, as in Excel |
+| Manual calculation in v1 | Yes. A file's manual setting is honoured, and there is a menu toggle, F9, Shift+F9, Ctrl+Alt+F9 and a "Calculate" note in the status bar. The setting is only written to a file when you change it |
+| Formatting kept when pasting from Excel | Values plus common formats read from Excel's HTML: number format, font name, size, bold, italic, underline, colour, fill, alignment, borders and merges. Formats are appended, so existing style indices stay valid. TSV when there is no HTML. Copying inside the app keeps formulas and styles |
+| Autosave and crash recovery | Recovery only, and never the real file. Each command goes to a journal in OPFS or app data, beside a kept copy of the source, and the next launch offers to restore after a crash. Recovery data goes on save, on a clean close or when discarded |
+| Scoring the 99.5% target | As Phase 1: 10% per-file cap, the same file split, relative 1e-9, the same skipped functions, in Chrome WASM, with private files in the pool. If it stalls below 99.5%, stop and show what's left, and don't change the scoring |
+| Your private workbooks | Keep the 5 for now, scored and reported separately. You can add more to the folder before the final measurement |
+| Engine fixes upstream | Fork only for now. Nothing public goes out this phase, and #556, #557 and #558 stay as they are. The report lists the fixes so you can decide on PRs later |
+| 1,000 random edits | 2 seeds, compared with Excel over COM after every edit, mixing typing, formulas, fill, paste, row, column and sheet changes, undo and redo, on a seed with names, tables and arrays |
+| Input under 100 ms | Keystroke or arrow key to painted result, p99, on the reference machine while 1,000,000 formulas recalculate. Commands queue behind at most one engine slice. If an undividable step runs over, the editor and selection stay live on the main thread, and the longest wait for the engine is reported separately |

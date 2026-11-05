@@ -909,3 +909,67 @@ fn text_reads_format_codes_through_cgs_numfmt() {
         }
     }
 }
+
+#[test]
+fn every_cell_an_edit_changes_is_in_the_change_list() {
+    // The engine keeps its own spelling of a sheet named `sheet1`. Two public workbooks lost a
+    // changed result to that, when the list was matched to sheets by name.
+    let mut engine = cgs_calc::formualizer::FormualizerEngine::new();
+    let book = BookInfo {
+        sheets: vec!["sheet1".to_string()],
+        ..BookInfo::default()
+    };
+    let cells = vec![
+        (
+            1,
+            1,
+            CellInput::Formula {
+                text: "IF(ISBLANK(B1),\"\",B1)".to_string(),
+                shape: FormulaShape::Normal,
+                cached: Some(CalcValue::Text("Peter".to_string())),
+            },
+        ),
+        (1, 2, text("Peter")),
+        (
+            2,
+            1,
+            CellInput::Formula {
+                text: "IF(ISBLANK(B2),\"\",B2)".to_string(),
+                shape: FormulaShape::Normal,
+                cached: Some(CalcValue::Text("Tom".to_string())),
+            },
+        ),
+        (2, 2, text("Tom")),
+        (
+            3,
+            1,
+            CellInput::Formula {
+                text: "COUNTBLANK(A1:A2)".to_string(),
+                shape: FormulaShape::Normal,
+                cached: Some(CalcValue::Number(0.0)),
+            },
+        ),
+    ];
+    load(&mut engine, &book, &[cells]);
+    while engine.prepare_step().unwrap() {}
+    engine
+        .set_cells(&[CellEdit {
+            at: CellRef {
+                sheet: 0,
+                row: 1,
+                col: 2,
+            },
+            input: text("New"),
+        }])
+        .unwrap();
+    let changed = engine.calc_all_changes().unwrap();
+    assert_eq!(
+        grid(&engine, 0).0[&(1, 1)],
+        CalcValue::Text("New".to_string())
+    );
+    assert!(changed.contains(&CellRef {
+        sheet: 0,
+        row: 1,
+        col: 1
+    }));
+}
