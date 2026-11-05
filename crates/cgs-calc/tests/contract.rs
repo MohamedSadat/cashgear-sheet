@@ -594,12 +594,9 @@ fn dynamic_text_arrays_spill() {
             CalcValue::Text("he".to_string()),
             "{name} anchor"
         );
-        // Formualizer doesn't spread a scalar function over a range yet, so LEFT gives one
-        // value here. Upstream tracks it as PSU3D0/formualizer#529. When that lands, this
-        // should say "wo" instead.
         assert_eq!(
             at(engine.as_ref(), 0, 2, 3),
-            CalcValue::Empty,
+            CalcValue::Text("wo".to_string()),
             "{name} spill"
         );
     }
@@ -1421,4 +1418,51 @@ fn rewriting_text_agrees_with_the_engine() {
         );
     }
     assert_eq!(compared, 6000);
+}
+
+/// Loads one sheet with a table or names, and calculates everything as a recalculation would.
+fn calculated(
+    info: &BookInfo,
+    sheets: &[Vec<(u32, u32, CellInput)>],
+) -> cgs_calc::formualizer::FormualizerEngine {
+    let mut engine = cgs_calc::formualizer::FormualizerEngine::new();
+    load(&mut engine, info, sheets);
+    engine.recalc_all().unwrap();
+    settle(&mut engine);
+    engine
+}
+
+#[test]
+fn a_plain_formula_reads_one_cell_where_excel_cuts_a_range_down() {
+    let mut sheet = vec![
+        (1, 1, text("ab")),
+        (2, 1, text("cd")),
+        (3, 1, text("ef")),
+        (1, 2, num(1.0)),
+        (2, 2, num(-2.0)),
+        (3, 2, num(3.0)),
+    ];
+    let cases = [
+        (
+            "LEFT(A:A,1)",
+            CalcValue::Text("cd".chars().take(1).collect()),
+        ),
+        ("SUM(ABS(B:B))", CalcValue::Number(2.0)),
+        ("SUMPRODUCT(ABS(B1:B3))", CalcValue::Number(6.0)),
+        ("SUMPRODUCT(IF(B1:B3>0,1,0))", CalcValue::Number(0.0)),
+        ("B:B", CalcValue::Number(-2.0)),
+        ("MATCH(A:A,A1:A3,0)", CalcValue::Number(2.0)),
+        ("SUM(ROW(A1:A3))", CalcValue::Number(1.0)),
+        ("SUM(SIGN({1,-2,3}))", CalcValue::Number(1.0)),
+        ("INDEX(B1:B3*2,3)", CalcValue::Number(6.0)),
+        ("LOOKUP(2,1/(B1:B3>0),B1:B3)", CalcValue::Number(3.0)),
+    ];
+    // All on row 2, so that a range cut down reads its second cell.
+    for (index, (text, _)) in cases.iter().enumerate() {
+        sheet.push((2, 3 + index as u32, formula(text, 0.0)));
+    }
+    let engine = calculated(&info(), &[sheet, Vec::new()]);
+    for (index, (text, expected)) in cases.iter().enumerate() {
+        assert_eq!(at(&engine, 0, 2, 3 + index as u32), *expected, "{text}");
+    }
 }

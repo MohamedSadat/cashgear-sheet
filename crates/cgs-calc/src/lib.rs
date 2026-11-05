@@ -2,6 +2,7 @@
 //! store; `cgs-model` holds everything else.
 
 pub mod formualizer;
+mod intersect;
 
 mod clock;
 

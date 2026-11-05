@@ -7,7 +7,7 @@
 //! `evaluate_slice` keeps what it finished, unlike a cancelled full evaluation, which
 //! puts everything it did back to dirty.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -23,10 +23,7 @@ use formualizer_eval::engine::{
     CycleConfig, CycleDetection, CyclePolicy, EvalConfig, FormulaParsePolicy, TemporalEgress,
 };
 use formualizer_eval::reference::{CellRef as FzCell, Coord, RangeRef};
-use formualizer_parse::parser::{
-    parse, ASTNode, ASTNodeType, BinaryOperator, ReferenceType, UnaryOperator,
-};
-use formualizer_parse::pretty::canonical_formula;
+use formualizer_parse::parser::{parse, ASTNode, ASTNodeType, ReferenceType};
 use formualizer_workbook::workbook::WBResolver;
 use formualizer_workbook::{CustomFnOptions, Workbook, WorkbookConfig};
 
@@ -65,6 +62,8 @@ pub struct FormualizerEngine {
     gone: Vec<bool>,
     /// Defined names as they read now, for telling what a change to the workbook's shape does.
     names: Vec<NameInfo>,
+    /// Names, in lower case, that stand for more than one cell.
+    many_names: HashSet<String>,
     /// Tables as they stand now, as the engine doesn't move them with rows and columns.
     tables: Vec<crate::TableInfo>,
     /// Sheets between `begin_sheet` and `finish_sheet`.
@@ -259,41 +258,6 @@ pub fn from_literal(value: &LiteralValue) -> CalcValue {
     }
 }
 
-/// A file marks a formula that spills as an array, so a plain formula such as
-/// `A:A&"/"&B:B` reads each range at its own row or column. Excel shows this as
-/// `@A:A`. Only a formula of operators and references is rewritten here; what a function
-/// does with a range belongs to the function. Returns the text if anything changed.
-fn implicit_intersection(text: &str) -> Option<String> {
-    if !text.contains(':') || text.contains('(') {
-        return None;
-    }
-    let mut ast = parse(format!("={text}")).ok()?;
-    wrap_ranges(&mut ast).then(|| canonical_formula(&ast))
-}
-
-fn wrap_ranges(node: &mut ASTNode) -> bool {
-    match &mut node.node_type {
-        ASTNodeType::Reference {
-            reference: ReferenceType::Range { .. },
-            ..
-        } => {
-            let inner = node.clone();
-            node.node_type = ASTNodeType::UnaryOp {
-                op: UnaryOperator::ImplicitIntersection,
-                expr: Box::new(inner),
-            };
-            true
-        }
-        ASTNodeType::UnaryOp { expr, .. } => wrap_ranges(expr),
-        ASTNodeType::BinaryOp { op, left, right } if *op != BinaryOperator::Range => {
-            let left = wrap_ranges(left);
-            let right = wrap_ranges(right);
-            left || right
-        }
-        _ => false,
-    }
-}
-
 /// Whether a formula reads a workbook other than this one: `[1]Sheet1!A1`, `[1]!Name`, or
 /// `'C:\\files\\[book.xlsx]Sheet 1'!A1`. A table's `Table1[Column]` doesn't count.
 fn reads_another_workbook(text: &str) -> bool {
@@ -374,6 +338,7 @@ impl FormualizerEngine {
             sheets: Vec::new(),
             gone: Vec::new(),
             names: Vec::new(),
+            many_names: HashSet::new(),
             tables: Vec::new(),
             loads: Vec::new(),
             pending: Vec::new(),
@@ -932,6 +897,12 @@ impl CalcEngine for FormualizerEngine {
         self.sheets = book.sheets.clone();
         self.gone = vec![false; book.sheets.len()];
         self.names = book.names.clone();
+        self.many_names = book
+            .names
+            .iter()
+            .filter(|name| name.formula.contains(':'))
+            .map(|name| name.name.to_ascii_lowercase())
+            .collect();
         self.tables = book.tables.clone();
         self.loads = book.sheets.iter().map(|_| None).collect();
         self.pending = vec![Vec::new(); book.sheets.len()];
@@ -1145,7 +1116,13 @@ impl CalcEngine for FormualizerEngine {
         }
         let staged = match shape {
             FormulaShape::Normal => {
-                implicit_intersection(text).unwrap_or_else(|| format!("={text}"))
+                let many = &self.many_names;
+                let staged = if many.is_empty() {
+                    crate::intersect::mark(text, &|_| false)
+                } else {
+                    crate::intersect::mark(text, &|name| many.contains(&name.to_ascii_lowercase()))
+                };
+                staged.unwrap_or_else(|| format!("={text}"))
             }
             FormulaShape::Array(_) | FormulaShape::Dynamic(_) => {
                 let staged = format!("={text}");
