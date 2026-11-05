@@ -319,3 +319,7 @@ Nothing public went out. These are on `MohamedSadat/formualizer`, branch `cashge
 | Find | Up to 10,000 results in Find All. Wildcards `*`, `?` and `~` as in Excel |
 | Pattern fills | Drawn from 4×4 bitmaps copied from Excel's own pixels at 100% |
 | A table heading renamed | The table's calculated column and totals formulas follow the new name, or Excel refuses the file. A broken fixture keeps that checked |
+
+**Signed off by you, 2026-11-05**
+
+The visual review against Excel: three generated workbooks drawn by Excel 2016 and by the app, in light and dark, with the differences listed on the review page. You signed it off as it stands, so `v0.1.0-mvp` is tagged. The listed differences stay as known gaps.

@@ -11,7 +11,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 2: Open xlsx | Done 2026-11-02 | `phase-2` |
 | Phase 3: Preserving save | Done 2026-11-05 | `phase-3` |
 | Phase 4: Editing, formulas, undo | Done 2026-11-05: 3 of 4 exit criteria met, and you accepted 99.35% on the fourth | `phase-4` |
-| Phase 5: Ribbon and formatting | Round trip met; the visual review waits for your sign-off | |
+| Phase 5: Ribbon and formatting | Done 2026-11-05, with your sign-off on the visual review | `v0.1.0-mvp` |
 | Phase 6: Data tools | Not started | |
 | Phase 7: Charts | Not started | |
 | Phase 8: Pivot tables | Not started | |
@@ -303,7 +303,7 @@ The app looks and works like Excel's Home tab for daily work. Measured on 2026-1
 | Criterion | Result | Evidence |
 | --- | --- | --- |
 | Formats round-trip through Excel, and existing style indices are unchanged | Pass | `bench/run-excel-format.mjs`: formats go on through the engine, Excel reads each one back over COM and saves its own copy, and our reader reads that copy. 181 of 181 formatted cells agree in all three readings, 181 of 181 show the same text, 34 of 34 lines and 6 of 6 sheet settings agree. 251 existing styles in 8 fixtures and 269 cells no format reached are unchanged. Your 5 private files, as temporary copies: 5 opened, 647 styles and 22,092 cells unchanged, 15 of 15 formatted cells agree and come back from Excel the same |
-| Visual goldens are reviewed against Excel | **Waiting for your sign-off** | `bench/run-visual-review.mjs` has Excel draw three generated workbooks with CopyPicture and the app draw the same ranges in Chrome, light and dark. The side-by-side page lists every difference. The e2e goldens hold the showcase and formatting workbooks in light and dark |
+| Visual goldens are reviewed against Excel | Pass: you signed off on 2026-11-05 | `bench/run-visual-review.mjs` has Excel draw three generated workbooks with CopyPicture and the app draw the same ranges in Chrome, light and dark. The side-by-side page lists every difference. The e2e goldens hold the showcase and formatting workbooks in light and dark |
 
 **What else was checked**
 

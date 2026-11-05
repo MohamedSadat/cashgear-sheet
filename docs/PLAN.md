@@ -227,7 +227,7 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 
 **Exit**
 - [x] Formats round-trip through Excel, and existing style indices are unchanged.
-- [ ] Visual goldens are reviewed against Excel.
+- [x] Visual goldens are reviewed against Excel.
 
 ### Phase 6: Data tools
 **Goal:** sort, filter, tables, conditional formatting, data validation.
