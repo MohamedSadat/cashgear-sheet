@@ -1457,7 +1457,9 @@ impl Session {
             input: Some(EditInput::Array(text, FormulaShape::Array(rect))),
             style: None,
         };
-        self.perform("array formula", Op::Cells(vec![edit]), Some((sheet, area)))
+        let edits = vec![edit];
+        self.refuse_array_in_table(sheet, area, &edits)?;
+        self.perform("array formula", Op::Cells(edits), Some((sheet, area)))
     }
 
     /// The `{=...}` array a cell belongs to: its anchor's formula and its area.
@@ -1493,25 +1495,6 @@ impl Session {
         mode: PasteMode,
     ) -> Option<EditInput> {
         let at = CellRef { sheet, row, col };
-        // A cell of a `{=...}` array copies as an array of its own, as in Excel. Only the whole
-        // array can stay one, which `paste_command` sees to.
-        if mode != PasteMode::Values {
-            if let Some((text, _)) = self.legacy_array_at(sheet, row, col) {
-                let (new_row, new_col) = (
-                    (i64::from(row) + rows) as u32,
-                    (i64::from(col) + cols) as u32,
-                );
-                return Some(EditInput::Array(
-                    cgs_refs::moved_formula(&text, rows, cols),
-                    FormulaShape::Array(cgs_calc::Rect {
-                        top: new_row,
-                        left: new_col,
-                        bottom: new_row,
-                        right: new_col,
-                    }),
-                ));
-            }
-        }
         let input = self.calc.cell_input(at);
         Some(match input {
             CellInput::Formula { text, cached, .. } => match mode {
@@ -1527,21 +1510,66 @@ impl Session {
         })
     }
 
-    /// Whether a copied cell belongs to an array the copied area holds all of.
-    fn whole_array_copy(&self, sheet: u32, from: Area, row: u32, col: u32) -> Option<WholeArray> {
+    /// What a copied cell of a `{=...}` array becomes, if it is one. As read off Excel, the part of
+    /// the array that was copied becomes one array of its own, wherever its first cell lands, with
+    /// the formula moved from where the original array starts. So `H3:H4` of `{=C2:C4*2}` in `H2:H4`,
+    /// copied to `I3`, is `{=D3:D5*2}` in `I3:I4`. `within` limits how far it can reach.
+    pub(crate) fn copied_array_cell(
+        &self,
+        sheet: u32,
+        from: Area,
+        (row, col): (u32, u32),
+        (new_row, new_col): (u32, u32),
+        within: Area,
+    ) -> Option<Option<EditInput>> {
         let (text, rect) = self.legacy_array_at(sheet, row, col)?;
-        let whole = from.top <= rect.top
-            && from.left <= rect.left
-            && from.bottom >= rect.bottom
-            && from.right >= rect.right;
-        if !whole {
-            return None;
+        let part = cgs_calc::Rect {
+            top: from.top.max(rect.top),
+            left: from.left.max(rect.left),
+            bottom: from.bottom.min(rect.bottom),
+            right: from.right.min(rect.right),
+        };
+        if (row, col) != (part.top, part.left) {
+            return Some(None);
         }
-        Some(if (rect.top, rect.left) == (row, col) {
-            WholeArray::Anchor(text, rect)
-        } else {
-            WholeArray::Inside
-        })
+        Some(Some(EditInput::Array(
+            cgs_refs::moved_formula(
+                &text,
+                i64::from(new_row) - i64::from(rect.top),
+                i64::from(new_col) - i64::from(rect.left),
+            ),
+            FormulaShape::Array(cgs_calc::Rect {
+                top: new_row,
+                left: new_col,
+                bottom: (new_row + (part.bottom - part.top)).min(within.bottom),
+                right: (new_col + (part.right - part.left)).min(within.right),
+            }),
+        )))
+    }
+
+    /// Excel refuses an array of many cells in a table, and goes by the whole area being changed:
+    /// the array itself can land just beside the table and still be refused.
+    pub(crate) fn refuse_array_in_table(
+        &self,
+        sheet: u32,
+        area: Area,
+        edits: &[EditCell],
+    ) -> Result<(), String> {
+        let many = edits.iter().any(|edit| {
+            matches!(&edit.input, Some(EditInput::Array(_, FormulaShape::Array(rect)))
+                if rect.top != rect.bottom || rect.left != rect.right)
+        });
+        let touches = self.calc.tables().iter().any(|table| {
+            table.sheet == sheet
+                && table.range.top <= area.bottom
+                && table.range.bottom >= area.top
+                && table.range.left <= area.right
+                && table.range.right >= area.left
+        });
+        if many && touches {
+            return Err("Arrays of many cells aren't allowed in tables.".to_string());
+        }
+        Ok(())
     }
 
     fn paste_command(
@@ -1605,22 +1633,18 @@ impl Session {
                             // A table's heading takes what a formula comes to.
                             _ if self.heading_at(sheet, new_row, new_col).is_some() => self
                                 .copied_input(from_sheet, row, col, rows, cols, PasteMode::Values),
-                            _ => match self.whole_array_copy(from_sheet, from, row, col) {
-                                Some(WholeArray::Anchor(text, rect))
-                                    if mode != PasteMode::Values =>
-                                {
-                                    Some(EditInput::Array(
-                                        cgs_refs::moved_formula(&text, rows, cols),
-                                        FormulaShape::Array(cgs_calc::Rect {
-                                            top: new_row,
-                                            left: new_col,
-                                            bottom: new_row + (rect.bottom - rect.top),
-                                            right: new_col + (rect.right - rect.left),
-                                        }),
-                                    ))
-                                }
-                                Some(WholeArray::Inside) if mode != PasteMode::Values => None,
-                                _ => self.copied_input(from_sheet, row, col, rows, cols, mode),
+                            PasteMode::Values => {
+                                self.copied_input(from_sheet, row, col, rows, cols, mode)
+                            }
+                            _ => match self.copied_array_cell(
+                                from_sheet,
+                                from,
+                                (row, col),
+                                (new_row, new_col),
+                                Area::cell(cgs_model::MAX_ROWS, cgs_model::MAX_COLS),
+                            ) {
+                                Some(input) => input,
+                                None => self.copied_input(from_sheet, row, col, rows, cols, mode),
                             },
                         };
                         let style = match mode {
@@ -1640,6 +1664,7 @@ impl Session {
                 }
             }
         }
+        self.refuse_array_in_table(sheet, target, &edits)?;
         let mut list = vec![Op::Cells(edits)];
         if matches!(mode, PasteMode::All | PasteMode::Formats) {
             let info = &self.book.sheets[sheet as usize];
@@ -1818,6 +1843,7 @@ impl Session {
                 let info = self.sheet_for_edit(sheet)?;
                 number_only(info)?;
                 let edits = self.fill_edits(sheet, from, to, copy)?;
+                self.refuse_array_in_table(sheet, to, &edits)?;
                 self.perform("filling", Op::Cells(edits), Some((sheet, to)))
             }
             Command::Paste {
@@ -1923,11 +1949,6 @@ impl Session {
 }
 
 /// What a copied cell is to an array that is copied whole.
-enum WholeArray {
-    Anchor(String, cgs_calc::Rect),
-    Inside,
-}
-
 /// Undo and redo as the menu shows them.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UndoState {

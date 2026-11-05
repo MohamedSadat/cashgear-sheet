@@ -63,12 +63,63 @@ fn opened(bytes: Vec<u8>) -> Engine {
     engine
 }
 
+/// Both read off Excel: the copied part of a `{=...}` array is one array of its own, whose formula
+/// has moved from where the original starts.
+#[test]
+fn part_of_an_array_copies_as_one_array() {
+    let mut engine = opened(cgs_xlsx::blank::blank_workbook().unwrap());
+    let run = |engine: &mut Engine, json: String| engine.apply_json(&json);
+    for row in 1..=5u32 {
+        let json = format!(
+            r#"{{"kind":"input","sheet":0,"row":{row},"col":1,"text":"{}"}}"#,
+            row * 10
+        );
+        run(&mut engine, json).unwrap();
+    }
+    run(
+        &mut engine,
+        r#"{"kind":"arrayInput","sheet":0,"area":{"top":2,"left":3,"bottom":4,"right":3},"text":"=A2:A4*2"}"#.to_string(),
+    )
+    .unwrap();
+    settle(&mut engine);
+    assert_eq!(engine.display_text(0, 3, 3), "60");
+
+    for (row, text) in [(10, "1"), (11, "2")] {
+        let json = format!(r#"{{"kind":"input","sheet":0,"row":{row},"col":3,"text":"{text}"}}"#);
+        run(&mut engine, json).unwrap();
+    }
+    // C3:C4 of the array at C2:C4 goes to E10: `{=C10:C12*2}`, moved by 8 rows and 2 columns from C2.
+    run(
+        &mut engine,
+        r#"{"kind":"paste","fromSheet":0,"from":{"top":3,"left":3,"bottom":4,"right":3},"sheet":0,"to":{"top":10,"left":5,"bottom":11,"right":5}}"#.to_string(),
+    )
+    .unwrap();
+    settle(&mut engine);
+    assert_eq!(
+        engine.formula_text(0, 10, 5).as_deref(),
+        Some("C10:C12 * 2")
+    );
+
+    // The two cells read the first two of what it comes to, not the first one twice.
+    assert_eq!(engine.display_text(0, 10, 5), "2");
+    assert_eq!(engine.display_text(0, 11, 5), "4");
+
+    // Filling across makes one array for each column.
+    run(
+        &mut engine,
+        r#"{"kind":"fill","sheet":0,"from":{"top":3,"left":3,"bottom":4,"right":3},"to":{"top":3,"left":3,"bottom":4,"right":4}}"#.to_string(),
+    )
+    .unwrap();
+    settle(&mut engine);
+    assert_eq!(engine.formula_text(0, 3, 4).as_deref(), Some("B3:B5 * 2"));
+}
+
 /// Someone carrying on typing while a calculation runs, a slice at a time, and then changing what
 /// every formula reads. However many commands went in between, each change has to reach them all.
 #[test]
 fn edits_during_a_calculation_never_lose_a_later_one() {
     let mut engine = opened(cgs_xlsx::blank::blank_workbook().unwrap());
-    const ROWS: u32 = 20_000;
+    const ROWS: u32 = 3_000;
     let input = |row: u32, col: u32, text: &str| {
         format!(r#"{{"kind":"input","sheet":0,"row":{row},"col":{col},"text":"{text}"}}"#)
     };

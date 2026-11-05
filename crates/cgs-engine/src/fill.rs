@@ -401,16 +401,25 @@ impl Session {
                 } else {
                     series_value(&kinds, offset, lone_date)
                 };
-                let input = counted.or_else(|| {
-                    self.copied_input(
-                        sheet,
-                        source_row,
-                        source_col,
-                        i64::from(row) - i64::from(source_row),
-                        i64::from(col) - i64::from(source_col),
-                        PasteMode::All,
-                    )
-                });
+                let input = match self.copied_array_cell(
+                    sheet,
+                    from,
+                    (source_row, source_col),
+                    (row, col),
+                    to,
+                ) {
+                    Some(input) => input,
+                    None => counted.or_else(|| {
+                        self.copied_input(
+                            sheet,
+                            source_row,
+                            source_col,
+                            i64::from(row) - i64::from(source_row),
+                            i64::from(col) - i64::from(source_col),
+                            PasteMode::All,
+                        )
+                    }),
+                };
                 edits.push(EditCell {
                     sheet,
                     row,
