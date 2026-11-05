@@ -1773,6 +1773,10 @@ impl CalcEngine for FormualizerEngine {
 
     fn all_formulas(&mut self) -> Result<Vec<(CellRef, String)>> {
         self.adopt()?;
+        // Formulas set since the last calculation wait to be built, and the graph is what lists them.
+        if self.engine().has_staged_formulas() {
+            self.engine().build_graph_all().map_err(err)?;
+        }
         Ok(self.formulas())
     }
 
