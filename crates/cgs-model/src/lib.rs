@@ -1,5 +1,5 @@
 //! Everything about a workbook except its cells: styles, dimensions, merges, tables,
-//! drawings and which style each cell uses. Commands and undo come in Phase 4. No I/O.
+//! drawings and which style each cell uses. No I/O.
 
 pub mod color;
 pub mod sheet;
@@ -8,7 +8,7 @@ pub mod style;
 pub use color::{Color, ColorKind, ColorSpace, DarkColors, Rgb, ThemePalette};
 pub use sheet::{
     Anchor, AnchorPoint, ColAxis, Drawing, DrawingKind, Freeze, LineInfo, RowAxis, SheetInfo,
-    SheetKind, SheetState, SheetView,
+    SheetKind, SheetShape, SheetState, SheetView,
 };
 pub use style::{
     Alignment, Border, Fill, Font, HAlign, Line, LineStyle, Pattern, ReadingOrder, StyleTable,
@@ -67,8 +67,44 @@ pub struct Book {
     pub date1904: bool,
     /// The sheet showing when the file was saved.
     pub active_sheet: u32,
-    /// The file asks for a full calculation when it opens. Phase 2 shows saved values.
+    /// The file asks for a full calculation when it opens.
     pub full_calc_on_load: bool,
+    /// The file is set to calculate only when asked.
+    pub manual_calc: bool,
+    /// Some formula has no saved value, which only files from other programs do.
+    pub formulas_without_values: bool,
+    /// Sheets by index in tab order, once that differs from their indexes. See `tab_order`.
+    pub order: Vec<u32>,
+    /// Which sheet each `<sheet>` element of the file is, once that differs from their indexes.
+    pub file_sheets: Vec<u32>,
+}
+
+impl Book {
+    /// Sheets by index, in the order their tabs show, deleted ones left out.
+    pub fn tab_order(&self) -> Vec<u32> {
+        let all: Vec<u32> = if self.order.is_empty() {
+            (0..self.sheets.len() as u32).collect()
+        } else {
+            self.order.clone()
+        };
+        all.into_iter()
+            .filter(|&sheet| !self.sheets[sheet as usize].deleted)
+            .collect()
+    }
+
+    /// Which sheet each `<sheet>` element of the file holds.
+    pub fn sheets_in_file(&self) -> Vec<u32> {
+        if self.file_sheets.is_empty() {
+            (0..self
+                .sheets
+                .iter()
+                .filter(|sheet| sheet.part.is_some())
+                .count() as u32)
+                .collect()
+        } else {
+            self.file_sheets.clone()
+        }
+    }
 }
 
 #[cfg(test)]
