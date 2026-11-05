@@ -182,6 +182,8 @@ fn section_decimals(section: &[char], step: i32) -> (String, bool) {
                 }
             }
             '.' if point.is_none() && last_digit.is_some() => point = Some(at),
+            // An exponent's digits aren't decimals: only the number before it changes.
+            'E' | 'e' if matches!(section.get(at + 1), Some('+' | '-')) => break,
             'd' | 'D' | 'm' | 'M' | 'y' | 'Y' | 'h' | 'H' | 's' | 'S' => has_date = true,
             _ => {}
         }
