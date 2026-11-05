@@ -1,0 +1,1686 @@
+{
+  "source": "Excel 16.0 over COM, by bench/run-builtin-styles.mjs. Colours keep styles.xml's theme index (0 lt1, 1 dk1, 2 lt2, 3 dk2, 4-9 accent1-6, 10 hlink, 11 folHlink) and tint, and rgb is what Excel resolved them to under the default Office theme.",
+  "styles": [
+    {
+      "name": "Normal",
+      "builtinId": 0,
+      "include": {
+        "number": true,
+        "font": true,
+        "alignment": true,
+        "border": true,
+        "fill": true,
+        "protection": true
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Comma",
+      "builtinId": 3,
+      "include": {
+        "number": true,
+        "font": false,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 43,
+      "formatCode": "_(* #,##0.00_);_(* \\(#,##0.00\\);_(* \"-\"??_);_(@_)",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Currency",
+      "builtinId": 4,
+      "include": {
+        "number": true,
+        "font": false,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 44,
+      "formatCode": "_(\"$\"* #,##0.00_);_(\"$\"* \\(#,##0.00\\);_(\"$\"* \"-\"??_);_(@_)",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Percent",
+      "builtinId": 5,
+      "include": {
+        "number": true,
+        "font": false,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 9,
+      "formatCode": "0%",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Comma [0]",
+      "builtinId": 6,
+      "include": {
+        "number": true,
+        "font": false,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 41,
+      "formatCode": "_(* #,##0_);_(* \\(#,##0\\);_(* \"-\"_);_(@_)",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Currency [0]",
+      "builtinId": 7,
+      "include": {
+        "number": true,
+        "font": false,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 42,
+      "formatCode": "_(\"$\"* #,##0_);_(\"$\"* \\(#,##0\\);_(\"$\"* \"-\"_);_(@_)",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Note",
+      "builtinId": 10,
+      "include": {
+        "number": false,
+        "font": false,
+        "alignment": false,
+        "border": true,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#FFFFCC"
+        }
+      },
+      "border": {
+        "left": {
+          "style": "thin",
+          "color": {
+            "rgb": "#B2B2B2"
+          }
+        },
+        "right": {
+          "style": "thin",
+          "color": {
+            "rgb": "#B2B2B2"
+          }
+        },
+        "top": {
+          "style": "thin",
+          "color": {
+            "rgb": "#B2B2B2"
+          }
+        },
+        "bottom": {
+          "style": "thin",
+          "color": {
+            "rgb": "#B2B2B2"
+          }
+        }
+      }
+    },
+    {
+      "name": "Warning Text",
+      "builtinId": 11,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "rgb": "#FF0000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Title",
+      "builtinId": 15,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri Light",
+        "size": 18,
+        "color": {
+          "theme": 3,
+          "rgb": "#44546A"
+        },
+        "family": 2,
+        "scheme": "major"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Heading 1",
+      "builtinId": 16,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 15,
+        "bold": true,
+        "color": {
+          "theme": 3,
+          "rgb": "#44546A"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {
+        "bottom": {
+          "style": "thick",
+          "color": {
+            "theme": 4,
+            "rgb": "#4472C4"
+          }
+        }
+      }
+    },
+    {
+      "name": "Heading 2",
+      "builtinId": 17,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 13,
+        "bold": true,
+        "color": {
+          "theme": 3,
+          "rgb": "#44546A"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {
+        "bottom": {
+          "style": "thick",
+          "color": {
+            "theme": 4,
+            "tint": 0.499984740745262,
+            "rgb": "#A2B8E1"
+          }
+        }
+      }
+    },
+    {
+      "name": "Heading 3",
+      "builtinId": 18,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "bold": true,
+        "color": {
+          "theme": 3,
+          "rgb": "#44546A"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {
+        "bottom": {
+          "style": "medium",
+          "color": {
+            "theme": 4,
+            "tint": 0.3999755851924192,
+            "rgb": "#8EA9DB"
+          }
+        }
+      }
+    },
+    {
+      "name": "Heading 4",
+      "builtinId": 19,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "bold": true,
+        "color": {
+          "theme": 3,
+          "rgb": "#44546A"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    },
+    {
+      "name": "Input",
+      "builtinId": 20,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "rgb": "#3F3F76"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#FFCC99"
+        }
+      },
+      "border": {
+        "left": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        },
+        "right": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        },
+        "top": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        },
+        "bottom": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        }
+      }
+    },
+    {
+      "name": "Output",
+      "builtinId": 21,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "bold": true,
+        "color": {
+          "rgb": "#3F3F3F"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#F2F2F2"
+        }
+      },
+      "border": {
+        "left": {
+          "style": "thin",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        },
+        "right": {
+          "style": "thin",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        },
+        "top": {
+          "style": "thin",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        },
+        "bottom": {
+          "style": "thin",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        }
+      }
+    },
+    {
+      "name": "Calculation",
+      "builtinId": 22,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "bold": true,
+        "color": {
+          "rgb": "#FA7D00"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#F2F2F2"
+        }
+      },
+      "border": {
+        "left": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        },
+        "right": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        },
+        "top": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        },
+        "bottom": {
+          "style": "thin",
+          "color": {
+            "rgb": "#7F7F7F"
+          }
+        }
+      }
+    },
+    {
+      "name": "Check Cell",
+      "builtinId": 23,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "bold": true,
+        "color": {
+          "theme": 0,
+          "rgb": "#FFFFFF"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#A5A5A5"
+        }
+      },
+      "border": {
+        "left": {
+          "style": "double",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        },
+        "right": {
+          "style": "double",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        },
+        "top": {
+          "style": "double",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        },
+        "bottom": {
+          "style": "double",
+          "color": {
+            "rgb": "#3F3F3F"
+          }
+        }
+      }
+    },
+    {
+      "name": "Linked Cell",
+      "builtinId": 24,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "rgb": "#FA7D00"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {
+        "bottom": {
+          "style": "double",
+          "color": {
+            "rgb": "#FF8001"
+          }
+        }
+      }
+    },
+    {
+      "name": "Total",
+      "builtinId": 25,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": true,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "bold": true,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {
+        "top": {
+          "style": "thin",
+          "color": {
+            "theme": 4,
+            "rgb": "#4472C4"
+          }
+        },
+        "bottom": {
+          "style": "double",
+          "color": {
+            "theme": 4,
+            "rgb": "#4472C4"
+          }
+        }
+      }
+    },
+    {
+      "name": "Good",
+      "builtinId": 26,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "rgb": "#006100"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#C6EFCE"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Bad",
+      "builtinId": 27,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "rgb": "#9C0006"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#FFC7CE"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Neutral",
+      "builtinId": 28,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "rgb": "#9C5700"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "rgb": "#FFEB9C"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Accent1",
+      "builtinId": 29,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 0,
+          "rgb": "#FFFFFF"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 4,
+          "rgb": "#4472C4"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "20% - Accent1",
+      "builtinId": 30,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 4,
+          "tint": 0.7999816888943144,
+          "rgb": "#D9E1F2"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "40% - Accent1",
+      "builtinId": 31,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 4,
+          "tint": 0.5999938962981048,
+          "rgb": "#B4C6E7"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "60% - Accent1",
+      "builtinId": 32,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 4,
+          "tint": 0.3999755851924192,
+          "rgb": "#8EA9DB"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Accent2",
+      "builtinId": 33,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 0,
+          "rgb": "#FFFFFF"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 5,
+          "rgb": "#ED7D31"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "20% - Accent2",
+      "builtinId": 34,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 5,
+          "tint": 0.7999816888943144,
+          "rgb": "#FCE4D6"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "40% - Accent2",
+      "builtinId": 35,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 5,
+          "tint": 0.5999938962981048,
+          "rgb": "#F8CBAD"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "60% - Accent2",
+      "builtinId": 36,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 5,
+          "tint": 0.3999755851924192,
+          "rgb": "#F4B084"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Accent3",
+      "builtinId": 37,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 0,
+          "rgb": "#FFFFFF"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 6,
+          "rgb": "#A5A5A5"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "20% - Accent3",
+      "builtinId": 38,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 6,
+          "tint": 0.7999816888943144,
+          "rgb": "#EDEDED"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "40% - Accent3",
+      "builtinId": 39,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 6,
+          "tint": 0.5999938962981048,
+          "rgb": "#DBDBDB"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "60% - Accent3",
+      "builtinId": 40,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 6,
+          "tint": 0.3999755851924192,
+          "rgb": "#C9C9C9"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Accent4",
+      "builtinId": 41,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 0,
+          "rgb": "#FFFFFF"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 7,
+          "rgb": "#FFC000"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "20% - Accent4",
+      "builtinId": 42,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 7,
+          "tint": 0.7999816888943144,
+          "rgb": "#FFF2CC"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "40% - Accent4",
+      "builtinId": 43,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 7,
+          "tint": 0.5999938962981048,
+          "rgb": "#FFE699"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "60% - Accent4",
+      "builtinId": 44,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 7,
+          "tint": 0.3999755851924192,
+          "rgb": "#FFD966"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Accent5",
+      "builtinId": 45,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 0,
+          "rgb": "#FFFFFF"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 8,
+          "rgb": "#5B9BD5"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "20% - Accent5",
+      "builtinId": 46,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 8,
+          "tint": 0.7999816888943144,
+          "rgb": "#DDEBF7"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "40% - Accent5",
+      "builtinId": 47,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 8,
+          "tint": 0.5999938962981048,
+          "rgb": "#BDD7EE"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "60% - Accent5",
+      "builtinId": 48,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 8,
+          "tint": 0.3999755851924192,
+          "rgb": "#9BC2E6"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Accent6",
+      "builtinId": 49,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 0,
+          "rgb": "#FFFFFF"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 9,
+          "rgb": "#70AD47"
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "20% - Accent6",
+      "builtinId": 50,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 9,
+          "tint": 0.7999816888943144,
+          "rgb": "#E2EFDA"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "40% - Accent6",
+      "builtinId": 51,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 9,
+          "tint": 0.5999938962981048,
+          "rgb": "#C6E0B4"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "60% - Accent6",
+      "builtinId": 52,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": true,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "color": {
+          "theme": 1,
+          "rgb": "#000000"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "solid",
+        "fgColor": {
+          "theme": 9,
+          "tint": 0.3999755851924192,
+          "rgb": "#A9D08E"
+        },
+        "bgColor": {
+          "indexed": 65
+        }
+      },
+      "border": {}
+    },
+    {
+      "name": "Explanatory Text",
+      "builtinId": 53,
+      "include": {
+        "number": false,
+        "font": true,
+        "alignment": false,
+        "border": false,
+        "fill": false,
+        "protection": false
+      },
+      "numFmtId": 0,
+      "formatCode": "General",
+      "font": {
+        "name": "Calibri",
+        "size": 11,
+        "italic": true,
+        "color": {
+          "rgb": "#7F7F7F"
+        },
+        "family": 2,
+        "scheme": "minor"
+      },
+      "fill": {
+        "pattern": "none"
+      },
+      "border": {}
+    }
+  ]
+}
