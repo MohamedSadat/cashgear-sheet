@@ -152,6 +152,10 @@ function randomOp(sheets, nextId) {
       col: 1 + random(10),
     };
   }
+  if (roll < 80) {
+    const remove = random(2) === 0;
+    return { ...base, kind: 'shiftCells', area: area(2, 2), down: random(2) === 0, delete: remove };
+  }
   if (roll < 92) {
     const axis = random(2) === 0 ? 'row' : 'col';
     return {

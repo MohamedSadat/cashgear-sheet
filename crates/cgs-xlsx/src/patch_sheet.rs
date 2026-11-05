@@ -213,11 +213,17 @@ pub struct SheetExtras {
     /// patch per cell for a format over a whole sheet.
     pub styled: Option<(cgs_model::SheetInfo, Vec<cgs_model::Rect>)>,
     pub view: Option<ViewPatch>,
+    /// A new default row height, in pixels at 100%, as whole columns' fonts can set.
+    pub default_row_px: Option<u32>,
 }
 
 impl SheetExtras {
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty() && self.cols.is_empty() && self.styled.is_none() && self.view.is_none()
+        self.rows.is_empty()
+            && self.cols.is_empty()
+            && self.styled.is_none()
+            && self.view.is_none()
+            && self.default_row_px.is_none()
     }
 }
 
@@ -1666,6 +1672,18 @@ impl Patcher<'_> {
                             out.write_all(&tag)?;
                             if kind == Kind::Start {
                                 self.read_cols(&mut scanner, out)?;
+                            }
+                        }
+                        b"sheetFormatPr" => {
+                            let mut tag = tag.clone();
+                            if let Some(px) = self.extras.default_row_px {
+                                let height = format!("{}", px_to_points(px));
+                                tag = edit_tag(&tag, &[("defaultRowHeight", Some(&height))]);
+                                self.outcome.changed = true;
+                            }
+                            out.write_all(&tag)?;
+                            if kind == Kind::Start {
+                                depth += 1;
                             }
                         }
                         b"sheetViews" if self.view_due => {

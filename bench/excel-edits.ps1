@@ -110,6 +110,19 @@ function Apply-Op($book, $op) {
       [void]$source.Copy($target)
       $book.Application.CutCopyMode = 0
     }
+    'shiftCells' {
+      $sheet = $book.Worksheets.Item([int]$op.pos)
+      $range = Area $sheet $op.area
+      if ($op.delete) {
+        # xlUp and xlToLeft.
+        $direction = if ($op.down) { -4162 } else { -4159 }
+        [void]$range.Delete($direction)
+      } else {
+        # xlDown and xlToRight.
+        $direction = if ($op.down) { -4121 } else { -4161 }
+        [void]$range.Insert($direction)
+      }
+    }
     'move' {
       $from = $book.Worksheets.Item([int]$op.fromPos)
       $to = $book.Worksheets.Item([int]$op.pos)

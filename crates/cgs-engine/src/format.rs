@@ -39,7 +39,11 @@ impl ColorSpec {
             Self::Auto => None,
             Self::Rgb { rgb } => Some(format!(" rgb=\"FF{}\"", rgb.to_uppercase())),
             Self::Theme { theme, tint } if *tint == 0.0 => Some(format!(" theme=\"{theme}\"")),
-            Self::Theme { theme, tint } => Some(format!(" theme=\"{theme}\" tint=\"{tint}\"")),
+            // Excel holds a tint in 32767ths, and writes what that comes to.
+            Self::Theme { theme, tint } => {
+                let tint = (tint * 32767.0).trunc() / 32767.0;
+                Some(format!(" theme=\"{theme}\" tint=\"{tint}\""))
+            }
         }
     }
 }
@@ -262,6 +266,8 @@ pub(crate) struct StylesBefore {
     pub rows: Vec<(u32, LineInfo)>,
     pub cols: Vec<(u32, u32, LineInfo)>,
     pub areas: Vec<Rect>,
+    /// The sheet's default row height, if this changed it.
+    pub default_row_px: Option<u32>,
 }
 
 impl StylesBefore {
@@ -867,6 +873,30 @@ impl Session {
         self.refresh_styles();
         let rects = before.areas.clone();
         self.note_styled(sheet, &rects);
+        // Blank rows are as tall as the fonts of whole columns need, as in Excel.
+        if heights
+            && rects
+                .iter()
+                .any(|area| area.top == 1 && area.bottom == cgs_model::MAX_ROWS)
+        {
+            let table = &self.book.styles;
+            let info = &self.book.sheets[sheet as usize];
+            let mut tallest = cgs_model::style::fitted_row_px(table.normal_font());
+            for &(_, _, line) in &info.cols.ranges {
+                if let Some(style) = line.style {
+                    tallest =
+                        tallest.max(cgs_model::style::fitted_row_px(table.font(table.xf(style))));
+                }
+            }
+            let info = &mut self.book.sheets[sheet as usize];
+            if tallest != info.rows.default_px {
+                before.default_row_px = Some(info.rows.default_px);
+                info.rows.default_px = tallest;
+                self.edits.default_rows.insert(sheet);
+                self.dirty.sheets.insert(sheet);
+                self.dirty.layouts.insert(sheet);
+            }
+        }
         if heights {
             for area in &rects {
                 let info = &self.book.sheets[sheet as usize];
@@ -1046,6 +1076,12 @@ impl Session {
                 .push((row, info.rows.info(row).copied().unwrap_or_default()));
         }
         info.rows.set_many(&rows);
+        if let Some(px) = before.default_row_px {
+            after.default_row_px = Some(info.rows.default_px);
+            info.rows.default_px = px;
+            self.edits.default_rows.insert(sheet);
+            self.dirty.sheets.insert(sheet);
+        }
         self.note_styled(sheet, &before.areas);
         self.dirty.layouts.insert(sheet);
         Op::Styles(Box::new(after))
@@ -1163,13 +1199,22 @@ impl Session {
         let table = &self.book.styles;
         let mut tallest = 0;
         let mut measure = Vec::new();
+        let normal = table.normal_font();
+        // The workbook's own font is what the default row already fits.
+        let fits = |font: &cgs_model::Font| {
+            if font.name == normal.name && font.size == normal.size {
+                0
+            } else {
+                cgs_model::style::fitted_row_px(font)
+            }
+        };
         let line_style = info.rows.info(row).and_then(|line| line.style);
         if let Some(style) = line_style {
-            tallest = cgs_model::style::fitted_row_px(table.font(table.xf(style)));
+            tallest = fits(table.font(table.xf(style)));
         }
         for (col, style) in info.own_styles_in_row(row) {
             let xf = table.xf(style);
-            tallest = tallest.max(cgs_model::style::fitted_row_px(table.font(xf)));
+            tallest = tallest.max(fits(table.font(xf)));
             let wraps = xf.alignment.wrap || xf.alignment.rotation != 0;
             if wraps && info.merge_at(row, col).is_none() {
                 let at = CellRef { sheet, row, col };

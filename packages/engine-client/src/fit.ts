@@ -86,5 +86,5 @@ export function fitColumns(
   return [...widest].map(([col, px]) => [col, Math.min(px, 1792)]);
 }
 
-/** What a column adds around its widest text, as Excel's AutoFit does for Calibri 11. */
-const COLUMN_PADDING = 5;
+/** What a column adds around its widest text: 14 for "x", 77 for ten digits, over COM. */
+const COLUMN_PADDING = 7;

@@ -145,7 +145,7 @@ fn formats_add_styles_and_leave_the_old_ones_byte_for_byte() {
     let styles = part(&out, "xl/styles.xml");
     assert!(styles.contains(r#"<font><b/><sz val="16"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font>"#), "{styles}");
     assert!(
-        styles.contains(r#"<fgColor theme="4" tint="0.4"/>"#),
+        styles.contains(r#"<fgColor theme="4" tint="0.3999755851924192"/>"#),
         "{styles}"
     );
     let sheet = sheet_part(&out);

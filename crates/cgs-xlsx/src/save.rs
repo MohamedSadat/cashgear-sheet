@@ -118,6 +118,8 @@ pub struct WorkbookEdits {
     pub view_freeze: std::collections::BTreeSet<u32>,
     /// Sheets whose gridlines or headings may have changed.
     pub view_flags: std::collections::BTreeSet<u32>,
+    /// Sheets whose default row height may have changed.
+    pub default_rows: std::collections::BTreeSet<u32>,
 }
 
 impl WorkbookEdits {

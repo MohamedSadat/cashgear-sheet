@@ -190,6 +190,144 @@ const MOVES = {
     rows(0, 6, 1, true),
   ],
 };
+const format = (areas, change) => ({ kind: 'format', sheet: 0, areas, change });
+const cells = (top, left, bottom = top, right = left) => ({ top, left, bottom, right });
+const lines = (axis, first, last, extra) => ({
+  kind: 'lines',
+  sheet: 0,
+  axis,
+  first,
+  last,
+  ...extra,
+});
+// Each of what Phase 5 can do to a file, some on what a fixture holds and some past it.
+Object.assign(MOVES, {
+  'a font, a fill and a border': [
+    format([cells(1, 1, 4, 3)], {
+      bold: true,
+      fontName: 'Arial',
+      fontSize: 14,
+      underline: 'double',
+      fontColor: { kind: 'theme', theme: 4, tint: 0.4 },
+      fill: { pattern: 'solid', color: { kind: 'rgb', rgb: 'FFEEDD' } },
+      border: {
+        top: { style: 'thick', color: { kind: 'rgb', rgb: 'FF0000' } },
+        bottom: { style: 'double' },
+        left: { style: 'dashed' },
+        right: { style: 'slantDashDot' },
+        insideHorizontal: { style: 'hair' },
+        insideVertical: { style: 'dotted' },
+      },
+    }),
+  ],
+  'a pattern and alignment': [
+    format([cells(2, 2, 6, 5)], {
+      fill: {
+        pattern: 'darkTrellis',
+        color: { kind: 'theme', theme: 6 },
+        patternColor: { kind: 'rgb', rgb: '00FF00' },
+      },
+      horizontal: 'centerContinuous',
+      vertical: 'distributed',
+      wrap: true,
+      indent: 2,
+      rotation: 135,
+      readingOrder: 2,
+    }),
+  ],
+  'a number format, then fewer decimals': [
+    format([cells(1, 1, 10, 4)], { numberFormat: '[Red]#,##0.00" x";-0.0_);@' }),
+    format([cells(1, 1, 10, 4)], { decimals: -1 }),
+  ],
+  'a diagonal border': [
+    format([cells(3, 3, 5, 5)], {
+      border: { diagonal: { style: 'medium' }, diagonalUp: true, diagonalDown: true },
+    }),
+  ],
+  'formats cleared': [format([cells(1, 1, 20, 10)], { clear: true })],
+  'a whole column': [format([cells(1, 2, 1048576, 2)], { italic: true, fontSize: 18 })],
+  'a whole row': [
+    format([cells(2, 1, 2, 16384)], {
+      fill: { pattern: 'solid', color: { kind: 'rgb', rgb: 'CCFFCC' } },
+    }),
+  ],
+  'the whole sheet': [format([cells(1, 1, 1048576, 16384)], { fontName: 'Tahoma', fontSize: 12 })],
+  'a column and a row that cross': [
+    format([cells(1, 3, 1048576, 3)], { bold: true }),
+    format([cells(3, 1, 3, 16384)], { italic: true }),
+  ],
+  'a format, undone': [format([cells(1, 1, 3, 3)], { bold: true }), { kind: 'undo' }],
+  'a format, undone, redone': [
+    format([cells(1, 1, 3, 3)], { bold: true }),
+    { kind: 'undo' },
+    { kind: 'redo' },
+  ],
+  'a merge and centre': [{ kind: 'merge', sheet: 0, areas: [cells(30, 2, 32, 4)], center: true }],
+  'a merge across': [{ kind: 'merge', sheet: 0, areas: [cells(34, 2, 36, 4)], across: true }],
+  'a merge over cells': [{ kind: 'merge', sheet: 0, areas: [cells(2, 1, 3, 2)] }],
+  'every merge undone': [{ kind: 'unmerge', sheet: 0, areas: [cells(1, 1, 1048576, 16384)] }],
+  'rows and columns sized': [
+    lines('row', 2, 4, { size: 40 }),
+    lines('col', 2, 3, { size: 120 }),
+    lines('col', 40, 50, { size: 10 }),
+    lines('row', 5000, 5000, { size: 80 }),
+  ],
+  'rows and columns hidden': [
+    lines('row', 3, 4, { hidden: true }),
+    lines('col', 2, 2, { hidden: true }),
+    lines('col', 16384, 16384, { hidden: true }),
+    lines('row', 1048576, 1048576, { hidden: true }),
+  ],
+  'rows and columns hidden, then shown': [
+    lines('row', 3, 4, { hidden: true }),
+    lines('row', 3, 4, { hidden: false }),
+    lines('col', 2, 2, { size: 0 }),
+    lines('col', 2, 2, { hidden: false }),
+  ],
+  'panes frozen': [{ kind: 'freeze', sheet: 0, rows: 2, cols: 1 }],
+  'the top row frozen, scrolled': [{ kind: 'freeze', sheet: 0, rows: 1, cols: 0, top: 5, left: 3 }],
+  'the first column frozen': [{ kind: 'freeze', sheet: 0, rows: 0, cols: 1 }],
+  'panes frozen, then not': [
+    { kind: 'freeze', sheet: 0, rows: 2, cols: 2 },
+    { kind: 'freeze', sheet: 0, rows: 0, cols: 0 },
+  ],
+  'no gridlines or headings': [{ kind: 'viewFlags', sheet: 0, grid: false, headings: false }],
+  'cells inserted down': [{ kind: 'shiftCells', sheet: 0, area: cells(40, 2, 41, 3), down: true }],
+  'cells inserted across': [
+    { kind: 'shiftCells', sheet: 0, area: cells(40, 2, 41, 3), down: false },
+  ],
+  'cells deleted upward': [
+    { kind: 'shiftCells', sheet: 0, area: cells(40, 2, 41, 3), down: true, delete: true },
+  ],
+  'cells deleted leftward': [
+    { kind: 'shiftCells', sheet: 0, area: cells(40, 2, 41, 3), down: false, delete: true },
+  ],
+  'cells in use inserted down': [
+    { kind: 'shiftCells', sheet: 0, area: cells(1, 1, 1, 1), down: true },
+  ],
+  'cells in use deleted': [
+    { kind: 'shiftCells', sheet: 0, area: cells(2, 2, 2, 2), down: false, delete: true },
+  ],
+  'cells shifted, then rows in': [
+    { kind: 'shiftCells', sheet: 0, area: cells(40, 2, 41, 3), down: true },
+    rows(0, 2, 1),
+    format([cells(50, 1, 50, 3)], { bold: true }),
+  ],
+  'a replace': [
+    {
+      kind: 'replaceAll',
+      query: { text: 'a', sheet: 0, formulas: true },
+      with: 'b',
+    },
+  ],
+  'a size, a format and a row out': [
+    lines('row', 4, 4, { size: 50 }),
+    format([cells(4, 1, 6, 3)], { bold: true }),
+    rows(0, 5, 1, true),
+    cols(0, 1, 1),
+  ],
+});
+
 const MOVED = {
   'moving-parts.xlsx': 'xlsx',
   'prefixed.xlsx': 'xlsx',
@@ -415,6 +553,9 @@ try {
             cols(0, 2, 1),
             { kind: 'insertSheet', position: 0 },
             { kind: 'renameSheet', sheet: 0, name: 'Renamed sheet' },
+            { kind: 'format', sheet: 0, areas: [cells(1, 1, 3, 3)], change: { bold: true } },
+            { kind: 'lines', sheet: 0, axis: 'col', first: 2, last: 2, size: 90 },
+            { kind: 'freeze', sheet: 0, rows: 1, cols: 1 },
           ],
         );
         const seen = opens(saved);

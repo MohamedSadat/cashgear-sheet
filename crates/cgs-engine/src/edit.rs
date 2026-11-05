@@ -369,6 +369,11 @@ impl Session {
                 }
             }
         }
+        for &sheet in &edits.default_rows.clone() {
+            if let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) {
+                edits.extras.entry(sheet).or_default().default_row_px = Some(info.rows.default_px);
+            }
+        }
         let viewed: std::collections::BTreeSet<u32> = edits
             .view_flags
             .iter()

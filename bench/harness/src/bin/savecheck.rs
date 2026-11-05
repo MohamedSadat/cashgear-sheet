@@ -540,6 +540,21 @@ fn run_edit(args: &[String]) -> Result<String, String> {
             eprintln!("refused: {problem}");
         }
     }
+    // A long list goes in a file: an array of commands, each run the same way.
+    if let Some(path) = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--command-file="))
+    {
+        let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
+        let list: Vec<serde_json::Value> =
+            serde_json::from_str(&text).map_err(|error| error.to_string())?;
+        for command in list {
+            if let Err(problem) = engine.apply_json(&command.to_string()) {
+                return Err(format!("{command}: {problem}"));
+            }
+            while engine.calc_step(60_000, &[])? {}
+        }
+    }
     while engine.calc_step(60_000, &[])? {}
     if args.iter().any(|arg| arg == "--refresh-pivots") {
         engine.refresh_pivots_on_load()?;
@@ -553,8 +568,65 @@ fn run_edit(args: &[String]) -> Result<String, String> {
     Ok(cgs_engine::report_json(&report))
 }
 
+/// How our reader understands a saved file's formats: the cells, rows and columns a list names.
+fn run_formats(args: &[String]) -> Result<String, String> {
+    let bytes = fs::read(&args[1]).map_err(|error| error.to_string())?;
+    let list: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&args[2]).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    let mut engine = opened(bytes)?;
+    let number = |value: &serde_json::Value, key: &str| value[key].as_u64().unwrap_or(0) as u32;
+    let empty = Vec::new();
+    let mut cells = Vec::new();
+    for cell in list["cells"].as_array().unwrap_or(&empty) {
+        let (sheet, row, col) = (
+            number(cell, "sheet"),
+            number(cell, "row"),
+            number(cell, "col"),
+        );
+        let format: serde_json::Value =
+            serde_json::from_str(&engine.cell_format_json(sheet, row, col))
+                .map_err(|error| error.to_string())?;
+        cells.push(serde_json::json!({
+            "format": format,
+            "display": engine.display_text(sheet, row, col),
+        }));
+    }
+    let book = engine.book().ok_or("nothing is open")?;
+    let mut rows = Vec::new();
+    for line in list["rows"].as_array().unwrap_or(&empty) {
+        let info = &book.sheets[number(line, "sheet") as usize];
+        let at = number(line, "line");
+        rows.push(serde_json::json!({
+            "px": info.rows.px(at),
+            "hidden": info.rows.px(at) == 0,
+            "custom": info.rows.info(at).is_some_and(|line| line.custom),
+        }));
+    }
+    let mut cols = Vec::new();
+    for line in list["cols"].as_array().unwrap_or(&empty) {
+        let info = &book.sheets[number(line, "sheet") as usize];
+        let at = number(line, "line");
+        cols.push(serde_json::json!({
+            "px": info.cols.px(at),
+            "hidden": info.cols.px(at) == 0,
+        }));
+    }
+    Ok(serde_json::json!({ "cells": cells, "rows": rows, "cols": cols }).to_string())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--formats") {
+        match run_formats(&args) {
+            Ok(report) => println!("{report}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.first().map(String::as_str) == Some("--edit") {
         match run_edit(&args) {
             Ok(report) => println!("{report}"),

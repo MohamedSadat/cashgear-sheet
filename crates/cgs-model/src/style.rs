@@ -395,9 +395,95 @@ pub fn base_col_width_to_px(base: f64, digit: f64) -> u32 {
     ((padded / 8.0).ceil() * 8.0).min(4096.0) as u32
 }
 
+/// Excel's row heights for fonts it has here, in points, measured over COM with AutoFit at
+/// `ROW_FIT_SIZES`. Sizes below 12 fit inside the default row, so they aren't told apart.
+const ROW_FITS: [(&str, [f64; 12]); 10] = [
+    (
+        "calibri",
+        [
+            15.75, 18.75, 21.0, 23.25, 26.25, 28.5, 31.5, 33.75, 36.0, 46.5, 61.5, 92.25,
+        ],
+    ),
+    (
+        "arial",
+        [
+            15.75, 18.0, 20.25, 23.25, 25.5, 27.0, 30.0, 33.0, 34.5, 44.25, 59.25, 90.0,
+        ],
+    ),
+    (
+        "times new roman",
+        [
+            15.75, 18.75, 20.25, 23.25, 26.25, 27.75, 30.75, 33.0, 35.25, 45.75, 61.5, 91.5,
+        ],
+    ),
+    (
+        "tahoma",
+        [
+            15.75, 18.0, 19.5, 22.5, 25.5, 27.0, 30.0, 32.25, 34.5, 44.25, 58.5, 87.75,
+        ],
+    ),
+    (
+        "verdana",
+        [
+            15.75, 18.0, 19.5, 22.5, 24.75, 27.0, 29.25, 32.25, 35.25, 45.75, 60.0, 87.75,
+        ],
+    ),
+    (
+        "cambria",
+        [
+            15.75, 18.0, 20.25, 22.5, 25.5, 27.0, 30.0, 33.0, 34.5, 45.0, 59.25, 88.5,
+        ],
+    ),
+    (
+        "consolas",
+        [
+            15.75, 18.75, 20.25, 23.25, 26.25, 27.75, 30.75, 33.75, 35.25, 45.75, 60.75, 90.75,
+        ],
+    ),
+    (
+        "courier new",
+        [
+            15.75, 18.75, 21.0, 24.0, 26.25, 28.5, 31.5, 34.5, 36.0, 46.5, 62.25, 92.25,
+        ],
+    ),
+    (
+        "segoe ui",
+        [
+            17.25, 20.25, 25.5, 26.25, 30.75, 33.0, 37.5, 38.25, 40.5, 52.5, 69.0, 102.0,
+        ],
+    ),
+    (
+        "georgia",
+        [
+            15.75, 18.0, 20.25, 23.25, 25.5, 27.0, 30.0, 33.0, 34.5, 45.0, 59.25, 88.5,
+        ],
+    ),
+];
+const ROW_FIT_SIZES: [f32; 12] = [
+    12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 36.0, 48.0, 72.0,
+];
+
 /// The height Excel fits a row to for this font, in pixels at 100%.
 pub fn fitted_row_px(font: &Font) -> u32 {
-    (f64::from(font.size) * 1.75).ceil() as u32
+    if font.size < ROW_FIT_SIZES[0] {
+        return (f64::from(font.size) * 1.75).ceil() as u32;
+    }
+    let name = font.name.to_ascii_lowercase();
+    let heights = ROW_FITS
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map_or(&ROW_FITS[0].1, |(_, heights)| heights);
+    if let Some(at) = ROW_FIT_SIZES.iter().position(|size| *size == font.size) {
+        return points_to_px(heights[at]);
+    }
+    // Between sizes, or past them: in proportion to the nearest measured size.
+    let nearest = ROW_FIT_SIZES
+        .iter()
+        .enumerate()
+        .min_by(|a, b| (a.1 - font.size).abs().total_cmp(&(b.1 - font.size).abs()))
+        .map_or(0, |(at, _)| at);
+    let ratio = heights[nearest] / f64::from(ROW_FIT_SIZES[nearest]);
+    points_to_px(f64::from(font.size) * ratio)
 }
 
 /// Points to whole pixels at 100%.
@@ -464,8 +550,17 @@ mod tests {
         assert_eq!(at(11.0), 20);
         assert_eq!(at(14.0), 25);
         assert_eq!(at(16.0), 28);
+        assert_eq!(at(18.0), 31);
         assert_eq!(at(20.0), 35);
         assert_eq!(at(24.0), 42);
+        assert_eq!(at(72.0), 123);
+        assert_eq!(at(13.0), 23);
+        let arial = Font {
+            name: "Arial".to_string(),
+            size: 24.0,
+            ..Font::default()
+        };
+        assert_eq!(fitted_row_px(&arial), 40);
     }
 
     #[test]
