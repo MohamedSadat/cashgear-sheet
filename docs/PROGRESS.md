@@ -10,7 +10,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 1: Formula engine bake-off | Done 2026-11-02: Formualizer, with the accuracy target moved to Phase 4 | `phase-1` |
 | Phase 2: Open xlsx | Done 2026-11-02 | `phase-2` |
 | Phase 3: Preserving save | Done 2026-11-05 | `phase-3` |
-| Phase 4: Editing, formulas, undo | Not started | |
+| Phase 4: Editing, formulas, undo | Built, with 3 of 4 exit criteria met. Waiting on your decision about the 99.5% target | |
 | Phase 5: Ribbon and formatting | Not started | |
 | Phase 6: Data tools | Not started | |
 | Phase 7: Charts | Not started | |
@@ -218,3 +218,78 @@ Save writes a valid `.xlsx` where everything untouched survives, on web and desk
 - Workbooks that link to other workbooks failed in the engine's graph build, which could have closed a business file just after opening. Such a formula now keeps its saved value and stays out of the engine.
 - Public files showed more than the fixtures did: styles with a namespace prefix, a part named twice, a part nothing links to, a content type for a part that isn't there, UTF-16 declarations, and rows with no addresses.
 - A 256 KB buffer per cell took a 16 MB save to 21 s. Timing a large file is what showed it.
+
+## Phase 4: Editing, formulas, undo
+
+You can type, calculate, undo, save and reopen in Excel. Measured on 2026-11-05 on the reference machine, in Chrome 156, with Formualizer pinned at fork commit `47ddf40e`. The Excel here is 2016 (16.0).
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| 1,000 random edits match Excel via COM | Pass | `bench/run-edit-fuzz.mjs`, 250 episodes of 5 edits on each of 2 seeds. Seed 1: 1,160 steps match and 0 diverge, over 126,536 cell comparisons. Seed 2: 1,135 match and 0 diverge, over 121,948. Another 23 were refused by both, and 4 were silently ignored by Excel and refused here. 178 steps weren't reached, as 39 episodes stopped at a circular reference and the rest at a refusal |
+| Input stays under 100 ms during recalculation | Pass | `bench/measure-input.mjs`: 5 recalculations of 1,000,000 formulas, each correct at the end. Key to painted frame: p50 21.7 ms, p99 44.4 ms, longest 47.1 ms. Frames: p99 19.8 ms, longest 21.7 ms. The longest wait for the engine, reported separately: p99 114 ms, longest 323 ms. An edit reaches the engine in p50 53 ms, p99 117 ms |
+| Files saved after structural edits open with no repair prompts | Pass | `bench/run-excel-matrix.mjs`: 29 structural edits over each of 8 fixtures, 232 of 232 clean. All 11 broken controls refused, so the check can see a repair. Your 5 private files: 5 of 5 clean after rows, columns, a new sheet and a rename. 434 of 434 files saved by the fuzz opened clean and matched Excel over 46,412 cells. Chart, pivot and macros still work after rows go in |
+| Formula cells match Excel's stored values at 99.5% on real documents, private workbooks included | **Not met: 99.350%** | Chrome WASM, same scoring as Phase 1: 345 documents, 72,016 formula cells, 10% cap 99.350%, pooled 99.435%, up from 98.272% and 98.496%. Your private set adds 1 Excel-saved file with 24 formula cells, all matching. 99.5% needs at most 313 misses, and there are 407. See below |
+
+**Why 99.5% wasn't reached**
+
+Most of the 407 remaining misses are outside what a formula engine can do from the file:
+
+| Cells | Cause |
+| --- | --- |
+| 157 | VBA and XLL functions, and what depends on them, whose code we can't run |
+| About 100 | Saved values that aren't a fresh Excel calculation: PhpSpreadsheet and XlsxWriter placeholders, stored `#NAME?` for functions the engine computes, stored `""` for computed text |
+| 66 | `FORECAST.ETS` and `.CONFINT`, which aren't implemented. Excel's fit lands on a 0.001 grid, but its objective wasn't identified |
+| 36 | `_FV`, which needs rich-data parts the engine isn't given |
+| 27 | Formulas reading sheets that aren't in the file |
+| 21 | Rich-value cells storing `#VALUE!` where the real error is `#SPILL!`, and odds and ends |
+
+The scoring, the file split, the tolerance and the skip list didn't change to get here.
+
+**What else was checked**
+
+- Typed text: `bench/run-excel-input.mjs`, 153 of 153 spellings read as Excel reads them, and 10 more follow what typing does because COM treats them differently.
+- Browsers: 134 of 134 tests in Chrome and Edge, including 35 new ones for typing, pointing, undo, fill, clipboard, structure, moving around, manual calculation, CSV and recovery.
+- Desktop: the smoke test passes, including saving.
+- Saving in WASM, one edit and then the whole save: 25 MB of values 11.9 s, 25 MB of formulas 16.8 s, 1,048,576 rows 26.2 s, 100 MB 25.1 s. The page's longest frame during any of them was 24 ms.
+- WASM gzip: within the 5 MB budget, which the build enforces.
+- Dark mode, licences, the Open XML validator and the save check are all clean.
+
+**Engine fixes, for your decision on upstream PRs**
+
+28 commits on `MohamedSadat/formualizer`, branch `cashgear/0.13.0`, `05f93f5a..47ddf40e`, plus 4 more from earlier in the phase. Nothing public went out.
+
+- A scalar function runs once for each value of an array, from a new table of parameter classes.
+- `ROW` and `COLUMN` return arrays, and read the numbers a reference names.
+- `INDEX` reads a table column.
+- Intersection and union operators, and `SINGLE`, which is how a file writes `@` inside a formula.
+- Defined names work out their values after stored values are adopted, and can hold characters beyond ASCII.
+- A spill shows over an edit that emptied the cell.
+- `ISERROR`, `ISERR` and `ISNA` see what can't be evaluated. `ISFORMULA` works.
+- `LOOKUP` skips what it can't compare. `SUMIF` reads arrays of `INDIRECT` references.
+- `SIN` and `COS` match Excel where the result is only the remainder.
+- `GROUPBY` totals by default, and `FORMULATEXT` and `CELL` give what a person reads.
+- Fixed arrays with family execution on, volatile formulas dirty after opening, sheet names like `R23` quoted, and `#REF!` rather than a panic for a table on a deleted sheet.
+
+The fork's own test suite has 3,353 passing and 1 failing, `ingest_has_no_formula_plane_producer_sites`, which also fails on a clean checkout. Some of its expectations changed to match Excel's stored values: `ROW` and `COLUMN` of a range, `CONCATENATE` over a range, a `GROUPBY` total row, 15-digit complex numbers.
+
+**Known gaps**
+
+- The 99.5% target, above.
+- Saving takes 12 to 26 s on large files, and the engine does nothing else meanwhile, though the page stays responsive.
+- A very fast typist queues up: at about 14 edits a second during a recalculation, edits land late and the calculation takes longer, as each edit makes it plan again. Nothing is lost, and keys still show at once.
+- Dynamic arrays can't be compared here, as Excel 2016 has none. They have contract tests, and their saved files open.
+- Recovery is tested in Chrome and Edge. The desktop uses the same worker code, but the smoke test doesn't crash it. Closing the desktop window with unsaved edits doesn't ask yet, though recovery covers it.
+- Inserting cells that shift sideways, with its dialog, is left to Phase 5's menus. Tables don't expand when you type beside them until Phase 6.
+- One pivot save was refused once in the matrix while Chrome ran 4 workers beside it. The same file opened clean 3 times alone, and in the final run. It's likely a refresh-on-open racing the check, but I didn't prove that.
+- A nested `@` saves as `_xlfn.SINGLE`, as Excel 365 writes it, which Excel 2016 can't calculate. It only reaches a file for cells that get rewritten.
+- 8 cells match by keeping their saved value, as a name pointing at another workbook now follows the existing rule for direct links.
+- `CgTabs` starts measuring over whenever its list of tabs changes identity. The shell works around that, and the library could stop it.
+
+**What was learned**
+
+- Each failure the matrix found was a file that looked fine to our own reader: a frozen pane with a split of 0, a sparkline reading `Data!#REF!`, a group with no sparklines, and a deleted shared-formula master that left a whole sheet in its old coordinates while its table moved.
+- Only the private files had their relationship prefix declared on each sheet, which made every added sheet invalid. Fixtures written by hand all shared the shape that hid it.
+- A measurement has to check its own answers. The first input run looked fine until the last value read 4 instead of 7, and that was the script reading a cell while commands were still queued.
+- A fuzz that lets calculation finish between steps can't see what happens during one, so a test now covers edits between slices.

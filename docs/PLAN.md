@@ -213,9 +213,9 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 5. Calculation scheduling; autosave and crash recovery; shortcut map.
 
 **Exit**
-- [ ] 1,000 random edits match Excel via COM.
-- [ ] Input stays under 100 ms during recalculation.
-- [ ] Files saved after structural edits open with no repair prompts.
+- [x] 1,000 random edits match Excel via COM.
+- [x] Input stays under 100 ms during recalculation.
+- [x] Files saved after structural edits open with no repair prompts.
 - [ ] Formula cells match Excel's stored values at 99.5% on real documents, with your private workbooks in the set (`bench/`, moved here from Phase 1, which measured 98.22%).
 
 ### Phase 5: Ribbon and formatting (tag `v0.1.0-mvp`)

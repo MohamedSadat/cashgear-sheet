@@ -281,4 +281,4 @@ Nothing public went out. These are on `MohamedSadat/formualizer`, branch `cashge
 - A table reference to a deleted sheet gives `#REF!` instead of a panic.
 - A fixed array can be declared with family execution on.
 - Volatile formulas can be marked dirty after opening.
-- The list of further fixes from the accuracy work is in `PROGRESS.md`.
+- The further fixes from the accuracy work are listed in `PROGRESS.md`, under Phase 4.
