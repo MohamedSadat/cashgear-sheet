@@ -81,8 +81,17 @@ fn gives_many(name: &str, args: &[ASTNode], wants: Wants, names: &dyn Fn(&str) -
             _ => false,
         })
     };
+    // A reference worked out by a function can be several cells too.
+    let is_reference_call = |arg: Option<&ASTNode>| {
+        arg.is_some_and(|arg| {
+            matches!(&arg.node_type, ASTNodeType::Function { name, .. }
+                if matches!(name.as_str(), "INDIRECT" | "OFFSET" | "INDEX" | "IF" | "CHOOSE"))
+        })
+    };
     match name {
-        "ROW" | "COLUMN" => wants != Wants::Array && is_many_arg(args.first()),
+        "ROW" | "COLUMN" => {
+            wants != Wants::Array && (is_many_arg(args.first()) || is_reference_call(args.first()))
+        }
         "OFFSET" => {
             wants == Wants::Value
                 && (args.len() > 3 || is_many_arg(args.first()))
@@ -289,6 +298,7 @@ mod tests {
                 "SUMPRODUCT(MAX((A1:A9=1)*ROW(A1:A9)))",
             ),
             ("ROW(A1)", "ROW(A1)"),
+            ("ROW(INDIRECT(B1))", "=@ROW(INDIRECT(B1))"),
             ("LEN(INDIRECT(B1))", "=LEN(@INDIRECT(B1))"),
             ("SUM(INDIRECT(B1))", "SUM(INDIRECT(B1))"),
             ("OFFSET(A1,1,1)", "OFFSET(A1,1,1)"),
