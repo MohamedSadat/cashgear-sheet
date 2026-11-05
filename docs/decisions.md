@@ -282,3 +282,9 @@ Nothing public went out. These are on `MohamedSadat/formualizer`, branch `cashge
 - A fixed array can be declared with family execution on.
 - Volatile formulas can be marked dirty after opening.
 - The further fixes from the accuracy work are listed in `PROGRESS.md`, under Phase 4.
+
+**Answered by you at the end of the phase**
+
+| Question | Answer |
+| --- | --- |
+| The 99.5% target came out at 99.350% with the 10% cap, 99.435% pooled. How should the phase end? | Accept 99.35% and tag `phase-4`, with the target recorded as not met and each remaining cause listed. The scoring stays as it was, and formulas calling unknown functions in VBA files aren't kept at their saved values to raise it |

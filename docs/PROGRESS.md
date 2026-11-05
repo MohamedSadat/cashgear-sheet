@@ -10,7 +10,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 1: Formula engine bake-off | Done 2026-11-02: Formualizer, with the accuracy target moved to Phase 4 | `phase-1` |
 | Phase 2: Open xlsx | Done 2026-11-02 | `phase-2` |
 | Phase 3: Preserving save | Done 2026-11-05 | `phase-3` |
-| Phase 4: Editing, formulas, undo | Built, with 3 of 4 exit criteria met. Waiting on your decision about the 99.5% target | |
+| Phase 4: Editing, formulas, undo | Done 2026-11-05: 3 of 4 exit criteria met, and you accepted 99.35% on the fourth | `phase-4` |
 | Phase 5: Ribbon and formatting | Not started | |
 | Phase 6: Data tools | Not started | |
 | Phase 7: Charts | Not started | |
@@ -230,7 +230,7 @@ You can type, calculate, undo, save and reopen in Excel. Measured on 2026-11-05 
 | 1,000 random edits match Excel via COM | Pass | `bench/run-edit-fuzz.mjs`, 250 episodes of 5 edits on each of 2 seeds. Seed 1: 1,160 steps match and 0 diverge, over 126,536 cell comparisons. Seed 2: 1,135 match and 0 diverge, over 121,948. Another 23 were refused by both, and 4 were silently ignored by Excel and refused here. 178 steps weren't reached, as 39 episodes stopped at a circular reference and the rest at a refusal |
 | Input stays under 100 ms during recalculation | Pass | `bench/measure-input.mjs`: 5 recalculations of 1,000,000 formulas, each correct at the end. Key to painted frame: p50 21.7 ms, p99 44.4 ms, longest 47.1 ms. Frames: p99 19.8 ms, longest 21.7 ms. The longest wait for the engine, reported separately: p99 114 ms, longest 323 ms. An edit reaches the engine in p50 53 ms, p99 117 ms |
 | Files saved after structural edits open with no repair prompts | Pass | `bench/run-excel-matrix.mjs`: 29 structural edits over each of 8 fixtures, 232 of 232 clean. All 11 broken controls refused, so the check can see a repair. Your 5 private files: 5 of 5 clean after rows, columns, a new sheet and a rename. 434 of 434 files saved by the fuzz opened clean and matched Excel over 46,412 cells. Chart, pivot and macros still work after rows go in |
-| Formula cells match Excel's stored values at 99.5% on real documents, private workbooks included | **Not met: 99.350%** | Chrome WASM, same scoring as Phase 1: 345 documents, 72,016 formula cells, 10% cap 99.350%, pooled 99.435%, up from 98.272% and 98.496%. Your private set adds 1 Excel-saved file with 24 formula cells, all matching. 99.5% needs at most 313 misses, and there are 407. See below |
+| Formula cells match Excel's stored values at 99.5% on real documents, private workbooks included | **Not met: 99.350%, accepted by your decision** | Chrome WASM, same scoring as Phase 1: 345 documents, 72,016 formula cells, 10% cap 99.350%, pooled 99.435%, up from 98.272% and 98.496%. Your private set adds 1 Excel-saved file with 24 formula cells, all matching. 99.5% needs at most 313 misses, and there are 407. See below |
 
 **Why 99.5% wasn't reached**
 
@@ -245,7 +245,7 @@ Most of the 407 remaining misses are outside what a formula engine can do from t
 | 27 | Formulas reading sheets that aren't in the file |
 | 21 | Rich-value cells storing `#VALUE!` where the real error is `#SPILL!`, and odds and ends |
 
-The scoring, the file split, the tolerance and the skip list didn't change to get here.
+The scoring, the file split, the tolerance and the skip list didn't change to get here. You chose to accept this result and tag the phase, rather than change the scoring or keep saved values in place of calculating them. See `decisions.md`.
 
 **What else was checked**
 
@@ -253,7 +253,7 @@ The scoring, the file split, the tolerance and the skip list didn't change to ge
 - Browsers: 134 of 134 tests in Chrome and Edge, including 35 new ones for typing, pointing, undo, fill, clipboard, structure, moving around, manual calculation, CSV and recovery.
 - Desktop: the smoke test passes, including saving.
 - Saving in WASM, one edit and then the whole save: 25 MB of values 11.9 s, 25 MB of formulas 16.8 s, 1,048,576 rows 26.2 s, 100 MB 25.1 s. The page's longest frame during any of them was 24 ms.
-- WASM gzip: within the 5 MB budget, which the build enforces.
+- WASM gzip: 2.97 MB, against the 5 MB budget the build enforces.
 - Dark mode, licences, the Open XML validator and the save check are all clean.
 
 **Engine fixes, for your decision on upstream PRs**
