@@ -44,6 +44,11 @@ impl SharedStrings {
         self.rich.contains_key(&index)
     }
 
+    /// A rich string's runs.
+    pub fn runs(&self, index: u32) -> Option<&[RichRun]> {
+        self.rich.get(&index).map(Vec::as_slice)
+    }
+
     pub fn rich_strings(&self) -> HashMap<u32, Vec<RichRun>> {
         self.rich.clone()
     }

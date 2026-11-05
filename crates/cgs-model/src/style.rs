@@ -486,6 +486,24 @@ pub fn fitted_row_px(font: &Font) -> u32 {
     points_to_px(f64::from(font.size) * ratio)
 }
 
+/// The height Excel fits a row to for a rich string's runs that set their own size, in pixels at
+/// 100%, or 0. A run without a name takes the cell's.
+pub fn rich_row_px(runs: &[RichRun], cell: &Font) -> u32 {
+    runs.iter()
+        .filter_map(|run| {
+            let font = run.font.as_ref()?;
+            let size = font.size?;
+            fitted_row_px(&Font {
+                name: font.name.clone().unwrap_or_else(|| cell.name.clone()),
+                size,
+                ..Font::default()
+            })
+            .into()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// Points to whole pixels at 100%.
 pub fn points_to_px(points: f64) -> u32 {
     (points * 96.0 / 72.0).round().clamp(0.0, 4096.0) as u32

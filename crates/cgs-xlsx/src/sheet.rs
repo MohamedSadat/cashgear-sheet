@@ -78,6 +78,8 @@ pub struct LoadContext<'a> {
     pub digit: f64,
     /// How tall a row must be for each cell format's font, in pixels at 100%.
     pub xf_heights: &'a [u32],
+    /// The Normal style's font, for rich runs that only set a size.
+    pub normal_font: &'a cgs_model::Font,
 }
 
 pub struct SheetLoader {
@@ -353,8 +355,15 @@ impl SheetLoader {
                                     self.row_tallest.max(needs.copied().unwrap_or(0) & !WRAPS);
                                 if self.cell_type == CellType::Shared && self.has_value {
                                     if let Ok(index) = self.value.trim().parse::<u32>() {
-                                        if context.strings.is_rich(index) {
+                                        if let Some(runs) = context.strings.runs(index) {
                                             info.rich.insert((self.row, self.col), index);
+                                            // A run of a bigger font makes the row taller, as in Excel.
+                                            self.row_tallest = self.row_tallest.max(
+                                                cgs_model::style::rich_row_px(
+                                                    runs,
+                                                    context.normal_font,
+                                                ),
+                                            );
                                         }
                                     }
                                 }

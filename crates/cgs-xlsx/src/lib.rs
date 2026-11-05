@@ -267,6 +267,7 @@ impl Loader {
                 strings: &self.strings,
                 digit: self.digit,
                 xf_heights: &self.xf_heights,
+                normal_font: book.styles.normal_font(),
             };
             match current.step(&mut context, info, keep_going)? {
                 Step::More => return Ok(false),

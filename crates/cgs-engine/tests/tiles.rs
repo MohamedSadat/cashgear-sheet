@@ -495,6 +495,8 @@ fn rich_text_comes_with_the_looks_of_its_runs() {
     let tile = Tile::new(&mut engine, 0, 0, 0, LIGHT);
     let cell = tile.cell(0, 0);
     assert_eq!(cell.text, "Rich: bold blue, big red italic");
+    // The 14 point run makes the row taller, as Excel fits it.
+    assert!(tile.row_px(0) > 20, "{}", tile.row_px(0));
     // Three runs a cell, both cells.
     assert_eq!(tile.runs, 6);
     let offset = u32_at(&tile.bytes, tile.sizes());

@@ -1212,6 +1212,12 @@ impl Session {
         if let Some(style) = line_style {
             tallest = fits(table.font(table.xf(style)));
         }
+        for (&(_, col), index) in info.rich.iter().filter(|((at, _), _)| *at == row) {
+            if let Some(runs) = self.book.rich_strings.get(index) {
+                let cell = table.font(table.xf(info.style_at(row, col)));
+                tallest = tallest.max(cgs_model::style::rich_row_px(runs, cell));
+            }
+        }
         for (col, style) in info.own_styles_in_row(row) {
             let xf = table.xf(style);
             tallest = tallest.max(fits(table.font(xf)));
