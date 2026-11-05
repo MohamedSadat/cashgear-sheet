@@ -290,6 +290,37 @@ pub enum Command {
         #[serde(default)]
         headings: Option<bool>,
     },
+    /// Makes a table. No `headers` guesses them from the first row.
+    CreateTable {
+        sheet: u32,
+        area: Area,
+        #[serde(default)]
+        headers: Option<bool>,
+        #[serde(default)]
+        style: Option<String>,
+    },
+    TableOptions {
+        table: String,
+        #[serde(flatten)]
+        options: crate::tables::TableOptions,
+    },
+    TotalsFunction {
+        table: String,
+        column: String,
+        #[serde(default)]
+        function: Option<String>,
+    },
+    RenameTable {
+        table: String,
+        name: String,
+    },
+    ResizeTable {
+        table: String,
+        area: Area,
+    },
+    ConvertToRange {
+        table: String,
+    },
     Undo,
     Redo,
 }
@@ -320,6 +351,8 @@ pub(crate) enum Op {
     Names(Vec<NameInfo>),
     /// The engine's tables as they were.
     Tables(Vec<TableInfo>),
+    /// The model's tables, which hold how each looks.
+    BookTables(Vec<Table>),
     Merges {
         sheet: u32,
         merges: Vec<Rect>,
@@ -400,6 +433,7 @@ impl Op {
             } => shape.bytes() + names.len() * 128 + tables.len() * 256,
             Self::Names(names) => names.len() * 128,
             Self::Tables(tables) => tables.len() * 256,
+            Self::BookTables(tables) => tables.len() * 512,
             Self::Merges { merges, .. } => merges.len() * 16,
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
             Self::Styles(before) => before.bytes(),
@@ -1167,6 +1201,16 @@ impl Session {
                 }
                 Ok(Op::Tables(before))
             }
+            Op::BookTables(tables) => {
+                for table in tables.iter().chain(self.book.tables.iter()) {
+                    self.dirty.sheets.insert(table.sheet);
+                }
+                self.edits.tables_changed = true;
+                Ok(Op::BookTables(std::mem::replace(
+                    &mut self.book.tables,
+                    tables,
+                )))
+            }
             Op::Merges { sheet, merges } => {
                 let info = &mut self.book.sheets[sheet as usize];
                 let before = std::mem::replace(&mut info.merges, merges);
@@ -1402,7 +1446,7 @@ impl Session {
 
     /// A table's headings are always text, and always different: this makes edits to them so, and
     /// carries a new name into the table and the formulas that use it.
-    fn with_table_headings(&mut self, op: Op) -> Result<Op, String> {
+    pub(crate) fn with_table_headings(&mut self, op: Op) -> Result<Op, String> {
         if self.calc.tables().is_empty() {
             return Ok(op);
         }
@@ -1410,14 +1454,34 @@ impl Session {
             Op::Many(list) => list,
             other => vec![other],
         };
-        let mut tables = self.calc.tables().to_vec();
+        // Headings are judged by the tables as the change leaves them.
+        fn last_tables(list: &[Op]) -> Option<&Vec<TableInfo>> {
+            list.iter().rev().find_map(|op| match op {
+                Op::Tables(tables) => Some(tables),
+                Op::Many(inner) => last_tables(inner),
+                _ => None,
+            })
+        }
+        let given = last_tables(&list).cloned();
+        let mut tables = given.clone().unwrap_or_else(|| self.calc.tables().to_vec());
+        let heading_at = |tables: &[TableInfo], sheet: u32, row: u32, col: u32| {
+            tables.iter().enumerate().find_map(|(index, table)| {
+                (table.sheet == sheet
+                    && table.header_row
+                    && table.range.top == row
+                    && col >= table.range.left
+                    && col <= table.range.right)
+                    .then(|| (index, (col - table.range.left) as usize))
+            })
+        };
         let mut renames: Vec<(String, String, String)> = Vec::new();
         for item in &mut list {
             let Op::Cells(edits) = item else {
                 continue;
             };
             for edit in edits.iter_mut() {
-                let Some((index, column)) = self.heading_at(edit.sheet, edit.row, edit.col) else {
+                let Some((index, column)) = heading_at(&tables, edit.sheet, edit.row, edit.col)
+                else {
                     continue;
                 };
                 let Some(input) = &edit.input else {
@@ -1502,6 +1566,27 @@ impl Session {
                 });
             }
         }
+        // The change's own tables take the new names too.
+        fn set_last_tables(list: &mut [Op], tables: &[TableInfo]) -> bool {
+            for op in list.iter_mut().rev() {
+                match op {
+                    Op::Tables(found) => {
+                        *found = tables.to_vec();
+                        return true;
+                    }
+                    Op::Many(inner) => {
+                        if set_last_tables(inner, tables) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        if given.is_some() {
+            set_last_tables(&mut list, &tables);
+        }
         // The table first, so that the new text finds its column.
         let mut all = vec![Op::Tables(tables)];
         all.extend(list);
@@ -1512,7 +1597,7 @@ impl Session {
     }
 
     /// Applies a change and remembers how to undo it.
-    fn perform(
+    pub(crate) fn perform(
         &mut self,
         label: &'static str,
         op: Op,
@@ -1524,6 +1609,7 @@ impl Session {
         let log_before = self.edits.ops.len();
         self.touched_rows.clear();
         let inverse = self.apply_op(op)?;
+        self.sync_book_tables();
         // Rows that hold something new may want another height, which goes back with the step.
         let inverse = match self.refit_touched() {
             Some(lines) => Op::Many(vec![lines, inverse]),
@@ -1549,6 +1635,7 @@ impl Session {
         let before = self.history.state;
         let log_before = self.edits.ops.len();
         let inverse = self.apply_op(op)?;
+        self.sync_book_tables();
         self.touched_rows = rows;
         let inverse = match self.refit_touched() {
             Some(lines) => Op::Many(vec![lines, inverse]),
@@ -1557,6 +1644,66 @@ impl Session {
         self.history.touch();
         self.history.push(label, inverse, before, None, log_before);
         Ok(Applied::default())
+    }
+
+    /// Applies a change made of steps that each build on the last, as one step to undo. `next`
+    /// gives each in turn, and nothing once done. If one fails, those before it are taken back.
+    pub(crate) fn perform_steps(
+        &mut self,
+        label: &'static str,
+        selection: Option<(u32, Area)>,
+        mut next: impl FnMut(&mut Self, usize) -> Result<Option<Op>, String>,
+    ) -> Result<Applied, String> {
+        self.absorb_results();
+        let before = self.history.state;
+        let log_before = self.edits.ops.len();
+        self.touched_rows.clear();
+        let mut undo = Vec::new();
+        let mut step = 0;
+        loop {
+            let result = next(self, step).and_then(|op| match op {
+                Some(op) => {
+                    let op = self.with_table_headings(op)?;
+                    self.apply_op(op).map(Some)
+                }
+                None => Ok(None),
+            });
+            match result {
+                Ok(Some(inverse)) => {
+                    undo.push(inverse);
+                    self.sync_book_tables();
+                }
+                Ok(None) => break,
+                Err(problem) => {
+                    while let Some(inverse) = undo.pop() {
+                        let _ = self.apply_op(inverse);
+                    }
+                    self.edits.ops.truncate(log_before);
+                    self.sync_book_tables();
+                    return Err(problem);
+                }
+            }
+            step += 1;
+        }
+        if undo.is_empty() {
+            return Ok(Applied {
+                selection,
+                replaced: 0,
+            });
+        }
+        undo.reverse();
+        let inverse = Op::Many(undo);
+        let inverse = match self.refit_touched() {
+            Some(lines) => Op::Many(vec![lines, inverse]),
+            None => inverse,
+        };
+        self.history.touch();
+        self.history
+            .push(label, inverse, before, selection, log_before);
+        Ok(Applied {
+            selection,
+            replaced: 0,
+        })
     }
 
     /// Measured heights for rows that wrap, which belong to the step that asked for them.
@@ -1605,6 +1752,7 @@ impl Session {
         self.history.bytes -= step.bytes;
         let op = std::mem::replace(&mut step.op, Op::Many(Vec::new()));
         let inverse = self.apply_op(op)?;
+        self.sync_book_tables();
         self.touched_rows.clear();
         step.bytes = inverse.bytes();
         step.op = inverse;
@@ -1634,6 +1782,7 @@ impl Session {
         step.log_before = self.edits.ops.len();
         step.log_file = self.history.file;
         let inverse = self.apply_op(op)?;
+        self.sync_book_tables();
         self.touched_rows.clear();
         step.bytes = inverse.bytes();
         step.op = inverse;
@@ -1792,6 +1941,12 @@ impl Session {
             }
         }
         let area = areas.first().copied().unwrap_or(Area::cell(row, col));
+        // A table beside what was typed may grow to take it in.
+        if let Some(growth) = self.table_growth(sheet, &edits) {
+            let mut list = vec![Op::Cells(edits)];
+            list.extend(growth);
+            return self.perform("typing", Op::Many(list), Some((sheet, area)));
+        }
         self.perform("typing", Op::Cells(edits), Some((sheet, area)))
     }
 
@@ -2143,6 +2298,25 @@ impl Session {
                 replaced: 0,
             });
         }
+        let edits = self.move_edits(from_sheet, from, sheet, row, col)?;
+        self.perform("moving", Op::Cells(edits), Some((sheet, target)))
+    }
+
+    /// What moving cells changes, with what points at them following.
+    pub(crate) fn move_edits(
+        &mut self,
+        from_sheet: u32,
+        from: Area,
+        sheet: u32,
+        row: u32,
+        col: u32,
+    ) -> Result<Vec<EditCell>, String> {
+        let target = Area {
+            top: row,
+            left: col,
+            bottom: row + from.rows() - 1,
+            right: col + from.cols() - 1,
+        };
         if self.cuts_an_array(from_sheet, from) || self.cuts_an_array(sheet, target) {
             return Err("You can't change part of an array.".to_string());
         }
@@ -2218,11 +2392,7 @@ impl Session {
                 },
             );
         }
-        self.perform(
-            "moving",
-            Op::Cells(edits.into_values().collect()),
-            Some((sheet, target)),
-        )
+        Ok(edits.into_values().collect())
     }
 
     /// Runs a command the UI asked for.
@@ -2547,6 +2717,31 @@ impl Session {
                 let op = self.freeze_op(sheet, Some(freeze));
                 self.perform("freezing panes", op, None)
             }
+            Command::CreateTable {
+                sheet,
+                area,
+                headers,
+                style,
+            } => {
+                if !area.valid() {
+                    return Err("That's off the sheet.".to_string());
+                }
+                self.create_table_command(sheet, area, headers, style)
+            }
+            Command::TableOptions { table, options } => self.table_options_command(&table, options),
+            Command::TotalsFunction {
+                table,
+                column,
+                function,
+            } => self.totals_function_command(&table, &column, function),
+            Command::RenameTable { table, name } => self.rename_table_command(&table, &name),
+            Command::ResizeTable { table, area } => {
+                if !area.valid() {
+                    return Err("That's off the sheet.".to_string());
+                }
+                self.resize_table_command(&table, area)
+            }
+            Command::ConvertToRange { table } => self.convert_to_range_command(&table),
             Command::ShiftCells {
                 sheet,
                 area,
@@ -2628,7 +2823,7 @@ impl Session {
         }
     }
 
-    fn sheet_for_edit(&self, sheet: u32) -> Result<&SheetInfo, String> {
+    pub(crate) fn sheet_for_edit(&self, sheet: u32) -> Result<&SheetInfo, String> {
         self.book
             .sheets
             .get(sheet as usize)

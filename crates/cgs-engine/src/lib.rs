@@ -2,6 +2,7 @@
 //! about a cell, commands and undo, calculation in slices, and saving. Opening calculates nothing
 //! that a saved value covers.
 
+mod ask;
 pub mod clip;
 pub mod command;
 pub mod edit;
@@ -12,6 +13,7 @@ pub mod input;
 mod json;
 pub mod query;
 mod shift;
+pub mod tables;
 pub mod tile;
 pub mod view_block;
 

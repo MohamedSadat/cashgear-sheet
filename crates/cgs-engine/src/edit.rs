@@ -208,6 +208,19 @@ impl Session {
                                         plain = next;
                                     }
                                 }
+                                let home = self
+                                    .calc
+                                    .tables()
+                                    .iter()
+                                    .find(|table| {
+                                        table.sheet == sheet && table.range.contains(row, col)
+                                    })
+                                    .map(|table| table.name.as_str());
+                                if let std::borrow::Cow::Owned(next) =
+                                    cgs_refs::table_refs_for_file(&plain, home)
+                                {
+                                    plain = next;
+                                }
                                 *text = cgs_refs::formula_for_file(&plain, in_array);
                                 *value = value_at(self, sheet, row, col);
                             }

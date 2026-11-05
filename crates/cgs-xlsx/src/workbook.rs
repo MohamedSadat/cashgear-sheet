@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use cgs_model::{
     Anchor, AnchorPoint, Book, DefinedName, Drawing, DrawingKind, SheetInfo, SheetKind, SheetState,
-    Table,
+    Table, TableColumnInfo, TableStyle, TotalsFunction,
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -214,10 +214,11 @@ fn read_tables(package: &Package, book: &mut Book) {
             if !kind.ends_with("/table") {
                 continue;
             }
-            if let Some(table) = package
+            if let Some(mut table) = package
                 .read(&target)
                 .and_then(|xml| read_table(&xml, index as u32))
             {
+                table.part = Some(target.clone());
                 tables.push(table);
             }
         }
@@ -229,10 +230,18 @@ fn read_table(xml: &[u8], sheet: u32) -> Option<Table> {
     let mut reader = Reader::from_reader(xml);
     let mut buf = Vec::new();
     let mut table: Option<Table> = None;
+    // Which formula of a column is being read: 1 calculated, 2 totals.
+    let mut formula = 0u8;
+    let mut text = String::new();
     loop {
+        let before = reader.buffer_position() as usize;
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) | Err(_) => break,
-            Ok(Event::Start(element) | Event::Empty(element)) => {
+            Ok(event @ (Event::Start(_) | Event::Empty(_))) => {
+                let empty = matches!(event, Event::Empty(_));
+                let (Event::Start(element) | Event::Empty(element)) = event else {
+                    unreachable!()
+                };
                 match element.local_name().as_ref() {
                     // Only the root: an extension can hold an <x14:table> too.
                     b"table" if table.is_none() => {
@@ -240,25 +249,103 @@ fn read_table(xml: &[u8], sheet: u32) -> Option<Table> {
                         let name = attr(&element, b"displayName")
                             .or_else(|| attr(&element, b"name"))
                             .unwrap_or_default();
-                        table = Some(Table {
-                            name,
-                            sheet,
-                            range,
-                            header_rows: attr_u32(&element, b"headerRowCount").unwrap_or(1),
-                            totals_rows: attr_u32(&element, b"totalsRowCount").unwrap_or(0),
-                            columns: Vec::new(),
-                        });
+                        let mut next = Table::new(name, sheet, range, Vec::new());
+                        next.header_rows = attr_u32(&element, b"headerRowCount").unwrap_or(1);
+                        next.totals_rows = attr_u32(&element, b"totalsRowCount").unwrap_or(0);
+                        next.id = attr_u32(&element, b"id").unwrap_or(0);
+                        next.edited = false;
+                        next.style = TableStyle {
+                            name: None,
+                            first_column: false,
+                            last_column: false,
+                            row_stripes: false,
+                            column_stripes: false,
+                        };
+                        table = Some(next);
+                    }
+                    b"autoFilter" if table.as_ref().is_some_and(|t| t.filter.is_none()) => {
+                        // Its own XML, read by itself.
+                        let start = before;
+                        let end = if empty {
+                            reader.buffer_position() as usize
+                        } else {
+                            let _ = reader.read_to_end_into(element.name(), &mut Vec::new());
+                            reader.buffer_position() as usize
+                        };
+                        if let (Some(table), Some(filter)) = (
+                            table.as_mut(),
+                            xml.get(start..end)
+                                .and_then(crate::filter::read_auto_filter),
+                        ) {
+                            table.filter = Some(filter);
+                        }
                     }
                     b"tableColumn" => {
                         if let (Some(table), Some(name)) = (table.as_mut(), attr(&element, b"name"))
                         {
                             table.columns.push(unescape_x(&name).into_owned());
+                            table.column_info.push(TableColumnInfo {
+                                totals_function: attr(&element, b"totalsRowFunction")
+                                    .and_then(|text| TotalsFunction::from_xml(&text)),
+                                totals_label: attr(&element, b"totalsRowLabel"),
+                                totals_formula: None,
+                                calculated: None,
+                            });
+                        }
+                    }
+                    b"calculatedColumnFormula" if !empty => {
+                        formula = 1;
+                        text.clear();
+                    }
+                    b"totalsRowFormula" if !empty => {
+                        formula = 2;
+                        text.clear();
+                    }
+                    b"tableStyleInfo" => {
+                        if let Some(table) = table.as_mut() {
+                            table.style = TableStyle {
+                                name: attr(&element, b"name"),
+                                first_column: attr_bool(&element, b"showFirstColumn")
+                                    .unwrap_or(false),
+                                last_column: attr_bool(&element, b"showLastColumn")
+                                    .unwrap_or(false),
+                                row_stripes: attr_bool(&element, b"showRowStripes")
+                                    .unwrap_or(false),
+                                column_stripes: attr_bool(&element, b"showColumnStripes")
+                                    .unwrap_or(false),
+                            };
                         }
                     }
                     _ => {}
                 }
             }
-            _ => {}
+            Ok(Event::End(end)) => {
+                let local = end.local_name();
+                if formula != 0
+                    && matches!(
+                        local.as_ref(),
+                        b"calculatedColumnFormula" | b"totalsRowFormula"
+                    )
+                {
+                    if let Some(info) = table
+                        .as_mut()
+                        .and_then(|table| table.column_info.last_mut())
+                    {
+                        let read = Some(std::mem::take(&mut text));
+                        if formula == 1 {
+                            info.calculated = read;
+                        } else {
+                            info.totals_formula = read;
+                        }
+                    }
+                    formula = 0;
+                }
+            }
+            Ok(event) => {
+                if formula != 0 {
+                    push_text(&event, &mut text);
+                }
+            }
         }
         buf.clear();
     }

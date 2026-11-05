@@ -85,6 +85,9 @@ pub struct FormualizerEngine {
     /// Formulas that read another workbook, which keep their saved value, as they do in Excel
     /// until its links are updated. The engine would refuse them, and the whole sheet with them.
     linked: HashMap<CellRef, String>,
+    /// Formulas with this-row table references as they were given. The engine turns those into
+    /// the cells they read, so its own text would lose them.
+    this_row: HashMap<CellRef, String>,
     /// Staged formulas haven't been adopted or calculated yet.
     fresh: bool,
     /// The next sheet `prepare_step` builds a graph for.
@@ -381,6 +384,7 @@ impl FormualizerEngine {
             array_anchors: Vec::new(),
             cached_spills: Vec::new(),
             linked: HashMap::new(),
+            this_row: HashMap::new(),
             fresh: true,
             prepare_next: 0,
             prepared: false,
@@ -500,6 +504,16 @@ impl FormualizerEngine {
         self.linked = linked
             .into_iter()
             .filter_map(|(mut at, text)| moved(&mut at).then_some((at, text)))
+            .collect();
+        let name = self.sheets[sheet as usize].clone();
+        let this_row = std::mem::take(&mut self.this_row);
+        self.this_row = this_row
+            .into_iter()
+            .filter_map(|(mut at, text)| {
+                let home = self.sheets[at.sheet as usize].clone();
+                let text = cgs_refs::edit_formula(&text, &home, &name, edit).into_owned();
+                moved(&mut at).then_some((at, text))
+            })
             .collect();
         let extent = &mut self.extents[sheet as usize];
         let reach = match edit.axis {
@@ -964,6 +978,7 @@ impl CalcEngine for FormualizerEngine {
         self.array_anchors.clear();
         self.cached_spills.clear();
         self.linked.clear();
+        self.this_row.clear();
         self.fresh = true;
         self.prepare_next = 0;
         self.prepared = false;
@@ -1075,6 +1090,7 @@ impl CalcEngine for FormualizerEngine {
             .retain(|(cell, _, _)| cell.sheet != sheet);
         self.cached_spills.retain(|cell| cell.sheet != sheet);
         self.linked.retain(|cell, _| cell.sheet != sheet);
+        self.this_row.retain(|cell, _| cell.sheet != sheet);
         self.loads[sheet as usize] = Some(if shape.sparse {
             SheetLoad::Sparse(Box::new(ArrowSheet::new_sparse_with_date_system(
                 &name,
@@ -1178,6 +1194,10 @@ impl CalcEngine for FormualizerEngine {
                 .insert(CellRef { sheet, row, col }, text.to_string());
             return Ok(());
         }
+        if uses_this_row(text) {
+            self.this_row
+                .insert(CellRef { sheet, row, col }, text.to_string());
+        }
         let rewritten = self.file_formula(text, sheet, row, col);
         let text = rewritten.as_deref().unwrap_or(text);
         let staged = match shape {
@@ -1254,6 +1274,7 @@ impl CalcEngine for FormualizerEngine {
                 input: self.cell_input(edit.at),
             });
             self.linked.remove(&edit.at);
+            self.this_row.remove(&edit.at);
             self.array_anchors.retain(|(at, _, _)| *at != edit.at);
             let extent = &mut self.extents[edit.at.sheet as usize];
             extent.0 = extent.0.max(row);
@@ -1271,6 +1292,9 @@ impl CalcEngine for FormualizerEngine {
                 }
                 CellInput::Formula { text, shape, .. } => {
                     let staged = format!("={text}");
+                    if uses_this_row(text) {
+                        self.this_row.insert(edit.at, text.clone());
+                    }
                     // An array that was here takes what it spilled with it first.
                     if *shape != FormulaShape::Normal {
                         self.workbook
@@ -1629,6 +1653,7 @@ impl CalcEngine for FormualizerEngine {
         }
         self.array_anchors.retain(|(at, _, _)| at.sheet != sheet);
         self.linked.retain(|at, _| at.sheet != sheet);
+        self.this_row.retain(|at, _| at.sheet != sheet);
         self.workbook.delete_sheet(&name).map_err(err)?;
         self.gone[sheet as usize] = true;
         self.set_cells(&rewrites)?;
@@ -1701,6 +1726,20 @@ impl CalcEngine for FormualizerEngine {
     }
 
     fn restore_tables(&mut self, tables: &[crate::TableInfo]) -> Result<()> {
+        // Tables that aren't in the list go, so that a name can be used again.
+        let gone: Vec<String> = self
+            .tables
+            .iter()
+            .filter(|old| {
+                !tables
+                    .iter()
+                    .any(|table| table.name.eq_ignore_ascii_case(&old.name))
+            })
+            .map(|old| old.name.clone())
+            .collect();
+        for name in gone {
+            let _ = self.engine().delete_table(&name);
+        }
         for table in tables {
             self.sync_table(table)?;
         }
@@ -1850,10 +1889,22 @@ impl CalcEngine for FormualizerEngine {
             return Some(text.clone());
         }
         let name = self.sheet_name(at.sheet).ok()?;
+        if let Some(text) = self.this_row.get(&at) {
+            // Only while the engine still holds a formula there.
+            return self
+                .workbook
+                .get_formula(name, at.row, at.col)
+                .map(|_| text.clone());
+        }
         self.workbook
             .get_formula(name, at.row, at.col)
             .map(|text| text.trim_start_matches('=').to_string())
     }
+}
+
+/// Whether a formula reads its own row of a table, which the engine turns into cells.
+fn uses_this_row(text: &str) -> bool {
+    text.contains("[@") || text.to_ascii_lowercase().contains("#this row")
 }
 
 /// A block read, kept.

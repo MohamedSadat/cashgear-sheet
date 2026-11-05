@@ -1037,6 +1037,10 @@ pub fn own_table_text(
     col: u32,
     text: String,
 ) -> String {
+    let text = match cgs_refs::table_refs_for_people(&text) {
+        std::borrow::Cow::Owned(shown) => shown,
+        std::borrow::Cow::Borrowed(_) => text,
+    };
     let table = calc
         .tables()
         .iter()

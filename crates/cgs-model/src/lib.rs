@@ -2,10 +2,15 @@
 //! drawings and which style each cell uses. No I/O.
 
 pub mod color;
+pub mod filter;
 pub mod sheet;
 pub mod style;
+pub mod table;
 
 pub use color::{Color, ColorKind, ColorSpace, DarkColors, Rgb, ThemePalette};
+pub use filter::{
+    AutoFilter, DateGroup, FilterColumn, FilterCriteria, FilterOp, SortBy, SortKey, SortState,
+};
 pub use sheet::{
     Anchor, AnchorPoint, ColAxis, ColumnRuns, Drawing, DrawingKind, Freeze, LineInfo, RowAxis,
     SheetInfo, SheetKind, SheetShape, SheetState, SheetView, NO_CELL,
@@ -14,6 +19,7 @@ pub use style::{
     Alignment, Border, Fill, Font, HAlign, Hatch, Line, LineStyle, Pattern, ReadingOrder, RichRun,
     RunFont, StyleTable, Underline, VAlign, Xf,
 };
+pub use table::{Table, TableColumnInfo, TableStyle, TotalsFunction};
 
 /// Excel's row limit.
 pub const MAX_ROWS: u32 = 1_048_576;
@@ -45,16 +51,6 @@ pub struct DefinedName {
     pub formula: String,
     pub local_sheet: Option<u32>,
     pub hidden: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Table {
-    pub name: String,
-    pub sheet: u32,
-    pub range: Rect,
-    pub header_rows: u32,
-    pub totals_rows: u32,
-    pub columns: Vec<String>,
 }
 
 /// A workbook as `cgs-xlsx` reads it.
