@@ -226,7 +226,7 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 **Tasks:** Home ribbon on `CgRibbon`; font, fill, borders, alignment, wrap; number format dialog; format painter; merges; resize, auto-fit and hide; freeze panes; find and replace; context menus.
 
 **Exit**
-- [ ] Formats round-trip through Excel, and existing style indices are unchanged.
+- [x] Formats round-trip through Excel, and existing style indices are unchanged.
 - [ ] Visual goldens are reviewed against Excel.
 
 ### Phase 6: Data tools

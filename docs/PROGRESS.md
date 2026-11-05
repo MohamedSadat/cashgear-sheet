@@ -5,13 +5,13 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Work | Status | Tag |
 | --- | --- | --- |
 | Planning | Done 2026-11-01 | |
-| Track U: components in `CashGear.React.UI` | `CgStatusBar` and `CgSlider` done for Phase 2, the rest not started | |
+| Track U: components in `CashGear.React.UI` | All seven components built, pinned at `65500a73`; Firefox can't run here, so `npm run verify` stops there | |
 | Phase 0: Scaffold, toolchain, CI | Done 2026-11-01 | `phase-0` |
 | Phase 1: Formula engine bake-off | Done 2026-11-02: Formualizer, with the accuracy target moved to Phase 4 | `phase-1` |
 | Phase 2: Open xlsx | Done 2026-11-02 | `phase-2` |
 | Phase 3: Preserving save | Done 2026-11-05 | `phase-3` |
 | Phase 4: Editing, formulas, undo | Done 2026-11-05: 3 of 4 exit criteria met, and you accepted 99.35% on the fourth | `phase-4` |
-| Phase 5: Ribbon and formatting | Not started | |
+| Phase 5: Ribbon and formatting | Round trip met; the visual review waits for your sign-off | |
 | Phase 6: Data tools | Not started | |
 | Phase 7: Charts | Not started | |
 | Phase 8: Pivot tables | Not started | |
@@ -293,3 +293,51 @@ The fork's own test suite has 3,353 passing and 1 failing, `ingest_has_no_formul
 - Only the private files had their relationship prefix declared on each sheet, which made every added sheet invalid. Fixtures written by hand all shared the shape that hid it.
 - A measurement has to check its own answers. The first input run looked fine until the last value read 4 instead of 7, and that was the script reading a cell while commands were still queued.
 - A fuzz that lets calculation finish between steps can't see what happens during one, so a test now covers edits between slices.
+
+## Phase 5: Ribbon and formatting
+
+The app looks and works like Excel's Home tab for daily work. Measured on 2026-11-05 on the reference machine, in Chrome 156, with Excel 2016 (16.0) and Formualizer pinned at fork commit `47ddf40e`.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Formats round-trip through Excel, and existing style indices are unchanged | Pass | `bench/run-excel-format.mjs`: formats go on through the engine, Excel reads each one back over COM and saves its own copy, and our reader reads that copy. 181 of 181 formatted cells agree in all three readings, 181 of 181 show the same text, 34 of 34 lines and 6 of 6 sheet settings agree. 251 existing styles in 8 fixtures and 269 cells no format reached are unchanged. Your 5 private files, as temporary copies: 5 opened, 647 styles and 22,092 cells unchanged, 15 of 15 formatted cells agree and come back from Excel the same |
+| Visual goldens are reviewed against Excel | **Waiting for your sign-off** | `bench/run-visual-review.mjs` has Excel draw three generated workbooks with CopyPicture and the app draw the same ranges in Chrome, light and dark. The side-by-side page lists every difference. The e2e goldens hold the showcase and formatting workbooks in light and dark |
+
+**What else was checked**
+
+- Saving after formatting: `bench/run-excel-matrix.mjs` now makes 61 edits on each of 8 fixtures, 32 of them new: formats, borders, patterns, merges, sizes, hiding, freezing, shifting cells and replacing. 488 of 488 saved files open in Excel with no repair. All 12 broken controls are refused, one of them new. Your 5 private files: 5 of 5 clean, and 5,107 of 5,107 cells match.
+- Editing against Excel: `bench/run-edit-fuzz.mjs` now shifts cells too. On 2 seeds of 250 episodes, 2,209 steps match Excel and 3 don't, over 242,845 cell comparisons. All 411 saved files open clean and match what Excel makes of the same edits. The 3 are table behaviour that Phase 6 owns, below.
+- Browsers: 182 of 182 tests in Chrome and Edge, 48 more than in Phase 4, for the ribbon, Format Cells, Find and Replace, the format painter, merges, sizes, freezing, shifting cells and the context menus.
+- Goldens: the showcase in light and dark, made by the engine's own commands, and the formatting workbook with a rich-text cell.
+- WASM gzip: 3.10 MB, against the 5 MB budget.
+- Desktop: closing the window with unsaved edits asks first.
+- Licences, the Open XML validator and the save check are clean.
+- The matrix and the round trip ran before the last fixes below, which change what cells hold rather than how files are written. The fuzz numbers are from the final code.
+
+**Track U**
+
+`CgRibbon`, `CgColorPicker`, `CgGallery`, `CgBorderPicker` and 114 spreadsheet and formatting icons (Fluent System Icons, MIT) are built in `CashGear.React.UI`, beside `CgStatusBar` and `CgSlider` from Phase 2. `CgTabs` no longer measures itself over when a parent passes a new list of the same tabs. The pin is at `65500a73`. The library records every gate passing except Firefox, which can't launch on this PC, so `npm run verify` as one command still stops there.
+
+**Found and fixed on the way**
+
+- Renaming a table heading left the table's calculated column reading the old name, and Excel refused the file. The matrix found it, and a broken fixture now keeps it checked.
+- A `{=...}` array whose formula a shift, a move or a heading rename rewrote became a single formula, so a smaller result left cells empty where Excel shows `#N/A` or repeats it. A fill could also write into part of an array.
+- Formulas typed since the last calculation were skipped by shifts, moves and heading renames, and at any time with manual calculation.
+- Deleting cells that take a range's end, sideways, now trims the range, as Excel does.
+- A lone number in a fill counts on when the source isn't all numbers, as Excel's AutoFill does.
+- A rich cell's bigger runs now make its row taller, as Excel fits it.
+- Increase Decimal on a scientific format no longer adds digits to the exponent.
+- The font boxes committed twice, and a row refit could take the keyboard from them mid-typing.
+
+**Known gaps**
+
+- From the fuzz, all for Phase 6's tables: filling `Sales[Cost]` across moves the column in Excel, deleting cells inside a table deletes table rows in Excel and is refused here, and Excel writes `[Cost]` for a table's own column.
+- From the review: text turned up 90° sits nearer the left of its cell than in Excel, stacked text clips a little differently, and there are no green error triangles.
+- Cell Styles moved to Phase 6, and key tips to after v1. Sheets can't be hidden or shown yet, and zoom isn't saved.
+- Pasting or moving a rich cell makes it plain. Superscript and subscript aren't drawn.
+- A format on part of a column crosses at most 200,000 cells. Whole-column borders don't reach row 1's top edge. The format painter doesn't copy row and column sizes.
+- There is no circular-reference warning that names the cells.
+- Excel 2016 can't check dynamic arrays or newer functions, as before.
+- Outside this phase: the Azure Static Web Apps workflow you added fails, because it looks for an app in `./apps` and finds none to build. The repo's own CI is separate.
