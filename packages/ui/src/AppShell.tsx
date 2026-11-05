@@ -279,7 +279,13 @@ export function AppShell({ platform, theme }: AppShellProps) {
       showGrid: layout.showGrid,
       showHeadings: layout.showHeaders,
     });
-    if (!editingRef.current?.session.snapshot().active) controller.current?.focus();
+    // A layout that changed under a ribbon box being typed in leaves the keyboard there.
+    const active = document.activeElement;
+    const typing =
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      active instanceof HTMLSelectElement;
+    if (!typing && !editingRef.current?.session.snapshot().active) controller.current?.focus();
   }, []);
 
   const onLoadEvent = useCallback(
@@ -1143,6 +1149,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
       openSize,
       openShift,
       openFind: (tab) => setDialog({ kind: 'find', tab }),
+      focusGrid: () => controller.current?.focus(),
       goTo: goToBox,
       renameSheet: openRename,
       insertSheet: () => insertSheet(false),

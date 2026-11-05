@@ -1,6 +1,6 @@
 // The ribbon: Excel's tabs that have working commands behind them. What each command does is in
 // `SheetFormat` and `SheetEditing`, so this only says what's shown and what it's called.
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   CgBorderPicker,
   CgColorPicker,
@@ -79,6 +79,7 @@ function RibbonCombo({
   disabled,
   testId,
   onCommit,
+  onDone,
 }: {
   label: string;
   value: string;
@@ -87,12 +88,21 @@ function RibbonCombo({
   disabled: boolean;
   testId: string;
   onCommit: (text: string) => void;
+  /** Where the keyboard goes back to after Enter or Escape: the grid, as in Excel. */
+  onDone: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
+  // Enter commits and then moves focus, which blurs: the ref makes sure that's one commit.
+  const pending = useRef<string | null>(null);
+  const setPending = (text: string | null) => {
+    pending.current = text;
+    setDraft(text);
+  };
   const listId = 'cgs-list-' + testId;
   const commit = () => {
-    if (draft !== null && draft !== value && draft.trim()) onCommit(draft.trim());
-    setDraft(null);
+    const text = pending.current?.trim();
+    setPending(null);
+    if (text && text !== value) onCommit(text);
   };
   return (
     <span className="cgs-ribbon-combo" style={{ inlineSize: width }}>
@@ -106,23 +116,28 @@ function RibbonCombo({
         onFocus={(event) => event.currentTarget.select()}
         onChange={(event) => {
           const text = event.target.value;
-          // Picking from the list arrives as a change that matches an option.
-          if (options.includes(text) && draft !== null && text !== value) {
-            setDraft(null);
-            onCommit(text);
+          // Picking from the list is a change that wasn't typed. Typing `2` on the way to `24`
+          // must not commit, even where `2` is an option.
+          const kind = (event.nativeEvent as Partial<InputEvent>).inputType;
+          const picked = kind === undefined || kind === 'insertReplacementText';
+          if (picked && options.includes(text)) {
+            setPending(null);
+            if (text !== value) onCommit(text);
+            onDone();
             return;
           }
-          setDraft(text);
+          setPending(text);
         }}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault();
             commit();
-            event.currentTarget.blur();
+            onDone();
           } else if (event.key === 'Escape') {
-            setDraft(null);
-            event.currentTarget.blur();
+            event.preventDefault();
+            setPending(null);
+            onDone();
           }
         }}
       />
@@ -180,6 +195,7 @@ export interface RibbonActions {
   mergeCells(kind: 'center' | 'across' | 'cells'): void;
   clearAll(): void;
   clearContents(): void;
+  focusGrid(): void;
 }
 
 const fillOf = (value: CgColorPickerValue): FormatChange['fill'] =>
@@ -285,6 +301,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
                   width="9.5rem"
                   disabled={off}
                   onCommit={(name) => sheet.format({ fontName: name })}
+                  onDone={actions.focusGrid}
                 />
               ),
             },
@@ -303,6 +320,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
                     const size = Number(text);
                     if (size >= 1 && size <= 409) sheet.format({ fontSize: size });
                   }}
+                  onDone={actions.focusGrid}
                 />
               ),
             },
