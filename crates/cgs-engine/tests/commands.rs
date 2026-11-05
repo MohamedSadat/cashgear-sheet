@@ -918,3 +918,52 @@ fn deleting_a_ranges_last_cell_sideways_trims_it() {
         .unwrap();
     assert_eq!(engine.formula_text(0, 1, 5).as_deref(), Some("SUM(A2:A4)"));
 }
+
+/// Read off Excel 2016's AutoFill: a lone number copies when the whole source is numbers, and
+/// counts on by one when anything else is in it, a formula, text or an empty cell.
+#[test]
+fn a_lone_number_counts_on_when_the_source_is_not_all_numbers() {
+    let mut engine = opened(cgs_xlsx::blank::blank_workbook().unwrap());
+    let put = |engine: &mut Engine, row: u32, col: u32, text: &str| {
+        let json =
+            format!(r#"{{"kind":"input","sheet":0,"row":{row},"col":{col},"text":"{text}"}}"#);
+        engine.apply_json(&json).unwrap();
+    };
+    let fill_right = |engine: &mut Engine, top: u32, bottom: u32| {
+        let json = format!(
+            r#"{{"kind":"fill","sheet":0,"from":{{"top":{top},"left":1,"bottom":{bottom},"right":1}},"to":{{"top":{top},"left":1,"bottom":{bottom},"right":3}}}}"#
+        );
+        engine.apply_json(&json).unwrap();
+    };
+    let row = |engine: &mut Engine, row: u32| {
+        settle(engine);
+        (1..=3)
+            .map(|col| engine.display_text(0, row, col))
+            .collect::<Vec<_>>()
+    };
+    put(&mut engine, 1, 1, "2");
+    fill_right(&mut engine, 1, 1);
+    assert_eq!(row(&mut engine, 1), ["2", "2", "2"]);
+
+    put(&mut engine, 3, 1, "2");
+    put(&mut engine, 4, 1, "=A3+1");
+    fill_right(&mut engine, 3, 4);
+    assert_eq!(row(&mut engine, 3), ["2", "3", "4"]);
+    assert_eq!(row(&mut engine, 4), ["3", "4", "5"]);
+
+    put(&mut engine, 6, 1, "2");
+    put(&mut engine, 7, 1, "5");
+    fill_right(&mut engine, 6, 7);
+    assert_eq!(row(&mut engine, 6), ["2", "2", "2"]);
+    assert_eq!(row(&mut engine, 7), ["5", "5", "5"]);
+
+    put(&mut engine, 9, 1, "2");
+    put(&mut engine, 10, 1, "x");
+    fill_right(&mut engine, 9, 10);
+    assert_eq!(row(&mut engine, 9), ["2", "3", "4"]);
+    assert_eq!(row(&mut engine, 10), ["x", "x", "x"]);
+
+    put(&mut engine, 12, 1, "2");
+    fill_right(&mut engine, 12, 13);
+    assert_eq!(row(&mut engine, 12), ["2", "3", "4"]);
+}

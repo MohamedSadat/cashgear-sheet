@@ -365,6 +365,16 @@ impl Session {
             )
         };
         let first = if down { from.top } else { from.left };
+        // Lone numbers across several lines copy if the source is all numbers, and count on if
+        // anything else is in it, a formula or an empty cell too. Read off Excel 2016.
+        let all_numbers = (from.top..=from.bottom).all(|row| {
+            (from.left..=from.right).all(|col| {
+                matches!(
+                    self.calc.cell_input(CellRef { sheet, row, col }),
+                    CellInput::Value(CalcValue::Number(_))
+                )
+            })
+        });
         for line in lines {
             let at = |offset: u32| {
                 if down {
@@ -382,8 +392,8 @@ impl Session {
             let (row, col) = at(0);
             let num_fmt = self.book.styles.xf(info.style_at(row, col)).num_fmt;
             let lone_date = self.is_date_format(num_fmt);
-            // A single cell only counts on if it is the whole source.
-            let copies = copy || (length == 1 && line_count > 1);
+            let lone = length == 1 && line_count > 1;
+            let copies = copy || (lone && all_numbers);
             for position in extent.0..=extent.1 {
                 let offset = i64::from(position) - i64::from(first);
                 if offset >= 0 && offset < i64::from(length) {
@@ -398,6 +408,13 @@ impl Session {
                 let (source_row, source_col) = at(source);
                 let counted = if copies {
                     None
+                } else if lone {
+                    match kinds[0] {
+                        Kind::Number(number) => {
+                            Some(EditInput::Value(CalcValue::Number(number + offset as f64)))
+                        }
+                        _ => None,
+                    }
                 } else {
                     series_value(&kinds, offset, lone_date)
                 };
