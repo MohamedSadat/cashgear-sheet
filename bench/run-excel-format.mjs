@@ -300,7 +300,7 @@ function excelReads(path, wanted) {
     { encoding: 'utf8', timeout: 900000, windowsHide: true },
   );
   if (run.status !== 0) throw new Error('Excel script failed: ' + run.stderr.slice(0, 400));
-  return { read: JSON.parse(readFileSync(result, 'utf8').replace(/^﻿/, '')), copy };
+  return { read: JSON.parse(readFileSync(result, 'utf8').replace(/^\uFEFF/, '')), copy };
 }
 
 function ourRead(path, wanted) {
@@ -447,7 +447,7 @@ function compareCell(ours, excel) {
 function compareOurs(a, b) {
   const problems = [];
   // Excel keeps a tint to its own precision, and writes plain characters in a code as escapes.
-  const plain = (value, key) =>
+  const plain = (value) =>
     JSON.stringify(value, (name, item) => {
       if (name === 'tint') return Math.round(item * 1000) / 1000;
       if (name === 'color' && typeof item === 'string') return item.slice(0, 5);

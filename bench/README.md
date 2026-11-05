@@ -71,3 +71,19 @@ node bench/run-edit-fuzz.mjs --seed=1 --episodes=250 --steps=5 --fresh
 node bench/run-excel-input.mjs
 node bench/measure-input.mjs
 ```
+
+# Phase 5 checks
+
+What formatting is held to. Only generated workbooks and private ones go through Excel, as before.
+
+- `run-excel-format.mjs`, `excel-format.ps1`: formats go on through the engine and are saved, Excel reads each one back over COM and saves its own copy, and our reader reads that copy. All three have to agree, and a file's existing style indices and untouched cells have to stay as they were. With `--private=<folder>`, temporary copies of private files get formats too, and only counts reach the output.
+- `run-visual-review.mjs`, `excel-picture.ps1`: pictures for reviewing the grid against Excel by eye. Excel draws a range with `CopyPicture`, and the app draws the same range of the same file in Chrome, in light and dark. `tests/fixtures/showcase.mjs` makes the showcase workbook from engine commands, and the e2e goldens draw it too.
+- `run-excel-matrix.mjs`: now also formats, merges, sizes, freezes, shifts cells and replaces text on each fixture. `run-edit-fuzz.mjs` shifts cells sideways and down as well.
+
+```bash
+cargo build -p cgs-bench --profile fast --bin savecheck --bin editfuzz
+node bench/run-excel-format.mjs bench/results/excel-format.json
+node bench/run-excel-format.mjs bench/results/excel-format-private.json --private=<folder>
+pnpm dev:web
+node bench/run-visual-review.mjs bench/results/visual
+```
