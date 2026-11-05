@@ -381,9 +381,12 @@ test.describe('freezing', () => {
       .poll(() => page.evaluate(() => window.cgsTest.grid()!.state().scrollY))
       .toBeGreaterThan(0);
     const low = await page.evaluate(() => window.cgsTest.grid()!.state().scrollY);
+    const before = await pointFor(page, 0, 0);
+    const moving = await pointFor(page, 5, 0);
     await page.evaluate(() => window.cgsTest.grid()!.scrollTo(0, 100000));
-    const held = await pointFor(page, 0, 0);
-    expect(held.y).toBeLessThan(held.box.y + 40);
+    // The frozen row stays exactly where it was, and a row below the panes went away.
+    await expect.poll(async () => (await pointFor(page, 5, 0)).y).not.toBe(moving.y);
+    expect((await pointFor(page, 0, 0)).y).toBe(before.y);
     await pick(page, 'Freeze Panes', 'Unfreeze Panes');
     await page.evaluate(() => window.cgsTest.grid()!.scrollTo(0, 0));
     await expect
