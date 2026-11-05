@@ -323,3 +323,28 @@ Nothing public went out. These are on `MohamedSadat/formualizer`, branch `cashge
 **Signed off by you, 2026-11-05**
 
 The visual review against Excel: three generated workbooks drawn by Excel 2016 and by the app, in light and dark, with the differences listed on the review page. You signed it off as it stands, so `v0.1.0-mvp` is tagged. The listed differences stay as known gaps.
+
+## 2026-11-06: Phase 6
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Sort semantics | Excel's exactly: numbers, then text, then TRUE/FALSE, then errors, with blanks last in both directions. Case-insensitive unless the case option is ticked, and stable. The Sort dialog takes up to 64 levels, by rows or columns, with a header row and custom lists such as months and weekdays, and sorts by cell colour, font colour and CF icon. Formulas move with their rows as Excel moves them. Checked against Excel 2016 over COM |
+| Extended (x14) conditional formats | Drawn in the grid, listed read-only in the manager and saved byte for byte. Classic rules can be created and edited: cell value, text, dates, top/bottom, above average, duplicates, formulas, colour scales, data bars and icon sets. New data bars are written as Excel 2016 writes them, a classic bar with its x14 partner |
+| Table styles | All 60 built-in styles (Light 1–21, Medium 1–28, Dark 1–11) from Excel's definitions in the workbook's theme colours, in a gallery beside Cell Styles. A file's custom table styles are drawn and can be applied, but not created or modified yet |
+| Data tab | Sort & Filter (A–Z, Z–A, Sort, Filter, Clear, Reapply), Data Validation with Circle Invalid Data, and Remove Duplicates. Name Manager, Define Name and Create from Selection go on the Formulas tab. Table Design follows Excel's tab: styles, style options, total row, resize, convert to range, and tables grow as you type beside them |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| The 200 ms filter target | A value-list filter on a column of 1,000,000 rows, from the command to the filtered view ready to draw, in Chrome WASM on the reference machine, median of 5 runs |
+| "Rules match Excel" | Generated test files go through Excel 2016 over COM: CF by `Range.DisplayFormat` colours and Excel's own icon and bar choices where COM shows them, DV by reading the rules back and by `Validation.Value`, filters by comparing hidden rows with Excel's own `AutoFilter`, sorts by comparing with `Range.Sort`. Saved files go through the open matrix |
+| Filter menu | Excel's: sort, sort by colour, value list with search and a year/month/day tree for dates, text/number/date filters with two conditions, Top 10, above or below average, and filter by cell or font colour. Tables get the same buttons |
+| Notes | Excel 2016's notes (legacy comments, with their VML shapes): red triangle, shown on hover, New, Edit, Delete, Show/Hide and Show All. Threaded comments from newer Excel are shown read-only and kept |
+| Hyperlinks | Ctrl+K dialog for a web address, a place in this document and an email address, with a ScreenTip. A click on a link follows it: a web link opens in a new tab or the system browser, and a place in the document selects it. Remove Hyperlink in the context menu |
+| Data validation | Every Excel type: whole number, decimal, list, date, time, text length and custom, with the input message and Stop, Warning and Information alerts. List cells get a dropdown arrow. Pasting doesn't validate, as in Excel |
+| Cell Styles | Excel 2016's built-in cell styles plus the file's own, applied from a `CgGallery` beside the table styles. New and Modify Cell Style wait. Applying one appends to `styles.xml` |
+| Name Manager | New, Edit and Delete, workbook or sheet scope, with a filter. Renaming a name follows into formulas |
+| Remove Duplicates | Excel's comparison, checked over COM |
