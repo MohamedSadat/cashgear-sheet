@@ -778,6 +778,137 @@ export function structuresBook() {
 }
 
 /**
+ * One of each thing in a file that holds a cell address, for structural edits to get right: merges,
+ * conditional formats old and new, validation, a link, a comment and its shape, a chart, a table,
+ * names, arrays of both kinds, a sparkline, and another sheet that reads this one.
+ */
+export function movingPartsBook() {
+  const X14 = 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main';
+  const XM = 'http://schemas.microsoft.com/office/excel/2006/main';
+  const cells = (row, list) =>
+    `<row r="${row}">` +
+    list
+      .map(
+        ([col, body]) =>
+          `<c r="${col}${row}"${body.startsWith('t=') ? ' ' + body.split('|')[0] + '>' + body.split('|')[1] : '>' + body}</c>`,
+      )
+      .join('') +
+    '</row>';
+  const text = (value) => `t="inlineStr"|<is><t>${value}</t></is>`;
+  const data =
+    `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}" xmlns:x14="${X14}" xmlns:xm="${XM}" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray">` +
+    '<dimension ref="A1:H20"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="B3" sqref="B3"/></sheetView></sheetViews>' +
+    '<sheetFormatPr defaultRowHeight="15"/><cols><col min="2" max="3" width="14" customWidth="1"/></cols><sheetData>' +
+    cells(1, [
+      ['A', text('Name')],
+      ['B', text('Amount')],
+      ['C', text('Twice')],
+    ]) +
+    cells(2, [
+      ['A', text('one')],
+      ['B', '<v>10</v>'],
+      ['C', '<f t="shared" ref="C2:C5" si="0">B2*2</f><v>20</v>'],
+    ]) +
+    cells(3, [
+      ['A', text('two')],
+      ['B', '<v>20</v>'],
+      ['C', '<f t="shared" si="0"/><v>40</v>'],
+    ]) +
+    cells(4, [
+      ['A', text('three')],
+      ['B', '<v>30</v>'],
+      ['C', '<f t="shared" si="0"/><v>60</v>'],
+    ]) +
+    cells(5, [
+      ['A', text('four')],
+      ['B', '<v>40</v>'],
+      ['C', '<f t="shared" si="0"/><v>80</v>'],
+    ]) +
+    cells(7, [
+      ['A', text('Total')],
+      ['B', '<f>SUM(Sales[Amount])</f><v>100</v>'],
+      ['C', '<f>SUM(C2:C5)</f><v>200</v>'],
+    ]) +
+    cells(9, [
+      ['A', text('merged')],
+      ['E', '<f t="array" ref="E9:F10">B2:C3</f><v>10</v>'],
+      ['F', '<v>20</v>'],
+    ]) +
+    cells(10, [
+      ['A', text('below')],
+      ['E', '<v>20</v>'],
+      ['F', '<v>40</v>'],
+    ]) +
+    `<row r="12"><c r="A12" cm="1"><f t="array" ref="A12:A13">B2:B3*2</f><v>20</v></c><c r="D12"><v>1</v></c><c r="E12"><v>2</v></c><c r="F12"><v>3</v></c></row>` +
+    `<row r="13"><c r="A13"><v>40</v></c></row>` +
+    cells(15, [
+      ['A', 't="str"|<f>HYPERLINK("#B2","go")</f><v>go</v>'],
+      ['B', '<v>5</v>'],
+      ['C', '<f>OFFSET(B15,0,0)</f><v>5</v>'],
+    ]) +
+    '</sheetData>' +
+    '<mergeCells count="2"><mergeCell ref="A9:C9"/><mergeCell ref="A18:B20"/></mergeCells>' +
+    '<conditionalFormatting sqref="B2:B5 E12:F12"><cfRule type="expression" priority="1"><formula>$B2&gt;$B$15</formula></cfRule></conditionalFormatting>' +
+    '<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" sqref="D2:D5"><formula1>$A$2:$A$5</formula1></dataValidation></dataValidations>' +
+    `<hyperlinks><hyperlink ref="B15" location="Other!A1" display="there"/></hyperlinks>` +
+    '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>' +
+    '<rowBreaks count="1" manualBreakCount="1"><brk id="10" max="16383" man="1"/></rowBreaks>' +
+    '<drawing r:id="rDrawing"/><legacyDrawing r:id="rVml"/><tableParts count="1"><tablePart r:id="rTable"/></tableParts>' +
+    '<extLst>' +
+    `<ext xmlns:x14="${X14}" uri="{78C0D931-6437-407d-A8EE-F0AAD7539E65}"><x14:conditionalFormattings><x14:conditionalFormatting><x14:cfRule type="expression" priority="2" id="{00000000-0000-0000-0000-000000000001}"><xm:f>Other!$A$1&gt;0</xm:f><x14:dxf/></x14:cfRule><xm:sqref>C2:C5</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings></ext>` +
+    `<ext xmlns:x14="${X14}" uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}"><x14:sparklineGroups><x14:sparklineGroup><x14:colorSeries rgb="FF376092"/><x14:sparklines><x14:sparkline><xm:f>Data!B2:B5</xm:f><xm:sqref>G2</xm:sqref></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext>` +
+    '</extLst></worksheet>';
+  const other =
+    `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}"><sheetData>` +
+    `<row r="1"><c r="A1"><f>Data!B3+1</f><v>21</v></c><c r="B1"><f>SUM(Data!B:B)</f><v>205</v></c><c r="C1"><f>SUM(Data!2:3)</f><v>90</v></c></row>` +
+    `<row r="2"><c r="A2"><f>Total</f><v>100</v></c><c r="B2"><f>SUM(Sales[Twice])</f><v>200</v></c></row>` +
+    '</sheetData></worksheet>';
+  const table = `${HEADER}<table xmlns="${MAIN}" id="1" name="Sales" displayName="Sales" ref="A1:C5" totalsRowShown="0"><autoFilter ref="A1:C5"/><tableColumns count="3"><tableColumn id="1" name="Name"/><tableColumn id="2" name="Amount"/><tableColumn id="3" name="Twice"><calculatedColumnFormula>Sales[[#This Row],[Amount]]*2</calculatedColumnFormula></tableColumn></tableColumns><tableStyleInfo name="TableStyleMedium2" showRowStripes="1"/></table>`;
+  const comments = `${HEADER}<comments xmlns="${MAIN}"><authors><author>Test</author></authors><commentList><comment ref="B3" authorId="0"><text><t>A note</t></text></comment></commentList></comments>`;
+  const vml =
+    '<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype><v:shape id="_x0000_s1025" type="#_x0000_t202" style="position:absolute;margin-left:100pt;margin-top:20pt;width:100pt;height:50pt;visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto"><v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox/><x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>3, 15, 1, 10, 5, 31, 5, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>2</x:Row><x:Column>1</x:Column></x:ClientData></v:shape></xml>';
+  const drawing =
+    '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><xdr:twoCellAnchor><xdr:from><xdr:col>8</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>12</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>12</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Sales chart"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>';
+  const metadata = `${HEADER}<metadata xmlns="${MAIN}" xmlns:xda="http://schemas.microsoft.com/office/spreadsheetml/2017/dynamicarray"><metadataTypes count="1"><metadataType name="XLDAPR" minSupportedVersion="120000" copy="1" pasteAll="1" pasteValues="1" merge="1" splitFirst="1" rowColShift="1" clearFormats="1" clearComments="1" assign="1" coerce="1" cellMeta="1"/></metadataTypes><futureMetadata name="XLDAPR" count="1"><bk><extLst><ext uri="{bdbb8cdc-fa1e-496e-a857-3c3f30c029c3}"><xda:dynamicArrayProperties fDynamic="1" fCollapsed="0"/></ext></extLst></bk></futureMetadata><cellMetadata count="1"><bk><rc t="1" v="0"/></bk></cellMetadata></metadata>`;
+  const types = 'application/vnd.openxmlformats-officedocument';
+  return zip([
+    [
+      '[Content_Types].xml',
+      `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="vml" ContentType="${types}.vmlDrawing"/><Override PartName="/xl/workbook.xml" ContentType="${types}.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="${types}.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="${types}.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="${types}.spreadsheetml.styles+xml"/><Override PartName="/xl/tables/table1.xml" ContentType="${types}.spreadsheetml.table+xml"/><Override PartName="/xl/comments1.xml" ContentType="${types}.spreadsheetml.comments+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="${types}.drawing+xml"/><Override PartName="/xl/charts/chart1.xml" ContentType="${types}.drawingml.chart+xml"/><Override PartName="/xl/metadata.xml" ContentType="${types}.spreadsheetml.sheetMetadata+xml"/></Types>`,
+    ],
+    [
+      '_rels/.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ],
+    [
+      'xl/workbook.xml',
+      `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Other" sheetId="2" r:id="rId2"/></sheets><definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">Data!$A$1:$C$10</definedName><definedName name="_xlnm.Print_Titles" localSheetId="0">Data!$1:$1</definedName><definedName name="Total">Data!$B$7</definedName></definedNames><calcPr calcId="191029"/></workbook>`,
+    ],
+    [
+      'xl/_rels/workbook.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${RELS}/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="${RELS}/styles" Target="styles.xml"/><Relationship Id="rId4" Type="${RELS}/sheetMetadata" Target="metadata.xml"/></Relationships>`,
+    ],
+    ['xl/styles.xml', HEADER + PLAIN_STYLES],
+    ['xl/metadata.xml', metadata],
+    ['xl/worksheets/sheet1.xml', data],
+    ['xl/worksheets/sheet2.xml', other],
+    [
+      'xl/worksheets/_rels/sheet1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rDrawing" Type="${RELS}/drawing" Target="../drawings/drawing1.xml"/><Relationship Id="rVml" Type="${RELS}/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/><Relationship Id="rTable" Type="${RELS}/table" Target="../tables/table1.xml"/><Relationship Id="rComments" Type="${RELS}/comments" Target="../comments1.xml"/></Relationships>`,
+    ],
+    ['xl/tables/table1.xml', table],
+    ['xl/comments1.xml', comments],
+    ['xl/drawings/vmlDrawing1.vml', vml],
+    ['xl/drawings/drawing1.xml', HEADER + drawing],
+    [
+      'xl/drawings/_rels/drawing1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/chart" Target="../charts/chart1.xml"/></Relationships>`,
+    ],
+    ['xl/charts/chart1.xml', HEADER + chartXml('Data')],
+  ]);
+}
+
+/**
  * Files Excel must not open cleanly, one each way a save could go wrong. The open matrix runs
  * them first: a check that can't see these can't say a saved file had no repair prompt.
  */
@@ -786,7 +917,24 @@ export function brokenBooks() {
   const parts = readZip(good);
   const change = (name, make) =>
     zip(parts.map(([part, body]) => [part, part === name ? make(body.toString('utf8')) : body]));
+  const moving = readZip(movingPartsBook());
+  const changeMoving = (make) =>
+    zip(
+      moving.map(([part, body]) => [
+        part,
+        part === 'xl/worksheets/sheet1.xml' ? make(body.toString('utf8')) : body,
+      ]),
+    );
   return {
+    // A sparkline reads a range or `#REF!`, and Excel refuses a sheet name before the error.
+    'sparkline-reads-sheet-and-error': changeMoving((xml) =>
+      xml.replace('<xm:f>Data!B2:B5</xm:f>', '<xm:f>Data!#REF!</xm:f>'),
+    ),
+    // A frozen pane has to freeze something, which a save mustn't forget after a delete.
+    'frozen-pane-split-zero': changeMoving((xml) => xml.replace('ySplit="1"', 'ySplit="0"')),
+    'sparkline-group-with-none': changeMoving((xml) =>
+      xml.replace(/<x14:sparkline>.*?<\/x14:sparkline>/, ''),
+    ),
     'table-header-mismatch': change('xl/tables/table1.xml', (xml) =>
       xml.replace('name="First"', 'name="Not the header"'),
     ),

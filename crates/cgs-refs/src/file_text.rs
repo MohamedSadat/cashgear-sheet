@@ -100,7 +100,6 @@ const FUTURE: &[&str] = &[
     "MODE.SNGL",
     "MUNIT",
     "NEGBINOM.DIST",
-    "NETWORKDAYS.INTL.X",
     "NORM.DIST",
     "NORM.INV",
     "NORM.S.DIST",

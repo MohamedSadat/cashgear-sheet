@@ -492,6 +492,8 @@ pub fn report_json(report: &SaveReport) -> String {
     list(&mut out, &report.removed_parts);
     out.push_str(",\"addedParts\":");
     list(&mut out, &report.added_parts);
+    out.push_str(",\"leftExtensions\":");
+    list(&mut out, &report.left_extensions);
     out.push_str(",\"keptContent\":[");
     for (index, (what, count)) in report.kept_content.iter().enumerate() {
         if index > 0 {

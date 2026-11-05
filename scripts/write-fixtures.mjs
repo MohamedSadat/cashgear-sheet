@@ -9,6 +9,7 @@ import {
   defaultStyledBook,
   formattingBook,
   macroBook,
+  movingPartsBook,
   pivotBook,
   structuresBook,
 } from '../tests/fixtures/workbooks.mjs';
@@ -24,6 +25,7 @@ for (const [name, bytes] of Object.entries({
   'pivot.xlsx': pivotBook(),
   'macro.xlsm': macroBook(),
   'structures.xlsx': structuresBook(),
+  'moving-parts.xlsx': movingPartsBook(),
 })) {
   writeFileSync(join(good, name), bytes);
 }

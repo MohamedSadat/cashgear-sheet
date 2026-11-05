@@ -144,12 +144,44 @@ impl SheetEdits<'_> {
 }
 
 /// How one pass over a sheet went.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct Rewritten {
     /// Anything differs. A pass that changes nothing leaves the part as raw bytes.
     pub changed: bool,
     /// A follower of a shared formula came before its master, which a second pass now knows.
     pub again: bool,
+    /// Extensions this pass doesn't understand, kept as they were, by URI.
+    pub left_extensions: Vec<String>,
+}
+
+/// What a sheet's extensions may hold that follows moved cells: `sqref` and `f` are visited wherever
+/// they stand, and these are the extensions known to keep their addresses there.
+const FOLLOWED_EXTENSIONS: [&[u8]; 3] = [
+    b"conditionalFormattings",
+    b"dataValidations",
+    b"sparklineGroups",
+];
+
+/// Extensions under a sheet's `extLst` that nothing here knows the addresses of.
+fn unknown_extensions(element: &Element, found: &mut Vec<String>) {
+    if element.local() != b"extLst" {
+        return;
+    }
+    for child in &element.children {
+        let Node::Element(ext) = child else { continue };
+        if ext.local() != b"ext" {
+            continue;
+        }
+        let known = ext.children.iter().any(|inner| {
+            matches!(inner, Node::Element(inner) if FOLLOWED_EXTENSIONS.contains(&inner.local()))
+        });
+        if !known {
+            let uri = ext.attr_text(b"uri").unwrap_or_default();
+            if !found.contains(&uri) {
+                found.push(uri);
+            }
+        }
+    }
 }
 
 /// Shared formulas' texts, by index: the text as the file has it, and where it is stored.
@@ -323,6 +355,9 @@ fn visit(element: &mut Element, edits: &SheetEdits<'_>) -> Keep {
             if let Some(cell) = element.attr(b"topLeftCell").and_then(|at| edits.cell(at)) {
                 element.set_attr("topLeftCell", Some(&cell));
             }
+            let keep = visit_children(element, edits);
+            settle_frozen_panes(element);
+            return keep;
         }
         b"pane" => {
             if let Some(cell) = element.attr(b"topLeftCell").and_then(|at| edits.cell(at)) {
@@ -438,6 +473,26 @@ fn visit(element: &mut Element, edits: &SheetEdits<'_>) -> Keep {
             }
             return Keep::Yes;
         }
+        b"sparkline" => {
+            let keep = visit_children(element, edits);
+            // Excel refuses `Data!#REF!` here, as a sparkline has to read a range or nothing.
+            for child in &mut element.children {
+                if let Node::Element(inner) = child {
+                    if inner.local() == b"f" && inner.text().contains("#REF!") {
+                        inner.set_text("#REF!");
+                    }
+                }
+            }
+            return keep;
+        }
+        b"sparklineGroup" => {
+            // Excel refuses a group left with no sparklines, and it holds other things too.
+            let keep = visit_children(element, edits);
+            let any = element.children.iter().any(
+                |child| matches!(child, Node::Element(inner) if inner.local() == b"sparklines"),
+            );
+            return if any { keep } else { Keep::No };
+        }
         b"sqref" => {
             // `xm:sqref`: the cells a rule in an extension applies to.
             let next = edits.sqref(&element.text());
@@ -498,6 +553,69 @@ fn visit(element: &mut Element, edits: &SheetEdits<'_>) -> Keep {
         _ => {}
     }
     visit_children(element, edits)
+}
+
+/// Everything frozen may have gone with the rows or columns. Excel refuses a frozen pane with a split
+/// of 0, or a selection in a pane the sheet no longer has.
+fn settle_frozen_panes(view: &mut Element) {
+    let mut gone = false;
+    let mut active = None;
+    let mut old_active = None;
+    for child in &mut view.children {
+        let Node::Element(pane) = child else { continue };
+        if pane.local() != b"pane" {
+            continue;
+        }
+        if !matches!(pane.attr(b"state"), Some(b"frozen" | b"frozenSplit")) {
+            return;
+        }
+        old_active = pane.attr_text(b"activePane");
+        let split = |pane: &Element, name: &[u8]| pane.attr(name).and_then(parse_u32).unwrap_or(0);
+        let (x, y) = (split(pane, b"xSplit"), split(pane, b"ySplit"));
+        if x > 0 && y > 0 {
+            return;
+        }
+        if x == 0 {
+            pane.set_attr("xSplit", None);
+        }
+        if y == 0 {
+            pane.set_attr("ySplit", None);
+        }
+        active = match (x > 0, y > 0) {
+            (true, _) => Some("topRight"),
+            (_, true) => Some("bottomLeft"),
+            _ => None,
+        };
+        gone = active.is_none();
+        pane.set_attr("activePane", active);
+    }
+    if old_active.is_none() && active.is_none() && !gone {
+        return;
+    }
+    if gone {
+        view.children
+            .retain(|child| !matches!(child, Node::Element(inner) if inner.local() == b"pane"));
+    }
+    // One selection, the one the user was in, now in the pane that's left.
+    let mut kept = false;
+    let has_active = view.children.iter().any(|child| {
+        matches!(child, Node::Element(inner)
+            if inner.local() == b"selection" && inner.attr_text(b"pane") == old_active)
+    });
+    view.children.retain_mut(|child| {
+        let Node::Element(inner) = child else {
+            return true;
+        };
+        if inner.local() != b"selection" {
+            return true;
+        }
+        if kept || (has_active && inner.attr_text(b"pane") != old_active) {
+            return false;
+        }
+        kept = true;
+        inner.set_attr("pane", active);
+        true
+    });
 }
 
 fn visit_children(element: &mut Element, edits: &SheetEdits<'_>) -> Keep {
@@ -571,6 +689,7 @@ pub fn rewrite_sheet<R: Read, W: Write>(
     let mut result = Rewritten {
         changed: !edits.moves_nothing(),
         again: false,
+        left_extensions: Vec::new(),
     };
     let mut depth = 0u32;
     while let Some(kind) = scanner.next()? {
@@ -589,6 +708,9 @@ pub fn rewrite_sheet<R: Read, W: Write>(
                 let mut keep = Keep::Yes;
                 if let Some(Node::Element(element)) = nodes.first_mut() {
                     keep = visit(element, edits);
+                    if !edits.moves_nothing() {
+                        unknown_extensions(element, &mut result.left_extensions);
+                    }
                 }
                 if keep == Keep::Yes {
                     let mut written = Vec::with_capacity(raw.len());
@@ -634,12 +756,43 @@ fn read_element<R: Read>(scanner: &mut Scanner<R>, out: &mut Vec<u8>) -> io::Res
     Err(damaged("an element never ends"))
 }
 
-/// Moves past the element that has just opened.
-fn skip_element<R: Read>(scanner: &mut Scanner<R>) -> io::Result<()> {
+/// Moves past a row or cell that is going, noting any shared formula's master in it, as the cells
+/// that stay still read their formulas from it.
+fn skip_noting_masters<R: Read>(
+    scanner: &mut Scanner<R>,
+    masters: &mut Masters,
+    mut row: u32,
+    mut col: u32,
+) -> io::Result<()> {
     let mut depth = 1u32;
     while let Some(kind) = scanner.next()? {
+        let token = scanner.token();
         match kind {
-            Kind::Start => depth += 1,
+            Kind::Start if local_name(token) == b"f" => {
+                let tag = token.to_vec();
+                let mut body = Vec::new();
+                read_element(scanner, &mut body)?;
+                if attr_value(&tag, b"t") == Some(b"shared") {
+                    let close = body
+                        .iter()
+                        .rposition(|&byte| byte == b'<')
+                        .unwrap_or(body.len());
+                    let text = unescape_attr(&body[..close]);
+                    if let (false, Some(index)) =
+                        (text.is_empty(), attr_value(&tag, b"si").and_then(parse_u32))
+                    {
+                        masters.entry(index).or_insert((text, row, col));
+                    }
+                }
+            }
+            Kind::Start => {
+                if local_name(token) == b"c" {
+                    if let Some(at) = attr_value(token, b"r").and_then(parse_cell) {
+                        (row, col) = at;
+                    }
+                }
+                depth += 1;
+            }
             Kind::End => {
                 depth -= 1;
                 if depth == 0 {
@@ -649,7 +802,7 @@ fn skip_element<R: Read>(scanner: &mut Scanner<R>) -> io::Result<()> {
             _ => {}
         }
     }
-    Err(damaged("an element never ends"))
+    Err(damaged("this sheet's cells never end"))
 }
 
 fn rewrite_cells<R: Read, W: Write>(
@@ -678,7 +831,7 @@ fn rewrite_cells<R: Read, W: Write>(
                 match edits.row(row) {
                     None => {
                         if kind == Kind::Start {
-                            skip_element(scanner)?;
+                            skip_noting_masters(scanner, masters, row, 0)?;
                         }
                     }
                     Some(moved) => {
@@ -715,7 +868,7 @@ fn rewrite_cells<R: Read, W: Write>(
                 let moved = if new_row == 0 { None } else { edits.col(col) };
                 let Some(moved) = moved else {
                     if kind == Kind::Start {
-                        skip_element(scanner)?;
+                        skip_noting_masters(scanner, masters, row, col)?;
                     }
                     continue;
                 };
@@ -1415,7 +1568,7 @@ mod tests {
 <conditionalFormatting sqref=\"A3:A5\"><cfRule type=\"expression\" priority=\"1\"><formula>A3&gt;1</formula></cfRule></conditionalFormatting>\
 <dataValidations count=\"1\"><dataValidation sqref=\"C3\"><formula1>$A$3:$A$5</formula1></dataValidation></dataValidations>\
 <hyperlinks><hyperlink ref=\"A3\" location=\"S!A3\"/></hyperlinks>\
-<extLst><ext uri=\"{x}\"><x14:conditionalFormattings><x14:conditionalFormatting><xm:f>S!A3</xm:f><xm:sqref>A3</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings></ext></extLst>";
+<extLst><ext uri=\"{x}\"><x14:conditionalFormattings><x14:conditionalFormatting><xm:f>S!A3</xm:f><xm:sqref>A3</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings></ext><ext uri=\"{new}\"><x99:thing/></ext></extLst>";
         let out = run(&sheet_xml("", after), rows(2, 2));
         assert!(
             out.contains("<mergeCell ref=\"A1:B1\"/><mergeCell ref=\"A5:A6\"/>"),
@@ -1432,6 +1585,83 @@ mod tests {
             out.contains("<xm:f>S!A5</xm:f><xm:sqref>A5</xm:sqref>"),
             "{out}"
         );
+    }
+
+    /// Each of these made a file Excel refuses, found by `bench/run-excel-matrix.mjs`.
+    #[test]
+    fn a_frozen_pane_with_nothing_left_frozen_goes() {
+        let sheet = |view: &str| {
+            format!("<worksheet xmlns=\"m\">{view}<sheetData></sheetData></worksheet>")
+        };
+        let view = |pane: &str| {
+            format!(
+                "<sheetViews><sheetView workbookViewId=\"0\">{pane}<selection pane=\"bottomLeft\" activeCell=\"A5\" sqref=\"A5\"/></sheetView></sheetViews>"
+            )
+        };
+        let before = view(
+            "<pane ySplit=\"2\" topLeftCell=\"A3\" activePane=\"bottomLeft\" state=\"frozen\"/>",
+        );
+        let out = run(&sheet(&before), AxisEdit::delete(Axis::Row, 1, 2));
+        assert!(!out.contains("<pane"), "{out}");
+        assert!(!out.contains("pane=\"bottomLeft\""), "{out}");
+        assert!(out.contains("activeCell=\"A3\""), "{out}");
+
+        // With both frozen, losing the rows leaves the columns.
+        let before = "<sheetViews><sheetView workbookViewId=\"0\"><pane xSplit=\"1\" ySplit=\"2\" topLeftCell=\"B3\" activePane=\"bottomRight\" state=\"frozen\"/><selection pane=\"topRight\"/><selection pane=\"bottomLeft\"/><selection pane=\"bottomRight\" activeCell=\"B5\" sqref=\"B5\"/></sheetView></sheetViews>";
+        let out = run(&sheet(before), AxisEdit::delete(Axis::Row, 1, 2));
+        assert!(out.contains("xSplit=\"1\""), "{out}");
+        assert!(!out.contains("ySplit"), "{out}");
+        assert!(out.contains("activePane=\"topRight\""), "{out}");
+        assert_eq!(out.matches("<selection").count(), 1, "{out}");
+        assert!(
+            out.contains("<selection pane=\"topRight\" activeCell=\"B3\""),
+            "{out}"
+        );
+
+        // A pane that's only been made smaller stays.
+        let before = view(
+            "<pane ySplit=\"2\" topLeftCell=\"A3\" activePane=\"bottomLeft\" state=\"frozen\"/>",
+        );
+        let out = run(&sheet(&before), AxisEdit::delete(Axis::Row, 1, 1));
+        assert!(out.contains("ySplit=\"1\""), "{out}");
+        assert!(out.contains("pane=\"bottomLeft\""), "{out}");
+    }
+
+    #[test]
+    fn a_sparkline_that_lost_what_it_reads_says_only_ref() {
+        let group = |cell: &str| {
+            format!(
+                "<extLst><ext uri=\"{{y}}\"><x14:sparklineGroups><x14:sparklineGroup><x14:colorSeries rgb=\"FF000000\"/><x14:sparklines><x14:sparkline><xm:f>S!A3:A4</xm:f><xm:sqref>{cell}</xm:sqref></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext></extLst>"
+            )
+        };
+        let out = run(
+            &sheet_xml("", &group("C9")),
+            AxisEdit::delete(Axis::Row, 3, 2),
+        );
+        assert!(
+            out.contains("<xm:f>#REF!</xm:f><xm:sqref>C7</xm:sqref>"),
+            "{out}"
+        );
+
+        // With its own cell gone, nothing is left that Excel would accept.
+        let out = run(
+            &sheet_xml("", &group("C3")),
+            AxisEdit::delete(Axis::Row, 3, 2),
+        );
+        assert!(!out.contains("extLst"), "{out}");
+    }
+
+    #[test]
+    fn a_shared_formula_outlives_the_row_of_its_master() {
+        let cells = "<row r=\"2\"><c r=\"B2\"><f t=\"shared\" ref=\"B2:B4\" si=\"0\">A2*2</f><v>2</v></c></row>\
+<row r=\"3\"><c r=\"B3\"><f t=\"shared\" si=\"0\"/><v>4</v></c></row>\
+<row r=\"4\"><c r=\"B4\"><f t=\"shared\" si=\"0\"/><v>6</v></c></row>";
+        let xml = format!(
+            "<worksheet xmlns=\"m\" xmlns:x14=\"x\" xmlns:xm=\"y\"><sheetData>{cells}</sheetData></worksheet>"
+        );
+        let out = run(&xml, AxisEdit::delete(Axis::Row, 2, 1));
+        assert!(out.contains("<c r=\"B2\"><f>A2*2</f>"), "{out}");
+        assert!(out.contains("<c r=\"B3\"><f>A3*2</f>"), "{out}");
     }
 
     #[test]

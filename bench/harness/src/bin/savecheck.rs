@@ -9,7 +9,7 @@
 //! Usage: savecheck <out.jsonl> <folder>... [--jobs=N] [--timeout=seconds] [--private] [--keep=dir]
 //!        savecheck --one <file> [--keep=<path>] [--examples]
 //!        savecheck --edit <source|blank> <saved> [--set=sheet,row,col,kind:value]...
-//!                  [--refresh-pivots]
+//!                  [--command=<json>]... [--refresh-pivots]
 //! With `--private`, results hold no file names or cell values. With `--keep`, saved files stay
 //! in that folder, numbered, for the validator and Excel.
 
@@ -534,6 +534,13 @@ fn run_edit(args: &[String]) -> Result<String, String> {
     if !edits.is_empty() {
         engine.edit_cells(&edits)?;
     }
+    for command in args.iter().filter_map(|arg| arg.strip_prefix("--command=")) {
+        // One it refuses changes nothing, as it would for someone at the keyboard.
+        if let Err(problem) = engine.apply_json(command) {
+            eprintln!("refused: {problem}");
+        }
+    }
+    while engine.calc_step(60_000, &[])? {}
     if args.iter().any(|arg| arg == "--refresh-pivots") {
         engine.refresh_pivots_on_load()?;
     }

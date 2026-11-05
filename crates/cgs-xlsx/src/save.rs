@@ -723,14 +723,20 @@ fn apply_structure(
         if info.kind == cgs_model::SheetKind::Worksheet {
             let mut masters = Masters::default();
             let mut packed = None;
-            for _ in 0..2 {
+            for pass in 0..2 {
                 let stream = package
                     .stream(part)
                     .ok_or_else(|| SaveError::Damaged(format!("no {part}")))?;
                 let mut packer = Packer::default();
                 let result = rewrite_sheet(stream, &mut packer, &sheet_edits, &mut masters)
                     .map_err(part_error)?;
-                if !result.again {
+                for uri in &result.left_extensions {
+                    if !report.left_extensions.contains(uri) {
+                        report.left_extensions.push(uri.clone());
+                    }
+                }
+                // A follower with no master anywhere stays as the file had it, on the second pass.
+                if !result.again || pass == 1 {
                     if result.changed {
                         packed = Some(packer.finish().map_err(zip_error)?);
                     }

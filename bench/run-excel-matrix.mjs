@@ -1,5 +1,5 @@
-// The COM-open matrix for Phase 3: saved files must open in Excel with no repair, and what a save
-// kept must still work there. Only generated fixtures and, with `--private=<folder>`, your private
+// The COM-open matrix: saved files must open in Excel with no repair, after cell edits and after
+// structural ones, and what a save kept must still work there. Only generated fixtures and, with `--private=<folder>`, your private
 // workbooks go through it, as public files never open in Excel. Saved files go to a temporary
 // folder that is always deleted, and originals are only read.
 // Usage: node bench/run-excel-matrix.mjs <out.json> [--private=<folder>]
@@ -48,11 +48,18 @@ const feature = (path, mode) => powershell(featureScript, { Workbook: resolve(pa
 
 let serial = 0;
 /** Saves `source` with these edits, and returns the saved path and the save's report. */
-function save(source, extension, sets = [], extra = []) {
+function save(source, extension, sets = [], extra = [], commands = []) {
   const saved = join(scratch, `saved-${++serial}.${extension}`);
   const run = spawnSync(
     tool,
-    ['--edit', source, saved, ...sets.map((set) => '--set=' + set), ...extra],
+    [
+      '--edit',
+      source,
+      saved,
+      ...sets.map((set) => '--set=' + set),
+      ...commands.map((command) => '--command=' + JSON.stringify(command)),
+      ...extra,
+    ],
     { encoding: 'utf8', windowsHide: true },
   );
   if (run.status !== 0) throw new Error('Saving failed: ' + run.stderr.slice(0, 300));
@@ -71,6 +78,7 @@ const hashes = (path) =>
 const results = {
   controls: {},
   scenarios: {},
+  structural: {},
   generated: { files: 0, sourcesOpened: 0, savedOpened: 0, failures: [] },
   private: null,
   features: {},
@@ -100,6 +108,96 @@ const STRUCTURES = {
   'an array cell replaced': ['0,9,5,n:1'],
   'a merged cell written': ['0,2,4,n:7'],
   'a precedent, so results change': ['0,5,1,n:100'],
+};
+
+const rows = (sheet, at, count, remove = false) => ({
+  kind: 'axis',
+  sheet,
+  axis: 'row',
+  at,
+  count,
+  delete: remove,
+});
+const cols = (sheet, at, count, remove = false) => ({
+  kind: 'axis',
+  sheet,
+  axis: 'col',
+  at,
+  count,
+  delete: remove,
+});
+const input = (sheet, row, col, text) => ({ kind: 'input', sheet, row, col, text });
+
+// Structural edits, each on every fixture in `MOVED`. Some land on what a fixture holds and some
+// miss it, and a command a fixture refuses changes nothing.
+const MOVES = {
+  'rows in at the top': [rows(0, 1, 2)],
+  'rows in the middle': [rows(0, 4, 3)],
+  'rows out of the middle': [rows(0, 3, 2, true)],
+  'rows out across a merge': [rows(0, 9, 2, true)],
+  'rows out across an array': [rows(0, 12, 2, true)],
+  'rows out below everything': [rows(0, 100, 5, true)],
+  'columns in at the left': [cols(0, 1, 2)],
+  'columns in the middle': [cols(0, 3, 1)],
+  'columns out of the middle': [cols(0, 2, 1, true)],
+  'columns out past everything': [cols(0, 50, 3, true)],
+  'a table column out': [cols(0, 3, 1, true)],
+  'a whole table out': [cols(0, 1, 3, true)],
+  'a table out by its rows': [rows(0, 1, 5, true)],
+  'a shared formula master out': [rows(0, 2, 1, true)],
+  'a sparkline cell out': [cols(0, 7, 1, true)],
+  'everything out': [rows(0, 1, 20, true)],
+  'rows and columns both': [rows(0, 2, 1), cols(0, 2, 1), rows(0, 5, 2, true)],
+  'a sheet added at the front': [{ kind: 'insertSheet', position: 0 }],
+  'a sheet added at the end': [{ kind: 'insertSheet', position: 99 }],
+  'the first sheet renamed': [{ kind: 'renameSheet', sheet: 0, name: "It's new" }],
+  'the first sheet deleted': [{ kind: 'deleteSheet', sheet: 0 }],
+  'a sheet added, then deleted': [{ kind: 'insertSheet', position: 0 }, { kind: 'undo' }],
+  'rows in, then undone': [rows(0, 2, 1), { kind: 'undo' }],
+  'rows in, undone, redone': [rows(0, 2, 1), { kind: 'undo' }, { kind: 'redo' }],
+  'a cell, then rows, then a cell': [input(0, 3, 2, '77'), rows(0, 2, 1), input(0, 2, 2, '=1+1')],
+  'cells moved': [
+    {
+      kind: 'move',
+      fromSheet: 0,
+      from: { top: 2, left: 1, bottom: 3, right: 2 },
+      sheet: 0,
+      row: 30,
+      col: 5,
+    },
+  ],
+  'cells filled and pasted': [
+    {
+      kind: 'fill',
+      sheet: 0,
+      from: { top: 2, left: 2, bottom: 2, right: 2 },
+      to: { top: 2, left: 2, bottom: 2, right: 6 },
+    },
+    {
+      kind: 'paste',
+      fromSheet: 0,
+      from: { top: 1, left: 1, bottom: 2, right: 2 },
+      sheet: 0,
+      to: { top: 40, left: 1, bottom: 41, right: 2 },
+    },
+  ],
+  'a dynamic array typed, then rows in': [input(0, 60, 1, '=SORT(B2:B5)'), rows(0, 50, 1)],
+  'a total of everything moved': [
+    rows(0, 2, 1),
+    cols(0, 1, 1),
+    { kind: 'renameSheet', sheet: 0, name: 'Renamed' },
+    { kind: 'insertSheet', position: 1 },
+    rows(0, 6, 1, true),
+  ],
+};
+const MOVED = {
+  'moving-parts.xlsx': 'xlsx',
+  'formatting.xlsx': 'xlsx',
+  'structures.xlsx': 'xlsx',
+  'pivot.xlsx': 'xlsx',
+  'arabic.xlsx': 'xlsx',
+  'defaults.xlsx': 'xlsx',
+  'macro.xlsm': 'xlsm',
 };
 
 try {
@@ -138,6 +236,41 @@ try {
     const seen = opens(save('blank', 'xlsx', sets).saved);
     results.scenarios[name] = { clean: seen.opened && !seen.repaired };
     console.log('scenario', name, results.scenarios[name].clean ? 'clean' : 'REPAIR');
+  }
+
+  // Every structural edit over every fixture.
+  for (const [file, extension] of Object.entries(MOVED)) {
+    const source = join(fixtures, file);
+    const before = opens(source);
+    if (!before.opened || before.repaired) throw new Error(file + ' does not open cleanly.');
+    results.structural[file] = { clean: 0, repaired: [] };
+    for (const [name, commands] of Object.entries(MOVES)) {
+      const { saved } = save(source, extension, [], [], commands);
+      const seen = opens(saved);
+      if (seen.opened && !seen.repaired) results.structural[file].clean++;
+      else results.structural[file].repaired.push(name);
+      rmSync(saved, { force: true });
+    }
+    console.log('structural', file, results.structural[file]);
+  }
+
+  // What a structural edit must leave working: the chart, the pivot and the macros.
+  {
+    const moved = save(join(fixtures, 'moving-parts.xlsx'), 'xlsx', [], [], [rows(0, 1, 2)]);
+    results.features.chartAfterRowsIn = feature(moved.saved, 'chart');
+    const pivot = save(join(fixtures, 'pivot.xlsx'), 'xlsx', [], [], [rows(0, 1, 2)]);
+    results.features.pivotAfterRowsIn = {
+      opens: opens(pivot.saved).opened,
+      excel: feature(pivot.saved, 'pivot'),
+      changedParts: pivot.report.changedParts,
+    };
+    const source = join(fixtures, 'macro.xlsm');
+    const macro = save(source, 'xlsm', [], [], [rows(0, 50, 2)]);
+    results.features.macroAfterRowsIn = {
+      projectIdentical:
+        hashes(macro.saved)['xl/vbaProject.bin'] === hashes(source)['xl/vbaProject.bin'],
+      opens: opens(macro.saved).opened,
+    };
   }
 
   // Each kept feature, after a save that changed cells around it.
@@ -267,6 +400,30 @@ try {
       const after = opens(record.report.saved);
       if (before.opened && !before.repaired) summary.sourcesOpened++;
       if (after.opened && !after.repaired) summary.savedOpened++;
+      // A row and a column in on the first sheet, a sheet added, the first one renamed.
+      summary.structuralTried = (summary.structuralTried ?? 0) + 1;
+      try {
+        const extension = record.source.split('.').pop();
+        const { saved } = save(
+          record.source,
+          extension,
+          [],
+          [],
+          [
+            rows(0, 2, 1),
+            cols(0, 2, 1),
+            { kind: 'insertSheet', position: 0 },
+            { kind: 'renameSheet', sheet: 0, name: 'Renamed sheet' },
+          ],
+        );
+        const seen = opens(saved);
+        if (seen.opened && !seen.repaired) {
+          summary.structuralOpened = (summary.structuralOpened ?? 0) + 1;
+        }
+        rmSync(saved, { force: true });
+      } catch {
+        summary.structuralFailed = (summary.structuralFailed ?? 0) + 1;
+      }
     }
     results.private = summary;
   }
