@@ -28,10 +28,14 @@ use formualizer_parse::pretty::canonical_formula;
 use formualizer_workbook::workbook::WBResolver;
 use formualizer_workbook::{CustomFnOptions, Workbook, WorkbookConfig};
 
+use cgs_refs::{
+    delete_sheet_in_formula, edit_formula, reads_sheet, rename_in_formula, touches_band,
+};
+
 use crate::{
-    err, wants_sparse, BookInfo, CalcEngine, CalcProgress, CalcValue, CellEdit, CellInput, CellRef,
-    CellSink, FormulaShape, LoadEntry, LoadValue, Rect, Result, SheetCells, SheetRect, SheetShape,
-    StructuralOp, StructuralUndo,
+    err, wants_sparse, BookInfo, CalcEngine, CalcError, CalcProgress, CalcValue, CellEdit,
+    CellInput, CellRef, CellSink, FormulaShape, LoadEntry, LoadValue, NameInfo, Rect, Result,
+    SheetCells, SheetRect, SheetShape, SheetUndo, StructuralOp, StructuralUndo,
 };
 
 /// Rows in one chunk of the Arrow store.
@@ -54,13 +58,17 @@ pub struct FormualizerEngine {
     /// The conventions `TEXT` follows, which the shell sets from the user's language.
     locale: Arc<RwLock<Locale>>,
     sheets: Vec<String>,
+    /// Sheets that have been deleted, whose indexes stay taken so that an undo can bring them back.
+    gone: Vec<bool>,
+    /// Defined names as they read now, for telling what a change to the workbook's shape does.
+    names: Vec<NameInfo>,
     /// Sheets between `begin_sheet` and `finish_sheet`.
     loads: Vec<Option<SheetLoad>>,
     /// What `load_batch` holds until `finish_load`.
     pending: Vec<Vec<(u32, u32, CellInput)>>,
     extents: Vec<(u32, u32)>,
-    /// Array formulas, which must run again to rebuild their spills.
-    array_anchors: Vec<(CellRef, String)>,
+    /// Array formulas, which must run again to rebuild their spills, with how they are stored.
+    array_anchors: Vec<(CellRef, String, FormulaShape)>,
     /// Cells showing a saved spill. A stored value would block the real spill, so
     /// these empty out when calculation first starts.
     cached_spills: Vec<CellRef>,
@@ -75,7 +83,7 @@ pub struct FormualizerEngine {
     prepared: bool,
     slice: EvaluationSlice,
     idle: bool,
-    changed: Vec<SheetRect>,
+    changed: Vec<CellRef>,
 }
 
 impl Default for FormualizerEngine {
@@ -340,6 +348,8 @@ impl FormualizerEngine {
             workbook: new_workbook(false, &locale),
             locale,
             sheets: Vec::new(),
+            gone: Vec::new(),
+            names: Vec::new(),
             loads: Vec::new(),
             pending: Vec::new(),
             extents: Vec::new(),
@@ -349,7 +359,7 @@ impl FormualizerEngine {
             fresh: true,
             prepare_next: 0,
             prepared: false,
-            slice: EvaluationSlice::default(),
+            slice: EvaluationSlice::tracking(),
             idle: true,
             changed: Vec::new(),
         }
@@ -369,8 +379,183 @@ impl FormualizerEngine {
     fn sheet_name(&self, sheet: u32) -> Result<&str> {
         self.sheets
             .get(sheet as usize)
+            .filter(|_| !self.gone[sheet as usize])
             .map(String::as_str)
             .ok_or_else(|| err(format!("no sheet {sheet}")))
+    }
+
+    /// Our index for each of the engine's sheet ids. It keeps its own spelling of a name that
+    /// differs only in case, such as `Sheet1` for a file's `sheet1`.
+    fn sheet_indexes(&self) -> HashMap<u16, u32> {
+        let mut map = HashMap::with_capacity(self.sheets.len());
+        for (index, name) in self.sheets.iter().enumerate() {
+            if self.gone[index] {
+                continue;
+            }
+            if let Some(id) = self.workbook.engine().sheet_id(name) {
+                map.insert(id, index as u32);
+            }
+        }
+        map
+    }
+
+    /// Every formula's cell with its text. Costs as much as the formulas there are.
+    fn formulas(&self) -> Vec<(CellRef, String)> {
+        let indexes = self.sheet_indexes();
+        let mut out = Vec::new();
+        for cell in self.workbook.engine().formula_cells() {
+            let Some(&sheet) = indexes.get(&cell.sheet_id) else {
+                continue;
+            };
+            let at = CellRef {
+                sheet,
+                row: cell.coord.row() + 1,
+                col: cell.coord.col() + 1,
+            };
+            if let Some(text) = self.formula_text(at) {
+                out.push((at, text));
+            }
+        }
+        out
+    }
+
+    /// Moves what this keeps by position.
+    fn move_anchors(&mut self, sheet: u32, edit: &cgs_refs::AxisEdit) {
+        let moved = |at: &mut CellRef| -> bool {
+            if at.sheet != sheet {
+                return true;
+            }
+            let place = match edit.axis {
+                cgs_refs::Axis::Row => &mut at.row,
+                cgs_refs::Axis::Col => &mut at.col,
+            };
+            match edit.point(*place) {
+                Some(next) => {
+                    *place = next;
+                    true
+                }
+                None => false,
+            }
+        };
+        let mut anchors = std::mem::take(&mut self.array_anchors);
+        anchors.retain_mut(|(at, _, shape)| {
+            if !moved(at) {
+                return false;
+            }
+            if at.sheet == sheet {
+                *shape = moved_shape(*shape, edit);
+            }
+            true
+        });
+        self.array_anchors = anchors;
+        let linked = std::mem::take(&mut self.linked);
+        self.linked = linked
+            .into_iter()
+            .filter_map(|(mut at, text)| moved(&mut at).then_some((at, text)))
+            .collect();
+        let extent = &mut self.extents[sheet as usize];
+        let reach = match edit.axis {
+            cgs_refs::Axis::Row => &mut extent.0,
+            cgs_refs::Axis::Col => &mut extent.1,
+        };
+        if *reach > 0 {
+            *reach = if edit.delete {
+                edit.span((1, *reach)).map_or(0, |span| span.1)
+            } else if *reach >= edit.at {
+                (*reach + edit.count).min(edit.axis.max())
+            } else {
+                *reach
+            };
+        }
+    }
+
+    /// Runs array formulas again where they now stand, as their spills don't move with the rows
+    /// and columns under them.
+    fn rearm_moved_arrays(&mut self, sheet: u32) -> Result<()> {
+        let anchors: Vec<CellRef> = self
+            .array_anchors
+            .iter()
+            .filter(|(at, _, _)| at.sheet == sheet)
+            .map(|(at, _, _)| *at)
+            .collect();
+        for at in anchors {
+            let name = self.sheet_name(at.sheet)?.to_string();
+            let Some(text) = self.workbook.get_formula(&name, at.row, at.col) else {
+                continue;
+            };
+            self.workbook
+                .set_formula(&name, at.row, at.col, &text)
+                .map_err(err)?;
+            if let Some(entry) = self
+                .array_anchors
+                .iter_mut()
+                .find(|(cell, _, _)| *cell == at)
+            {
+                entry.1 = text;
+            }
+        }
+        Ok(())
+    }
+
+    /// Puts names back through the engine and into this adapter's own list.
+    fn set_name(&mut self, name: &NameInfo) -> Result<()> {
+        let scope = match name.local_sheet {
+            Some(index) => {
+                let sheet = self.sheet_name(index)?.to_string();
+                let id = self
+                    .engine()
+                    .sheet_id(&sheet)
+                    .ok_or_else(|| err("no sheet id"))?;
+                NameScope::Sheet(id)
+            }
+            None => NameScope::Workbook,
+        };
+        let text = format!("={}", name.formula.trim().trim_start_matches('='));
+        let ast = parse(&text).map_err(err)?;
+        let definition = self
+            .simple_reference(&ast)
+            .unwrap_or_else(|| NamedDefinition::Formula {
+                ast,
+                dependencies: Vec::new(),
+                range_deps: Vec::new(),
+            });
+        if self
+            .engine()
+            .update_name(&name.name, definition.clone(), scope)
+            .is_err()
+        {
+            self.engine()
+                .define_name(&name.name, definition, scope)
+                .map_err(err)?;
+        }
+        if let Some(entry) = self
+            .names
+            .iter_mut()
+            .find(|entry| entry.name == name.name && entry.local_sheet == name.local_sheet)
+        {
+            entry.formula = name.formula.clone();
+        }
+        Ok(())
+    }
+
+    /// Records the results a slice's list holds, by our sheet numbers.
+    fn collect_changed(&mut self) -> Result<()> {
+        let delta = self.slice.take_changed().map_err(err)?;
+        if delta.changed_cells.is_empty() {
+            return Ok(());
+        }
+        let indexes = self.sheet_indexes();
+        self.changed.reserve(delta.changed_cells.len());
+        for cell in &delta.changed_cells {
+            if let Some(&sheet) = indexes.get(&cell.sheet_id()) {
+                self.changed.push(CellRef {
+                    sheet,
+                    row: cell.row0() + 1,
+                    col: cell.col0() + 1,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn define_name(&mut self, name: &crate::NameInfo) -> Result<()> {
@@ -455,7 +640,7 @@ impl FormualizerEngine {
                 .set_value(&name, cell.row, cell.col, LiteralValue::Empty)
                 .map_err(err)?;
         }
-        for (cell, text) in self.array_anchors.clone() {
+        for (cell, text, _) in self.array_anchors.clone() {
             let name = self.sheets[cell.sheet as usize].clone();
             self.workbook
                 .set_formula(&name, cell.row, cell.col, &text)
@@ -477,6 +662,32 @@ impl FormualizerEngine {
             None => store.sheets.push(sheet),
         }
         self.engine().finalize_sheet_index(&name);
+    }
+}
+
+/// Whether a parsed formula has nothing the parser only let through by guessing.
+fn well_formed(_ast: &ASTNode) -> bool {
+    true
+}
+
+/// Where an array's area goes.
+fn moved_shape(shape: FormulaShape, edit: &cgs_refs::AxisEdit) -> FormulaShape {
+    let area = |rect: Rect| {
+        cgs_refs::edit_rect((rect.top, rect.left, rect.bottom, rect.right), edit).map(
+            |(top, left, bottom, right)| Rect {
+                top,
+                left,
+                bottom,
+                right,
+            },
+        )
+    };
+    match shape {
+        FormulaShape::Normal => FormulaShape::Normal,
+        FormulaShape::Array(rect) => area(rect).map_or(FormulaShape::Normal, FormulaShape::Array),
+        FormulaShape::Dynamic(rect) => {
+            area(rect).map_or(FormulaShape::Normal, FormulaShape::Dynamic)
+        }
     }
 }
 
@@ -516,6 +727,8 @@ impl CalcEngine for FormualizerEngine {
     fn begin_load(&mut self, book: &BookInfo) -> Result<()> {
         self.workbook = new_workbook(book.date1904, &self.locale);
         self.sheets = book.sheets.clone();
+        self.gone = vec![false; book.sheets.len()];
+        self.names = book.names.clone();
         self.loads = book.sheets.iter().map(|_| None).collect();
         self.pending = vec![Vec::new(); book.sheets.len()];
         self.extents = vec![(0, 0); book.sheets.len()];
@@ -625,7 +838,8 @@ impl CalcEngine for FormualizerEngine {
         let name = self.sheet_name(sheet)?.to_string();
         let date_system = self.date_system();
         let cols = shape.cols.max(1) as usize;
-        self.array_anchors.retain(|(cell, _)| cell.sheet != sheet);
+        self.array_anchors
+            .retain(|(cell, _, _)| cell.sheet != sheet);
         self.cached_spills.retain(|cell| cell.sheet != sheet);
         self.linked.retain(|cell, _| cell.sheet != sheet);
         self.loads[sheet as usize] = Some(if shape.sparse {
@@ -732,7 +946,7 @@ impl CalcEngine for FormualizerEngine {
             FormulaShape::Array(_) | FormulaShape::Dynamic(_) => {
                 let staged = format!("={text}");
                 self.array_anchors
-                    .push((CellRef { sheet, row, col }, staged.clone()));
+                    .push((CellRef { sheet, row, col }, staged.clone(), shape));
                 staged
             }
         };
@@ -788,24 +1002,15 @@ impl CalcEngine for FormualizerEngine {
         for edit in edits {
             let name = self.sheet_name(edit.at.sheet)?.to_string();
             let (row, col) = (edit.at.row, edit.at.col);
-            self.linked.remove(&edit.at);
-            let old_formula = self.workbook.get_formula(&name, row, col);
-            let old_value = self
-                .workbook
-                .get_value(&name, row, col)
-                .map_or(CalcValue::Empty, |value| from_literal(&value));
             previous.push(CellEdit {
                 at: edit.at,
-                input: match old_formula {
-                    Some(text) => CellInput::Formula {
-                        text: text.trim_start_matches('=').to_string(),
-                        shape: FormulaShape::Normal,
-                        cached: Some(old_value),
-                    },
-                    None if old_value == CalcValue::Empty => CellInput::Clear,
-                    None => CellInput::Value(old_value),
-                },
+                input: self.cell_input(edit.at),
             });
+            self.linked.remove(&edit.at);
+            self.array_anchors.retain(|(at, _, _)| *at != edit.at);
+            let extent = &mut self.extents[edit.at.sheet as usize];
+            extent.0 = extent.0.max(row);
+            extent.1 = extent.1.max(col);
             match &edit.input {
                 CellInput::Value(value) => {
                     self.workbook
@@ -817,10 +1022,14 @@ impl CalcEngine for FormualizerEngine {
                         .set_value(&name, row, col, LiteralValue::Empty)
                         .map_err(err)?;
                 }
-                CellInput::Formula { text, .. } => {
+                CellInput::Formula { text, shape, .. } => {
+                    let staged = format!("={text}");
                     self.workbook
-                        .set_formula(&name, row, col, &format!("={text}"))
+                        .set_formula(&name, row, col, &staged)
                         .map_err(err)?;
+                    if *shape != FormulaShape::Normal {
+                        self.array_anchors.push((edit.at, staged, *shape));
+                    }
                 }
                 CellInput::Spill { .. } => {}
             }
@@ -832,21 +1041,77 @@ impl CalcEngine for FormualizerEngine {
         self.adopt()?;
         self.slice.reset();
         self.idle = false;
-        let (sheet, inverse) = match *op {
-            StructuralOp::InsertRows { sheet, at, count } => {
-                (sheet, StructuralOp::DeleteRows { sheet, at, count })
-            }
-            StructuralOp::DeleteRows { sheet, at, count } => {
-                (sheet, StructuralOp::InsertRows { sheet, at, count })
-            }
-            StructuralOp::InsertCols { sheet, at, count } => {
-                (sheet, StructuralOp::DeleteCols { sheet, at, count })
-            }
-            StructuralOp::DeleteCols { sheet, at, count } => {
-                (sheet, StructuralOp::InsertCols { sheet, at, count })
-            }
-        };
+        let sheet = op.sheet();
+        let edit = op.edit();
+        let inverse = StructuralOp::new(sheet, edit.inverse());
         let name = self.sheet_name(sheet)?.to_string();
+        // A delete takes cells with it and shrinks ranges, which only their pre-images can undo.
+        // Everything else comes back when the rows or columns do.
+        let mut removed = Vec::new();
+        let mut names = Vec::new();
+        if edit.delete {
+            let band = |at: &CellRef| {
+                let place = match edit.axis {
+                    cgs_refs::Axis::Row => at.row,
+                    cgs_refs::Axis::Col => at.col,
+                };
+                at.sheet == sheet && place >= edit.at && place - edit.at < edit.count
+            };
+            for (at, text) in self.formulas() {
+                let home = self.sheets[at.sheet as usize].as_str();
+                if band(&at) || touches_band(&text, home, &name, &edit) {
+                    removed.push(CellEdit {
+                        at,
+                        input: self.cell_input(at),
+                    });
+                }
+            }
+            let spills = self.spill_areas();
+            let extent = self.extents[sheet as usize];
+            let rect = match edit.axis {
+                cgs_refs::Axis::Row => Rect {
+                    top: edit.at,
+                    left: 1,
+                    bottom: (edit.at + edit.count - 1).min(extent.0.max(1)),
+                    right: extent.1.max(1),
+                },
+                cgs_refs::Axis::Col => Rect {
+                    top: 1,
+                    left: edit.at,
+                    bottom: extent.0.max(1),
+                    right: (edit.at + edit.count - 1).min(extent.1.max(1)),
+                },
+            };
+            if rect.top <= rect.bottom && rect.left <= rect.right {
+                let mut values = Collected::default();
+                self.read_block(SheetRect { sheet, rect }, &mut values);
+                for (row, col, value) in values.0 {
+                    let at = CellRef { sheet, row, col };
+                    let spilled = spills.iter().any(|area| {
+                        area.sheet == sheet
+                            && area.rect.contains(row, col)
+                            && (area.rect.top, area.rect.left) != (row, col)
+                    });
+                    if !spilled && self.formula_text(at).is_none() {
+                        removed.push(CellEdit {
+                            at,
+                            input: CellInput::Value(value),
+                        });
+                    }
+                }
+            }
+            names = self
+                .names
+                .iter()
+                .filter(|info| touches_band(&info.formula, "", &name, &edit))
+                .cloned()
+                .collect();
+        }
+        for info in &mut self.names {
+            if let std::borrow::Cow::Owned(next) = edit_formula(&info.formula, "", &name, &edit) {
+                info.formula = next;
+            }
+        }
         let engine = self.engine();
         match *op {
             StructuralOp::InsertRows { at, count, .. } => {
@@ -862,9 +1127,12 @@ impl CalcEngine for FormualizerEngine {
                 engine.delete_columns(&name, at, count).map_err(err)?;
             }
         }
+        self.move_anchors(sheet, &edit);
+        self.rearm_moved_arrays(sheet)?;
         Ok(StructuralUndo {
             inverse,
-            removed: Vec::new(),
+            removed,
+            names,
         })
     }
 
@@ -901,7 +1169,10 @@ impl CalcEngine for FormualizerEngine {
                     })
                 })
                 .collect();
-            self.workbook.evaluate_cells(&targets).map_err(err)?;
+            self.workbook
+                .engine_mut()
+                .evaluate_cells_tracked(&mut self.slice, &targets)
+                .map_err(err)?;
             // Those cells are clean now, so a pass planned before them is out of date.
             self.slice.reset();
         }
@@ -910,22 +1181,7 @@ impl CalcEngine for FormualizerEngine {
             .engine_mut()
             .evaluate_slice(&mut self.slice, budget)
             .map_err(err)?;
-        if result.computed_vertices > 0 {
-            self.changed.extend(
-                self.extents
-                    .iter()
-                    .enumerate()
-                    .map(|(sheet, &(rows, cols))| SheetRect {
-                        sheet: sheet as u32,
-                        rect: Rect {
-                            top: 1,
-                            left: 1,
-                            bottom: rows.max(1),
-                            right: cols.max(1),
-                        },
-                    }),
-            );
-        }
+        self.collect_changed()?;
         if result.finished {
             self.idle = true;
             return Ok(CalcProgress::Done);
@@ -934,40 +1190,268 @@ impl CalcEngine for FormualizerEngine {
     }
 
     fn calc_all_changes(&mut self) -> Result<Vec<CellRef>> {
-        self.slice.reset();
-        self.idle = true;
-        let (_, delta) = self
-            .workbook
-            .engine_mut()
-            .evaluate_all_with_delta()
-            .map_err(err)?;
-        // By the engine's own id for each sheet: it keeps its own spelling of a name that differs
-        // only in case, such as `Sheet1` for a file's `sheet1`.
-        let mut sheets = std::collections::HashMap::new();
-        for (index, name) in self.sheets.iter().enumerate() {
-            if let Some(id) = self.workbook.engine().sheet_id(name) {
-                sheets.insert(id, index);
-            }
-        }
-        let mut cells = Vec::with_capacity(delta.changed_cells.len());
-        for cell in &delta.changed_cells {
-            if let Some(&index) = sheets.get(&cell.sheet_id()) {
-                cells.push(CellRef {
-                    sheet: index as u32,
-                    row: cell.row0() + 1,
-                    col: cell.col0() + 1,
-                });
-            }
-        }
-        Ok(cells)
+        while self.calc_slice(60_000, &[])? != CalcProgress::Done {}
+        Ok(self.take_changed())
     }
 
-    fn take_changed(&mut self) -> Vec<SheetRect> {
+    fn take_changed(&mut self) -> Vec<CellRef> {
         std::mem::take(&mut self.changed)
     }
 
+    fn add_sheet(&mut self, name: &str) -> Result<u32> {
+        self.adopt()?;
+        self.workbook.add_sheet(name).map_err(err)?;
+        self.sheets.push(name.to_string());
+        self.gone.push(false);
+        self.loads.push(None);
+        self.pending.push(Vec::new());
+        self.extents.push((0, 0));
+        self.slice.reset();
+        self.idle = false;
+        Ok(self.sheets.len() as u32 - 1)
+    }
+
+    fn delete_sheet(&mut self, sheet: u32) -> Result<SheetUndo> {
+        self.adopt()?;
+        self.slice.reset();
+        self.idle = false;
+        let name = self.sheet_name(sheet)?.to_string();
+        // The sheet's cells and what reads it, as they were.
+        let (mut cells, mut readers) = (Vec::new(), Vec::new());
+        let mut rewrites = Vec::new();
+        for (at, text) in self.formulas() {
+            let edit = CellEdit {
+                at,
+                input: self.cell_input(at),
+            };
+            if at.sheet == sheet {
+                cells.push(edit);
+            } else if reads_sheet(&text, "", &name) {
+                readers.push(edit);
+                rewrites.push(CellEdit {
+                    at,
+                    input: CellInput::Formula {
+                        text: delete_sheet_in_formula(&text, &name).into_owned(),
+                        shape: self.formula_shape(at),
+                        cached: None,
+                    },
+                });
+            }
+        }
+        let spills = self.spill_areas();
+        let extent = self.extents[sheet as usize];
+        let mut values = Collected::default();
+        self.read_block(
+            SheetRect {
+                sheet,
+                rect: Rect {
+                    top: 1,
+                    left: 1,
+                    bottom: extent.0.max(1),
+                    right: extent.1.max(1),
+                },
+            },
+            &mut values,
+        );
+        for (row, col, value) in values.0 {
+            let at = CellRef { sheet, row, col };
+            let spilled = spills.iter().any(|area| {
+                area.sheet == sheet
+                    && area.rect.contains(row, col)
+                    && (area.rect.top, area.rect.left) != (row, col)
+            });
+            if !spilled && self.formula_text(at).is_none() {
+                cells.push(CellEdit {
+                    at,
+                    input: CellInput::Value(value),
+                });
+            }
+        }
+        let names: Vec<NameInfo> = self
+            .names
+            .iter()
+            .filter(|info| reads_sheet(&info.formula, "", &name))
+            .cloned()
+            .collect();
+        for info in &mut self.names {
+            if let std::borrow::Cow::Owned(next) = delete_sheet_in_formula(&info.formula, &name) {
+                info.formula = next;
+            }
+        }
+        self.array_anchors.retain(|(at, _, _)| at.sheet != sheet);
+        self.linked.retain(|at, _| at.sheet != sheet);
+        self.workbook.delete_sheet(&name).map_err(err)?;
+        self.gone[sheet as usize] = true;
+        self.set_cells(&rewrites)?;
+        Ok(SheetUndo {
+            cells,
+            readers,
+            names,
+        })
+    }
+
+    fn restore_sheet(&mut self, sheet: u32) -> Result<()> {
+        let name = self
+            .sheets
+            .get(sheet as usize)
+            .cloned()
+            .ok_or_else(|| err(format!("no sheet {sheet}")))?;
+        self.workbook.add_sheet(&name).map_err(err)?;
+        self.gone[sheet as usize] = false;
+        self.extents[sheet as usize] = (0, 0);
+        self.slice.reset();
+        self.idle = false;
+        Ok(())
+    }
+
+    fn rename_sheet(&mut self, sheet: u32, name: &str) -> Result<String> {
+        self.adopt()?;
+        self.slice.reset();
+        self.idle = false;
+        let old = self.sheet_name(sheet)?.to_string();
+        // Read before the engine knows, as it stops being able to tell afterwards.
+        let mut rewrites = Vec::new();
+        for (at, text) in self.formulas() {
+            if let std::borrow::Cow::Owned(next) = rename_in_formula(&text, &old, name) {
+                rewrites.push(CellEdit {
+                    at,
+                    input: CellInput::Formula {
+                        text: next,
+                        shape: self.formula_shape(at),
+                        cached: None,
+                    },
+                });
+            }
+        }
+        self.workbook.rename_sheet(&old, name).map_err(err)?;
+        self.sheets[sheet as usize] = name.to_string();
+        for info in &mut self.names {
+            if let std::borrow::Cow::Owned(next) = rename_in_formula(&info.formula, &old, name) {
+                info.formula = next;
+            }
+        }
+        self.set_cells(&rewrites)?;
+        Ok(old)
+    }
+
+    fn restore_names(&mut self, names: &[NameInfo]) -> Result<()> {
+        for name in names {
+            self.set_name(name)?;
+        }
+        Ok(())
+    }
+
+    fn cell_input(&self, at: CellRef) -> CellInput {
+        let Ok(name) = self.sheet_name(at.sheet) else {
+            return CellInput::Clear;
+        };
+        let value = self
+            .workbook
+            .get_value(name, at.row, at.col)
+            .map_or(CalcValue::Empty, |value| from_literal(&value));
+        match self.formula_text(at) {
+            Some(text) => CellInput::Formula {
+                text,
+                shape: self.formula_shape(at),
+                cached: Some(value),
+            },
+            None if value == CalcValue::Empty => CellInput::Clear,
+            None => CellInput::Value(value),
+        }
+    }
+
+    fn spill_areas(&self) -> Vec<SheetRect> {
+        let indexes = self.sheet_indexes();
+        self.workbook
+            .engine()
+            .spill_areas()
+            .into_iter()
+            .filter_map(|(anchor, rows, cols)| {
+                let sheet = *indexes.get(&anchor.sheet_id)?;
+                let (top, left) = (anchor.coord.row() + 1, anchor.coord.col() + 1);
+                Some(SheetRect {
+                    sheet,
+                    rect: Rect {
+                        top,
+                        left,
+                        bottom: top + rows - 1,
+                        right: left + cols - 1,
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn formula_shape(&self, at: CellRef) -> FormulaShape {
+        self.array_anchors
+            .iter()
+            .find(|(cell, _, _)| *cell == at)
+            .map_or(FormulaShape::Normal, |(_, _, shape)| *shape)
+    }
+
+    fn is_calculating(&self) -> bool {
+        !self.idle
+    }
+
+    fn all_formulas(&mut self) -> Result<Vec<(CellRef, String)>> {
+        self.adopt()?;
+        Ok(self.formulas())
+    }
+
+    fn check_formula(&self, text: &str) -> Result<String> {
+        let trimmed = text.trim();
+        let mut depth = 0i32;
+        let mut quote = None;
+        for ch in trimmed.chars() {
+            match quote {
+                Some(open) => {
+                    if ch == open {
+                        quote = None;
+                    }
+                }
+                None => match ch {
+                    '"' | '\'' => quote = Some(ch),
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                },
+            }
+        }
+        let mut fixed = trimmed.to_string();
+        if let Some(open) = quote {
+            if open == '"' {
+                fixed.push('"');
+            }
+        }
+        for _ in 0..depth.max(0) {
+            fixed.push(')');
+        }
+        let problem = || {
+            CalcError(
+                "There's a problem with this formula. Check its brackets, commas and quotes."
+                    .to_string(),
+            )
+        };
+        if depth < 0 {
+            return Err(problem());
+        }
+        let ast = parse(format!("={fixed}")).map_err(|_| problem())?;
+        if !well_formed(&ast) {
+            return Err(problem());
+        }
+        Ok(fixed)
+    }
+
+    fn start_volatile(&mut self) -> Result<()> {
+        self.adopt()?;
+        self.slice.reset();
+        self.engine().mark_volatile_formulas_dirty();
+        self.idle = false;
+        Ok(())
+    }
+
     fn read_block(&self, r: SheetRect, out: &mut dyn CellSink) {
-        let Some(name) = self.sheets.get(r.sheet as usize) else {
+        let Ok(name) = self.sheet_name(r.sheet) else {
             return;
         };
         let rows = self.workbook.engine().get_range_values(
@@ -994,10 +1478,20 @@ impl CalcEngine for FormualizerEngine {
         if let Some(text) = self.linked.get(&at) {
             return Some(text.clone());
         }
-        let name = self.sheets.get(at.sheet as usize)?;
+        let name = self.sheet_name(at.sheet).ok()?;
         self.workbook
             .get_formula(name, at.row, at.col)
             .map(|text| text.trim_start_matches('=').to_string())
+    }
+}
+
+/// A block read, kept.
+#[derive(Default)]
+struct Collected(Vec<(u32, u32, CalcValue)>);
+
+impl CellSink for Collected {
+    fn cell(&mut self, row: u32, col: u32, value: &CalcValue) {
+        self.0.push((row, col, value.clone()));
     }
 }
 

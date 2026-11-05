@@ -283,6 +283,7 @@ fn run_one(path: &Path, keep: Option<&Path>, examples: bool) -> Report {
             font: Some("<b/><sz val=\"11\"/><name val=\"Calibri\"/>".to_string()),
             fill: Some("FFEE00".to_string()),
             number_format: Some("0.000".to_string()),
+            ..NewStyle::default()
         },
     ) {
         Ok(style) => style,

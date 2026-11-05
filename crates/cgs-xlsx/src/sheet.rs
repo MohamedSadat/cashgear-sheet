@@ -78,6 +78,8 @@ pub struct LoadContext<'a> {
 }
 
 pub struct SheetLoader {
+    /// A formula here has no saved value.
+    pub formula_without_value: bool,
     sheet: u32,
     reader: Reader<BufReader<PartStream>>,
     buf: Vec<u8>,
@@ -216,6 +218,7 @@ impl SheetLoader {
             cell_style: 0,
             cell_type: CellType::Number,
             cell_dynamic: false,
+            formula_without_value: false,
             has_value: false,
             in_value: false,
             value: String::new(),
@@ -656,6 +659,9 @@ impl SheetLoader {
             self.pending.push((row, col, pending));
         }
         if self.has_formula {
+            if stored.is_none() && self.formula_type != FormulaType::DataTable {
+                self.formula_without_value = true;
+            }
             self.stage_formula(context)?;
         } else if !self.arrays.is_empty() && stored.is_some() {
             // The other cells of an array are the array's output, not constants.

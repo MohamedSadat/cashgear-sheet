@@ -173,13 +173,99 @@ pub enum StructuralOp {
     DeleteCols { sheet: u32, at: u32, count: u32 },
 }
 
-/// What undoing a structural edit needs: the inverse operation, plus the cells a
-/// delete removed. Formulas that turned to `#REF!` elsewhere are restored by Phase 4's
-/// command stack, which holds their pre-images.
+impl StructuralOp {
+    pub fn new(sheet: u32, edit: cgs_refs::AxisEdit) -> Self {
+        let (at, count) = (edit.at, edit.count);
+        match (edit.axis, edit.delete) {
+            (cgs_refs::Axis::Row, false) => Self::InsertRows { sheet, at, count },
+            (cgs_refs::Axis::Row, true) => Self::DeleteRows { sheet, at, count },
+            (cgs_refs::Axis::Col, false) => Self::InsertCols { sheet, at, count },
+            (cgs_refs::Axis::Col, true) => Self::DeleteCols { sheet, at, count },
+        }
+    }
+
+    pub fn sheet(&self) -> u32 {
+        match *self {
+            Self::InsertRows { sheet, .. }
+            | Self::DeleteRows { sheet, .. }
+            | Self::InsertCols { sheet, .. }
+            | Self::DeleteCols { sheet, .. } => sheet,
+        }
+    }
+
+    pub fn edit(&self) -> cgs_refs::AxisEdit {
+        use cgs_refs::{Axis, AxisEdit};
+        match *self {
+            Self::InsertRows { at, count, .. } => AxisEdit::insert(Axis::Row, at, count),
+            Self::DeleteRows { at, count, .. } => AxisEdit::delete(Axis::Row, at, count),
+            Self::InsertCols { at, count, .. } => AxisEdit::insert(Axis::Col, at, count),
+            Self::DeleteCols { at, count, .. } => AxisEdit::delete(Axis::Col, at, count),
+        }
+    }
+}
+
+/// What undoing a structural edit needs: the inverse operation, then these cells as they were,
+/// in the positions they had. A delete removes cells and shrinks ranges and turns references to
+/// `#REF!`, and only these pre-images bring that back. Formulas that only moved come back through
+/// the inverse.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructuralUndo {
     pub inverse: StructuralOp,
     pub removed: Vec<CellEdit>,
+    /// Defined names as they were.
+    pub names: Vec<NameInfo>,
+}
+
+/// What putting a sheet back needs, in the order to do it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetUndo {
+    /// The sheet's own cells as they were.
+    pub cells: Vec<CellEdit>,
+    /// Formulas elsewhere that read it, and defined names, as they were.
+    pub readers: Vec<CellEdit>,
+    pub names: Vec<NameInfo>,
+}
+
+impl StructuralUndo {
+    /// Roughly what this holds, for the undo stack's limit.
+    pub fn bytes(&self) -> usize {
+        edits_bytes(&self.removed) + self.names.iter().map(name_bytes).sum::<usize>()
+    }
+}
+
+impl SheetUndo {
+    pub fn bytes(&self) -> usize {
+        edits_bytes(&self.cells)
+            + edits_bytes(&self.readers)
+            + self.names.iter().map(name_bytes).sum::<usize>()
+    }
+}
+
+fn name_bytes(name: &NameInfo) -> usize {
+    64 + name.name.len() + name.formula.len()
+}
+
+/// Roughly what a list of cell edits holds.
+pub fn edits_bytes(edits: &[CellEdit]) -> usize {
+    edits
+        .iter()
+        .map(|edit| {
+            let text = |value: &CalcValue| match value {
+                CalcValue::Text(text) | CalcValue::Error(text) => text.len(),
+                _ => 0,
+            };
+            64 + match &edit.input {
+                CellInput::Value(value) => text(value),
+                CellInput::Formula {
+                    text: formula,
+                    cached,
+                    ..
+                } => formula.len() + cached.as_ref().map_or(0, text),
+                CellInput::Spill { cached, .. } => text(cached),
+                CellInput::Clear => 0,
+            }
+        })
+        .sum()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,11 +317,37 @@ pub trait CalcEngine {
     /// Calculates for about `ms` milliseconds, cells in `first` before others. A single
     /// engine call can't be interrupted, so a slice can run over; the bake-off measures by how much.
     fn calc_slice(&mut self, ms: u32, first: &[SheetRect]) -> Result<CalcProgress>;
-    /// Calculates everything that is due, in one go, and returns the cells whose values changed.
-    /// Saving needs to know exactly which, where a slice only says which sheets. A single call
-    /// can't be interrupted; Phase 4's scheduling is what will bring this into slices.
+    /// Calculates everything that is due, in one go, and returns the cells whose values changed,
+    /// along with any not yet taken. A single call can't be interrupted.
     fn calc_all_changes(&mut self) -> Result<Vec<CellRef>>;
-    fn take_changed(&mut self) -> Vec<SheetRect>;
+    /// The cells whose values calculation has changed since the last call: exactly those, spills
+    /// included. A formula that came out the same can be listed too.
+    fn take_changed(&mut self) -> Vec<CellRef>;
+    /// Adds a sheet, with the next index.
+    fn add_sheet(&mut self, name: &str) -> Result<u32>;
+    /// Removes a sheet, leaving `#REF!` in what read it. Its index stays taken.
+    fn delete_sheet(&mut self, sheet: u32) -> Result<SheetUndo>;
+    /// Brings back a sheet `delete_sheet` removed, with no cells yet.
+    fn restore_sheet(&mut self, sheet: u32) -> Result<()>;
+    /// Renames a sheet. What reads it follows. Returns the old name.
+    fn rename_sheet(&mut self, sheet: u32, name: &str) -> Result<String>;
+    /// Puts defined names back as they were.
+    fn restore_names(&mut self, names: &[NameInfo]) -> Result<()>;
+    /// What a cell holds now, in a form `set_cells` can put back.
+    fn cell_input(&self, at: CellRef) -> CellInput;
+    /// Every array that has spilled: its anchor, and the area it covers, anchor included.
+    fn spill_areas(&self) -> Vec<SheetRect>;
+    /// A formula's array shape, if it was entered or stored as an array.
+    fn formula_shape(&self, at: CellRef) -> FormulaShape;
+    /// Whether anything is waiting to be calculated.
+    fn is_calculating(&self) -> bool;
+    /// Every formula with its text, as `formula_text` gives it.
+    fn all_formulas(&mut self) -> Result<Vec<(CellRef, String)>>;
+    /// Reads a typed formula, with no leading `=`. Excel closes brackets someone left open, so this
+    /// gives back the text to use, or says what is wrong with it.
+    fn check_formula(&self, text: &str) -> Result<String>;
+    /// After opening, works out what is due without any edit: volatile functions.
+    fn start_volatile(&mut self) -> Result<()>;
     fn read_block(&self, r: SheetRect, out: &mut dyn CellSink);
     fn formula_text(&self, at: CellRef) -> Option<String>;
 }

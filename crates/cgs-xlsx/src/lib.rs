@@ -15,6 +15,7 @@ pub mod save;
 pub mod scan;
 pub mod sheet;
 pub mod strings;
+pub mod structure;
 pub mod styles;
 pub mod workbook;
 pub mod xml;
@@ -270,6 +271,7 @@ impl Loader {
             match current.step(&mut context, info, keep_going)? {
                 Step::More => return Ok(false),
                 Step::Done => {
+                    book.formulas_without_values |= current.formula_without_value;
                     if let Some(done) = self.current.take() {
                         self.finished_bytes += done.consumed();
                         if let Some(rel) = done.drawing_rel.as_deref() {

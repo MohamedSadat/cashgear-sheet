@@ -19,6 +19,7 @@ fn formula(text: &str, result: f64) -> CellPatch {
         change: CellChange::Formula {
             text: text.to_string(),
             value: CalcValue::Number(result),
+            array: ArrayKind::None,
         },
         style: None,
     }
@@ -398,6 +399,7 @@ fn a_non_utf8_part_gets_character_references() {
             change: CellChange::Formula {
                 text: "\"ن\"".to_string(),
                 value: CalcValue::Text("ن".to_string()),
+                array: ArrayKind::None,
             },
             style: None,
         },
@@ -470,6 +472,7 @@ fn errors_only_rich_values_can_hold_never_reach_a_plain_cell() {
                     change: CellChange::Formula {
                         text: "SEQUENCE(0)".to_string(),
                         value: error("#CALC!"),
+                        array: ArrayKind::None,
                     },
                     style: None,
                 },

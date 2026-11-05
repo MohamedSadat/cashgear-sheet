@@ -31,11 +31,11 @@ cgs-native = { path = "crates/cgs-native" }
 # Formualizer with the Phase 1 patches, at an exact commit of our fork. See
 # docs/decisions.md. A new upstream release is taken by rebasing the fork on it.
 [patch.crates-io]
-formualizer-common = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
-formualizer-eval = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
-formualizer-macros = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
-formualizer-parse = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
-formualizer-workbook = { git = "https://github.com/MohamedSadat/formualizer", rev = "7efd060e492d8af36c739a639396a1549a376371" }
+formualizer-common = { git = "https://github.com/MohamedSadat/formualizer", rev = "7432e2b92e3e776e42d0c9241203934032b574a7" }
+formualizer-eval = { git = "https://github.com/MohamedSadat/formualizer", rev = "7432e2b92e3e776e42d0c9241203934032b574a7" }
+formualizer-macros = { git = "https://github.com/MohamedSadat/formualizer", rev = "7432e2b92e3e776e42d0c9241203934032b574a7" }
+formualizer-parse = { git = "https://github.com/MohamedSadat/formualizer", rev = "7432e2b92e3e776e42d0c9241203934032b574a7" }
+formualizer-workbook = { git = "https://github.com/MohamedSadat/formualizer", rev = "7432e2b92e3e776e42d0c9241203934032b574a7" }
 
 [profile.release]
 opt-level = 3

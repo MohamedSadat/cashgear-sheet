@@ -16,6 +16,30 @@ use crate::scan::{
 use crate::xml::{parse_cell, parse_rect, parse_u32, unescape_attr, unescape_x};
 use crate::zipdir::{Packed, Packer};
 
+/// How a formula is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArrayKind {
+    /// A formula of one cell.
+    #[default]
+    None,
+    /// `{=...}`, over this area.
+    Legacy(cgs_model::Rect),
+    /// A formula that spills over this area, with its cell metadata's index.
+    Dynamic(cgs_model::Rect, u32),
+}
+
+fn area_text(area: cgs_model::Rect) -> String {
+    if (area.top, area.left) == (area.bottom, area.right) {
+        cell_name(area.top, area.left)
+    } else {
+        format!(
+            "{}:{}",
+            cell_name(area.top, area.left),
+            cell_name(area.bottom, area.right)
+        )
+    }
+}
+
 /// What happens to a cell's contents.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellChange {
@@ -26,9 +50,20 @@ pub enum CellChange {
     /// A constant.
     Value(CalcValue),
     /// A formula, as a file stores it, with its result.
-    Formula { text: String, value: CalcValue },
+    Formula {
+        text: String,
+        value: CalcValue,
+        array: ArrayKind,
+    },
     /// The formula or spill stays as the file has it, and this is its new result.
     Result(CalcValue),
+    /// An array's anchor that stays as the file has it, with its new result and area.
+    ArrayResult {
+        value: CalcValue,
+        area: cgs_model::Rect,
+    },
+    /// A cell an array spills into, which gets written even if the file has no such cell.
+    Spilled(CalcValue),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -360,22 +395,26 @@ impl Patcher<'_> {
     ) -> Vec<u8> {
         let style = patch.style.or_else(|| self.inherited_style(row_tag, col));
         let mut out = Vec::new();
+        let mut dynamic = None;
         let (kind, body) = match &patch.change {
             CellChange::Keep | CellChange::Clear => (None, Vec::new()),
             CellChange::Value(value) => self.value_parts(value, false),
-            // A result with no cell is a spill that grew. Excel rebuilds it on opening.
-            CellChange::Result(value) => {
+            CellChange::Spilled(value) => self.value_parts(value, true),
+            // A result with no cell is an array's anchor or spill this file doesn't hold. Excel
+            // works it out on opening.
+            CellChange::Result(value) | CellChange::ArrayResult { value, .. } => {
                 if has_value(value) {
                     self.outcome.results_skipped += 1;
                 }
                 return out;
             }
-            CellChange::Formula { text, value } => {
+            CellChange::Formula { text, value, array } => {
                 let (kind, mut body) = self.value_parts(value, true);
-                let mut formula = format!("<{}>", self.name("f")).into_bytes();
-                self.escape_into(text, &mut formula);
-                formula.extend_from_slice(format!("</{}>", self.name("f")).as_bytes());
+                let mut formula = self.formula_element(text, *array);
                 formula.append(&mut body);
+                if let ArrayKind::Dynamic(_, cm) = array {
+                    dynamic = Some(cm.to_string());
+                }
                 (kind, formula)
             }
         };
@@ -391,6 +430,9 @@ impl Patcher<'_> {
         if let Some(kind) = kind {
             out.extend_from_slice(format!(" t=\"{kind}\"").as_bytes());
         }
+        if let Some(cm) = dynamic {
+            out.extend_from_slice(format!(" cm=\"{cm}\"").as_bytes());
+        }
         if body.is_empty() {
             out.extend_from_slice(b"/>");
         } else {
@@ -400,6 +442,21 @@ impl Patcher<'_> {
         }
         self.outcome.changed = true;
         self.outcome.cells_written += 1;
+        out
+    }
+
+    /// A formula's element, with what its kind of array needs.
+    fn formula_element(&self, text: &str, array: ArrayKind) -> Vec<u8> {
+        let name = self.name("f");
+        let mut out = match array {
+            ArrayKind::None => format!("<{name}>"),
+            ArrayKind::Legacy(area) | ArrayKind::Dynamic(area, _) => {
+                format!("<{name} t=\"array\" ref=\"{}\">", area_text(area))
+            }
+        }
+        .into_bytes();
+        self.escape_into(text, &mut out);
+        out.extend_from_slice(format!("</{name}>").as_bytes());
         out
     }
 
@@ -687,6 +744,20 @@ impl Patcher<'_> {
         if let Some(style) = &style {
             changes.push(("s", Some(style)));
         }
+        // An array's new area goes on its formula element.
+        let new_area = match &patch.change {
+            CellChange::ArrayResult { area, .. } => children.formula.and_then(|span| {
+                let formula = &self.row_buffer[span.0..span.1];
+                let tag_end = formula.iter().position(|&byte| byte == b'>')? + 1;
+                let tag = &formula[..tag_end];
+                (attr_value(tag, b"t") == Some(b"array")
+                    && attr_value(tag, b"ref").map(unescape_attr).as_deref()
+                        != Some(area_text(*area).as_str()))
+                .then(|| area_text(*area))
+            }),
+            _ => None,
+        };
+        let mut new_cm = None;
         let (kind, new_body, keep_formula) = match &patch.change {
             CellChange::Keep => {
                 if changes.is_empty() {
@@ -703,16 +774,21 @@ impl Patcher<'_> {
                 let (kind, body) = self.value_parts(value, false);
                 (kind, body, false)
             }
-            CellChange::Formula { text, value } => {
-                let mut formula = format!("<{}>", self.name("f")).into_bytes();
-                self.escape_into(text, &mut formula);
-                formula.extend_from_slice(format!("</{}>", self.name("f")).as_bytes());
+            CellChange::Formula { text, value, array } => {
+                let mut formula = self.formula_element(text, *array);
                 let (kind, mut body) = self.value_parts(value, true);
                 formula.append(&mut body);
+                if let ArrayKind::Dynamic(_, cm) = array {
+                    new_cm = Some(cm.to_string());
+                }
                 (kind, formula, false)
             }
-            CellChange::Result(value) => {
-                if style.is_none() && address.is_none() {
+            CellChange::Spilled(value) => {
+                let (kind, body) = self.value_parts(value, true);
+                (kind, body, false)
+            }
+            CellChange::ArrayResult { value, .. } | CellChange::Result(value) => {
+                if style.is_none() && address.is_none() && new_area.is_none() {
                     if let Some(stored) = self.stored_result(cell, &children) {
                         let same = match (&stored, value) {
                             // A value the file holds has the same bits when nothing changed it.
@@ -734,7 +810,7 @@ impl Patcher<'_> {
         changes.push(("t", kind));
         // A new value isn't the array or rich value those attributes described.
         if !keep_formula {
-            changes.push(("cm", None));
+            changes.push(("cm", new_cm.as_deref()));
         }
         changes.push(("vm", None));
         self.outcome.changed = true;
@@ -749,7 +825,21 @@ impl Patcher<'_> {
                     .and_then(|index| self.expanded_follower(cell, span, index))
                 {
                     Some(formula) => body.extend_from_slice(&formula),
-                    None => body.extend_from_slice(&self.row_buffer[span.0..span.1]),
+                    None => match &new_area {
+                        Some(area) => {
+                            let formula = &self.row_buffer[span.0..span.1];
+                            let tag_end = formula
+                                .iter()
+                                .position(|&byte| byte == b'>')
+                                .map_or(0, |at| at + 1);
+                            body.extend_from_slice(&edit_tag(
+                                &formula[..tag_end],
+                                &[("ref", Some(area))],
+                            ));
+                            body.extend_from_slice(&formula[tag_end..]);
+                        }
+                        None => body.extend_from_slice(&self.row_buffer[span.0..span.1]),
+                    },
                 }
             }
         }
@@ -1082,9 +1172,10 @@ impl Patcher<'_> {
             let grows = match &patch.change {
                 CellChange::Value(value) => has_value(value),
                 CellChange::Formula { .. } => true,
+                CellChange::Spilled(value) => has_value(value),
                 CellChange::Keep | CellChange::Clear => patch.style.is_some(),
                 // Nothing new is written for a result.
-                CellChange::Result(_) => false,
+                CellChange::Result(_) | CellChange::ArrayResult { .. } => false,
             };
             if grows {
                 let (top, left, bottom, right): (u32, u32, u32, u32) =
@@ -1154,6 +1245,35 @@ impl Patcher<'_> {
                                 self.write_new_sheet_data(out)?;
                             } else {
                                 out.write_all(&tag)?;
+                            }
+                        }
+                        // Merges that are given anew replace what the file holds, whatever it holds.
+                        b"mergeCells"
+                            if self.elements.iter().any(|new| new.name == "mergeCells") =>
+                        {
+                            if kind == Kind::Start {
+                                let mut inner = 1u32;
+                                while let Some(next) = scanner.next()? {
+                                    match next {
+                                        Kind::Start => inner += 1,
+                                        Kind::End => {
+                                            inner -= 1;
+                                            if inner == 0 {
+                                                break;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            self.outcome.changed = true;
+                            if let Some(at) = self
+                                .elements
+                                .iter()
+                                .position(|new| new.name == "mergeCells")
+                            {
+                                let new = self.elements.remove(at);
+                                out.write_all(&self.element_bytes(&new.xml))?;
                             }
                         }
                         b"dimension" => {
@@ -1334,9 +1454,12 @@ pub fn patch_sheet<R: Read>(
     ascii_only: bool,
 ) -> io::Result<(Option<Packed>, Outcome)> {
     let only_results = elements.is_empty()
-        && patches
-            .values()
-            .all(|patch| matches!(patch.change, CellChange::Result(_)) && patch.style.is_none());
+        && patches.values().all(|patch| {
+            matches!(
+                patch.change,
+                CellChange::Result(_) | CellChange::ArrayResult { .. }
+            ) && patch.style.is_none()
+        });
     if only_results {
         let (_, probe) = patch_into(&mut open, io::sink, patches, elements, strings, ascii_only)?;
         if !probe.changed {

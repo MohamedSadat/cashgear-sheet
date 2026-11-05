@@ -973,3 +973,330 @@ fn every_cell_an_edit_changes_is_in_the_change_list() {
         col: 1
     }));
 }
+
+fn fresh(sheets: &[Vec<(u32, u32, CellInput)>]) -> cgs_calc::formualizer::FormualizerEngine {
+    let mut engine = cgs_calc::formualizer::FormualizerEngine::new();
+    load(&mut engine, &info(), sheets);
+    while engine.prepare_step().unwrap() {}
+    engine
+}
+
+fn cell(sheet: u32, row: u32, col: u32) -> CellRef {
+    CellRef { sheet, row, col }
+}
+
+fn value_at(engine: &dyn CalcEngine, sheet: u32, row: u32, col: u32) -> Option<CalcValue> {
+    grid(engine, sheet).0.get(&(row, col)).cloned()
+}
+
+#[test]
+fn slices_report_exactly_what_changed() {
+    let mut engine = fresh(&[vec![
+        (1, 1, num(1.0)),
+        (2, 1, formula("A1*2", 2.0)),
+        (3, 1, formula("A2+1", 3.0)),
+        (4, 1, num(9.0)),
+    ]]);
+    engine
+        .set_cells(&[CellEdit {
+            at: cell(0, 1, 1),
+            input: num(5.0),
+        }])
+        .unwrap();
+    settle(&mut engine);
+    let mut changed = engine.take_changed();
+    changed.sort();
+    assert_eq!(changed, vec![cell(0, 2, 1), cell(0, 3, 1)]);
+    assert!(engine.take_changed().is_empty());
+}
+
+#[test]
+fn slices_report_spills_too() {
+    let mut engine = fresh(&[vec![(1, 1, num(1.0))]]);
+    engine
+        .set_cells(&[CellEdit {
+            at: cell(0, 3, 1),
+            input: CellInput::Formula {
+                text: "SEQUENCE(3)".to_string(),
+                shape: FormulaShape::Normal,
+                cached: None,
+            },
+        }])
+        .unwrap();
+    settle(&mut engine);
+    let changed = engine.take_changed();
+    assert!(changed.contains(&cell(0, 5, 1)), "{changed:?}");
+    assert_eq!(value_at(&engine, 0, 5, 1), Some(CalcValue::Number(3.0)));
+    let areas = engine.spill_areas();
+    assert_eq!(areas.len(), 1);
+    assert_eq!(
+        areas[0].rect,
+        Rect {
+            top: 3,
+            left: 1,
+            bottom: 5,
+            right: 1
+        }
+    );
+}
+
+#[test]
+fn a_delete_gives_back_what_putting_the_rows_back_needs() {
+    let mut engine = fresh(&[
+        vec![
+            (1, 1, num(1.0)),
+            (2, 1, num(2.0)),
+            (3, 1, num(3.0)),
+            (4, 1, num(4.0)),
+            (5, 2, formula("SUM(A1:A3)", 6.0)),
+            (6, 2, formula("A2", 2.0)),
+            (7, 2, formula("A4", 4.0)),
+            (2, 3, formula("A1", 1.0)),
+        ],
+        vec![(1, 1, formula("Sheet1!A3", 3.0))],
+    ]);
+    let before: Vec<Option<String>> = [(5, 2), (6, 2), (7, 2), (2, 3)]
+        .iter()
+        .map(|&(row, col)| engine.formula_text(cell(0, row, col)))
+        .collect();
+    let undo = engine
+        .structural(&StructuralOp::DeleteRows {
+            sheet: 0,
+            at: 2,
+            count: 2,
+        })
+        .unwrap();
+    settle(&mut engine);
+    assert_eq!(
+        engine.formula_text(cell(0, 3, 2)).as_deref(),
+        Some("SUM(A1:A1)")
+    );
+    assert_eq!(engine.formula_text(cell(0, 4, 2)).as_deref(), Some("#REF!"));
+    assert_eq!(engine.formula_text(cell(1, 1, 1)).as_deref(), Some("#REF!"));
+    assert_eq!(value_at(&engine, 0, 2, 1), Some(CalcValue::Number(4.0)));
+    // The cells and formulas it took or changed, and not the one that only moved.
+    let held: Vec<CellRef> = undo.removed.iter().map(|edit| edit.at).collect();
+    for cell in [
+        cell(0, 2, 1),
+        cell(0, 3, 1),
+        cell(0, 5, 2),
+        cell(0, 6, 2),
+        cell(0, 2, 3),
+        cell(1, 1, 1),
+    ] {
+        assert!(held.contains(&cell), "{cell:?} in {held:?}");
+    }
+    assert!(!held.contains(&cell(0, 7, 2)));
+
+    engine.structural(&undo.inverse).unwrap();
+    engine.set_cells(&undo.removed).unwrap();
+    settle(&mut engine);
+    let after: Vec<Option<String>> = [(5, 2), (6, 2), (7, 2), (2, 3)]
+        .iter()
+        .map(|&(row, col)| engine.formula_text(cell(0, row, col)))
+        .collect();
+    assert_eq!(before, after);
+    assert_eq!(value_at(&engine, 0, 5, 2), Some(CalcValue::Number(6.0)));
+    assert_eq!(value_at(&engine, 1, 1, 1), Some(CalcValue::Number(3.0)));
+}
+
+#[test]
+fn renaming_a_sheet_carries_what_reads_it() {
+    let mut engine = fresh(&[
+        vec![(1, 1, num(7.0))],
+        vec![(1, 1, formula("Sheet1!A1+1", 8.0))],
+    ]);
+    let old = engine.rename_sheet(0, "New Name").unwrap();
+    assert_eq!(old, "Sheet1");
+    settle(&mut engine);
+    assert_eq!(
+        engine.formula_text(cell(1, 1, 1)).as_deref(),
+        Some("'New Name'!A1 + 1")
+    );
+    assert_eq!(value_at(&engine, 1, 1, 1), Some(CalcValue::Number(8.0)));
+    engine
+        .set_cells(&[CellEdit {
+            at: cell(0, 1, 1),
+            input: num(10.0),
+        }])
+        .unwrap();
+    settle(&mut engine);
+    assert_eq!(value_at(&engine, 1, 1, 1), Some(CalcValue::Number(11.0)));
+}
+
+#[test]
+fn deleting_a_sheet_leaves_ref_and_can_be_undone() {
+    let mut engine = fresh(&[
+        vec![(1, 1, num(7.0)), (2, 1, formula("A1*2", 14.0))],
+        vec![(1, 1, formula("Sheet1!A2+1", 15.0))],
+    ]);
+    let undo = engine.delete_sheet(0).unwrap();
+    settle(&mut engine);
+    assert_eq!(
+        engine.formula_text(cell(1, 1, 1)).as_deref(),
+        Some("#REF! + 1")
+    );
+    assert_eq!(
+        value_at(&engine, 1, 1, 1),
+        Some(CalcValue::Error("#REF!".to_string()))
+    );
+    assert_eq!(value_at(&engine, 0, 1, 1), None);
+    engine.restore_sheet(0).unwrap();
+    engine.set_cells(&undo.cells).unwrap();
+    engine.set_cells(&undo.readers).unwrap();
+    settle(&mut engine);
+    assert_eq!(value_at(&engine, 0, 2, 1), Some(CalcValue::Number(14.0)));
+    assert_eq!(value_at(&engine, 1, 1, 1), Some(CalcValue::Number(15.0)));
+}
+
+#[test]
+fn a_new_sheet_can_be_read_and_written() {
+    let mut engine = fresh(&[vec![(1, 1, num(7.0))], vec![]]);
+    let index = engine.add_sheet("Third").unwrap();
+    assert_eq!(index, 2);
+    engine
+        .set_cells(&[
+            CellEdit {
+                at: cell(2, 1, 1),
+                input: CellInput::Formula {
+                    text: "Sheet1!A1*3".to_string(),
+                    shape: FormulaShape::Normal,
+                    cached: None,
+                },
+            },
+            CellEdit {
+                at: cell(0, 2, 1),
+                input: CellInput::Formula {
+                    text: "Third!A1+1".to_string(),
+                    shape: FormulaShape::Normal,
+                    cached: None,
+                },
+            },
+        ])
+        .unwrap();
+    settle(&mut engine);
+    assert_eq!(value_at(&engine, 2, 1, 1), Some(CalcValue::Number(21.0)));
+    assert_eq!(value_at(&engine, 0, 2, 1), Some(CalcValue::Number(22.0)));
+}
+
+/// A small generator, so that a failure comes back the same each time.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self, below: u32) -> u32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % u64::from(below)) as u32
+    }
+}
+
+fn random_reference(rng: &mut Rng) -> String {
+    let col = |rng: &mut Rng| char::from(b'A' + rng.next(8) as u8);
+    let row = |rng: &mut Rng| rng.next(12) + 1;
+    let dollar = |rng: &mut Rng| if rng.next(4) == 0 { "$" } else { "" };
+    match rng.next(6) {
+        0 | 1 => format!("{}{}{}{}", dollar(rng), col(rng), dollar(rng), row(rng)),
+        2 | 3 => {
+            let (a, b) = (rng.next(12) + 1, rng.next(12) + 1);
+            let (c, d) = (rng.next(8), rng.next(8));
+            format!(
+                "{}{}:{}{}",
+                char::from(b'A' + c.min(d) as u8),
+                a.min(b),
+                char::from(b'A' + c.max(d) as u8),
+                a.max(b)
+            )
+        }
+        4 => {
+            let (c, d) = (rng.next(8), rng.next(8));
+            format!(
+                "{}:{}",
+                char::from(b'A' + c.min(d) as u8),
+                char::from(b'A' + c.max(d) as u8)
+            )
+        }
+        _ => {
+            let (a, b) = (rng.next(12) + 1, rng.next(12) + 1);
+            format!("{}:{}", a.min(b), a.max(b))
+        }
+    }
+}
+
+#[test]
+fn rewriting_text_agrees_with_the_engine() {
+    // How the two print a range of one cell, `#REF!` or spaces makes no difference to its meaning.
+    let normal = |text: &str| {
+        let plain = text.replace(' ', "").replace("Sheet1!#REF!", "#REF!");
+        let mut out = String::new();
+        for (index, part) in plain.split(':').enumerate() {
+            let last = out
+                .rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '$')
+                .next()
+                .unwrap_or("");
+            let same = !last.is_empty()
+                && part.starts_with(last)
+                && !part[last.len()..].starts_with(|c: char| c.is_ascii_alphanumeric());
+            if same {
+                out.push_str(&part[last.len()..]);
+            } else {
+                if index > 0 {
+                    out.push(':');
+                }
+                out.push_str(part);
+            }
+        }
+        out
+    };
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let mut compared = 0;
+    for _ in 0..300 {
+        let mut cells = Vec::new();
+        for row in 20..40 {
+            let (a, b) = (random_reference(&mut rng), random_reference(&mut rng));
+            cells.push((row, 20, formula(&format!("SUM({a},{b})"), 0.0)));
+        }
+        let other = vec![(
+            1,
+            1,
+            formula(&format!("SUM(Sheet1!{})", random_reference(&mut rng)), 0.0),
+        )];
+        let mut engine = fresh(&[cells, other]);
+        let axis = if rng.next(2) == 0 {
+            cgs_refs::Axis::Row
+        } else {
+            cgs_refs::Axis::Col
+        };
+        let (start, count) = (rng.next(9) + 1, rng.next(4) + 1);
+        let edit = if rng.next(2) == 0 {
+            cgs_refs::AxisEdit::insert(axis, start, count)
+        } else {
+            cgs_refs::AxisEdit::delete(axis, start, count)
+        };
+        let before: Vec<String> = (20..40)
+            .map(|row| engine.formula_text(cell(0, row, 20)).unwrap())
+            .collect();
+        let other_before = engine.formula_text(cell(1, 1, 1)).unwrap();
+        engine.structural(&StructuralOp::new(0, edit)).unwrap();
+        settle(&mut engine);
+        for (index, text) in before.iter().enumerate() {
+            let row = 20 + index as u32;
+            let (row, col) = match axis {
+                cgs_refs::Axis::Row => (edit.point(row).unwrap(), 20),
+                cgs_refs::Axis::Col => (row, edit.point(20).unwrap()),
+            };
+            let actual = engine.formula_text(cell(0, row, col)).unwrap();
+            let expected = cgs_refs::edit_formula(text, "Sheet1", "Sheet1", &edit);
+            assert_eq!(normal(&expected), normal(&actual), "{text} after {edit:?}");
+            compared += 1;
+        }
+        let actual = engine.formula_text(cell(1, 1, 1)).unwrap();
+        let expected = cgs_refs::edit_formula(&other_before, "Other Sheet", "Sheet1", &edit);
+        assert_eq!(
+            normal(&expected),
+            normal(&actual),
+            "{other_before} after {edit:?}"
+        );
+    }
+    assert_eq!(compared, 6000);
+}

@@ -132,6 +132,7 @@ pub fn read_workbook(package: &Package) -> Result<Book, ReadError> {
                     b"calcPr" => {
                         book.full_calc_on_load =
                             attr_bool(element, b"fullCalcOnLoad").unwrap_or(false);
+                        book.manual_calc = attr(element, b"calcMode").as_deref() == Some("manual");
                     }
                     b"workbookView" => {
                         book.active_sheet = attr_u32(element, b"activeTab").unwrap_or(0);

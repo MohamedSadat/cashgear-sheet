@@ -1,8 +1,12 @@
 //! Ties the workbook together: opening, reading in slices, viewport tiles, what the UI asks
-//! about a cell, and saving. Calculation scheduling comes in Phase 4; until then only an edit
-//! through `edit_cells` calculates, and opening never does.
+//! about a cell, commands and undo, calculation in slices, and saving. Opening calculates nothing
+//! that a saved value covers.
 
+pub mod clip;
+pub mod command;
 pub mod edit;
+mod fill;
+pub mod input;
 mod json;
 pub mod tile;
 pub mod view_block;
@@ -18,6 +22,7 @@ use cgs_numfmt::{Locale, Options};
 use cgs_xlsx::save::{SavePlan, WorkbookEdits};
 use cgs_xlsx::{book_info, ByteSource, Loader, Package, ReadError};
 
+pub use command::{Applied, Area, Command, Dirty, UndoState};
 pub use edit::{report_json, EditCell, EditInput, NewStyle};
 pub use tile::Screen;
 pub use view_block::ViewBlock;
@@ -51,6 +56,17 @@ struct Session {
     package: Rc<Package>,
     /// What differs from that file.
     edits: WorkbookEdits,
+    history: command::History,
+    /// What the UI hasn't been told about yet.
+    dirty: command::Dirty,
+    /// New cell formats by what they were made from, so that typing adds each one once.
+    format_styles: std::collections::HashMap<(u32, input::Format), u32>,
+    /// Today's date serial, for dates typed with no year.
+    today: f64,
+    /// The workbook calculates only when asked.
+    manual: bool,
+    /// Asked to, though it is manual.
+    force_calc: bool,
     /// What the last save should have written, until it has been checked and used.
     pending_save: Option<SavePlan>,
     /// Why this workbook's formulas can't be made ready for an edit, if they can't.
@@ -64,6 +80,7 @@ struct Session {
 /// The engine a worker holds.
 pub struct Engine {
     locale: Locale,
+    today: f64,
     session: Option<Session>,
 }
 
@@ -147,10 +164,36 @@ fn drawing_box(info: &SheetInfo, anchor: Anchor) -> (i64, i64, i64, i64) {
     }
 }
 
+impl Session {
+    /// Once the workbook is ready for edits, works out what a saved value doesn't cover.
+    fn after_preparing(&mut self) {
+        if self.manual || self.cannot_edit.is_some() {
+            return;
+        }
+        // A file that asks to be calculated, or holds formulas with no saved value, gets all of
+        // them calculated. Other files only have their volatile functions to bring up to date.
+        let result = if self.book.full_calc_on_load || self.book.formulas_without_values {
+            self.calc.recalc_all()
+        } else {
+            self.calc.start_volatile()
+        };
+        if let Err(error) = result {
+            self.cannot_edit = Some(error.0);
+        }
+    }
+
+    /// Puts in cells that are part of what opened, such as a CSV file's, with no undo step.
+    fn load_cells(&mut self, edits: Vec<EditCell>) -> Result<(), String> {
+        let _ = self.apply_loaded(edits)?;
+        Ok(())
+    }
+}
+
 impl Engine {
     pub fn new() -> Self {
         Self {
             locale: Locale::en_us(),
+            today: 45_000.0,
             session: None,
         }
     }
@@ -172,6 +215,12 @@ impl Engine {
             calc,
             package: loader.package(),
             edits: WorkbookEdits::default(),
+            history: command::History::default(),
+            dirty: command::Dirty::default(),
+            format_styles: std::collections::HashMap::new(),
+            today: self.today,
+            manual: false,
+            force_calc: false,
             pending_save: None,
             cannot_edit: None,
             loader: Some(loader),
@@ -220,6 +269,7 @@ impl Engine {
                     .finish_load()
                     .map_err(|error| ReadError::Engine(error.0))?;
                 session.loader = None;
+                session.manual = session.book.manual_calc;
                 session.phase = LoadPhase::Preparing;
             }
         }
@@ -245,6 +295,7 @@ impl Engine {
             Ok(more) => {
                 if !more {
                     session.phase = LoadPhase::Ready;
+                    session.after_preparing();
                 }
                 Ok(more)
             }
@@ -419,7 +470,16 @@ impl Engine {
             });
             out.push_str("\",\"loaded\":");
             out.push_str(if sheet.loaded { "true" } else { "false" });
+            out.push_str(",\"deleted\":");
+            out.push_str(if sheet.deleted { "true" } else { "false" });
             out.push('}');
+        }
+        out.push_str("],\"order\":[");
+        for (index, sheet) in book.tab_order().iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(&sheet.to_string());
         }
         out.push_str("]}");
         out

@@ -199,6 +199,32 @@ pub fn remove_relationships(xml: &[u8], type_ends_with: &str) -> Vec<u8> {
 
 /// Adds a relationship, with an id nothing in the part uses.
 pub fn add_relationship(xml: &[u8], kind: &str, target: &str) -> Vec<u8> {
+    add_relationship_with_id(xml, kind, target).0
+}
+
+/// Removes relationships by their ids.
+pub fn remove_relationship_ids(xml: &[u8], ids: &[String]) -> Vec<u8> {
+    let mut changes = Vec::new();
+    for token in tokens(xml) {
+        if !matches!(token.kind, Kind::Start | Kind::Empty) {
+            continue;
+        }
+        let tag = &xml[token.start..token.end];
+        if local_name(tag) != b"Relationship" {
+            continue;
+        }
+        let Some(id) = attr_value(tag, b"Id").map(unescape_attr) else {
+            continue;
+        };
+        if ids.contains(&id) {
+            changes.push((token.start, token.end, Vec::new()));
+        }
+    }
+    crate::scan::splice(xml, &changes)
+}
+
+/// Adds a relationship and says which id it got.
+pub fn add_relationship_with_id(xml: &[u8], kind: &str, target: &str) -> (Vec<u8>, String) {
     let list = tokens(xml);
     let name = root_prefix(xml, &list);
     let mut used = Vec::new();
@@ -222,7 +248,40 @@ pub fn add_relationship(xml: &[u8], kind: &str, target: &str) -> Vec<u8> {
         escape_attr(kind),
         escape_attr(target)
     );
-    before_root_end(xml, text.as_bytes())
+    (before_root_end(xml, text.as_bytes()), id)
+}
+
+/// Sets whether the workbook calculates only when asked.
+pub fn set_calc_mode(xml: &[u8], manual: bool) -> Vec<u8> {
+    let list = tokens(xml);
+    let name = root_prefix(xml, &list);
+    let wanted = order_in(WORKBOOK_ORDER, b"calcPr");
+    let value = if manual { Some("manual") } else { None };
+    for token in &list {
+        if !matches!(token.kind, Kind::Start | Kind::Empty) {
+            continue;
+        }
+        let tag = &xml[token.start..token.end];
+        let local = local_name(tag);
+        if local == b"calcPr" {
+            let edited = edit_tag(tag, &[("calcMode", value)]);
+            return crate::scan::splice(xml, &[(token.start, token.end, edited)]);
+        }
+        if token.depth == 1 && order_in(WORKBOOK_ORDER, local) > wanted {
+            if !manual {
+                return xml.to_vec();
+            }
+            let text = format!("<{name}calcPr calcMode=\"manual\"/>").into_bytes();
+            return crate::scan::splice(xml, &[(token.start, token.start, text)]);
+        }
+    }
+    if !manual {
+        return xml.to_vec();
+    }
+    before_root_end(
+        xml,
+        format!("<{name}calcPr calcMode=\"manual\"/>").as_bytes(),
+    )
 }
 
 /// Asks Excel to calculate the workbook when it opens, adding `calcPr` where the schema wants
@@ -478,12 +537,38 @@ pub fn read_table_part(xml: &[u8]) -> Option<TablePart> {
 }
 
 /// What differs in a new cell format from the one it starts from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct XfChanges {
     pub font: Option<u32>,
     pub fill: Option<u32>,
     pub border: Option<u32>,
     pub num_fmt: Option<u32>,
+    /// `<alignment>`'s attributes, starting with a space.
+    pub alignment: Option<String>,
+}
+
+/// A cell format's XML with this alignment in place of any it had.
+fn with_alignment(xf: &str, name: &str, attributes: &str) -> String {
+    let element = format!("<{name}alignment{attributes}/>");
+    // Without children it is closed in its first tag.
+    if let Some(body) = xf.strip_suffix("/>") {
+        return format!("{body}>{element}</{name}xf>");
+    }
+    let open = format!("<{name}alignment");
+    if let Some(start) = xf.find(&open) {
+        let tail = &xf[start..];
+        if let Some(end) = tail.find("/>").map(|at| at + 2).or_else(|| {
+            tail.find(&format!("</{name}alignment>"))
+                .map(|at| at + name.len() + 12)
+        }) {
+            return format!("{}{element}{}", &xf[..start], &tail[end..]);
+        }
+    }
+    // Alignment comes before anything else inside a format.
+    match xf.find('>') {
+        Some(at) => format!("{}{element}{}", &xf[..=at], &xf[at + 1..]),
+        None => xf.to_string(),
+    }
 }
 
 /// `styles.xml`, which only grows, so every index in the file stays valid. It holds the whole
@@ -674,6 +759,26 @@ impl StylesXml {
         )
     }
 
+    /// Adds a border from its sides' XML. Returns its index.
+    pub fn add_border(&mut self, inner: &str) -> u32 {
+        let name = self.root();
+        // The first border is the default one, and a file with none needs it.
+        if self.entry_count(b"borders", b"border") == 0 {
+            let blank = with_prefix(b"<left/><right/><top/><bottom/><diagonal/>", &name);
+            self.append(
+                "borders",
+                "border",
+                &format!("<{name}border>{blank}</{name}border>"),
+            );
+        }
+        let inner = with_prefix(inner.as_bytes(), &name);
+        self.append(
+            "borders",
+            "border",
+            &format!("<{name}border>{inner}</{name}border>"),
+        )
+    }
+
     fn entry_count(&self, list: &[u8], entry: &[u8]) -> usize {
         let located = tokens(&self.bytes);
         self.find_list(&located, list, entry)
@@ -759,9 +864,15 @@ impl StylesXml {
         if !has_style_list {
             edits.push(("xfId", None));
         }
+        if changes.alignment.is_some() {
+            edits.push(("applyAlignment", Some("1")));
+        }
         let mut xml = edit_tag(&template[..tag_end], &edits);
         xml.extend_from_slice(&template[tag_end..]);
-        let xml = String::from_utf8_lossy(&xml).into_owned();
+        let mut xml = String::from_utf8_lossy(&xml).into_owned();
+        if let Some(alignment) = &changes.alignment {
+            xml = with_alignment(&xml, &name, alignment);
+        }
         self.append("cellXfs", "xf", &xml)
     }
 }

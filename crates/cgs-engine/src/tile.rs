@@ -883,7 +883,7 @@ pub fn edit_text(
 ) -> String {
     let at = cgs_calc::CellRef { sheet, row, col };
     if let Some(formula) = input.calc.formula_text(at) {
-        return format!("={}", formula_for_people(&formula));
+        return format!("={}", cgs_refs::formula_for_people(&formula));
     }
     let info = &input.book.sheets[sheet as usize];
     let table = &input.book.styles;
@@ -924,52 +924,10 @@ pub fn edit_text(
     out
 }
 
-/// Formula text as Excel shows it: without the prefixes a file stores newer functions with,
-/// and without the spaces the engine prints once it has parsed a formula. A space between two
-/// operands stays, because that is the intersection operator.
-fn formula_for_people(text: &str) -> String {
-    let mut plain = text.to_string();
-    for prefix in ["_xlfn.", "_xlws.", "_xlpm."] {
-        if plain.contains(prefix) {
-            plain = plain.replace(prefix, "");
-        }
-    }
-    let operand = |ch: char| {
-        ch.is_alphanumeric() || matches!(ch, '_' | '$' | '\'' | '"' | ')' | ']' | '.' | '#' | '!')
-    };
-    let chars: Vec<char> = plain.chars().collect();
-    let mut out = String::with_capacity(plain.len());
-    let mut quote = None;
-    for (at, &ch) in chars.iter().enumerate() {
-        match quote {
-            Some(open) => {
-                if ch == open {
-                    quote = None;
-                }
-            }
-            None => {
-                if ch == '"' || ch == '\'' {
-                    quote = Some(ch);
-                } else if ch == ' ' {
-                    let before = out.chars().last().is_some_and(operand);
-                    let after = chars[at + 1..]
-                        .iter()
-                        .find(|&&next| next != ' ')
-                        .is_some_and(|&next| operand(next) || next == '(');
-                    if !(before && after) {
-                        continue;
-                    }
-                }
-            }
-        }
-        out.push(ch);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cgs_refs::formula_for_people;
 
     #[test]
     fn finds_direction_from_the_first_strong_character() {

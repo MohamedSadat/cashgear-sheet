@@ -271,6 +271,7 @@ fn a_style_only_edit_recalculates_nothing_and_keeps_the_chain() {
                 font: Some("<b/><sz val=\"11\"/>".to_string()),
                 fill: Some("FFEE00".to_string()),
                 number_format: Some("0.000".to_string()),
+                ..NewStyle::default()
             },
         )
         .unwrap();
