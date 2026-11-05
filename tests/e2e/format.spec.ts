@@ -388,9 +388,14 @@ test.describe('freezing', () => {
     await expect.poll(async () => (await pointFor(page, 5, 0)).y).not.toBe(moving.y);
     expect((await pointFor(page, 0, 0)).y).toBe(before.y);
     await pick(page, 'Freeze Panes', 'Unfreeze Panes');
-    await page.evaluate(() => window.cgsTest.grid()!.scrollTo(0, 0));
+    // The panes go when the engine answers, and until then the top stops at their edge.
     await expect
-      .poll(() => page.evaluate(() => window.cgsTest.grid()!.state().scrollY))
+      .poll(() =>
+        page.evaluate(() => {
+          window.cgsTest.grid()!.scrollTo(0, 0);
+          return window.cgsTest.grid()!.state().scrollY;
+        }),
+      )
       .toBeLessThan(low);
   });
 

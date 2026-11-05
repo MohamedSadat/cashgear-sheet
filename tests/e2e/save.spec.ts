@@ -38,14 +38,15 @@ async function privateFile(page: Page, name: string) {
   const base64 = await page.evaluate(async (name) => {
     const root = await navigator.storage.getDirectory();
     // While a save closes its stream, the browser swaps the new file in, and for a moment there's
-    // none by that name. Edge shows that gap more often than Chrome.
+    // none by that name or one that can't be read yet.
     let bytes: Uint8Array | undefined;
     for (let tries = 0; !bytes; tries++) {
       try {
         const handle = await root.getFileHandle(name);
         bytes = new Uint8Array(await (await handle.getFile()).arrayBuffer());
       } catch (error) {
-        if (tries > 50 || (error as DOMException).name !== 'NotFoundError') throw error;
+        const kind = (error as DOMException).name;
+        if (tries > 50 || (kind !== 'NotFoundError' && kind !== 'NotReadableError')) throw error;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
