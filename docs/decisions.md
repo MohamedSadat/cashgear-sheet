@@ -288,3 +288,18 @@ Nothing public went out. These are on `MohamedSadat/formualizer`, branch `cashge
 | Question | Answer |
 | --- | --- |
 | The 99.5% target came out at 99.350% with the 10% cap, 99.435% pooled. How should the phase end? | Accept 99.35% and tag `phase-4`, with the target recorded as not met and each remaining cause listed. The scoring stays as it was, and formulas calling unknown functions in VBA files aren't kept at their saved values to raise it |
+
+## 2026-11-05: Phase 5
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Ribbon tabs | Working tabs only: File, Home, Insert, Formulas and View, in Excel's order. Data joins in Phase 6, and others when they have real commands |
+| Key tips | Later, after v1, since browsers claim keys like Alt+F and Alt+E. Phase 5 adds Excel's Ctrl shortcuts |
+| Format Cells | Five tabs: Number, Alignment, Font, Border and Fill, including pattern fills, which the grid draws properly. Protection waits for sheet protection, and gradients stay preserved but can't be created |
+| Cell Styles gallery | Moved to Phase 6, beside the table style gallery. Phase 5 keeps a file's named styles intact |
+| Rich text | Draw each run's own style, with no editing of runs. Retyping a rich cell makes it plain, and an untouched cell's runs stay byte for byte |
+| Row heights | Rows refit by themselves, as in Excel. A row with no fixed height refits when wrap, font size or typed text changes it, and saves without `customHeight`. Rows with no stored height from other writers' files fit when they first show. A row you've set stays as set |
+| Visual review | I compare generated workbooks drawn by Excel and by the app and list each difference. You then get a side-by-side page and sign off before `v0.1.0-mvp` is tagged |
+| Your private workbooks in the round-trip | Temp copies, counts only. Formats are applied in the app and saved to a temp file. Excel opens it and reads the formats back, re-saves only that temp copy, and our reader reads it back. Originals open read-only, and temp files are deleted afterwards |
