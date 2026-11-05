@@ -32,6 +32,7 @@ use cgs_refs::{
     rename_in_formula, touches_band,
 };
 
+use crate::file_formula::{expand_three_d, qualify_bare_columns, MovingNames};
 use crate::{
     err, wants_sparse, BookInfo, CalcEngine, CalcError, CalcProgress, CalcValue, CellEdit,
     CellInput, CellRef, CellSink, FormulaShape, LoadEntry, LoadValue, NameInfo, Rect, Result,
@@ -64,6 +65,11 @@ pub struct FormualizerEngine {
     names: Vec<NameInfo>,
     /// Names, in lower case, that stand for more than one cell.
     many_names: HashSet<String>,
+    /// Names, in lower case, that read another workbook. Formulas that use them keep their saved
+    /// value, as a formula that reads the workbook itself does.
+    linked_names: HashSet<String>,
+    /// Names that read something different from one formula to the next.
+    moving_names: MovingNames,
     /// Tables as they stand now, as the engine doesn't move them with rows and columns.
     tables: Vec<crate::TableInfo>,
     /// Sheets between `begin_sheet` and `finish_sheet`.
@@ -258,6 +264,33 @@ pub fn from_literal(value: &LiteralValue) -> CalcValue {
     }
 }
 
+/// A file writes characters XML can't hold in a table's column names as `_x000a_`, and a formula
+/// names the column with the character itself.
+fn decoded_xml_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(at) = rest.find("_x") {
+        let code = rest
+            .get(at + 2..at + 6)
+            .filter(|_| rest.get(at + 6..at + 7) == Some("_"))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .and_then(char::from_u32);
+        match code {
+            Some(ch) => {
+                out.push_str(&rest[..at]);
+                out.push(ch);
+                rest = &rest[at + 7..];
+            }
+            None => {
+                out.push_str(&rest[..at + 2]);
+                rest = &rest[at + 2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Whether a formula reads a workbook other than this one: `[1]Sheet1!A1`, `[1]!Name`, or
 /// `'C:\\files\\[book.xlsx]Sheet 1'!A1`. A table's `Table1[Column]` doesn't count.
 fn reads_another_workbook(text: &str) -> bool {
@@ -339,6 +372,8 @@ impl FormualizerEngine {
             gone: Vec::new(),
             names: Vec::new(),
             many_names: HashSet::new(),
+            linked_names: HashSet::new(),
+            moving_names: MovingNames::default(),
             tables: Vec::new(),
             loads: Vec::new(),
             pending: Vec::new(),
@@ -353,6 +388,29 @@ impl FormualizerEngine {
             idle: true,
             changed: Vec::new(),
         }
+    }
+
+    /// What the engine needs to read a file's formula, if that isn't the text itself.
+    fn file_formula(&self, text: &str, sheet: u32, row: u32, col: u32) -> Option<String> {
+        let mut text = std::borrow::Cow::Borrowed(text);
+        let mut changed = false;
+        if let Some(next) = crate::file_formula::column_line_ends(&text) {
+            text = std::borrow::Cow::Owned(next);
+            changed = true;
+        }
+        if let Some(next) = self.moving_names.expand(&text, sheet, row, col) {
+            text = std::borrow::Cow::Owned(next.trim_start_matches('=').to_string());
+            changed = true;
+        }
+        if let Some(next) = qualify_bare_columns(&text, &self.tables, sheet, row, col) {
+            text = std::borrow::Cow::Owned(next);
+            changed = true;
+        }
+        if let Some(next) = expand_three_d(&text, &self.sheets) {
+            text = std::borrow::Cow::Owned(next.trim_start_matches('=').to_string());
+            changed = true;
+        }
+        changed.then(|| text.into_owned())
     }
 
     /// Sets the conventions `TEXT` follows for built-in date and number forms.
@@ -903,6 +961,13 @@ impl CalcEngine for FormualizerEngine {
             .filter(|name| name.formula.contains(':'))
             .map(|name| name.name.to_ascii_lowercase())
             .collect();
+        self.linked_names = book
+            .names
+            .iter()
+            .filter(|name| reads_another_workbook(&name.formula))
+            .map(|name| name.name.to_ascii_lowercase())
+            .collect();
+        self.moving_names = MovingNames::new(&book.names);
         self.tables = book.tables.clone();
         self.loads = book.sheets.iter().map(|_| None).collect();
         self.pending = vec![Vec::new(); book.sheets.len()];
@@ -938,7 +1003,11 @@ impl CalcEngine for FormualizerEngine {
                 &table.name,
                 RangeRef::new(start, end),
                 table.header_row,
-                table.columns.clone(),
+                table
+                    .columns
+                    .iter()
+                    .map(|name| decoded_xml_name(name))
+                    .collect(),
                 table.totals_row,
             );
         }
@@ -1109,11 +1178,19 @@ impl CalcEngine for FormualizerEngine {
         let extent = &mut self.extents[sheet as usize];
         extent.0 = extent.0.max(row);
         extent.1 = extent.1.max(col);
-        if reads_another_workbook(text) {
+        let linked_names = &self.linked_names;
+        if reads_another_workbook(text)
+            || (!linked_names.is_empty()
+                && crate::intersect::mentions_name(text, &|word| {
+                    linked_names.contains(&word.to_ascii_lowercase())
+                }))
+        {
             self.linked
                 .insert(CellRef { sheet, row, col }, text.to_string());
             return Ok(());
         }
+        let rewritten = self.file_formula(text, sheet, row, col);
+        let text = rewritten.as_deref().unwrap_or(text);
         let staged = match shape {
             FormulaShape::Normal => {
                 let many = &self.many_names;

@@ -1,6 +1,7 @@
 //! The `CalcEngine` trait and the Formualizer adapter. The engine is the only cell
 //! store; `cgs-model` holds everything else.
 
+mod file_formula;
 pub mod formualizer;
 mod intersect;
 

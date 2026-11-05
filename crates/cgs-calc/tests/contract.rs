@@ -1466,3 +1466,103 @@ fn a_plain_formula_reads_one_cell_where_excel_cuts_a_range_down() {
         assert_eq!(at(&engine, 0, 2, 3 + index as u32), *expected, "{text}");
     }
 }
+
+#[test]
+fn a_relative_name_reads_from_where_the_formula_stands() {
+    let mut book = info();
+    book.names = vec![
+        NameInfo {
+            name: "OnRow".to_string(),
+            formula: "Sheet1!$A1".to_string(),
+            local_sheet: None,
+        },
+        NameInfo {
+            name: "Doubled".to_string(),
+            formula: "OnRow*2".to_string(),
+            local_sheet: None,
+        },
+    ];
+    let sheet = vec![
+        (1, 1, num(1.0)),
+        (2, 1, num(2.0)),
+        (3, 1, num(3.0)),
+        (2, 3, formula("OnRow", 0.0)),
+        (3, 3, formula("Doubled", 0.0)),
+    ];
+    let engine = calculated(&book, &[sheet, Vec::new()]);
+    assert_eq!(at(&engine, 0, 2, 3), CalcValue::Number(2.0));
+    assert_eq!(at(&engine, 0, 3, 3), CalcValue::Number(6.0));
+}
+
+#[test]
+fn a_formula_that_uses_a_name_from_another_workbook_keeps_its_saved_value() {
+    let mut book = info();
+    book.names = vec![NameInfo {
+        name: "Elsewhere".to_string(),
+        formula: "[1]Sheet1!$A$1".to_string(),
+        local_sheet: None,
+    }];
+    let sheet = vec![(1, 1, formula("Elsewhere*2", 42.0))];
+    let engine = calculated(&book, &[sheet, Vec::new()]);
+    assert_eq!(at(&engine, 0, 1, 1), CalcValue::Number(42.0));
+}
+
+#[test]
+fn a_bare_column_means_the_table_the_formula_stands_in() {
+    let mut book = info();
+    book.tables = vec![TableInfo {
+        name: "Sales".to_string(),
+        sheet: 0,
+        range: Rect {
+            top: 1,
+            left: 1,
+            bottom: 4,
+            right: 1,
+        },
+        header_row: true,
+        totals_row: true,
+        columns: vec!["Amount".to_string()],
+    }];
+    let sheet = vec![
+        (1, 1, text("Amount")),
+        (2, 1, num(5.0)),
+        (3, 1, num(6.0)),
+        (4, 1, formula("SUBTOTAL(109,[Amount])", 0.0)),
+    ];
+    let engine = calculated(&book, &[sheet, Vec::new()]);
+    assert_eq!(at(&engine, 0, 4, 1), CalcValue::Number(11.0));
+}
+
+#[test]
+fn a_reference_across_sheets_reads_each_sheet() {
+    let book = BookInfo {
+        sheets: vec![
+            "Total".to_string(),
+            "Jan".to_string(),
+            "Feb".to_string(),
+            "End".to_string(),
+        ],
+        ..BookInfo::default()
+    };
+    let engine = calculated(
+        &book,
+        &[
+            vec![(1, 1, formula("SUM(Jan:End!A1:A2)", 0.0))],
+            vec![(1, 1, num(1.0)), (2, 1, num(2.0))],
+            vec![(1, 1, num(4.0))],
+            vec![(2, 1, num(8.0))],
+        ],
+    );
+    assert_eq!(at(&engine, 0, 1, 1), CalcValue::Number(15.0));
+}
+
+#[test]
+fn a_sheet_named_like_the_engines_first_sheet_keeps_its_cells() {
+    let book = BookInfo {
+        sheets: vec!["sheet1".to_string()],
+        ..BookInfo::default()
+    };
+    let sheet = vec![(1, 1, text("x")), (1, 2, formula("A1&\"y\"", 0.0))];
+    let engine = calculated(&book, &[sheet]);
+    assert_eq!(at(&engine, 0, 1, 2), CalcValue::Text("xy".to_string()));
+}
