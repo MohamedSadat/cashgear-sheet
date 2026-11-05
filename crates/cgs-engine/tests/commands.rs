@@ -114,6 +114,18 @@ fn typed(engine: &mut Engine, sheet: u32, row: u32, col: u32, text: &str) {
     settle(engine);
 }
 
+#[test]
+fn a_csv_is_part_of_what_a_save_writes() {
+    let mut engine = opened(cgs_xlsx::blank::blank_workbook().unwrap());
+    engine.load_csv("a,1\r\nb,=1+1\r\n").unwrap();
+    assert!(engine.has_changes());
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    let mut again = opened(out);
+    assert_eq!(again.display_text(0, 2, 1), "b");
+    assert_eq!(again.display_text(0, 2, 2), "2");
+}
+
 fn axis(engine: &mut Engine, json: &str) {
     engine.apply_json(json).unwrap();
     settle(engine);

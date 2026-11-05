@@ -1752,7 +1752,7 @@ impl CalcEngine for FormualizerEngine {
                     .to_string(),
             )
         };
-        if depth < 0 {
+        if depth < 0 || fixed.starts_with('=') {
             return Err(problem());
         }
         let ast = parse(format!("={fixed}")).map_err(|_| problem())?;

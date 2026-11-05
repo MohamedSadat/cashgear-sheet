@@ -599,6 +599,7 @@ dependencies = [
  "cgs-calc",
  "cgs-engine",
  "cgs-model",
+ "cgs-numfmt",
  "cgs-refs",
  "cgs-xlsx",
  "quick-xml 0.39.4",

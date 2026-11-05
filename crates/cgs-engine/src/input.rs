@@ -21,8 +21,6 @@ pub enum Typed {
 pub enum Format {
     /// A built-in format's id.
     Builtin(u32),
-    /// A code to add.
-    Code(&'static str),
 }
 
 const ERRORS: &[&str] = &[
@@ -92,6 +90,10 @@ fn number(text: &str, locale: &Locale) -> Option<Typed> {
         .strip_prefix('(')
         .and_then(|rest| rest.strip_suffix(')'))
     {
+        // Brackets already say it's negative, so `(-1)` isn't a number.
+        if inner.trim_start().starts_with('-') {
+            return None;
+        }
         negative = true;
         body = inner.trim();
     }
@@ -105,6 +107,9 @@ fn number(text: &str, locale: &Locale) -> Option<Typed> {
     if let Some(rest) = body.strip_suffix('%') {
         percent = true;
         body = rest.trim_end();
+    } else if let Some(rest) = body.strip_prefix('%') {
+        percent = true;
+        body = rest.trim_start();
     }
     let mut currency = false;
     for symbol in [locale.currency.as_str(), "$"] {
@@ -116,6 +121,9 @@ fn number(text: &str, locale: &Locale) -> Option<Typed> {
             body = rest.trim_start();
             break;
         }
+    }
+    if currency && percent {
+        return None;
     }
     if currency {
         if let Some(rest) = body.strip_prefix('-') {
@@ -146,6 +154,15 @@ fn number(text: &str, locale: &Locale) -> Option<Typed> {
     if !value.is_finite() {
         return None;
     }
+    // Too small to hold, which Excel leaves as text rather than calling it zero.
+    if value == 0.0
+        && plain
+            .split(['e', 'E'])
+            .next()
+            .is_some_and(|m| m.bytes().any(|b| matches!(b, b'1'..=b'9')))
+    {
+        return None;
+    }
     let mut value = if negative { -value } else { value };
     if percent {
         value /= 100.0;
@@ -154,19 +171,12 @@ fn number(text: &str, locale: &Locale) -> Option<Typed> {
         rest.bytes().take_while(u8::is_ascii_digit).count()
     });
     let exponent = plain.contains('e') || plain.contains('E');
-    Some(if percent {
+    Some(if exponent {
+        Typed::Formatted(value, Format::Builtin(11))
+    } else if percent {
         Typed::Formatted(value, Format::Builtin(if decimals > 0 { 10 } else { 9 }))
     } else if currency {
-        Typed::Formatted(
-            value,
-            Format::Code(if decimals > 0 {
-                "\"$\"#,##0.00_);\\(\"$\"#,##0.00\\)"
-            } else {
-                "\"$\"#,##0_);\\(\"$\"#,##0\\)"
-            }),
-        )
-    } else if exponent {
-        Typed::Formatted(value, Format::Builtin(11))
+        Typed::Formatted(value, Format::Builtin(if decimals > 0 { 8 } else { 6 }))
     } else if grouped {
         Typed::Formatted(value, Format::Builtin(if decimals > 0 { 4 } else { 3 }))
     } else {
@@ -174,8 +184,8 @@ fn number(text: &str, locale: &Locale) -> Option<Typed> {
     })
 }
 
-/// Takes the user's separators out, and says whether it had group separators. Groups must be
-/// whole, as `1,23` is not a number.
+/// Takes the user's separators out, and says whether it had group separators. As in Excel, a group
+/// can be long but not short: `1,2345` and `1000,000` are numbers, and `1,23` is not.
 fn plain_number(text: &str, locale: &Locale) -> Option<(String, bool)> {
     let decimal = locale.decimal.chars().next().unwrap_or('.');
     let group = locale.group.chars().next().unwrap_or(',');
@@ -195,12 +205,12 @@ fn plain_number(text: &str, locale: &Locale) -> Option<(String, bool)> {
     if grouped {
         let mut parts = whole.split(group);
         let first = parts.next()?;
-        if first.is_empty() || first.len() > 3 || !first.bytes().all(|b| b.is_ascii_digit()) {
+        if first.is_empty() || !first.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
         digits.push_str(first);
         for part in parts {
-            if part.len() != 3 || !part.bytes().all(|b| b.is_ascii_digit()) {
+            if part.len() < 3 || !part.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
             }
             digits.push_str(part);
@@ -375,6 +385,11 @@ fn date_only(text: &str, locale: &Locale, date1904: bool, today: f64) -> Option<
             .then(|| part.parse().ok())
             .flatten()
     };
+    // Numbers alone only stand for a date with marks between them, so `1 1/2` is a fraction or text.
+    let has_month = parts.iter().any(|part| month_named(part, locale).is_some());
+    if !has_month && text.contains(char::is_whitespace) {
+        return None;
+    }
     match parts.as_slice() {
         [a, b] => {
             if let Some(month) = month_named(a, locale) {
@@ -404,7 +419,7 @@ fn date_only(text: &str, locale: &Locale, date1904: bool, today: f64) -> Option<
             if let Some(serial) = date_serial(current, month, day, date1904) {
                 return Some((serial, Format::Builtin(16)));
             }
-            if (1..=12).contains(&x) && y >= 32 {
+            if (1..=12).contains(&x) {
                 let year = full_year(b)?;
                 return Some((date_serial(year, x, 1, date1904)?, Format::Builtin(17)));
             }
@@ -412,6 +427,10 @@ fn date_only(text: &str, locale: &Locale, date1904: bool, today: f64) -> Option<
         }
         [a, b, c] => {
             if let Some(month) = month_named(a, locale) {
+                // `Mar 4, 2021`: the comma is what Excel goes by.
+                if !text.contains(',') {
+                    return None;
+                }
                 return Some((
                     date_serial(full_year(c)?, month, number(b)?, date1904)?,
                     Format::Builtin(15),
@@ -440,8 +459,9 @@ fn date_only(text: &str, locale: &Locale, date1904: bool, today: f64) -> Option<
     }
 }
 
-/// A time of day as a fraction, with its format.
-fn time_only(text: &str, locale: &Locale) -> Option<(f64, Format)> {
+/// A time of day as a fraction, with its format. Excel reads `1:60` as the time it comes to, but
+/// doesn't call it a time, so that takes no format.
+fn time_only(text: &str, locale: &Locale) -> Option<(f64, Option<Format>)> {
     let lower = text.to_lowercase();
     let am = locale.am.to_lowercase();
     let pm = locale.pm.to_lowercase();
@@ -471,13 +491,26 @@ fn time_only(text: &str, locale: &Locale) -> Option<(f64, Format)> {
         Some(part) => part.trim().parse().ok()?,
         None => 0.0,
     };
-    if parts.next().is_some()
-        || hours.fract() != 0.0
-        || minutes.fract() != 0.0
-        || !(0.0..60.0).contains(&minutes)
-        || !(0.0..60.0).contains(&seconds)
-        || hours < 0.0
-    {
+    if parts.next().is_some() || hours < 0.0 || hours.fract() != 0.0 || hours >= 10_000.0 {
+        return None;
+    }
+    // `12:30.5` is minutes and seconds, down to a fraction of a second.
+    if minutes.fract() != 0.0 {
+        if half.is_some() || seconds_text.is_some() || !(0.0..60.0).contains(&minutes) {
+            return None;
+        }
+        return Some((
+            (hours * 60.0 + minutes) / 86_400.0,
+            Some(Format::Builtin(47)),
+        ));
+    }
+    if minutes < 0.0 || seconds < 0.0 {
+        return None;
+    }
+    if half.is_none() && (minutes >= 60.0 || seconds >= 60.0) {
+        return Some(((hours * 3600.0 + minutes * 60.0 + seconds) / 86_400.0, None));
+    }
+    if minutes >= 60.0 || seconds >= 60.0 {
         return None;
     }
     let hours = match half {
@@ -490,13 +523,20 @@ fn time_only(text: &str, locale: &Locale) -> Option<(f64, Format)> {
         None => hours,
     };
     let value = (hours * 3600.0 + minutes * 60.0 + seconds) / 86_400.0;
+    // Past a day, it's a length of time rather than a time of day.
+    if half.is_none() && hours >= 24.0 {
+        return Some((value, Some(Format::Builtin(46))));
+    }
+    if half.is_none() && seconds.fract() != 0.0 {
+        return Some((value, Some(Format::Builtin(47))));
+    }
     let format = match (half.is_some(), seconds_text.is_some()) {
         (true, true) => 19,
         (true, false) => 18,
         (false, true) => 21,
         (false, false) => 20,
     };
-    Some((value, Format::Builtin(format)))
+    Some((value, Some(Format::Builtin(format))))
 }
 
 fn date_time(text: &str, locale: &Locale, date1904: bool, today: f64) -> Option<Typed> {
@@ -505,7 +545,10 @@ fn date_time(text: &str, locale: &Locale, date1904: bool, today: f64) -> Option<
         return None;
     }
     if let Some((value, format)) = time_only(text, locale) {
-        return Some(Typed::Formatted(value, format));
+        return Some(match format {
+            Some(format) => Typed::Formatted(value, format),
+            None => Typed::Value(CalcValue::Number(value)),
+        });
     }
     if let Some((value, format)) = date_only(text, locale, date1904, today) {
         return Some(Typed::Formatted(value, format));
@@ -529,6 +572,31 @@ mod tests {
     use super::*;
 
     const TODAY: f64 = 46_331.0; // 2026-11-05
+
+    /// Each read off Excel by `bench/run-excel-input.mjs`.
+    #[test]
+    fn the_odd_ones_excel_reads_its_own_way() {
+        assert_eq!(formatted("1,2345"), (12_345.0, Format::Builtin(3)));
+        assert_eq!(formatted("1000,000"), (1_000_000.0, Format::Builtin(3)));
+        is_text("1,23");
+        is_text("12,34,56");
+        assert_eq!(formatted("%5"), (0.05, Format::Builtin(9)));
+        assert_eq!(formatted("1e3%"), (10.0, Format::Builtin(11)));
+        assert_eq!(formatted("$1e3"), (1000.0, Format::Builtin(11)));
+        assert_eq!(formatted("$5"), (5.0, Format::Builtin(6)));
+        assert_eq!(formatted("$5.50"), (5.5, Format::Builtin(8)));
+        is_text("$5%");
+        is_text("(-1)");
+        is_text("1E-400");
+        is_text("1 1/0");
+        is_text("mar 4 2021");
+        assert_eq!(formatted("1/0"), (36_526.0, Format::Builtin(17)));
+        assert_eq!(formatted("25:00").1, Format::Builtin(46));
+        assert_eq!(formatted("12:30.5").1, Format::Builtin(47));
+        assert_eq!(formatted("1:02:03.5").1, Format::Builtin(47));
+        assert!((plain("1:60") - 2.0 / 24.0).abs() < 1e-12);
+        is_text("10000:00");
+    }
 
     fn read(text: &str) -> Typed {
         parse_input(text, &Locale::en_us(), false, TODAY)
@@ -650,6 +718,6 @@ mod tests {
         assert_eq!(formatted("1:02:03").1, Format::Builtin(21));
         assert_eq!(formatted("1/2/2020 12:00").0, 43_832.5);
         assert_eq!(formatted("1/2/2020 12:00").1, Format::Builtin(22));
-        is_text("1:99");
+        assert!((plain("1:99") - 2.65 / 24.0).abs() < 1e-12);
     }
 }

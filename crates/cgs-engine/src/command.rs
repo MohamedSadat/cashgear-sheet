@@ -1277,12 +1277,10 @@ impl Session {
         }
         let new = crate::edit::NewStyle {
             number_format: match format {
-                Format::Code(code) => Some(code.to_string()),
                 Format::Builtin(_) => None,
             },
             number_format_id: match format {
                 Format::Builtin(id) => Some(id),
-                Format::Code(_) => None,
             },
             ..Default::default()
         };

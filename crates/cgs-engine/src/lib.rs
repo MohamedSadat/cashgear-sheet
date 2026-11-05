@@ -186,6 +186,8 @@ impl Session {
     /// Puts in cells that are part of what opened, such as a CSV file's, with no undo step.
     fn load_cells(&mut self, edits: Vec<EditCell>) -> Result<(), String> {
         let _ = self.apply_loaded(edits)?;
+        // Not an edit undo would take back, but these differ from the file, so a save writes them.
+        self.history.touch();
         Ok(())
     }
 }
