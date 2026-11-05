@@ -128,6 +128,21 @@ pub struct TableInfo {
     pub columns: Vec<String>,
 }
 
+/// The name Excel gives a table's new column: the first `ColumnN` the table doesn't have.
+pub fn new_column_name(columns: &[String]) -> String {
+    let mut number = 1;
+    loop {
+        let name = format!("Column{number}");
+        if !columns
+            .iter()
+            .any(|other| other.eq_ignore_ascii_case(&name))
+        {
+            return name;
+        }
+        number += 1;
+    }
+}
+
 /// A value as the file reader hands it over, borrowing its text.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoadValue<'a> {

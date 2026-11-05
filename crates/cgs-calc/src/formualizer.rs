@@ -666,18 +666,7 @@ impl FormualizerEngine {
                 } else if edit.at > table.range.left && edit.at <= table.range.right {
                     let at = (edit.at - table.range.left) as usize;
                     for step in 0..edit.count as usize {
-                        let mut number = 1;
-                        let name = loop {
-                            let name = format!("Column{number}");
-                            if !table
-                                .columns
-                                .iter()
-                                .any(|other| other.eq_ignore_ascii_case(&name))
-                            {
-                                break name;
-                            }
-                            number += 1;
-                        };
+                        let name = crate::new_column_name(&table.columns);
                         table.columns.insert(at + step, name.clone());
                         if table.header_row {
                             headers.push((

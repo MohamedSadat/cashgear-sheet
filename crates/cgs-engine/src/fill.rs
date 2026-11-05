@@ -427,14 +427,22 @@ impl Session {
                 ) {
                     Some(input) => input,
                     None => counted.or_else(|| {
-                        self.copied_input(
+                        let cols = i64::from(col) - i64::from(source_col);
+                        let input = self.copied_input(
                             sheet,
                             source_row,
                             source_col,
                             i64::from(row) - i64::from(source_row),
-                            i64::from(col) - i64::from(source_col),
+                            cols,
                             PasteMode::All,
-                        )
+                        );
+                        // Across, a table's columns move along as well, as Excel's fill does.
+                        match input {
+                            Some(EditInput::Formula(text)) if across => Some(EditInput::Formula(
+                                self.fill_table_columns(sheet, source_row, source_col, &text, cols),
+                            )),
+                            other => other,
+                        }
                     }),
                 };
                 edits.push(EditCell {
@@ -447,6 +455,23 @@ impl Session {
             }
         }
         Ok(edits)
+    }
+
+    /// `text` with its references to one column of a table moved `cols` along that table.
+    fn fill_table_columns(&self, sheet: u32, row: u32, col: u32, text: &str, cols: i64) -> String {
+        let tables = self.calc.tables();
+        let home = tables
+            .iter()
+            .find(|table| table.sheet == sheet && table.range.contains(row, col))
+            .map(|table| table.name.as_str());
+        let list: Vec<cgs_refs::TableColumns<'_>> = tables
+            .iter()
+            .map(|table| cgs_refs::TableColumns {
+                name: &table.name,
+                columns: &table.columns,
+            })
+            .collect();
+        cgs_refs::fill_table_columns(text, cols, &list, home).into_owned()
     }
 
     fn is_date_format(&self, num_fmt: u32) -> bool {

@@ -1029,6 +1029,24 @@ pub fn display_text(
 }
 
 /// What the formula bar shows for a cell: its formula, or its constant in full.
+/// A formula in a table, as Excel shows it there: its own columns without the table's name.
+pub fn own_table_text(
+    calc: &impl CalcEngine,
+    sheet: u32,
+    row: u32,
+    col: u32,
+    text: String,
+) -> String {
+    let table = calc
+        .tables()
+        .iter()
+        .find(|table| table.sheet == sheet && table.range.contains(row, col));
+    match table.map(|table| cgs_refs::own_table_for_people(&text, &table.name)) {
+        Some(std::borrow::Cow::Owned(shown)) => shown,
+        _ => text,
+    }
+}
+
 pub fn edit_text(
     input: &TileInput<'_>,
     cache: &mut TileCache,
@@ -1038,6 +1056,7 @@ pub fn edit_text(
 ) -> String {
     let at = cgs_calc::CellRef { sheet, row, col };
     if let Some(formula) = input.calc.formula_text(at) {
+        let formula = own_table_text(input.calc, sheet, row, col, formula);
         return format!("={}", cgs_refs::formula_for_people(&formula));
     }
     let info = &input.book.sheets[sheet as usize];

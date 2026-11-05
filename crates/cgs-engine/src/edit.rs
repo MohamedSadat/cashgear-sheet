@@ -473,12 +473,12 @@ impl Engine {
         }
     }
 
-    /// A formula's text as the engine holds it, for tests and the bench.
+    /// A formula's text as Excel shows it, for tests and the bench: inside a table, references to
+    /// one of its own columns lose the table's name.
     pub fn formula_text(&self, sheet: u32, row: u32, col: u32) -> Option<String> {
-        self.session
-            .as_ref()?
-            .calc
-            .formula_text(CellRef { sheet, row, col })
+        let calc = &self.session.as_ref()?.calc;
+        let text = calc.formula_text(CellRef { sheet, row, col })?;
+        Some(crate::tile::own_table_text(calc, sheet, row, col, text))
     }
 
     /// Whether the workbook differs from the file it came from.

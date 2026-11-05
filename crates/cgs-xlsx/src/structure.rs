@@ -1173,7 +1173,12 @@ pub fn rewrite_table(
             if let Some(area) = area {
                 let mut left = area.left;
                 let mut right = area.right;
-                for edit in edits.own.iter().filter(|edit| edit.axis == Axis::Col) {
+                // A shift whose band misses some of the table's rows doesn't reach its columns.
+                for edit in edits
+                    .own
+                    .iter()
+                    .filter(|edit| edit.axis == Axis::Col && edit.covers((area.top, area.bottom)))
+                {
                     edit_table_columns(table, edit, left, right, new_name);
                     if let Some(span) = edit.span((left, right)) {
                         left = span.0;

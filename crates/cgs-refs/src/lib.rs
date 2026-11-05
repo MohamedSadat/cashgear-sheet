@@ -4,6 +4,7 @@
 
 pub mod file_text;
 pub mod rewrite;
+pub mod table_text;
 
 pub use file_text::{formula_for_file, formula_for_people};
 pub use rewrite::{
@@ -12,6 +13,7 @@ pub use rewrite::{
     reads_sheet, reads_tables, rename_in_formula, rename_table_column, sheet_key, touches_band,
     Axis, AxisEdit, BookEdit, MovedCells, Span,
 };
+pub use table_text::{fill_table_columns, own_table_for_people, TableColumns};
 
 pub const MAX_ROW: i64 = 1_048_576;
 pub const MAX_COL: i64 = 16_384;
