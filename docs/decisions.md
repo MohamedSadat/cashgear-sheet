@@ -303,3 +303,19 @@ Nothing public went out. These are on `MohamedSadat/formualizer`, branch `cashge
 | Row heights | Rows refit by themselves, as in Excel. A row with no fixed height refits when wrap, font size or typed text changes it, and saves without `customHeight`. Rows with no stored height from other writers' files fit when they first show. A row you've set stays as set |
 | Visual review | I compare generated workbooks drawn by Excel and by the app and list each difference. You then get a side-by-side page and sign off before `v0.1.0-mvp` is tagged |
 | Your private workbooks in the round-trip | Temp copies, counts only. Formats are applied in the app and saved to a temp file. Excel opens it and reads the formats back, re-saves only that temp copy, and our reader reads it back. Originals open read-only, and temp files are deleted afterwards |
+
+**Defaults picked during the phase**
+
+| Choice | Default |
+| --- | --- |
+| Font name and size boxes | A text box with a list (`datalist`) inside `CgRibbon`, so any name or size can be typed, as in Excel |
+| Column auto-fit | Measured text plus 7 px, which matches Excel's double-click on Calibri 11 at 100% |
+| Row auto-fit | Excel's measured AutoFit heights for 10 common fonts at 12 to 72 points, and 1.75 times the size for anything else or smaller |
+| A whole column's font | Also sets the sheet's default row height, as Excel does, so `sheetFormatPr` changes with it |
+| Theme tints | Kept to 32767ths, as Excel stores them, so a saved tint reads back the same through Excel |
+| Text on a fill in dark mode | Keeps its stored colour when it reads well on the fill, as the fill itself stays as stored. Otherwise the usual dark-mode swap applies |
+| Typing into a cell formatted as Text | Stays text, formulas included, as in Excel. Numbers already in such a cell are drawn as text |
+| Shifting cells | Refused where it would cut a table, a merged area or an array, with Excel's reasons. Formulas, names and the ranges the file keeps follow the shift |
+| Find | Up to 10,000 results in Find All. Wildcards `*`, `?` and `~` as in Excel |
+| Pattern fills | Drawn from 4×4 bitmaps copied from Excel's own pixels at 100% |
+| A table heading renamed | The table's calculated column and totals formulas follow the new name, or Excel refuses the file. A broken fixture keeps that checked |
