@@ -498,6 +498,52 @@ fn push_row(out: &mut String, abs: bool, row: u32) {
     push_number(out, i64::from(row));
 }
 
+/// A range the band doesn't cover, with an end taken away whole by deleted cells: Excel trims
+/// that end, as deleting C13 with cells shifting left makes C2:C13 into C2:C12.
+fn trimmed_end(target: &Target, edit: &AxisEdit) -> Option<Target> {
+    let (Some((from, to)), true) = (edit.band, edit.delete) else {
+        return None;
+    };
+    let Target::Cells {
+        abs,
+        top,
+        left,
+        bottom,
+        right,
+    } = target.clone()
+    else {
+        return None;
+    };
+    let gone = (edit.at, edit.at + edit.count - 1);
+    // Along the edit's axis the range has to lie in what is deleted, and across it the band has
+    // to hold one end and not the other.
+    let (along, across) = match edit.axis {
+        Axis::Col => ((left, right), (top, bottom)),
+        Axis::Row => ((top, bottom), (left, right)),
+    };
+    if along.0 < gone.0 || along.1 > gone.1 {
+        return None;
+    }
+    let across = if across.0 < from && across.1 >= from && across.1 <= to {
+        (across.0, from - 1)
+    } else if across.1 > to && across.0 >= from && across.0 <= to {
+        (to + 1, across.1)
+    } else {
+        return None;
+    };
+    let (top, left, bottom, right) = match edit.axis {
+        Axis::Col => (across.0, left, across.1, right),
+        Axis::Row => (top, across.0, bottom, across.1),
+    };
+    Some(Target::Cells {
+        abs,
+        top,
+        left,
+        bottom,
+        right,
+    })
+}
+
 /// The target after the edit, or `None` if nothing is left of it.
 fn edited(target: &Target, edit: &AxisEdit) -> Option<Target> {
     if edit.band.is_some() {
@@ -520,7 +566,7 @@ fn edited(target: &Target, edit: &AxisEdit) -> Option<Target> {
             Target::Cols { .. } | Target::Rows { .. } => None,
         };
         if !across.is_some_and(|span| edit.covers(span)) {
-            return Some(target.clone());
+            return Some(trimmed_end(target, edit).unwrap_or_else(|| target.clone()));
         }
     }
     match target.clone() {
@@ -1500,6 +1546,38 @@ mod tests {
             },
         ];
         assert_eq!(apply_edits("A1+S!B2", "S", &edits), "A2+T!B3");
+    }
+
+    #[test]
+    fn deleted_cells_that_take_a_ranges_end_trim_it() {
+        // Deleting C13 with cells shifting left, as Excel does it.
+        let left = AxisEdit {
+            band: Some((13, 13)),
+            ..del(Axis::Col, 3, 1)
+        };
+        assert_eq!(edit_formula("SUM(C2:C13)", "S", "S", &left), "SUM(C2:C12)");
+        let first = AxisEdit {
+            band: Some((5, 5)),
+            ..del(Axis::Col, 1, 1)
+        };
+        assert_eq!(
+            edit_formula("SUM(A2:A5)", "Sheet1", "Sheet1", &first),
+            "SUM(A2:A4)"
+        );
+        assert_eq!(
+            edit_formula("SUM(C13:C20)", "S", "S", &left),
+            "SUM(C14:C20)"
+        );
+        // Not a whole end, or not only what is deleted: left alone.
+        assert_eq!(edit_formula("SUM(C2:C20)", "S", "S", &left), "SUM(C2:C20)");
+        assert_eq!(edit_formula("SUM(B2:C13)", "S", "S", &left), "SUM(B2:C13)");
+        assert_eq!(edit_formula("SUM(B2:B13)", "S", "S", &left), "SUM(B2:B13)");
+        // The same across: deleting B2:C2 with cells shifting up.
+        let up = AxisEdit {
+            band: Some((2, 3)),
+            ..del(Axis::Row, 2, 1)
+        };
+        assert_eq!(edit_formula("SUM(A2:C2)", "S", "S", &up), "SUM(A2:A2)");
     }
 
     #[test]
