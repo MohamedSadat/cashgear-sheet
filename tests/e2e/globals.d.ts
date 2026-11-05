@@ -32,6 +32,7 @@ interface Window {
       content: { number?: number; text?: string; formula?: string },
     ): Promise<void>;
     command(command: unknown): Promise<unknown>;
+    settled(): Promise<unknown>;
     hasChanges(): Promise<boolean>;
     writeTo(target: unknown): Promise<void>;
     lastSave(): unknown;

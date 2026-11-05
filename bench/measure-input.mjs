@@ -3,7 +3,7 @@
 // saving takes in WASM, with the page's longest frame while it does. Runs against `pnpm preview`,
 // so build first. Timings mean something only on the reference machine.
 // Usage: node bench/measure-input.mjs [--out=file] [--no-save]
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from '@playwright/test';
@@ -36,7 +36,14 @@ const browser = await chromium.launch({ channel: 'chrome', headless: false });
 async function openFile(path) {
   const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
   const page = await context.newPage();
-  page.on('pageerror', (error) => console.error('Page error:', error.message));
+  // A page that has fallen over gives timings that mean nothing.
+  page.on('pageerror', (error) => {
+    console.error('Page error:', error.stack ?? error.message);
+    process.exit(1);
+  });
+  page.on('console', (message) => {
+    if (message.type() === 'error') console.error('Console:', message.text().slice(0, 400));
+  });
   await page.addInitScript(() => {
     delete window.showOpenFilePicker;
   });
@@ -123,16 +130,20 @@ async function measureInput(path) {
 
   // The first edit's graph build happened on opening, so this only starts the calculation.
   const calculating = page.getByTestId('calc-status');
-  const result = { file: path.split(/[\\/]/).pop(), calculations: [], keysWhileIdle: null };
+  const result = { file: path.split(/[\\/]/).pop(), calculations: [] };
 
   await goTo(page, 'H2');
-  for (let press = 0; press < 60; press++) await page.keyboard.press('ArrowDown');
+  for (let press = 0; press < 60; press++) {
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(30);
+  }
   await page.waitForTimeout(200);
-  result.keysWhileIdle = summary(await page.evaluate(() => window.keyDelays.splice(0)));
+  result.keysRightAfterOpening = summary(await page.evaluate(() => window.keyDelays.splice(0)));
   await page.evaluate(() => window.engineWaits.splice(0));
   await page.evaluate(() => window.frameGaps.splice(0));
 
   let spare = 20;
+  const commits = [];
   const keysDuring = [];
   const engineDuring = [];
   const framesDuring = [];
@@ -141,6 +152,7 @@ async function measureInput(path) {
     const started = Date.now();
     await page.keyboard.type(String(round + 2));
     await page.keyboard.press('Enter');
+    await page.evaluate(() => window.cgsTest.settled());
     await calculating.waitFor({ state: 'visible', timeout: 60000 });
     let typed = 0;
     await goTo(page, 'H' + (round * 100 + 2));
@@ -152,15 +164,41 @@ async function measureInput(path) {
       await page.keyboard.type(String(spare++));
       await page.keyboard.press('Enter');
       typed += 5;
-      await page.waitForTimeout(30);
+      // Five keys in about a third of a second, which is someone typing very fast. A command runs
+      // once those before it have, so this says how long an edit takes to reach the engine.
+      const sent = Date.now();
+      await page.evaluate(() => window.cgsTest.settled());
+      commits.push(Date.now() - sent);
+      await page.waitForTimeout(250);
     }
+    await page.evaluate(() => window.cgsTest.settled());
     const took = Date.now() - started;
     keysDuring.push(...(await page.evaluate(() => window.keyDelays.splice(0))));
     engineDuring.push(...(await page.evaluate(() => window.engineWaits.splice(0))));
     framesDuring.push(...(await page.evaluate(() => window.frameGaps.splice(0))));
-    result.calculations.push({ calculationMs: took, keysPressed: typed });
+    // A calculation that ended early, or a refused edit, would make these timings meaningless.
+    const shown = await page.evaluate(async (value) => {
+      const grid = window.cgsTest;
+      return {
+        input: await grid.cellText(1, 7),
+        expected: value + 1,
+        first: await grid.cellText(1, 2),
+        status: document.querySelector('[data-testid="engine-status"]')?.textContent,
+        memoryMiB: Math.round((await grid.memoryBytes()) / 1048576),
+      };
+    }, round + 2);
+    result.calculations.push({ calculationMs: took, keysPressed: typed, ...shown });
     console.log(JSON.stringify(result.calculations.at(-1)));
   }
+  // The same keys with nothing left to calculate, for comparison.
+  await page.evaluate(() => window.keyDelays.splice(0));
+  for (let press = 0; press < 60; press++) {
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(200);
+  result.keysOnceSettled = summary(await page.evaluate(() => window.keyDelays.splice(0)));
+  result.commitsDuringRecalculation = summary(commits);
   result.keysDuringRecalculation = summary(keysDuring);
   result.engineWaitDuringRecalculation = summary(engineDuring);
   result.framesDuringRecalculation = summary(framesDuring);
@@ -221,5 +259,6 @@ if (!process.argv.includes('--no-save')) {
 }
 writeFileSync(out, JSON.stringify(output, null, 2) + '\n');
 await browser.close();
-server?.kill();
+// The server is a shell's grandchild, which killing the shell would leave running and holding dist.
+if (server) spawnSync('taskkill', ['/pid', String(server.pid), '/t', '/f'], { stdio: 'ignore' });
 process.exit(0);

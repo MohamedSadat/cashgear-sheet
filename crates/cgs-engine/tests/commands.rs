@@ -63,6 +63,53 @@ fn opened(bytes: Vec<u8>) -> Engine {
     engine
 }
 
+/// Someone carrying on typing while a calculation runs, a slice at a time, and then changing what
+/// every formula reads. However many commands went in between, each change has to reach them all.
+#[test]
+fn edits_during_a_calculation_never_lose_a_later_one() {
+    let mut engine = opened(cgs_xlsx::blank::blank_workbook().unwrap());
+    const ROWS: u32 = 20_000;
+    let input = |row: u32, col: u32, text: &str| {
+        format!(r#"{{"kind":"input","sheet":0,"row":{row},"col":{col},"text":"{text}"}}"#)
+    };
+    engine.apply_json(&input(1, 7, "1")).unwrap();
+    for row in 1..=ROWS {
+        engine
+            .apply_json(&input(row, 1, &(row % 1000).to_string()))
+            .unwrap();
+    }
+    engine.apply_json(&input(1, 2, "=A1*$G$1+1")).unwrap();
+    engine
+        .apply_json(&format!(
+            r#"{{"kind":"fill","sheet":0,"from":{{"top":1,"left":2,"bottom":1,"right":2}},"to":{{"top":1,"left":2,"bottom":{ROWS},"right":2}}}}"#
+        ))
+        .unwrap();
+    settle(&mut engine);
+    let mut spare = 0u32;
+    for round in 0..6u32 {
+        let value = round + 2;
+        engine.apply_json(&input(1, 7, &value.to_string())).unwrap();
+        // The second round is the long one, as it was in the app.
+        let commands = if round == 1 { 4000 } else { 40 };
+        for command in 0..commands {
+            let _ = engine.calc_step(0, &[]).unwrap();
+            spare += 1;
+            engine
+                .apply_json(&input(2 + command % 200, 8 + round, &spare.to_string()))
+                .unwrap();
+        }
+        settle(&mut engine);
+        for row in (1..=ROWS).step_by(997) {
+            let expected = u64::from(row % 1000) * u64::from(value) + 1;
+            assert_eq!(
+                engine.display_text(0, row, 2),
+                expected.to_string(),
+                "row {row} of round {round}"
+            );
+        }
+    }
+}
+
 fn settle(engine: &mut Engine) {
     while engine.calc_step(1000, &[]).unwrap() {}
     engine.take_dirty();

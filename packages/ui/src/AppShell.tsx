@@ -616,7 +616,13 @@ export function AppShell({ platform, theme }: AppShellProps) {
     editingRef.current = new SheetEditing(through);
   }
   const editing = editingRef.current;
-  const edit = useSyncExternalStore(editing.session.subscribe, editing.session.snapshot);
+  // Only what the status bar says, so that a keystroke redraws the two text boxes and not this.
+  const editMode = useSyncExternalStore(editing.session.subscribe, () => {
+    const state = editing.session.snapshot();
+    if (!state.active) return null;
+    if (state.picked) return 'Point';
+    return state.mode === 'enter' ? 'Enter' : 'Edit';
+  });
 
   // What changed comes back from the engine as it calculates, for as long as this engine lasts.
   useEffect(() => {
@@ -750,6 +756,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
           content: { number?: number; text?: string; formula?: string },
         ) => Promise<void>;
         command: (command: Command) => Promise<Applied>;
+        settled: () => Promise<unknown>;
         hasChanges: () => Promise<boolean>;
         writeTo: (target: SaveTarget) => Promise<void>;
         lastSave: () => SaveReport | null;
@@ -774,6 +781,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
         await runCommand({ kind: 'input', sheet, row, col, text });
       },
       command: runCommand,
+      settled: () => commands.current.catch(() => undefined),
       hasChanges: () => clientRef.current?.hasChanges() ?? Promise.resolve(false),
       writeTo,
       lastSave: () => lastSaveRef.current,
@@ -1108,25 +1116,24 @@ export function AppShell({ platform, theme }: AppShellProps) {
           ? `Reading ${percent}%`
           : saving
             ? 'Saving…'
-            : edit.active
-              ? edit.picked
-                ? 'Point'
-                : edit.mode === 'enter'
-                  ? 'Enter'
-                  : 'Edit'
-              : 'Ready';
-  const tabs = (book?.order ?? []).flatMap((index) => {
-    const entry = sheets[index];
-    return entry && !entry.deleted && entry.state === 'visible'
-      ? [
-          {
-            key: String(index),
-            text: entry.name,
-            headerAttributes: { 'data-testid': 'sheet-tab-' + index } as Record<string, string>,
-          },
-        ]
-      : [];
-  });
+            : (editMode ?? 'Ready');
+  // The same list until a tab changes: CgTabs starts measuring over each time it's given a new one.
+  const tabs = useMemo(
+    () =>
+      (book?.order ?? []).flatMap((index) => {
+        const entry = book?.sheets[index];
+        return entry && !entry.deleted && entry.state === 'visible'
+          ? [
+              {
+                key: String(index),
+                text: entry.name,
+                headerAttributes: { 'data-testid': 'sheet-tab-' + index } as Record<string, string>,
+              },
+            ]
+          : [];
+      }),
+    [book],
+  );
   const offered = recoverable[0];
 
   return (
