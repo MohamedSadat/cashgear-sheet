@@ -86,6 +86,7 @@ export function cellXml(at, value, style) {
     return `<c r="${at}"${s} t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
   }
   if (typeof value === 'boolean') return `<c r="${at}"${s} t="b"><v>${value ? 1 : 0}</v></c>`;
+  if ('s' in value) return `<c r="${at}"${s} t="s"><v>${value.s}</v></c>`;
   if ('e' in value) return `<c r="${at}"${s} t="e"><v>${escapeXml(value.e)}</v></c>`;
   const formula = `<f>${escapeXml(value.f)}</f>`;
   if (typeof value.v === 'string') {
@@ -97,11 +98,12 @@ export function cellXml(at, value, style) {
 /**
  * Builds a workbook. `sheets` are `{ name, rows, xml, drawings, state }`, where `rows` is a
  * list of `[row number, cells, attributes]` and `cells` a list of `[column, value, style]`.
- * `xml` holds what goes around `sheetData`: `{ before, after }`.
+ * `xml` holds what goes around `sheetData`: `{ before, after }`. `strings` are shared strings as the
+ * bodies of their `<si>`, which cells name as `{ s: index }`.
  */
 export function workbook(
   sheets,
-  { styles = '<styleSheet xmlns="' + MAIN + '"/>', theme, active = 0 } = {},
+  { styles = '<styleSheet xmlns="' + MAIN + '"/>', theme, active = 0, strings } = {},
 ) {
   const parts = [];
   const overrides = sheets
@@ -115,7 +117,7 @@ export function workbook(
     .join('');
   parts.push([
     '[Content_Types].xml',
-    `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${overrides}</Types>`,
+    `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${overrides}${strings ? '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' : ''}</Types>`,
   ]);
   parts.push([
     '_rels/.rels',
@@ -132,9 +134,11 @@ export function workbook(
         .join('') +
       '</sheets></workbook>',
   ]);
-  const extra = theme
-    ? `<Relationship Id="rTheme" Type="${RELS}/theme" Target="theme/theme1.xml"/>`
-    : '';
+  const extra =
+    (theme ? `<Relationship Id="rTheme" Type="${RELS}/theme" Target="theme/theme1.xml"/>` : '') +
+    (strings
+      ? `<Relationship Id="rStrings" Type="${RELS}/sharedStrings" Target="sharedStrings.xml"/>`
+      : '');
   parts.push([
     'xl/_rels/workbook.xml.rels',
     `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
@@ -148,6 +152,14 @@ export function workbook(
   ]);
   parts.push(['xl/styles.xml', HEADER + styles]);
   if (theme) parts.push(['xl/theme/theme1.xml', HEADER + theme]);
+  if (strings) {
+    parts.push([
+      'xl/sharedStrings.xml',
+      `${HEADER}<sst xmlns="${MAIN}" count="${strings.length}" uniqueCount="${strings.length}">` +
+        strings.map((body) => `<si>${body}</si>`).join('') +
+        '</sst>',
+    ]);
+  }
   sheets.forEach((sheet, index) => {
     const number = index + 1;
     const pieces = [
@@ -485,7 +497,11 @@ export function formattingBook() {
         [5, 'across', XF.centerAcross],
         [6, null, XF.centerAcross],
       ]),
-      row(11, [[1, 'merged across three', XF.center]]),
+      // Runs of their own fonts in one cell, beside the merge.
+      row(11, [
+        [1, 'merged across three', XF.center],
+        [4, { s: 0 }],
+      ]),
       row(12, [[1, 'A very long piece of text that overflows into the empty cells on its right']]),
       row(13, [
         [1, 'cut off at the next value'],
@@ -515,7 +531,11 @@ export function formattingBook() {
     ],
   };
   const hidden = { name: 'Hidden', state: 'hidden', rows: [[1, [[1, 'secret']]]] };
-  return workbook([sheet, second, hidden], { styles: STYLES });
+  const rich =
+    '<r><t xml:space="preserve">Rich: </t></r>' +
+    '<r><rPr><b/><sz val="11"/><color rgb="FF0070C0"/><rFont val="Calibri"/></rPr><t xml:space="preserve">bold blue, </t></r>' +
+    '<r><rPr><i/><sz val="14"/><color rgb="FFC00000"/><rFont val="Times New Roman"/></rPr><t>big red italic</t></r>';
+  return workbook([sheet, second, hidden], { styles: STYLES, strings: [rich] });
 }
 
 /** A workbook with only automatic and theme text, as Excel saves a new file. */

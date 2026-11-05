@@ -97,6 +97,7 @@ struct Tile {
     cols: usize,
     styles: usize,
     extras: usize,
+    runs: usize,
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> u16 {
@@ -123,12 +124,14 @@ impl Tile {
         let cols = u16_at(&bytes, 8) as usize;
         let styles = u32_at(&bytes, 20) as usize;
         let extras = u32_at(&bytes, 24) as usize;
+        let runs = u32_at(&bytes, 32) as usize;
         Self {
             bytes,
             rows,
             cols,
             styles,
             extras,
+            runs,
         }
     }
 
@@ -145,11 +148,27 @@ impl Tile {
         u16_at(&self.bytes, HEADER_BYTES + (self.rows + col) * 2)
     }
 
-    fn heap(&self) -> usize {
+    fn runs_at(&self) -> usize {
         self.sizes()
             + self.rows * self.cols * CELL_BYTES
             + self.styles * STYLE_BYTES
             + self.extras * EXTRA_BYTES
+    }
+
+    fn heap(&self) -> usize {
+        self.runs_at() + self.runs * RUN_BYTES
+    }
+
+    /// (text offset, start, length, colour, style) of a run.
+    fn run(&self, index: usize) -> (u32, u32, u32, u32, u16) {
+        let at = self.runs_at() + index * RUN_BYTES;
+        (
+            u32_at(&self.bytes, at),
+            u32_at(&self.bytes, at + 4),
+            u32_at(&self.bytes, at + 8),
+            u32_at(&self.bytes, at + 12),
+            u16_at(&self.bytes, at + 16),
+        )
     }
 
     fn text(&self, offset: usize, length: usize) -> String {
@@ -450,6 +469,50 @@ fn each_line_is_drawn_once_with_its_neighbours_borders() {
     assert_eq!(right_of(0), (6, 0x00FF00FF), "its own thin line");
     assert_eq!(right_of(1), (0, 0), "nothing");
     assert_eq!(right_of(2), (7, 0x0000FFFF), "D1's medium left line");
+}
+
+#[test]
+fn rich_text_comes_with_the_looks_of_its_runs() {
+    let strings = r#"<sst count="1" uniqueCount="1"><si><r><t xml:space="preserve">Rich: </t></r><r><rPr><b/><sz val="11"/><color rgb="FF0070C0"/><rFont val="Calibri"/></rPr><t xml:space="preserve">bold blue, </t></r><r><rPr><i/><sz val="14"/><color rgb="FFC00000"/><rFont val="Times New Roman"/></rPr><t>big red italic</t></r></si></sst>"#;
+    let sheet = r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>0</v></c></row></sheetData></worksheet>"#;
+    let bytes = zip_of(&[
+        (
+            "xl/workbook.xml",
+            r#"<workbook><sheets><sheet name="One" sheetId="1" r:id="r1"/></sheets></workbook>"#
+                .to_string(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<Relationships><Relationship Id="r1" Type="http://x/worksheet" Target="s.xml"/><Relationship Id="r2" Type="http://x/styles" Target="styles.xml"/><Relationship Id="r3" Type="http://x/sharedStrings" Target="strings.xml"/></Relationships>"#.to_string(),
+        ),
+        ("xl/styles.xml", STYLES.to_string()),
+        ("xl/strings.xml", strings.to_string()),
+        ("xl/s.xml", sheet.to_string()),
+    ]);
+    let mut engine = Engine::new();
+    engine.open(Rc::new(bytes)).unwrap();
+    while engine.load_step(1.0).unwrap().phase == LoadPhase::Reading {}
+    let tile = Tile::new(&mut engine, 0, 0, 0, LIGHT);
+    let cell = tile.cell(0, 0);
+    assert_eq!(cell.text, "Rich: bold blue, big red italic");
+    // Three runs a cell, both cells.
+    assert_eq!(tile.runs, 6);
+    let offset = u32_at(&tile.bytes, tile.sizes());
+    let first = tile.run(0);
+    assert_eq!((first.0, first.1, first.2), (offset, 0, 6));
+    let bold = tile.run(1);
+    assert_eq!((bold.1, bold.2, bold.3), (6, 11, 0x0070C0FF));
+    let italic = tile.run(2);
+    assert_eq!((italic.1, italic.2, italic.3), (17, 14, 0xC00000FF));
+    assert_eq!(tile.font(bold.4), "Calibri");
+    assert_eq!(tile.font(italic.4), "Times New Roman");
+    let size = |style: u16| u16_at(&tile.bytes, tile.style_at(style) + 8);
+    assert_eq!((size(bold.4), size(italic.4)), (1100, 1400));
+    let flags = |style: u16| tile.bytes[tile.style_at(style) + 10];
+    assert_ne!(flags(bold.4), flags(italic.4));
+    // Dark mode keeps a run's colour where it reads, as it does a cell's.
+    let dark = Tile::new(&mut engine, 0, 0, 0, DARK);
+    assert_eq!(dark.runs, 6);
 }
 
 #[test]
