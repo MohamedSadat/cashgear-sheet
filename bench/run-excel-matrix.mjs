@@ -192,6 +192,7 @@ const MOVES = {
 };
 const MOVED = {
   'moving-parts.xlsx': 'xlsx',
+  'prefixed.xlsx': 'xlsx',
   'formatting.xlsx': 'xlsx',
   'structures.xlsx': 'xlsx',
   'pivot.xlsx': 'xlsx',

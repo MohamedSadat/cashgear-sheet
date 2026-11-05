@@ -511,6 +511,7 @@ fn rewrite_workbook_part(
         let Node::Element(root) = node else {
             continue;
         };
+        let root_tag = String::from_utf8_lossy(&root.tag).into_owned();
         for child in root.elements_mut() {
             match child.local() {
                 b"sheets" => {
@@ -555,9 +556,17 @@ fn rewrite_workbook_part(
                             None => {
                                 next_id += 1;
                                 let id = new_ids.get(&stable).cloned().unwrap_or_default();
+                                // Some writers declare the relationship prefix on each sheet and
+                                // not at the top, which leaves a new sheet needing its own.
+                                let declared = id_attr
+                                    .split_once(':')
+                                    .map(|(name, _)| format!("xmlns:{name}="))
+                                    .filter(|needed| !root_tag.contains(needed))
+                                    .map(|needed| format!(" {needed}\"{RELATIONSHIP_NAMESPACE}\""))
+                                    .unwrap_or_default();
                                 Element {
                                     tag: format!(
-                                        "<{prefix}sheet name=\"{}\" sheetId=\"{next_id}\" {id_attr}=\"{id}\"/>",
+                                        "<{prefix}sheet name=\"{}\" sheetId=\"{next_id}\" {id_attr}=\"{id}\"{declared}/>",
                                         escape_attr(&info.name)
                                     )
                                     .into_bytes(),
@@ -627,6 +636,9 @@ fn rewrite_workbook_part(
     write_tree(&nodes, &mut out);
     Ok((out, gone_ids))
 }
+
+const RELATIONSHIP_NAMESPACE: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 /// The attribute names on a `<sheet>` tag that hold its relationship: `r:id`, whatever the prefix.
 fn sheet_id_attrs(tag: &[u8]) -> Vec<String> {

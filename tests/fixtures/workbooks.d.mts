@@ -7,6 +7,7 @@ export function pivotBook(): Buffer;
 export function macroBook(): Buffer;
 export function structuresBook(): Buffer;
 export function movingPartsBook(): Buffer;
+export function prefixedBook(): Buffer;
 export function brokenBooks(): Record<string, Buffer>;
 export function readZip(bytes: Buffer): [string, Buffer][];
 export const MACRO_CODE: string;

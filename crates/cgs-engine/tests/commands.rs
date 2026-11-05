@@ -63,6 +63,51 @@ fn opened(bytes: Vec<u8>) -> Engine {
     engine
 }
 
+/// Found on a real file: Excel refuses a sheet whose prefix isn't declared where it stands.
+#[test]
+fn a_new_sheet_declares_the_prefix_the_workbook_only_declared_on_its_sheets() {
+    let bytes = book("", "", "");
+    let mut zip = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut parts = Vec::new();
+    for index in 0..zip.len() {
+        let mut part = zip.by_index(index).unwrap();
+        let mut text = String::new();
+        part.read_to_string(&mut text).unwrap();
+        parts.push((part.name().unwrap().to_string(), text));
+    }
+    let parts: Vec<(&str, String)> = parts
+        .iter()
+        .map(|(name, text)| {
+            let text = if name == "xl/workbook.xml" {
+                format!(
+                    r#"<x:workbook xmlns:x="{MAIN}"><x:sheets><x:sheet name="One" sheetId="1" r:id="rId1" xmlns:r="{RELS}"/><x:sheet name="Two" sheetId="2" r:id="rId2" xmlns:r="{RELS}"/></x:sheets></x:workbook>"#
+                )
+            } else {
+                text.clone()
+            };
+            (name.as_str(), text)
+        })
+        .collect();
+    let mut engine = opened(zip_of(&parts));
+    engine
+        .apply_json(r#"{"kind":"insertSheet","position":2}"#)
+        .unwrap();
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    let mut saved = ZipArchive::new(Cursor::new(out)).unwrap();
+    let mut workbook = String::new();
+    saved
+        .by_name("xl/workbook.xml")
+        .unwrap()
+        .read_to_string(&mut workbook)
+        .unwrap();
+    let new = workbook.split("<x:sheet ").nth(3).unwrap();
+    assert!(
+        new.contains("r:id=") && new.contains("xmlns:r="),
+        "{workbook}"
+    );
+}
+
 /// Both read off Excel: the copied part of a `{=...}` array is one array of its own, whose formula
 /// has moved from where the original starts.
 #[test]

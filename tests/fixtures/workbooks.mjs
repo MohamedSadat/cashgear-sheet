@@ -909,6 +909,22 @@ export function movingPartsBook() {
 }
 
 /**
+ * How some generators write a workbook: a prefix on every element, with the relationship prefix
+ * declared on each sheet and not at the top. Any sheet added to it has to declare its own.
+ */
+export function prefixedBook() {
+  return zip(
+    readZip(structuresBook()).map(([part, body]) => {
+      if (part !== 'xl/workbook.xml') return [part, body];
+      return [
+        part,
+        `${HEADER}<x:workbook xmlns:x="${MAIN}"><x:sheets><x:sheet name="Sheet1" sheetId="1" r:id="rId1" xmlns:r="${RELS}" /></x:sheets></x:workbook>`,
+      ];
+    }),
+  );
+}
+
+/**
  * Files Excel must not open cleanly, one each way a save could go wrong. The open matrix runs
  * them first: a check that can't see these can't say a saved file had no repair prompt.
  */
@@ -925,7 +941,19 @@ export function brokenBooks() {
         part === 'xl/worksheets/sheet1.xml' ? make(body.toString('utf8')) : body,
       ]),
     );
+  const prefixed = readZip(prefixedBook());
   return {
+    // A prefix has to be declared where it's used. The first sheet in the fixture keeps its own.
+    'sheet-prefix-undeclared': zip(
+      prefixed.map(([part, body]) => [
+        part,
+        part === 'xl/workbook.xml'
+          ? body
+              .toString('utf8')
+              .replace(`</x:sheets>`, `<x:sheet name="New" sheetId="2" r:id="rId9"/></x:sheets>`)
+          : body,
+      ]),
+    ),
     // A sparkline reads a range or `#REF!`, and Excel refuses a sheet name before the error.
     'sparkline-reads-sheet-and-error': changeMoving((xml) =>
       xml.replace('<xm:f>Data!B2:B5</xm:f>', '<xm:f>Data!#REF!</xm:f>'),
