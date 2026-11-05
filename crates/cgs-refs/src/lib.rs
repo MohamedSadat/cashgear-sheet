@@ -1,5 +1,16 @@
-//! Rewrites references in formula text: shared formula expansion now, and inserts,
-//! deletes and renames from Phase 4. Used by the xlsx reader, the bench and the engine.
+//! Rewrites references in formula text: shared formula expansion, inserts and deletes of rows and
+//! columns, and renamed or deleted sheets. Used by the xlsx reader, the writer, the bench and the
+//! engine. `rewrite` holds the second kind, and is tested against the formula engine.
+
+pub mod file_text;
+pub mod rewrite;
+
+pub use file_text::{formula_for_file, formula_for_people};
+pub use rewrite::{
+    apply_edits, delete_sheet_in_formula, edit_formula, edit_rect, edit_sqref, follow_moved_cells,
+    moved_formula, quote_sheet, reads_sheet, rename_in_formula, sheet_key, touches_band, Axis,
+    AxisEdit, BookEdit, MovedCells, Span,
+};
 
 pub const MAX_ROW: i64 = 1_048_576;
 pub const MAX_COL: i64 = 16_384;
