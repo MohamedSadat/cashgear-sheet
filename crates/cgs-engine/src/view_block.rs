@@ -3,8 +3,8 @@
 //! keep the two in step. A tile describes itself completely, colours resolved for one theme,
 //! so that drawing needs nothing else.
 //!
-//! Header (32 bytes): magic `CGVB`, u16 version, u16 rows, u16 columns, u16 flags, u32 first row,
-//! u32 first column, u32 style count, u32 extra count, u32 heap length.
+//! Header (36 bytes): magic `CGVB`, u16 version, u16 rows, u16 columns, u16 flags, u32 first row,
+//! u32 first column, u32 style count, u32 extra count, u32 heap length, u32 run count.
 //!
 //! Then u16 row heights and u16 column widths, in CSS pixels at 100% with 0 for hidden, padded
 //! to 4 bytes.
@@ -15,24 +15,29 @@
 //! are `0xRRGGBBAA`. Alpha 0 means no fill or the automatic text colour, which the theme's
 //! palette supplies when the tile is drawn.
 //!
-//! Then styles of 32 bytes: u32 font offset, u32 font length, u16 size in hundredths of a
+//! Then styles of 40 bytes: u32 font offset, u32 font length, u16 size in hundredths of a
 //! point, u8 font flags, u8 underline, u8 horizontal, u8 vertical, u8 indent, u8 rotation, u8
 //! layout flags, u8 right line, u8 bottom line, u8 diagonal line, u32 right colour, u32 bottom
-//! colour, u32 diagonal colour.
+//! colour, u32 diagonal colour, u8 pattern (`Hatch`'s number, 0 for none), 3 bytes of padding,
+//! u32 pattern colour. A cell's own fill is what a pattern is drawn on.
 //!
 //! Then extras of 40 bytes, text that belongs to a cell outside the tile or spanning it: u8
 //! kind, 3 bytes of padding, i32 x, i32 y, i32 width, i32 height (the source cell or merged
 //! area in CSS pixels at 100%, relative to the tile's top left), u32 text offset, u32 text
 //! length, u32 text colour, u16 style, u16 flags, u32 fill position.
 //!
+//! Then runs of 20 bytes, the looks of rich text: u32 the cell's or extra's text offset, u32 the
+//! run's byte offset from that, u32 its length in bytes, u32 text colour, u16 style, u16 padding.
+//!
 //! Then the heap of UTF-8 text.
 
 pub const MAGIC: [u8; 4] = *b"CGVB";
-pub const VERSION: u16 = 2;
-pub const HEADER_BYTES: usize = 32;
+pub const VERSION: u16 = 3;
+pub const HEADER_BYTES: usize = 36;
 pub const CELL_BYTES: usize = 24;
-pub const STYLE_BYTES: usize = 32;
+pub const STYLE_BYTES: usize = 40;
 pub const EXTRA_BYTES: usize = 40;
+pub const RUN_BYTES: usize = 20;
 
 /// Alpha 0: the theme supplies this colour.
 pub const AUTOMATIC: u32 = 0;
@@ -96,6 +101,8 @@ pub struct StyleRecord {
     pub right_color: u32,
     pub bottom_color: u32,
     pub diagonal_color: u32,
+    pub pattern: u8,
+    pub pattern_color: u32,
 }
 
 /// Text from a cell outside the tile, or spanning it.
@@ -123,6 +130,7 @@ pub struct TileWriter {
     cells: Vec<u8>,
     styles: Vec<u8>,
     extras: Vec<u8>,
+    runs: Vec<u8>,
     heap: Vec<u8>,
 }
 
@@ -137,6 +145,7 @@ impl TileWriter {
             col_px,
             styles: Vec::new(),
             extras: Vec::new(),
+            runs: Vec::new(),
             heap: Vec::new(),
         }
     }
@@ -151,7 +160,8 @@ impl TileWriter {
         (offset, text.len() as u32)
     }
 
-    pub fn cell(&mut self, text: &str, record: CellRecord) {
+    /// Adds a cell, and returns where its text went, which runs of it refer to.
+    pub fn cell(&mut self, text: &str, record: CellRecord) -> u32 {
         let (offset, length) = self.push_text(text);
         self.cells.extend_from_slice(&offset.to_le_bytes());
         self.cells.extend_from_slice(&length.to_le_bytes());
@@ -160,6 +170,17 @@ impl TileWriter {
         self.cells.extend_from_slice(&record.style.to_le_bytes());
         self.cells.extend_from_slice(&record.flags.to_le_bytes());
         self.cells.extend_from_slice(&record.fill_at.to_le_bytes());
+        offset
+    }
+
+    /// One run of a rich text: `text` is where `cell` or `extra` put the whole of it.
+    pub fn run(&mut self, text: u32, start: u32, length: u32, color: u32, style: u16) {
+        self.runs.extend_from_slice(&text.to_le_bytes());
+        self.runs.extend_from_slice(&start.to_le_bytes());
+        self.runs.extend_from_slice(&length.to_le_bytes());
+        self.runs.extend_from_slice(&color.to_le_bytes());
+        self.runs.extend_from_slice(&style.to_le_bytes());
+        self.runs.extend_from_slice(&[0, 0]);
     }
 
     /// Adds a style, and returns its index.
@@ -187,10 +208,14 @@ impl TileWriter {
             .extend_from_slice(&style.bottom_color.to_le_bytes());
         self.styles
             .extend_from_slice(&style.diagonal_color.to_le_bytes());
+        self.styles.extend_from_slice(&[style.pattern, 0, 0, 0]);
+        self.styles
+            .extend_from_slice(&style.pattern_color.to_le_bytes());
         index
     }
 
-    pub fn extra(&mut self, text: &str, record: ExtraRecord) {
+    /// Adds an extra, and returns where its text went.
+    pub fn extra(&mut self, text: &str, record: ExtraRecord) -> u32 {
         let (offset, length) = self.push_text(text);
         self.extras.extend_from_slice(&[record.kind, 0, 0, 0]);
         self.extras.extend_from_slice(&record.x.to_le_bytes());
@@ -203,6 +228,7 @@ impl TileWriter {
         self.extras.extend_from_slice(&record.style.to_le_bytes());
         self.extras.extend_from_slice(&record.flags.to_le_bytes());
         self.extras.extend_from_slice(&record.fill_at.to_le_bytes());
+        offset
     }
 
     pub fn finish(self) -> ViewBlock {
@@ -217,6 +243,7 @@ impl TileWriter {
                 + self.cells.len()
                 + self.styles.len()
                 + self.extras.len()
+                + self.runs.len()
                 + self.heap.len(),
         );
         bytes.extend_from_slice(&MAGIC);
@@ -229,6 +256,7 @@ impl TileWriter {
         bytes.extend_from_slice(&((self.styles.len() / STYLE_BYTES) as u32).to_le_bytes());
         bytes.extend_from_slice(&((self.extras.len() / EXTRA_BYTES) as u32).to_le_bytes());
         bytes.extend_from_slice(&(self.heap.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&((self.runs.len() / RUN_BYTES) as u32).to_le_bytes());
         for px in self.row_px.iter().chain(&self.col_px) {
             bytes.extend_from_slice(&px.to_le_bytes());
         }
@@ -236,6 +264,7 @@ impl TileWriter {
         bytes.extend_from_slice(&self.cells);
         bytes.extend_from_slice(&self.styles);
         bytes.extend_from_slice(&self.extras);
+        bytes.extend_from_slice(&self.runs);
         bytes.extend_from_slice(&self.heap);
         ViewBlock { bytes }
     }

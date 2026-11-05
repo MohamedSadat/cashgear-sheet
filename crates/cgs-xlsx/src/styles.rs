@@ -18,7 +18,7 @@ fn parse_rgb(text: &str) -> Option<u32> {
         .flatten()
 }
 
-fn parse_color(element: &BytesStart<'_>) -> Color {
+pub(crate) fn parse_color(element: &BytesStart<'_>) -> Color {
     let tint = attr_f64(element, b"tint").unwrap_or(0.0) as f32;
     let kind = if let Some(rgb) = attr(element, b"rgb").and_then(|text| parse_rgb(&text)) {
         ColorKind::Rgb(rgb)
@@ -54,16 +54,7 @@ fn line_style(text: &str) -> LineStyle {
 fn pattern(text: &str) -> Pattern {
     match text {
         "solid" => Pattern::Solid,
-        "gray0625" => Pattern::Mixed(6),
-        "gray125" => Pattern::Mixed(12),
-        "lightGray" | "lightHorizontal" | "lightVertical" | "lightDown" | "lightUp"
-        | "lightGrid" | "lightTrellis" => Pattern::Mixed(25),
-        "mediumGray" | "darkTrellis" => Pattern::Mixed(50),
-        "darkHorizontal" | "darkVertical" | "darkDown" | "darkUp" | "darkGrid" => {
-            Pattern::Mixed(50)
-        }
-        "darkGray" => Pattern::Mixed(75),
-        _ => Pattern::None,
+        _ => cgs_model::Hatch::from_name(text).map_or(Pattern::None, Pattern::Hatch),
     }
 }
 
@@ -458,7 +449,10 @@ mod tests {
         assert_eq!(font.size, 14.0);
         assert_eq!(font.color, Color::rgb(0xFF0000));
 
-        assert_eq!(table.fills[1].pattern, Pattern::Mixed(12));
+        assert_eq!(
+            table.fills[1].pattern,
+            Pattern::Hatch(cgs_model::Hatch::Gray125)
+        );
         assert_eq!(table.fills[2].pattern, Pattern::Solid);
         assert_eq!(table.fills[2].fg.kind, ColorKind::Theme(4));
         assert_eq!(table.fills[2].fg.tint, 0.5);

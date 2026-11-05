@@ -8,11 +8,11 @@ use cgs_refs::{edit_rect, Axis, AxisEdit};
 use crate::{Rect, MAX_ROWS, TILE_COLS, TILE_ROWS};
 
 /// No cell here: the row's or the column's style applies.
-const NO_CELL: u32 = u32::MAX;
+pub const NO_CELL: u32 = u32::MAX;
 
 /// Which style each cell of a column uses, as runs. A column of one style costs one run.
-#[derive(Debug, Clone, Default)]
-struct ColumnRuns {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ColumnRuns {
     /// (first row, style), ascending by row. A run lasts until the next one.
     runs: Vec<(u32, u32)>,
     /// One past the last row written while loading.
@@ -72,6 +72,57 @@ impl ColumnRuns {
         }
     }
 
+    /// The stretches of `top..=bottom` as (first, last, style), with `NO_CELL` where there's no cell.
+    fn spans(&self, top: u32, bottom: u32) -> Vec<(u32, u32, u32)> {
+        let mut out = Vec::new();
+        let mut row = top;
+        while row <= bottom {
+            let at = self.runs.partition_point(|&(start, _)| start <= row);
+            let style = self.get(row);
+            let next = self.runs.get(at).map_or(u32::MAX, |&(start, _)| start);
+            let mut stop = bottom.min(next.saturating_sub(1));
+            // Past the last row written there are no cells, whatever the last run says.
+            if row < self.end {
+                stop = stop.min(self.end - 1);
+            }
+            out.push((row, stop, style));
+            row = stop + 1;
+        }
+        out
+    }
+
+    /// Puts these stretches in place of what `top..=bottom` held. They must cover it, in order.
+    fn replace(&mut self, top: u32, bottom: u32, spans: &[(u32, u32, u32)]) {
+        let mut all = if top > 1 {
+            self.spans(1, top - 1)
+        } else {
+            Vec::new()
+        };
+        all.extend_from_slice(spans);
+        if self.end > bottom + 1 {
+            all.extend(self.spans(bottom + 1, self.end - 1));
+        }
+        let mut runs: Vec<(u32, u32)> = Vec::with_capacity(all.len());
+        let mut end = 0;
+        for (first, last, style) in all {
+            let same = runs
+                .last()
+                .map_or(style == NO_CELL, |&(_, before)| before == style);
+            if !same {
+                runs.push((first, style));
+            }
+            if style != NO_CELL {
+                end = last + 1;
+            }
+        }
+        // Only a run of something can end the list.
+        if runs.last().is_some_and(|&(_, style)| style == NO_CELL) {
+            runs.pop();
+        }
+        self.runs = runs;
+        self.end = end;
+    }
+
     /// Makes room for rows, which take the style of the row above them, as new rows do in Excel.
     fn insert_rows(&mut self, at: u32, count: u32) {
         for run in &mut self.runs {
@@ -117,6 +168,14 @@ pub struct LineInfo {
     pub hidden: bool,
     /// The style cells without their own use, if the line has one.
     pub style: Option<u32>,
+    /// Someone set this size, so it stays when what the line holds changes.
+    pub custom: bool,
+}
+
+impl LineInfo {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Rows: one entry per row that differs from the default, sorted.
@@ -130,6 +189,46 @@ impl RowAxis {
     pub fn info(&self, row: u32) -> Option<&LineInfo> {
         let at = self.rows.binary_search_by_key(&row, |&(r, _)| r).ok()?;
         Some(&self.rows[at].1)
+    }
+
+    /// Sets a row's record, which goes away if it says nothing.
+    pub fn set(&mut self, row: u32, info: LineInfo) {
+        match self.rows.binary_search_by_key(&row, |&(r, _)| r) {
+            Ok(at) if info.is_default() => {
+                self.rows.remove(at);
+            }
+            Ok(at) => self.rows[at].1 = info,
+            Err(_) if info.is_default() => {}
+            Err(at) => self.rows.insert(at, (row, info)),
+        }
+    }
+
+    /// Sets many rows' records at once. `list` must be sorted.
+    pub fn set_many(&mut self, list: &[(u32, LineInfo)]) {
+        if list.len() < 64 {
+            for &(row, info) in list {
+                self.set(row, info);
+            }
+            return;
+        }
+        let old = std::mem::take(&mut self.rows);
+        let mut merged = Vec::with_capacity(old.len() + list.len());
+        let (mut a, mut b) = (0, 0);
+        while a < old.len() || b < list.len() {
+            if b >= list.len() || (a < old.len() && old[a].0 < list[b].0) {
+                merged.push(old[a]);
+                a += 1;
+                continue;
+            }
+            if a < old.len() && old[a].0 == list[b].0 {
+                a += 1;
+            }
+            if !list[b].1.is_default() {
+                merged.push(list[b]);
+            }
+            b += 1;
+        }
+        self.rows = merged;
     }
 
     /// New rows take the height and style of the row above them, but stay visible.
@@ -179,6 +278,74 @@ impl ColAxis {
         let at = self.ranges.partition_point(|&(first, _, _)| first <= col);
         let (_, last, info) = self.ranges.get(at.checked_sub(1)?)?;
         (col <= *last).then_some(info)
+    }
+
+    /// The records of `first..=last`, cut where they differ, including stretches with none.
+    pub fn slices(&self, first: u32, last: u32) -> Vec<(u32, u32, LineInfo)> {
+        let mut out = Vec::new();
+        let mut at = first;
+        for &(from, to, info) in &self.ranges {
+            if to < at {
+                continue;
+            }
+            if from > last {
+                break;
+            }
+            if from > at {
+                out.push((at, from - 1, LineInfo::default()));
+            }
+            out.push((from.max(at), to.min(last), info));
+            at = to.saturating_add(1);
+            if at > last {
+                break;
+            }
+        }
+        if at <= last {
+            out.push((at, last, LineInfo::default()));
+        }
+        out
+    }
+
+    /// Sets a stretch of columns' records.
+    pub fn set(&mut self, first: u32, last: u32, info: LineInfo) {
+        let mut out = Vec::with_capacity(self.ranges.len() + 2);
+        let mut placed = false;
+        let mut place = |out: &mut Vec<(u32, u32, LineInfo)>| {
+            if !placed {
+                placed = true;
+                if !info.is_default() {
+                    out.push((first, last, info));
+                }
+            }
+        };
+        for &(from, to, old) in &self.ranges {
+            if to < first {
+                out.push((from, to, old));
+                continue;
+            }
+            if from > last {
+                place(&mut out);
+                out.push((from, to, old));
+                continue;
+            }
+            if from < first {
+                out.push((from, first - 1, old));
+            }
+            place(&mut out);
+            if to > last {
+                out.push((last + 1, to, old));
+            }
+        }
+        place(&mut out);
+        // Neighbours that say the same become one, as Excel writes them.
+        let mut joined: Vec<(u32, u32, LineInfo)> = Vec::with_capacity(out.len());
+        for (from, to, line) in out {
+            match joined.last_mut() {
+                Some((_, end, same)) if *end + 1 == from && *same == line => *end = to,
+                _ => joined.push((from, to, line)),
+            }
+        }
+        self.ranges = joined;
     }
 
     /// New columns join the range of the column to their left, as they take its width and style.
@@ -372,6 +539,7 @@ pub struct SheetShape {
     drawings: Vec<Drawing>,
     used: (u32, u32),
     styles: Vec<ColumnRuns>,
+    rich: HashMap<(u32, u32), u32>,
 }
 
 impl SheetShape {
@@ -381,6 +549,7 @@ impl SheetShape {
             + self.cols.len() * 32
             + self.merges.len() * 16
             + self.drawings.len() * 96
+            + self.rich.len() * 16
             + self
                 .styles
                 .iter()
@@ -407,6 +576,10 @@ pub struct SheetInfo {
     pub used: (u32, u32),
     /// All of its cells are in the formula engine.
     pub loaded: bool,
+    /// Rows that hold wrapped text and no stored height, as another program's file can have them.
+    pub unfitted_rows: Vec<u32>,
+    /// Cells showing a rich shared string, as the string's index in the file.
+    pub rich: HashMap<(u32, u32), u32>,
     /// Deleted. It keeps its index, so that sheets can be told apart by index and an undo can bring
     /// it back.
     pub deleted: bool,
@@ -434,6 +607,8 @@ impl SheetInfo {
         self.drawings.clear();
         self.used = (0, 0);
         self.loaded = false;
+        self.unfitted_rows.clear();
+        self.rich.clear();
     }
 
     /// Records a cell's style while loading. Rows mostly arrive in order.
@@ -443,6 +618,55 @@ impl SheetInfo {
             self.styles.resize_with(slot + 1, ColumnRuns::default);
         }
         self.styles[slot].push(row, style);
+    }
+
+    /// How far a sheet's cells have styles of their own, in columns.
+    pub fn styled_cols(&self) -> u32 {
+        self.styles.len() as u32
+    }
+
+    /// The stretches of a column between two rows, as (first, last, style), with `NO_CELL` where
+    /// there's no cell.
+    pub fn style_spans(&self, col: u32, top: u32, bottom: u32) -> Vec<(u32, u32, u32)> {
+        match self.styles.get((col - 1) as usize) {
+            Some(runs) => runs.spans(top, bottom),
+            None => vec![(top, bottom, NO_CELL)],
+        }
+    }
+
+    /// Puts these stretches in place of what a column held between two rows.
+    pub fn replace_styles(&mut self, col: u32, top: u32, bottom: u32, spans: &[(u32, u32, u32)]) {
+        let slot = (col - 1) as usize;
+        if slot >= self.styles.len() {
+            self.styles.resize_with(slot + 1, ColumnRuns::default);
+        }
+        self.styles[slot].replace(top, bottom, spans);
+    }
+
+    /// A column's styles, to put back later.
+    pub fn style_column(&self, col: u32) -> ColumnRuns {
+        self.styles
+            .get((col - 1) as usize)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Puts a column's styles back, and gives what was there.
+    pub fn set_style_column(&mut self, col: u32, runs: ColumnRuns) -> ColumnRuns {
+        let slot = (col - 1) as usize;
+        if slot >= self.styles.len() {
+            self.styles.resize_with(slot + 1, ColumnRuns::default);
+        }
+        std::mem::replace(&mut self.styles[slot], runs)
+    }
+
+    /// The style a cell has of its own, if it has one.
+    pub fn own_style(&self, row: u32, col: u32) -> Option<u32> {
+        let own = self
+            .styles
+            .get((col - 1) as usize)
+            .map_or(NO_CELL, |runs| runs.get(row));
+        (own != NO_CELL).then_some(own)
     }
 
     /// The style a cell draws with: its own, or else its row's, or else its column's.
@@ -531,6 +755,7 @@ impl SheetInfo {
             drawings: self.drawings.clone(),
             used: self.used,
             styles: self.styles.clone(),
+            rich: self.rich.clone(),
         }
     }
 
@@ -542,12 +767,25 @@ impl SheetInfo {
         self.drawings = shape.drawings;
         self.used = shape.used;
         self.styles = shape.styles;
+        self.rich = shape.rich;
         self.index_merges();
     }
 
     /// Moves everything on the sheet that an edit to rows or columns moves, as Excel does: a merge
     /// grows or shrinks with its range, and one that comes down to a single cell stops being one.
     pub fn apply_axis(&mut self, edit: &AxisEdit) {
+        if !self.rich.is_empty() {
+            self.rich = std::mem::take(&mut self.rich)
+                .into_iter()
+                .filter_map(|((row, col), index)| {
+                    let at = match edit.axis {
+                        Axis::Row => (edit.point(row)?, col),
+                        Axis::Col => (row, edit.point(col)?),
+                    };
+                    Some((at, index))
+                })
+                .collect();
+        }
         match edit.axis {
             Axis::Row => {
                 self.rows.apply(edit);
@@ -616,6 +854,107 @@ impl SheetInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What each row of a column says, the slow way, to compare with `spans` and `replace`.
+    fn flat(runs: &ColumnRuns, last: u32) -> Vec<u32> {
+        (1..=last).map(|row| runs.get(row)).collect()
+    }
+
+    #[test]
+    fn replacing_styles_matches_writing_them_one_by_one() {
+        // A small deterministic walk over overlapping edits.
+        let mut seed = 12345u32;
+        let mut next = |limit: u32| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            (seed >> 16) % limit
+        };
+        for _ in 0..300 {
+            let mut runs = ColumnRuns::default();
+            let mut model = vec![NO_CELL; 40];
+            // Loading writes in order, with gaps.
+            for row in 1..=30 {
+                if next(3) != 0 {
+                    let style = next(4);
+                    runs.push(row, style);
+                    model[(row - 1) as usize] = style;
+                }
+            }
+            for _ in 0..6 {
+                let a = next(38) + 1;
+                let b = (a + next(8)).min(38);
+                let mut spans = Vec::new();
+                let mut row = a;
+                while row <= b {
+                    let stop = (row + next(3)).min(b);
+                    let style = if next(4) == 0 { NO_CELL } else { next(4) };
+                    spans.push((row, stop, style));
+                    for at in row..=stop {
+                        model[(at - 1) as usize] = style;
+                    }
+                    row = stop + 1;
+                }
+                runs.replace(a, b, &spans);
+                assert_eq!(flat(&runs, 40), model, "after {a}..{b} {spans:?}");
+                let read: Vec<u32> = runs
+                    .spans(1, 40)
+                    .into_iter()
+                    .flat_map(|(first, last, style)| (first..=last).map(move |_| style))
+                    .collect();
+                assert_eq!(read, model);
+            }
+        }
+    }
+
+    #[test]
+    fn a_stretch_of_columns_splits_and_joins() {
+        let mut cols = ColAxis::default();
+        let line = |size| LineInfo {
+            size: Some(size),
+            ..LineInfo::default()
+        };
+        cols.set(2, 10, line(50));
+        cols.set(4, 5, line(70));
+        assert_eq!(
+            cols.ranges,
+            vec![(2, 3, line(50)), (4, 5, line(70)), (6, 10, line(50))]
+        );
+        assert_eq!(
+            cols.slices(1, 4),
+            vec![
+                (1, 1, LineInfo::default()),
+                (2, 3, line(50)),
+                (4, 4, line(70))
+            ]
+        );
+        cols.set(4, 5, line(50));
+        assert_eq!(cols.ranges, vec![(2, 10, line(50))]);
+        cols.set(1, 20, LineInfo::default());
+        assert!(cols.ranges.is_empty());
+    }
+
+    #[test]
+    fn many_rows_merge_into_their_records() {
+        let line = |size| LineInfo {
+            size: Some(size),
+            ..LineInfo::default()
+        };
+        let mut rows = RowAxis::default();
+        rows.set(5, line(30));
+        rows.set(9, line(40));
+        let list: Vec<(u32, LineInfo)> = (1..=100)
+            .map(|row| {
+                if row == 9 {
+                    (row, LineInfo::default())
+                } else {
+                    (row, line(row))
+                }
+            })
+            .collect();
+        rows.set_many(&list);
+        assert_eq!(rows.rows.len(), 99);
+        assert_eq!(rows.info(5).and_then(|info| info.size), Some(5));
+        assert!(rows.info(9).is_none());
+    }
 
     #[test]
     fn inserted_rows_take_the_style_of_the_row_above() {

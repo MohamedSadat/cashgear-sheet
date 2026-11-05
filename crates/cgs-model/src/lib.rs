@@ -7,12 +7,12 @@ pub mod style;
 
 pub use color::{Color, ColorKind, ColorSpace, DarkColors, Rgb, ThemePalette};
 pub use sheet::{
-    Anchor, AnchorPoint, ColAxis, Drawing, DrawingKind, Freeze, LineInfo, RowAxis, SheetInfo,
-    SheetKind, SheetShape, SheetState, SheetView,
+    Anchor, AnchorPoint, ColAxis, ColumnRuns, Drawing, DrawingKind, Freeze, LineInfo, RowAxis,
+    SheetInfo, SheetKind, SheetShape, SheetState, SheetView, NO_CELL,
 };
 pub use style::{
-    Alignment, Border, Fill, Font, HAlign, Line, LineStyle, Pattern, ReadingOrder, StyleTable,
-    Underline, VAlign, Xf,
+    Alignment, Border, Fill, Font, HAlign, Hatch, Line, LineStyle, Pattern, ReadingOrder, RichRun,
+    RunFont, StyleTable, Underline, VAlign, Xf,
 };
 
 /// Excel's row limit.
@@ -77,6 +77,8 @@ pub struct Book {
     pub order: Vec<u32>,
     /// Which sheet each `<sheet>` element of the file is, once that differs from their indexes.
     pub file_sheets: Vec<u32>,
+    /// Shared strings with more than one look, by their index in the file.
+    pub rich_strings: std::collections::HashMap<u32, Vec<RichRun>>,
 }
 
 impl Book {

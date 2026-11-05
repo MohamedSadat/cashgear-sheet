@@ -3,6 +3,7 @@
 // can't load a worker started by a worker, and it reads the engine over a `MessageChannel`.
 import { expose, transfer, wrap, type Remote } from 'comlink';
 import { carlitoFaces } from './fonts';
+import { fitColumns, fitRows } from './fit';
 import { drawTile, tileEdges } from './tile-draw';
 import type { EngineTilePort, TileWorkerApi } from './types';
 import { decodeViewBlock, hashBytes, TILE_NOT_READY } from './view-block';
@@ -22,9 +23,24 @@ function rgb(css: string) {
   return parseInt(css.slice(1, 7), 16);
 }
 
+/** A canvas to measure text on, as tiles draw it. */
+function measuring() {
+  const context = new OffscreenCanvas(1, 1).getContext('2d');
+  if (!context) throw new Error('The tile worker could not get a 2D canvas.');
+  return context;
+}
+
 const api: TileWorkerApi = {
   attachEngine(port) {
     engine = wrap<EngineTilePort>(port);
+  },
+  async fitRows(rows, palette) {
+    await fontsReady;
+    return fitRows(measuring(), rows, palette);
+  },
+  async fitColumns(cells, palette) {
+    await fontsReady;
+    return fitColumns(measuring(), cells, palette);
   },
   async draw({ sheet, firstRow, firstCol, scale, palette }) {
     if (!engine) throw new Error('The tile worker is not connected to the engine.');

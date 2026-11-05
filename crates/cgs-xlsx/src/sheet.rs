@@ -67,6 +67,9 @@ pub enum Step {
     Restart(SheetShape),
 }
 
+/// Set in a format's height when it wraps or turns its text, which has to be measured.
+pub const WRAPS: u32 = 1 << 31;
+
 /// What a loader needs each time it runs.
 pub struct LoadContext<'a> {
     pub engine: &'a mut dyn CalcEngine,
@@ -347,7 +350,21 @@ impl SheetLoader {
                             b"c" if self.in_cell => {
                                 let needs = context.xf_heights.get(self.cell_style as usize);
                                 self.row_tallest =
-                                    self.row_tallest.max(needs.copied().unwrap_or(0));
+                                    self.row_tallest.max(needs.copied().unwrap_or(0) & !WRAPS);
+                                if self.cell_type == CellType::Shared && self.has_value {
+                                    if let Ok(index) = self.value.trim().parse::<u32>() {
+                                        if context.strings.is_rich(index) {
+                                            info.rich.insert((self.row, self.col), index);
+                                        }
+                                    }
+                                }
+                                // Only the bit a wrapping format sets, so most cells pay nothing.
+                                if !self.row_has_height
+                                    && needs.is_some_and(|px| px & WRAPS != 0)
+                                    && info.unfitted_rows.last() != Some(&self.row)
+                                {
+                                    info.unfitted_rows.push(self.row);
+                                }
                                 self.finish_cell(context)?;
                                 self.in_cell = false;
                             }
@@ -449,8 +466,7 @@ impl SheetLoader {
                 row,
                 LineInfo {
                     size: Some(self.row_tallest),
-                    hidden: false,
-                    style: None,
+                    ..LineInfo::default()
                 },
             )),
         }
@@ -462,8 +478,10 @@ impl SheetLoader {
         let mut hidden = false;
         let mut style = None;
         let mut custom_format = false;
+        let mut custom_height = false;
         each_attr(element, |key, value| match key {
             b"r" => number = parse_u32(value),
+            b"customHeight" => custom_height = parse_bool(value),
             b"ht" => {
                 height = std::str::from_utf8(value)
                     .ok()
@@ -506,13 +524,19 @@ impl SheetLoader {
         }
         let size = height.map(points_to_px);
         let style = style.filter(|_| custom_format);
-        if hidden || style.is_some() || size.is_some_and(|size| size != info.rows.default_px) {
+        // A fixed height stays known even at the default, as a later edit mustn't refit that row.
+        if hidden
+            || style.is_some()
+            || custom_height
+            || size.is_some_and(|size| size != info.rows.default_px)
+        {
             info.rows.rows.push((
                 row,
                 LineInfo {
                     size,
                     hidden,
                     style,
+                    custom: custom_height,
                 },
             ));
         }
@@ -888,6 +912,7 @@ fn read_head_element(name: &[u8], element: &BytesStart<'_>, info: &mut SheetInfo
                     size: width.map(|width| col_width_to_px(width, digit)),
                     hidden,
                     style: attr_u32(element, b"style"),
+                    custom: attr_bool(element, b"customWidth").unwrap_or(false),
                 },
             ));
         }

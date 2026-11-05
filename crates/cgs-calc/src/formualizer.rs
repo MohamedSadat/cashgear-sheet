@@ -1696,6 +1696,10 @@ impl CalcEngine for FormualizerEngine {
         Ok(old)
     }
 
+    fn names(&self) -> Vec<NameInfo> {
+        self.names.clone()
+    }
+
     fn restore_names(&mut self, names: &[NameInfo]) -> Result<()> {
         for name in names {
             self.set_name(name)?;

@@ -6,10 +6,9 @@ use std::io::Write;
 use std::rc::Rc;
 
 use cgs_calc::{CalcEngine, CalcValue, CellRef, CellSink, FormulaShape, Rect, SheetRect};
-use cgs_xlsx::patch_parts::{StylesXml, XfChanges};
-use cgs_xlsx::patch_sheet::{ArrayKind, CellChange, NewElement};
+use cgs_xlsx::patch_parts::XfChanges;
+use cgs_xlsx::patch_sheet::{ArrayKind, CellChange, ColPatch, NewElement, RowPatch, ViewPatch};
 use cgs_xlsx::save::{save_workbook, verify_directory, verify_saved, SaveError, SaveReport};
-use cgs_xlsx::styles::read_styles;
 use cgs_xlsx::zipdir::Directory;
 use cgs_xlsx::{ByteSource, Package};
 
@@ -122,16 +121,7 @@ fn merge_element(merges: &[cgs_model::Rect]) -> String {
 impl Session {
     /// Adds a cell format copied from `base`, and returns its index.
     pub(crate) fn add_style(&mut self, base: u32, new: &NewStyle) -> u32 {
-        if self.edits.styles.is_none() {
-            let part = cgs_xlsx::workbook::styles_part(&self.package);
-            let bytes = part
-                .and_then(|part| self.package.read(&part))
-                .unwrap_or_else(cgs_xlsx::blank::minimal_styles);
-            self.edits.styles = Some(StylesXml::new(bytes));
-        }
-        let Some(styles) = self.edits.styles.as_mut() else {
-            return base;
-        };
+        let styles = self.styles_xml();
         let changes = XfChanges {
             font: new.font.as_deref().map(|font| styles.add_font(font)),
             fill: new.fill.as_deref().map(|fill| styles.add_solid_fill(fill)),
@@ -145,12 +135,10 @@ impl Session {
                     .map(|code| styles.add_num_fmt(code))
             }),
             alignment: new.alignment.clone(),
+            ..XfChanges::default()
         };
         let index = styles.add_xf(base, changes);
-        let mut table = read_styles(&styles.bytes);
-        table.colors.theme = std::mem::take(&mut self.book.styles.colors.theme);
-        self.book.styles = table;
-        self.cache = crate::tile::TileCache::default();
+        self.refresh_styles();
         index
     }
 
@@ -270,6 +258,136 @@ impl Session {
                     area: model_rect(rect),
                 };
             }
+        }
+        let digit = cgs_model::style::max_digit_width(self.book.styles.normal_font());
+        for (&sheet, areas) in &edits.style_areas {
+            if let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) {
+                if !areas.is_empty() {
+                    edits.extras.entry(sheet).or_default().styled =
+                        Some((info.clone(), areas.clone()));
+                }
+            }
+        }
+        for (&sheet, spans) in &edits.row_lines {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            let extra = edits.extras.entry(sheet).or_default();
+            for &(first, last) in spans {
+                for row in first..=last {
+                    let line = info.rows.info(row).copied().unwrap_or_default();
+                    extra.rows.insert(
+                        row,
+                        RowPatch {
+                            size_px: line.size,
+                            custom: line.custom,
+                            hidden: line.hidden,
+                            style: line.style,
+                        },
+                    );
+                }
+            }
+        }
+        for (&sheet, spans) in &edits.col_lines {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            let extra = edits.extras.entry(sheet).or_default();
+            for &(first, last) in spans {
+                for (from, to, line) in info.cols.slices(first, last) {
+                    extra.cols.push(ColPatch {
+                        first: from,
+                        last: to,
+                        size_px: line.size,
+                        default_px: info.cols.default_px,
+                        digit,
+                        custom: line.custom,
+                        hidden: line.hidden,
+                        style: line.style,
+                    });
+                }
+            }
+        }
+        // Whole columns' styles go on `<col>` too, which a format doesn't list as lines.
+        for (&sheet, areas) in &edits.style_areas {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            let extra = edits.extras.entry(sheet).or_default();
+            let mut spans: Vec<(u32, u32)> = areas
+                .iter()
+                .filter(|area| area.top == 1 && area.bottom == cgs_model::MAX_ROWS)
+                .map(|area| (area.left, area.right))
+                .collect();
+            crate::format::join_spans(&mut spans);
+            for (first, last) in spans {
+                for (from, to, line) in info.cols.slices(first, last) {
+                    let covered = extra
+                        .cols
+                        .iter()
+                        .any(|old| old.first <= from && old.last >= to);
+                    if !covered {
+                        extra.cols.push(ColPatch {
+                            first: from,
+                            last: to,
+                            size_px: line.size,
+                            default_px: info.cols.default_px,
+                            digit,
+                            custom: line.custom,
+                            hidden: line.hidden,
+                            style: line.style,
+                        });
+                    }
+                }
+            }
+            // And whole rows' on `<row>`.
+            for area in areas
+                .iter()
+                .filter(|area| area.left == 1 && area.right == cgs_model::MAX_COLS)
+            {
+                if area.top == 1 && area.bottom == cgs_model::MAX_ROWS {
+                    for &(row, line) in &info.rows.rows {
+                        if line.style.is_some() {
+                            extra.rows.entry(row).or_insert(RowPatch {
+                                size_px: line.size,
+                                custom: line.custom,
+                                hidden: line.hidden,
+                                style: line.style,
+                            });
+                        }
+                    }
+                    continue;
+                }
+                for row in area.top..=area.bottom {
+                    let line = info.rows.info(row).copied().unwrap_or_default();
+                    extra.rows.entry(row).or_insert(RowPatch {
+                        size_px: line.size,
+                        custom: line.custom,
+                        hidden: line.hidden,
+                        style: line.style,
+                    });
+                }
+            }
+        }
+        let viewed: std::collections::BTreeSet<u32> = edits
+            .view_flags
+            .iter()
+            .chain(edits.view_freeze.iter())
+            .copied()
+            .collect();
+        for sheet in viewed {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            edits.extras.entry(sheet).or_default().view = Some(ViewPatch {
+                freeze: edits
+                    .view_freeze
+                    .contains(&sheet)
+                    .then_some(info.view.freeze),
+                show_grid: Some(info.view.show_grid),
+                show_headers: Some(info.view.show_headers),
+                active_cell: info.view.active_cell,
+            });
         }
         for &sheet in &edits.merges.clone() {
             let Some(info) = self.book.sheets.get(sheet as usize) else {

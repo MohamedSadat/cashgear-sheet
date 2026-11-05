@@ -2,11 +2,12 @@
 // it and describes the layout, so keep the two in step.
 
 const MAGIC = 0x42564743; // "CGVB", little-endian
-const VERSION = 2;
-const HEADER_BYTES = 32;
+const VERSION = 3;
+const HEADER_BYTES = 36;
 const CELL_BYTES = 24;
-const STYLE_BYTES = 32;
+const STYLE_BYTES = 40;
 const EXTRA_BYTES = 40;
+const RUN_BYTES = 20;
 
 export const TILE_NOT_READY = 1;
 
@@ -79,6 +80,16 @@ export interface TileStyle {
   rightColor: number;
   bottomColor: number;
   diagonalColor: number;
+  /** `Hatch`'s number in crates/cgs-model/src/style.rs, or 0. */
+  pattern: number;
+  patternColor: number;
+}
+
+/** A stretch of rich text. */
+export interface TileRun {
+  text: string;
+  color: number;
+  style: number;
 }
 
 export interface TileExtra {
@@ -89,6 +100,8 @@ export interface TileExtra {
   width: number;
   height: number;
   text: string;
+  /** Where its text starts in the heap, which its runs go by. */
+  textOffset: number;
   color: number;
   style: number;
   flags: number;
@@ -107,6 +120,8 @@ export interface ViewBlock {
   cells: Uint32Array;
   styles: TileStyle[];
   extras: TileExtra[];
+  /** Rich text's runs, by where the text starts in the heap. */
+  runs: Map<number, TileRun[]>;
   heap: Uint8Array;
 }
 
@@ -127,6 +142,7 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
   const styleCount = view.getUint32(20, true);
   const extraCount = view.getUint32(24, true);
   const heapBytes = view.getUint32(28, true);
+  const runCount = view.getUint32(32, true);
   const rowPx = new Uint16Array(buffer, HEADER_BYTES, rows);
   const colPx = new Uint16Array(buffer, HEADER_BYTES + rows * 2, cols);
   let at = HEADER_BYTES + (rows + cols) * 2;
@@ -134,7 +150,8 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
   const cells = new Uint32Array(buffer, at, (rows * cols * CELL_BYTES) / 4);
   const stylesAt = at + rows * cols * CELL_BYTES;
   const extrasAt = stylesAt + styleCount * STYLE_BYTES;
-  const heapAt = extrasAt + extraCount * EXTRA_BYTES;
+  const runsAt = extrasAt + extraCount * EXTRA_BYTES;
+  const heapAt = runsAt + runCount * RUN_BYTES;
   if (heapAt + heapBytes !== buffer.byteLength) throw new Error('A ViewBlock tile is cut short.');
   const heap = new Uint8Array(buffer, heapAt, heapBytes);
 
@@ -157,6 +174,8 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
       rightColor: view.getUint32(start + 20, true),
       bottomColor: view.getUint32(start + 24, true),
       diagonalColor: view.getUint32(start + 28, true),
+      pattern: view.getUint8(start + 32),
+      patternColor: view.getUint32(start + 36, true),
     });
   }
   const extras: TileExtra[] = [];
@@ -169,11 +188,25 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
       width: view.getInt32(start + 12, true),
       height: view.getInt32(start + 16, true),
       text: readText(heap, view.getUint32(start + 20, true), view.getUint32(start + 24, true)),
+      textOffset: view.getUint32(start + 20, true),
       color: view.getUint32(start + 28, true),
       style: view.getUint16(start + 32, true),
       flags: view.getUint16(start + 34, true),
       fillAt: view.getUint32(start + 36, true),
     });
+  }
+  const runs = new Map<number, TileRun[]>();
+  for (let index = 0; index < runCount; index++) {
+    const start = runsAt + index * RUN_BYTES;
+    const text = view.getUint32(start, true);
+    const run = {
+      text: readText(heap, text + view.getUint32(start + 4, true), view.getUint32(start + 8, true)),
+      color: view.getUint32(start + 12, true),
+      style: view.getUint16(start + 16, true),
+    };
+    const list = runs.get(text);
+    if (list) list.push(run);
+    else runs.set(text, [run]);
   }
   return {
     rows,
@@ -186,6 +219,7 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
     cells,
     styles,
     extras,
+    runs,
     heap,
   };
 }

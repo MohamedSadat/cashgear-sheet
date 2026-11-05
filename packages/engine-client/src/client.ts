@@ -4,17 +4,22 @@ import type {
   BookSummary,
   CalcStatus,
   CellArea,
+  CellFormat,
   CellText,
   Command,
   DrawingBox,
   EngineApi,
   EngineInfo,
   FileSource,
+  FindQuery,
+  FormatLists,
+  FoundCell,
   LoadEvent,
   LocaleData,
   Recoverable,
   SavedFile,
   TileImage,
+  TilePalette,
   TileRequest,
   TileWorkerApi,
   WorkbookChanges,
@@ -38,8 +43,18 @@ export interface EngineClient {
   blankWorkbook(): Promise<Uint8Array>;
   /** Makes saves independent of the file on disk, before the first edit. See `EngineApi`. */
   protectSource(source?: FileSource): Promise<boolean>;
-  /** Runs a command. Rejects with a message people can read, changing nothing. */
+  /** Runs a command, and fits any rows it left to measure. Rejects with a message people can read. */
   command(command: Command): Promise<Applied>;
+  /** Fits rows of a sheet from another program's file, for how it looks here. */
+  fitOpeningRows(sheet: number): Promise<void>;
+  /** Fits columns to what they hold. */
+  autoFitColumns(sheet: number, first: number, last: number): Promise<Applied | null>;
+  mergeDiscards(sheet: number, areas: CellArea[], across: boolean): Promise<boolean>;
+  cellFormat(sheet: number, row: number, col: number): Promise<CellFormat | null>;
+  formatLists(): Promise<FormatLists | null>;
+  formatSample(sheet: number, row: number, col: number, code: string): Promise<string | null>;
+  findNext(query: FindQuery, row: number, col: number, back: boolean): Promise<FoundCell | null>;
+  findAll(query: FindQuery): Promise<FoundCell[]>;
   /** Hears what changed and whether calculation is running, from now on. */
   watchChanges(
     onChanges: (changes: WorkbookChanges) => void,
@@ -134,6 +149,16 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
   watch(tileWorker, 'tile', report);
   const engine: Remote<EngineApi> = wrap<EngineApi>(engineWorker);
   const tiles: Remote<TileWorkerApi> = wrap<TileWorkerApi>(tileWorker);
+  /** Text measures as tiles draw it, so with the font they last used. */
+  let lastPalette: TilePalette | undefined;
+  const measuringPalette = (): TilePalette =>
+    lastPalette ?? {
+      dark: false,
+      background: '#ffffff',
+      gridline: '#d4d4d4',
+      text: '#000000',
+      fontFamily: 'sans-serif',
+    };
   const channel = new MessageChannel();
   const connected = Promise.all([
     engine.attachTileWorker(transfer(channel.port1, [channel.port1])),
@@ -156,7 +181,34 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     close: () => engine.close(),
     blankWorkbook: () => engine.blankWorkbook(),
     protectSource: (source) => engine.protectSource(source),
-    command: (command) => engine.command(command),
+    async command(command) {
+      const applied = await engine.command(command);
+      const rows = await engine.takeRowFits();
+      if (rows.length) {
+        const fitted = await tiles.fitRows(rows, measuringPalette());
+        await engine.command({ kind: 'fitRows', rows: fitted });
+      }
+      return applied;
+    },
+    async fitOpeningRows(sheet) {
+      const rows = await engine.openingRowFits(sheet);
+      if (!rows.length) return;
+      await connected;
+      const fitted = await tiles.fitRows(rows, measuringPalette());
+      await engine.command({ kind: 'fitRows', rows: fitted, quiet: true });
+    },
+    async autoFitColumns(sheet, first, last) {
+      const cells = await engine.colFits(sheet, first, last);
+      if (!cells.length) return null;
+      const cols = await tiles.fitColumns(cells, measuringPalette());
+      return engine.command({ kind: 'fitCols', sheet, cols });
+    },
+    mergeDiscards: (sheet, areas, across) => engine.mergeDiscards(sheet, areas, across),
+    cellFormat: (sheet, row, col) => engine.cellFormat(sheet, row, col),
+    formatLists: () => engine.formatLists(),
+    formatSample: (sheet, row, col, code) => engine.formatSample(sheet, row, col, code),
+    findNext: (query, row, col, back) => engine.findNext(query, row, col, back),
+    findAll: (query) => engine.findAll(query),
     watchChanges: (onChanges, onCalc) =>
       engine.watchChanges(
         proxy((numbers: Uint32Array) => onChanges(decodeChanges(numbers))),
@@ -188,6 +240,7 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     cellText: (sheet, row, col) => engine.cellText(sheet, row, col),
     memoryBytes: () => engine.memoryBytes(),
     async drawTile(request) {
+      lastPalette = request.palette;
       await connected;
       return tiles.draw(request);
     },

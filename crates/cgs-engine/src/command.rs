@@ -16,6 +16,7 @@ use cgs_xlsx::structure::BookOp;
 use serde::Deserialize;
 
 use crate::edit::{EditCell, EditInput};
+use crate::format::{FormatChange, StylesBefore};
 use crate::input::{parse_input, Format, Typed};
 use crate::{Engine, Session};
 
@@ -200,9 +201,105 @@ pub enum Command {
         sheet: u32,
         name: String,
     },
+    /// Formats cells. `active` is the cell a relative change, such as more decimals, goes by.
+    Format {
+        sheet: u32,
+        areas: Vec<Area>,
+        change: Box<FormatChange>,
+        #[serde(default)]
+        active: Option<(u32, u32)>,
+    },
+    /// Sets the size of rows or columns, or hides or shows them.
+    Lines {
+        sheet: u32,
+        axis: AxisName,
+        first: u32,
+        last: u32,
+        #[serde(default)]
+        size: Option<u32>,
+        #[serde(default)]
+        hidden: Option<bool>,
+    },
+    /// Rows go back to fitting what they hold.
+    AutoFitRows {
+        sheet: u32,
+        first: u32,
+        last: u32,
+    },
+    /// Columns take the widths that were measured for them.
+    FitCols {
+        sheet: u32,
+        cols: Vec<(u32, u32)>,
+    },
+    /// Rows take the heights that were measured for them, as part of the last step. `quiet` says
+    /// it's only for how a file looks on opening, which isn't a change to the file.
+    FitRows {
+        rows: Vec<(u32, u32, u32)>,
+        #[serde(default)]
+        quiet: bool,
+    },
+    /// Merges each area, or each row of it with `across`.
+    Merge {
+        sheet: u32,
+        areas: Vec<Area>,
+        #[serde(default)]
+        center: bool,
+        #[serde(default)]
+        across: bool,
+    },
+    Unmerge {
+        sheet: u32,
+        areas: Vec<Area>,
+    },
+    /// Freezes rows and columns from a first row and column. None of either unfreezes.
+    Freeze {
+        sheet: u32,
+        rows: u32,
+        cols: u32,
+        #[serde(default = "first_line")]
+        top: u32,
+        #[serde(default = "first_line")]
+        left: u32,
+    },
+    /// Inserts cells, or deletes them with `delete`, shifting what's there down or else across.
+    ShiftCells {
+        sheet: u32,
+        area: Area,
+        down: bool,
+        #[serde(default)]
+        delete: bool,
+    },
+    /// Replaces what a search finds in one cell.
+    ReplaceOne {
+        query: crate::find::FindQuery,
+        with: String,
+        sheet: u32,
+        row: u32,
+        col: u32,
+    },
+    /// Replaces everywhere a search reaches.
+    ReplaceAll {
+        query: crate::find::FindQuery,
+        with: String,
+    },
+    /// Shows or hides gridlines and headings.
+    ViewFlags {
+        sheet: u32,
+        #[serde(default)]
+        grid: Option<bool>,
+        #[serde(default)]
+        headings: Option<bool>,
+    },
     Undo,
     Redo,
 }
+
+fn first_line() -> u32 {
+    1
+}
+
+/// Cells and the rich strings they show.
+type RichCells = Vec<((u32, u32), Option<u32>)>;
 
 /// One change to the workbook, and what is kept to undo it.
 #[derive(Debug, Clone)]
@@ -246,6 +343,47 @@ pub(crate) enum Op {
         sheet: u32,
         name: String,
     },
+    /// A format to apply, which comes back as what it changed.
+    Format {
+        sheet: u32,
+        areas: Vec<Area>,
+        change: Box<FormatChange>,
+        active: Option<(u32, u32)>,
+    },
+    /// What a format changed.
+    Styles(Box<StylesBefore>),
+    /// Rows' and columns' records to put in place.
+    Lines {
+        sheet: u32,
+        rows: Vec<(u32, cgs_model::LineInfo)>,
+        cols: Vec<(u32, u32, cgs_model::LineInfo)>,
+    },
+    MergeArea {
+        sheet: u32,
+        area: Area,
+        center: bool,
+    },
+    /// Cells moved within a band, for the rest of the file to follow when it's saved.
+    ShiftLog {
+        sheet: u32,
+        edit: AxisEdit,
+    },
+    /// What defined names read, with what they read before.
+    NamesTo {
+        names: Vec<NameInfo>,
+        before: Vec<NameInfo>,
+    },
+    /// Which rich string cells show. A string coming back means the cell is the file's again.
+    Rich {
+        sheet: u32,
+        cells: RichCells,
+    },
+    /// A sheet's view to put in place. `freeze` says the panes are part of the change.
+    View {
+        sheet: u32,
+        view: cgs_model::SheetView,
+        freeze: bool,
+    },
     Many(Vec<Op>),
 }
 
@@ -263,6 +401,12 @@ impl Op {
             Self::Names(names) => names.len() * 128,
             Self::Tables(tables) => tables.len() * 256,
             Self::Merges { merges, .. } => merges.len() * 16,
+            Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
+            Self::Styles(before) => before.bytes(),
+            Self::Lines { rows, cols, .. } => 64 + rows.len() * 24 + cols.len() * 32,
+            Self::Rich { cells, .. } => 32 + cells.len() * 16,
+            Self::ShiftLog { .. } => 64,
+            Self::NamesTo { names, before } => (names.len() + before.len()) * 128,
             Self::AddSheet { name, .. } => 64 + name.len(),
             Self::RestoreSheet {
                 cells,
@@ -359,6 +503,8 @@ impl History {
 pub struct Applied {
     /// The cells to select afterwards.
     pub selection: Option<(u32, Area)>,
+    /// How many cells a replace changed.
+    pub replaced: u32,
 }
 
 fn not_open() -> String {
@@ -473,7 +619,7 @@ impl Session {
         })
     }
 
-    fn apply_cells(&mut self, edits: Vec<EditCell>) -> Result<Op, String> {
+    pub(crate) fn apply_cells(&mut self, edits: Vec<EditCell>) -> Result<Op, String> {
         for edit in &edits {
             let sheet = self
                 .book
@@ -530,6 +676,19 @@ impl Session {
             self.calc.set_cells(&inputs).map_err(|error| error.0)?
         }
         .into_iter();
+        // New contents take a rich string's look away.
+        let mut was_rich: BTreeMap<u32, RichCells> = BTreeMap::new();
+        for edit in edits.iter().filter(|edit| edit.input.is_some()) {
+            let info = &mut self.book.sheets[edit.sheet as usize];
+            if !info.rich.is_empty() {
+                if let Some(index) = info.rich.remove(&(edit.row, edit.col)) {
+                    was_rich
+                        .entry(edit.sheet)
+                        .or_default()
+                        .push(((edit.row, edit.col), Some(index)));
+                }
+            }
+        }
         let mut undo = Vec::with_capacity(edits.len());
         for (edit, style) in edits.iter().zip(before_styles) {
             let input = if edit.input.is_some() {
@@ -549,7 +708,16 @@ impl Session {
             self.note_cell_patch(edit);
         }
         undo.reverse();
-        Ok(Op::Cells(undo))
+        if was_rich.is_empty() {
+            return Ok(Op::Cells(undo));
+        }
+        let mut list = vec![Op::Cells(undo)];
+        list.extend(
+            was_rich
+                .into_iter()
+                .map(|(sheet, cells)| Op::Rich { sheet, cells }),
+        );
+        Ok(Op::Many(list))
     }
 
     fn note_cell_patch(&mut self, edit: &EditCell) {
@@ -592,6 +760,9 @@ impl Session {
         if edit.style.is_some() {
             patch.style = edit.style;
         }
+        if edit.input.is_some() || edit.style.is_some() {
+            self.touch_row(edit.sheet, edit.row);
+        }
         let info = &mut self.book.sheets[edit.sheet as usize];
         if let Some(style) = edit.style {
             info.set_style(edit.row, edit.col, style);
@@ -609,6 +780,28 @@ impl Session {
 
     /// Moves a sheet's patches to their new places.
     fn move_patches(&mut self, sheet: u32, edit: &AxisEdit) {
+        if let Some(areas) = self.edits.style_areas.get_mut(&sheet) {
+            *areas = areas
+                .iter()
+                .filter_map(|area| {
+                    let (top, left, bottom, right) =
+                        cgs_refs::edit_rect((area.top, area.left, area.bottom, area.right), edit)?;
+                    Some(Rect {
+                        top,
+                        left,
+                        bottom,
+                        right,
+                    })
+                })
+                .collect();
+        }
+        let lines = match edit.axis {
+            Axis::Row => self.edits.row_lines.get_mut(&sheet),
+            Axis::Col => self.edits.col_lines.get_mut(&sheet),
+        };
+        if let Some(lines) = lines {
+            *lines = lines.iter().filter_map(|&span| edit.span(span)).collect();
+        }
         let Some(patches) = self.edits.cells.get_mut(&sheet) else {
             return;
         };
@@ -890,7 +1083,7 @@ impl Session {
         })
     }
 
-    fn apply_op(&mut self, op: Op) -> Result<Op, String> {
+    pub(crate) fn apply_op(&mut self, op: Op) -> Result<Op, String> {
         match op {
             Op::Cells(edits) => self.apply_cells(edits),
             Op::Axis { sheet, edit } => self.apply_axis(sheet, edit, None),
@@ -1052,6 +1245,71 @@ impl Session {
                 self.dirty.sheets.extend(0..self.book.sheets.len() as u32);
                 Ok(Op::Rename { sheet, name: old })
             }
+            Op::Format {
+                sheet,
+                areas,
+                change,
+                active,
+            } => self.apply_format(sheet, &areas, *change, active),
+            Op::ShiftLog { sheet, edit } => {
+                let name = self.book.sheets[sheet as usize].name.clone();
+                self.edits.ops.push(BookOp::Axis { sheet, name, edit });
+                Ok(Op::ShiftLog {
+                    sheet,
+                    edit: edit.inverse(),
+                })
+            }
+            Op::NamesTo { names, before } => {
+                self.calc.restore_names(&names).map_err(|error| error.0)?;
+                for entry in &names {
+                    if let Some(defined) = self.book.names.iter_mut().find(|defined| {
+                        defined.name == entry.name && defined.local_sheet == entry.local_sheet
+                    }) {
+                        defined.formula = entry.formula.clone();
+                    }
+                }
+                Ok(Op::NamesTo {
+                    names: before,
+                    before: names,
+                })
+            }
+            Op::Rich { sheet, cells } => {
+                let mut before = Vec::with_capacity(cells.len());
+                for (at, index) in cells {
+                    let info = &mut self.book.sheets[sheet as usize];
+                    match index {
+                        Some(index) => {
+                            before.push((at, info.rich.insert(at, index)));
+                            if let Some(patch) = self
+                                .edits
+                                .cells
+                                .get_mut(&sheet)
+                                .and_then(|patches| patches.get_mut(&at))
+                            {
+                                patch.change = CellChange::Keep;
+                            }
+                        }
+                        None => before.push((at, info.rich.remove(&at))),
+                    }
+                    self.dirty.cell(sheet, at.0, at.1);
+                }
+                Ok(Op::Rich {
+                    sheet,
+                    cells: before,
+                })
+            }
+            Op::Styles(before) => Ok(self.apply_styles_before(*before)),
+            Op::Lines { sheet, rows, cols } => Ok(self.apply_lines(sheet, rows, cols)),
+            Op::MergeArea {
+                sheet,
+                area,
+                center,
+            } => self.apply_merge(sheet, area, center),
+            Op::View {
+                sheet,
+                view,
+                freeze,
+            } => Ok(self.apply_view(sheet, view, freeze)),
             Op::Many(list) => {
                 let mut undo = Vec::with_capacity(list.len());
                 for op in list {
@@ -1210,11 +1468,79 @@ impl Session {
         let op = self.with_table_headings(op)?;
         let before = self.history.state;
         let log_before = self.edits.ops.len();
+        self.touched_rows.clear();
         let inverse = self.apply_op(op)?;
+        // Rows that hold something new may want another height, which goes back with the step.
+        let inverse = match self.refit_touched() {
+            Some(lines) => Op::Many(vec![lines, inverse]),
+            None => inverse,
+        };
         self.history.touch();
         self.history
             .push(label, inverse, before, selection, log_before);
-        Ok(Applied { selection })
+        Ok(Applied {
+            selection,
+            replaced: 0,
+        })
+    }
+
+    /// As `perform`, for a change that says for itself which rows to fit afterwards.
+    fn perform_with_rows(
+        &mut self,
+        label: &'static str,
+        op: Op,
+        rows: std::collections::BTreeSet<(u32, u32)>,
+    ) -> Result<Applied, String> {
+        self.absorb_results();
+        let before = self.history.state;
+        let log_before = self.edits.ops.len();
+        let inverse = self.apply_op(op)?;
+        self.touched_rows = rows;
+        let inverse = match self.refit_touched() {
+            Some(lines) => Op::Many(vec![lines, inverse]),
+            None => inverse,
+        };
+        self.history.touch();
+        self.history.push(label, inverse, before, None, log_before);
+        Ok(Applied::default())
+    }
+
+    /// Measured heights for rows that wrap, which belong to the step that asked for them.
+    fn fit_rows_command(
+        &mut self,
+        rows: Vec<(u32, u32, u32)>,
+        quiet: bool,
+    ) -> Result<Applied, String> {
+        let mut by_sheet: BTreeMap<u32, Vec<(u32, cgs_model::LineInfo)>> = BTreeMap::new();
+        for (sheet, row, px) in rows {
+            let info = self.sheet_for_edit(sheet)?;
+            let line = info.rows.info(row).copied().unwrap_or_default();
+            if line.custom || line.hidden {
+                continue;
+            }
+            let size = (px != info.rows.default_px).then_some(px);
+            if size != line.size {
+                by_sheet
+                    .entry(sheet)
+                    .or_default()
+                    .push((row, cgs_model::LineInfo { size, ..line }));
+            }
+        }
+        for (sheet, mut list) in by_sheet {
+            list.sort_unstable_by_key(|&(row, _)| row);
+            if quiet {
+                self.book.sheets[sheet as usize].rows.set_many(&list);
+                self.dirty.sheets.insert(sheet);
+                self.dirty.layouts.insert(sheet);
+                continue;
+            }
+            let lines = self.apply_lines(sheet, list, Vec::new());
+            if let Some(step) = self.history.undo.last_mut() {
+                let old = std::mem::replace(&mut step.op, Op::Many(Vec::new()));
+                step.op = Op::Many(vec![lines, old]);
+            }
+        }
+        Ok(Applied::default())
     }
 
     fn step_back(&mut self) -> Result<Applied, String> {
@@ -1225,6 +1551,7 @@ impl Session {
         self.history.bytes -= step.bytes;
         let op = std::mem::replace(&mut step.op, Op::Many(Vec::new()));
         let inverse = self.apply_op(op)?;
+        self.touched_rows.clear();
         step.bytes = inverse.bytes();
         step.op = inverse;
         self.history.bytes += step.bytes;
@@ -1237,7 +1564,10 @@ impl Session {
         }
         self.history.redo.push(step);
         self.arrive_at_state();
-        Ok(Applied { selection })
+        Ok(Applied {
+            selection,
+            replaced: 0,
+        })
     }
 
     fn step_forward(&mut self) -> Result<Applied, String> {
@@ -1250,6 +1580,7 @@ impl Session {
         step.log_before = self.edits.ops.len();
         step.log_file = self.history.file;
         let inverse = self.apply_op(op)?;
+        self.touched_rows.clear();
         step.bytes = inverse.bytes();
         step.op = inverse;
         self.history.bytes += step.bytes;
@@ -1257,7 +1588,10 @@ impl Session {
         let selection = step.selection;
         self.history.undo.push(step);
         self.arrive_at_state();
-        Ok(Applied { selection })
+        Ok(Applied {
+            selection,
+            replaced: 0,
+        })
     }
 
     /// Back at the file's own state, nothing differs from it.
@@ -1724,6 +2058,7 @@ impl Session {
         if (from_sheet, from) == (sheet, target) {
             return Ok(Applied {
                 selection: Some((sheet, target)),
+                replaced: 0,
             });
         }
         if self.cuts_an_array(from_sheet, from) || self.cuts_an_array(sheet, target) {
@@ -1893,6 +2228,7 @@ impl Session {
                     at,
                     count,
                     delete,
+                    band: None,
                 };
                 self.perform("rows or columns", Op::Axis { sheet, edit }, None)
             }
@@ -1934,6 +2270,271 @@ impl Session {
                     return Err(problem);
                 }
                 self.perform("renaming a sheet", Op::Rename { sheet, name }, None)
+            }
+            Command::Format {
+                sheet,
+                areas,
+                change,
+                active,
+            } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                if areas.iter().any(|area| !area.valid()) {
+                    return Err("That's off the sheet.".to_string());
+                }
+                let selection = areas.first().map(|area| (sheet, *area));
+                self.perform(
+                    "formatting",
+                    Op::Format {
+                        sheet,
+                        areas,
+                        change,
+                        active,
+                    },
+                    selection,
+                )
+            }
+            Command::Lines {
+                sheet,
+                axis,
+                first,
+                last,
+                size,
+                hidden,
+            } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                let max = match axis {
+                    AxisName::Row => cgs_model::MAX_ROWS,
+                    AxisName::Col => cgs_model::MAX_COLS,
+                };
+                if first == 0 || first > last || last > max {
+                    return Err("That's off the sheet.".to_string());
+                }
+                let op = self.lines_op(sheet, axis, first, last, size, hidden);
+                let label = if hidden.is_some() {
+                    "hiding"
+                } else {
+                    match axis {
+                        AxisName::Row => "row height",
+                        AxisName::Col => "column width",
+                    }
+                };
+                self.perform(label, op, None)
+            }
+            Command::AutoFitRows { sheet, first, last } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                let used = info.used.0;
+                let rows: Vec<(u32, cgs_model::LineInfo)> = (first..=last.min(used.max(first)))
+                    .map(|row| {
+                        let mut line = info.rows.info(row).copied().unwrap_or_default();
+                        line.custom = false;
+                        (row, line)
+                    })
+                    .collect();
+                for &(row, _) in &rows {
+                    self.touch_row(sheet, row);
+                }
+                let touched = std::mem::take(&mut self.touched_rows);
+                self.perform_with_rows(
+                    "row height",
+                    Op::Lines {
+                        sheet,
+                        rows,
+                        cols: Vec::new(),
+                    },
+                    touched,
+                )
+            }
+            Command::FitCols { sheet, cols } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                let list = cols
+                    .iter()
+                    .map(|&(col, px)| {
+                        let line = info.cols.info(col).copied().unwrap_or_default();
+                        (
+                            col,
+                            col,
+                            cgs_model::LineInfo {
+                                size: Some(px),
+                                custom: true,
+                                hidden: false,
+                                ..line
+                            },
+                        )
+                    })
+                    .collect();
+                self.perform(
+                    "column width",
+                    Op::Lines {
+                        sheet,
+                        rows: Vec::new(),
+                        cols: list,
+                    },
+                    None,
+                )
+            }
+            Command::FitRows { rows, quiet } => self.fit_rows_command(rows, quiet),
+            Command::Merge {
+                sheet,
+                areas,
+                center,
+                across,
+            } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                let mut list = Vec::new();
+                for area in &areas {
+                    if !area.valid() {
+                        return Err("That's off the sheet.".to_string());
+                    }
+                    if self.cuts_an_array(sheet, *area) {
+                        return Err("You can't change part of an array.".to_string());
+                    }
+                    if across {
+                        for row in area.top..=area.bottom {
+                            let line = Area {
+                                top: row,
+                                left: area.left,
+                                bottom: row,
+                                right: area.right,
+                            };
+                            if line.cols() > 1 {
+                                list.push(Op::MergeArea {
+                                    sheet,
+                                    area: line,
+                                    center,
+                                });
+                            }
+                        }
+                    } else if area.rows() > 1 || area.cols() > 1 {
+                        list.push(Op::MergeArea {
+                            sheet,
+                            area: *area,
+                            center,
+                        });
+                    }
+                }
+                let selection = areas.first().map(|area| (sheet, *area));
+                self.perform("merging", Op::Many(list), selection)
+            }
+            Command::Unmerge { sheet, areas } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                let merges: Vec<Rect> = info
+                    .merges
+                    .iter()
+                    .filter(|merge| {
+                        !areas.iter().any(|area| {
+                            merge.top <= area.bottom
+                                && merge.bottom >= area.top
+                                && merge.left <= area.right
+                                && merge.right >= area.left
+                        })
+                    })
+                    .copied()
+                    .collect();
+                let selection = areas.first().map(|area| (sheet, *area));
+                self.perform("unmerging", Op::Merges { sheet, merges }, selection)
+            }
+            Command::Freeze {
+                sheet,
+                rows,
+                cols,
+                top,
+                left,
+            } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                if rows >= cgs_model::MAX_ROWS || cols >= cgs_model::MAX_COLS {
+                    return Err("That's off the sheet.".to_string());
+                }
+                let freeze = cgs_model::Freeze {
+                    rows,
+                    cols,
+                    top,
+                    left,
+                };
+                let op = self.freeze_op(sheet, Some(freeze));
+                self.perform("freezing panes", op, None)
+            }
+            Command::ShiftCells {
+                sheet,
+                area,
+                down,
+                delete,
+            } => {
+                if !area.valid() {
+                    return Err("That's off the sheet.".to_string());
+                }
+                let op = self.shift_op(sheet, area, down, delete)?;
+                let label = if delete {
+                    "deleting cells"
+                } else {
+                    "inserting cells"
+                };
+                self.perform(label, op, Some((sheet, area)))
+            }
+            Command::ReplaceOne {
+                query,
+                with,
+                sheet,
+                row,
+                col,
+            } => {
+                let options = cgs_numfmt::Options {
+                    locale,
+                    date1904: self.book.date1904,
+                };
+                match self.replace_one(&query, &with, (sheet, row, col), &options, locale) {
+                    Some(op) => {
+                        let mut applied =
+                            self.perform("replacing", op, Some((sheet, Area::cell(row, col))))?;
+                        applied.replaced = 1;
+                        Ok(applied)
+                    }
+                    None => Ok(Applied::default()),
+                }
+            }
+            Command::ReplaceAll { query, with } => {
+                let options = cgs_numfmt::Options {
+                    locale,
+                    date1904: self.book.date1904,
+                };
+                let edits = self.replace_all(&query, &with, &options, locale);
+                let count = edits.len() as u32;
+                if count == 0 {
+                    return Ok(Applied::default());
+                }
+                let mut applied = self.perform("replacing", Op::Cells(edits), None)?;
+                applied.replaced = count;
+                Ok(applied)
+            }
+            Command::ViewFlags {
+                sheet,
+                grid,
+                headings,
+            } => {
+                let info = self.sheet_for_edit(sheet)?;
+                number_only(info)?;
+                let mut view = info.view;
+                if let Some(show) = grid {
+                    view.show_grid = show;
+                }
+                if let Some(show) = headings {
+                    view.show_headers = show;
+                }
+                self.perform(
+                    "sheet view",
+                    Op::View {
+                        sheet,
+                        view,
+                        freeze: false,
+                    },
+                    None,
+                )
             }
             Command::Undo => self.step_back(),
             Command::Redo => self.step_forward(),

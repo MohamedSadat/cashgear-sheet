@@ -345,6 +345,8 @@ pub trait CalcEngine {
     fn restore_sheet(&mut self, sheet: u32) -> Result<()>;
     /// Renames a sheet. What reads it follows. Returns the old name.
     fn rename_sheet(&mut self, sheet: u32, name: &str) -> Result<String>;
+    /// Defined names as they stand now.
+    fn names(&self) -> Vec<NameInfo>;
     /// Puts defined names back as they were.
     fn restore_names(&mut self, names: &[NameInfo]) -> Result<()>;
     /// Puts tables back as they were, making any that have gone.

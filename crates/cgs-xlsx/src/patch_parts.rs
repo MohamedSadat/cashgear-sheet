@@ -5,8 +5,8 @@ use std::io::{self, Read, Write};
 
 use crate::patch_sheet::StringTable;
 use crate::scan::{
-    attr_value, edit_tag, escape_attr, escape_text, escape_x, local_name, opened, prefix, splice,
-    utf8_declaration, Kind, Scanner,
+    attr_value, closed, edit_tag, escape_attr, escape_text, escape_x, local_name, opened, prefix,
+    splice, utf8_declaration, Kind, Scanner,
 };
 use crate::xml::{parse_u32, unescape_attr, unescape_x};
 
@@ -545,6 +545,64 @@ pub struct XfChanges {
     pub num_fmt: Option<u32>,
     /// `<alignment>`'s attributes, starting with a space.
     pub alignment: Option<String>,
+    /// Attributes to set or remove on the `<alignment>` the format starts from, keeping the rest.
+    pub alignment_edits: Vec<(&'static str, Option<String>)>,
+}
+
+/// What changes in a font. The rest of it stays, including what we don't read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FontEdits {
+    pub name: Option<String>,
+    pub size: Option<f32>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub strike: Option<bool>,
+    /// `single`, `double`, `singleAccounting` or `doubleAccounting`, or nothing for none.
+    pub underline: Option<Option<String>>,
+    /// `<color>`'s attributes, starting with a space, or nothing for automatic.
+    pub color: Option<Option<String>>,
+}
+
+/// What changes in a border. Each line is its style and `<color>`'s attributes, or nothing for none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BorderEdits {
+    pub left: Option<Option<(String, String)>>,
+    pub right: Option<Option<(String, String)>>,
+    pub top: Option<Option<(String, String)>>,
+    pub bottom: Option<Option<(String, String)>>,
+    pub diagonal: Option<Option<(String, String)>>,
+    pub diagonal_up: Option<bool>,
+    pub diagonal_down: Option<bool>,
+}
+
+/// A font's children in the order Excel writes them, which the validator holds us to.
+const FONT_ORDER: &[&str] = &[
+    "b",
+    "i",
+    "strike",
+    "condense",
+    "extend",
+    "outline",
+    "shadow",
+    "u",
+    "vertAlign",
+    "sz",
+    "color",
+    "name",
+    "family",
+    "charset",
+    "scheme",
+];
+
+/// Writes a number as briefly as it reads back.
+fn point_text(points: f32) -> String {
+    let rounded = (f64::from(points) * 100.0).round() / 100.0;
+    format!("{rounded}")
+}
+
+/// A flag such as `<b/>` is on unless it says `val="0"`.
+fn flag_child(name: &str, on: bool) -> Option<String> {
+    on.then(|| format!("<{name}/>"))
 }
 
 /// A cell format's XML with this alignment in place of any it had.
@@ -719,6 +777,273 @@ impl StylesXml {
         root_prefix(&self.bytes, &tokens(&self.bytes))
     }
 
+    /// The XML of a list's entries, in order.
+    fn entries(&self, list: &[u8], entry: &[u8]) -> Vec<Vec<u8>> {
+        let located = tokens(&self.bytes);
+        self.find_list(&located, list, entry)
+            .map(|found| {
+                found
+                    .entries
+                    .iter()
+                    .map(|&(from, to)| self.bytes[from..to].to_vec())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Adds an entry, unless the list already holds exactly this one.
+    fn append_new(&mut self, name: &str, entry: &str, xml: &str) -> u32 {
+        let existing = self.entries(name.as_bytes(), entry.as_bytes());
+        if let Some(at) = existing.iter().position(|old| old == xml.as_bytes()) {
+            return at as u32;
+        }
+        self.append(name, entry, xml)
+    }
+
+    /// A font like the one at `base`, with these changes, reusing one that's the same. Everything
+    /// else it holds stays, except that a new name drops what described the old one.
+    pub fn edit_font(&mut self, base: u32, edits: &FontEdits) -> u32 {
+        let prefix = self.root();
+        let fonts = self.entries(b"fonts", b"font");
+        let old = fonts.get(base as usize).or_else(|| fonts.first());
+        let mut children: Vec<(String, String)> = Vec::new();
+        if let Some(old) = old {
+            let mut scanner = Scanner::new(&old[..]);
+            let mut depth = 0;
+            while let Ok(Some(kind)) = scanner.next() {
+                let token = scanner.token();
+                match kind {
+                    Kind::Start => {
+                        if depth == 1 {
+                            // A child with content, which fonts never have in practice.
+                            children.push((
+                                String::from_utf8_lossy(local_name(token)).into_owned(),
+                                String::from_utf8_lossy(&closed(token)).into_owned(),
+                            ));
+                        }
+                        depth += 1;
+                    }
+                    Kind::End => depth -= 1,
+                    Kind::Empty if depth == 1 => {
+                        children.push((
+                            String::from_utf8_lossy(local_name(token)).into_owned(),
+                            String::from_utf8_lossy(token).into_owned(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut put = |name: &str, xml: Option<String>| {
+            children.retain(|(child, _)| child != name);
+            if let Some(xml) = xml {
+                children.push((name.to_string(), with_prefix(xml.as_bytes(), &prefix)));
+            }
+        };
+        if let Some(on) = edits.bold {
+            put("b", flag_child("b", on));
+        }
+        if let Some(on) = edits.italic {
+            put("i", flag_child("i", on));
+        }
+        if let Some(on) = edits.strike {
+            put("strike", flag_child("strike", on));
+        }
+        if let Some(underline) = &edits.underline {
+            put(
+                "u",
+                underline.as_ref().map(|kind| {
+                    if kind == "single" {
+                        "<u/>".to_string()
+                    } else {
+                        format!("<u val=\"{kind}\"/>")
+                    }
+                }),
+            );
+        }
+        if let Some(size) = edits.size {
+            put("sz", Some(format!("<sz val=\"{}\"/>", point_text(size))));
+        }
+        if let Some(color) = &edits.color {
+            put(
+                "color",
+                color
+                    .as_ref()
+                    .map(|attributes| format!("<color{attributes}/>")),
+            );
+        }
+        if let Some(name) = &edits.name {
+            put(
+                "name",
+                Some(format!("<name val=\"{}\"/>", escape_attr(name))),
+            );
+            put("family", None);
+            put("charset", None);
+            put("scheme", None);
+        }
+        let place = |name: &str| FONT_ORDER.iter().position(|known| *known == name);
+        children.sort_by_key(|(name, _)| place(name).unwrap_or(FONT_ORDER.len()));
+        let inner: String = children.into_iter().map(|(_, xml)| xml).collect();
+        self.append_new(
+            "fonts",
+            "font",
+            &format!("<{prefix}font>{inner}</{prefix}font>"),
+        )
+    }
+
+    /// Adds a fill from its `patternFill`'s children, reusing one that's the same. Returns its index.
+    pub fn add_pattern_fill(&mut self, pattern: &str, colors: &str) -> u32 {
+        // Excel keeps the first two fills for itself, whatever they hold.
+        let name = self.root();
+        for _ in self.entry_count(b"fills", b"fill")..2 {
+            let reserved = if self.entry_count(b"fills", b"fill") == 0 {
+                "none"
+            } else {
+                "gray125"
+            };
+            self.append(
+                "fills",
+                "fill",
+                &format!(
+                    "<{name}fill><{name}patternFill patternType=\"{reserved}\"/></{name}fill>"
+                ),
+            );
+        }
+        let colors = with_prefix(colors.as_bytes(), &name);
+        let xml = if colors.is_empty() {
+            format!("<{name}fill><{name}patternFill patternType=\"{pattern}\"/></{name}fill>")
+        } else {
+            format!(
+                "<{name}fill><{name}patternFill patternType=\"{pattern}\">{colors}</{name}patternFill></{name}fill>"
+            )
+        };
+        self.append_new("fills", "fill", &xml)
+    }
+
+    /// A border like the one at `base`, with these changes, reusing one that's the same.
+    pub fn edit_border(&mut self, base: u32, edits: &BorderEdits) -> u32 {
+        let prefix = self.root();
+        let borders = self.entries(b"borders", b"border");
+        let old = borders.get(base as usize).or_else(|| borders.first());
+        // The sides as they stand, by name, and the border's own start tag.
+        let mut sides: Vec<(String, String)> = Vec::new();
+        let mut open = format!("<{prefix}border>").into_bytes();
+        if let Some(old) = old {
+            let mut scanner = Scanner::new(&old[..]);
+            let mut depth = 0;
+            let mut current: Option<(String, Vec<u8>)> = None;
+            while let Ok(Some(kind)) = scanner.next() {
+                let token = scanner.token();
+                match kind {
+                    Kind::Start if depth == 0 => {
+                        open = token.to_vec();
+                        depth = 1;
+                    }
+                    Kind::Empty if depth == 0 => open = opened(token),
+                    Kind::Start if depth == 1 => {
+                        current = Some((
+                            String::from_utf8_lossy(local_name(token)).into_owned(),
+                            token.to_vec(),
+                        ));
+                        depth = 2;
+                    }
+                    Kind::Empty if depth == 1 => {
+                        sides.push((
+                            String::from_utf8_lossy(local_name(token)).into_owned(),
+                            String::from_utf8_lossy(token).into_owned(),
+                        ));
+                    }
+                    Kind::End if depth == 2 => {
+                        depth = 1;
+                        if let Some((name, mut bytes)) = current.take() {
+                            bytes.extend_from_slice(token);
+                            sides.push((name, String::from_utf8_lossy(&bytes).into_owned()));
+                        }
+                    }
+                    Kind::End => depth -= 1,
+                    _ => {
+                        if let Some((_, bytes)) = current.as_mut() {
+                            bytes.extend_from_slice(token);
+                        }
+                    }
+                }
+            }
+        }
+        // A file can say `start` and `end`, which are the same sides.
+        for (name, xml) in &mut sides {
+            let plain = match name.as_str() {
+                "start" => "left",
+                "end" => "right",
+                _ => continue,
+            };
+            *xml = xml.replace(&format!("{prefix}{name}"), &format!("{prefix}{plain}"));
+            *name = plain.to_string();
+        }
+        let mut set = |name: &str, line: &Option<Option<(String, String)>>| {
+            let Some(line) = line else {
+                return;
+            };
+            let xml = match line {
+                Some((style, color)) if color.is_empty() => {
+                    format!("<{prefix}{name} style=\"{style}\"/>")
+                }
+                Some((style, color)) => format!(
+                    "<{prefix}{name} style=\"{style}\"><{prefix}color{color}/></{prefix}{name}>"
+                ),
+                None => format!("<{prefix}{name}/>"),
+            };
+            match sides.iter_mut().find(|(side, _)| side == name) {
+                Some(side) => side.1 = xml,
+                None => sides.push((name.to_string(), xml)),
+            }
+        };
+        set("left", &edits.left);
+        set("right", &edits.right);
+        set("top", &edits.top);
+        set("bottom", &edits.bottom);
+        set("diagonal", &edits.diagonal);
+        const ORDER: &[&str] = &[
+            "left",
+            "right",
+            "top",
+            "bottom",
+            "diagonal",
+            "vertical",
+            "horizontal",
+        ];
+        for name in ["left", "right", "top", "bottom", "diagonal"] {
+            if !sides.iter().any(|(side, _)| side == name) {
+                sides.push((name.to_string(), format!("<{prefix}{name}/>")));
+            }
+        }
+        let place = |name: &str| ORDER.iter().position(|known| *known == name);
+        sides.sort_by_key(|(name, _)| place(name).unwrap_or(ORDER.len()));
+        let on = |flag: bool| if flag { Some("1") } else { None };
+        let mut changes: Vec<(&str, Option<&str>)> = Vec::new();
+        if let Some(flag) = edits.diagonal_up {
+            changes.push(("diagonalUp", on(flag)));
+        }
+        if let Some(flag) = edits.diagonal_down {
+            changes.push(("diagonalDown", on(flag)));
+        }
+        let open = String::from_utf8_lossy(&edit_tag(&open, &changes)).into_owned();
+        let inner: String = sides.into_iter().map(|(_, xml)| xml).collect();
+        // The first border is the default one, and a file with none needs it.
+        if borders.is_empty() {
+            let blank = with_prefix(b"<left/><right/><top/><bottom/><diagonal/>", &prefix);
+            self.append(
+                "borders",
+                "border",
+                &format!("<{prefix}border>{blank}</{prefix}border>"),
+            );
+        }
+        self.append_new(
+            "borders",
+            "border",
+            &format!("{open}{inner}</{prefix}border>"),
+        )
+    }
+
     /// Adds a font, whose children are written without a prefix. Returns its index.
     pub fn add_font(&mut self, inner: &str) -> u32 {
         let name = self.root();
@@ -864,7 +1189,7 @@ impl StylesXml {
         if !has_style_list {
             edits.push(("xfId", None));
         }
-        if changes.alignment.is_some() {
+        if changes.alignment.is_some() || !changes.alignment_edits.is_empty() {
             edits.push(("applyAlignment", Some("1")));
         }
         let mut xml = edit_tag(&template[..tag_end], &edits);
@@ -873,7 +1198,33 @@ impl StylesXml {
         if let Some(alignment) = &changes.alignment {
             xml = with_alignment(&xml, &name, alignment);
         }
-        self.append("cellXfs", "xf", &xml)
+        if !changes.alignment_edits.is_empty() {
+            let open = format!("<{name}alignment");
+            let held = xml.find(&open).and_then(|start| {
+                let tail = &xml[start..];
+                tail.find('>').map(|end| tail[..=end].to_string())
+            });
+            let tag = held.unwrap_or_else(|| format!("{open}/>"));
+            let list: Vec<(&str, Option<&str>)> = changes
+                .alignment_edits
+                .iter()
+                .map(|(key, value)| (*key, value.as_deref()))
+                .collect();
+            let edited = edit_tag(tag.as_bytes(), &list);
+            let edited = String::from_utf8_lossy(&edited).into_owned();
+            // What's left after the name is what `with_alignment` writes.
+            let attributes = edited
+                .strip_prefix(&open)
+                .map(|rest| {
+                    rest.trim_end_matches('>')
+                        .trim_end_matches('/')
+                        .trim_end()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            xml = with_alignment(&xml, &name, &attributes);
+        }
+        self.append_new("cellXfs", "xf", &xml)
     }
 }
 
@@ -989,6 +1340,91 @@ mod tests {
         let table = crate::styles::read_styles(&styles.bytes);
         assert_eq!(table.xfs.len(), 3);
         assert!(table.fonts[1].bold);
+    }
+
+    #[test]
+    fn a_font_edit_keeps_what_it_does_not_change_and_is_reused() {
+        let xml = r#"<styleSheet><fonts count="1"><font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font></fonts><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>"#;
+        let mut styles = StylesXml::new(xml.as_bytes().to_vec());
+        let bold = FontEdits {
+            bold: Some(true),
+            ..FontEdits::default()
+        };
+        assert_eq!(styles.edit_font(0, &bold), 1);
+        let out = text(&styles.bytes);
+        assert!(out.contains(r#"<font><b/><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font>"#), "{out}");
+        assert!(out.contains(r#"<fonts count="2">"#), "{out}");
+        // Back to the first, and the same again, adds nothing.
+        let plain = FontEdits {
+            bold: Some(false),
+            ..FontEdits::default()
+        };
+        assert_eq!(styles.edit_font(1, &plain), 0);
+        assert_eq!(styles.edit_font(0, &bold), 1);
+        let arial = FontEdits {
+            name: Some("Arial".to_string()),
+            size: Some(10.5),
+            underline: Some(Some("double".to_string())),
+            color: Some(Some(r#" rgb="FFFF0000""#.to_string())),
+            ..FontEdits::default()
+        };
+        assert_eq!(styles.edit_font(0, &arial), 2);
+        let out = text(&styles.bytes);
+        assert!(out.contains(r#"<font><u val="double"/><sz val="10.5"/><color rgb="FFFF0000"/><name val="Arial"/></font>"#), "{out}");
+    }
+
+    #[test]
+    fn a_format_keeps_what_its_alignment_said_and_the_same_format_is_reused() {
+        let xml = r#"<styleSheet><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" justifyLastLine="1"/><protection locked="0"/></xf></cellXfs></styleSheet>"#;
+        let mut styles = StylesXml::new(xml.as_bytes().to_vec());
+        let edits = XfChanges {
+            alignment_edits: vec![("wrapText", Some("1".to_string())), ("horizontal", None)],
+            ..XfChanges::default()
+        };
+        assert_eq!(styles.add_xf(0, edits.clone()), 1);
+        let out = text(&styles.bytes);
+        assert!(
+            out.contains(
+                r#"<alignment justifyLastLine="1" wrapText="1"/><protection locked="0"/>"#
+            ),
+            "{out}"
+        );
+        assert_eq!(styles.add_xf(0, edits), 1);
+        assert!(out.contains(r#"<cellXfs count="2">"#), "{out}");
+    }
+
+    #[test]
+    fn a_border_edit_changes_only_its_sides() {
+        let xml = r#"<styleSheet><borders count="1"><border><left style="thin"><color auto="1"/></left><right/><top/><bottom/><diagonal/></border></borders></styleSheet>"#;
+        let mut styles = StylesXml::new(xml.as_bytes().to_vec());
+        let edits = BorderEdits {
+            bottom: Some(Some((
+                "double".to_string(),
+                r#" rgb="FF00FF00""#.to_string(),
+            ))),
+            right: Some(Some(("thin".to_string(), String::new()))),
+            diagonal_up: Some(true),
+            ..BorderEdits::default()
+        };
+        assert_eq!(styles.edit_border(0, &edits), 1);
+        let out = text(&styles.bytes);
+        assert!(out.contains(r#"<border diagonalUp="1"><left style="thin"><color auto="1"/></left><right style="thin"/><top/><bottom style="double"><color rgb="FF00FF00"/></bottom><diagonal/></border>"#), "{out}");
+        let clear = BorderEdits {
+            left: Some(None),
+            ..BorderEdits::default()
+        };
+        assert_eq!(styles.edit_border(0, &clear), 2);
+        assert!(text(&styles.bytes)
+            .contains(r#"<border><left/><right/><top/><bottom/><diagonal/></border>"#));
+    }
+
+    #[test]
+    fn a_pattern_fill_leaves_the_first_two_alone_and_is_reused() {
+        let mut styles = StylesXml::new(b"<styleSheet/>".to_vec());
+        let colors = r#"<fgColor theme="4"/><bgColor rgb="FFFF0000"/>"#;
+        assert_eq!(styles.add_pattern_fill("darkUp", colors), 2);
+        assert_eq!(styles.add_pattern_fill("darkUp", colors), 2);
+        assert_eq!(styles.add_pattern_fill("none", ""), 0);
     }
 
     #[test]

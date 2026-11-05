@@ -6,9 +6,12 @@ pub mod clip;
 pub mod command;
 pub mod edit;
 mod fill;
+pub mod find;
+pub mod format;
 pub mod input;
 mod json;
 pub mod query;
+mod shift;
 pub mod tile;
 pub mod view_block;
 
@@ -25,6 +28,8 @@ use cgs_xlsx::{book_info, ByteSource, Loader, Package, ReadError};
 
 pub use command::{Applied, Area, Command, Dirty, UndoState};
 pub use edit::{report_json, EditCell, EditInput, NewStyle};
+pub use find::FindQuery;
+pub use format::{BorderChange, ColorSpec, FillSpec, FormatChange, LineSpec};
 pub use tile::Screen;
 pub use view_block::ViewBlock;
 
@@ -62,6 +67,10 @@ struct Session {
     dirty: command::Dirty,
     /// New cell formats by what they were made from, so that typing adds each one once.
     format_styles: std::collections::HashMap<(u32, input::Format), u32>,
+    /// Rows a command changed, to see whether they need another height.
+    touched_rows: std::collections::BTreeSet<(u32, u32)>,
+    /// Rows waiting to be measured, because they wrap or turn their text.
+    pending_fits: std::collections::BTreeSet<(u32, u32)>,
     /// Today's date serial, for dates typed with no year.
     today: f64,
     /// The workbook calculates only when asked.
@@ -221,6 +230,8 @@ impl Engine {
             history: command::History::default(),
             dirty: command::Dirty::default(),
             format_styles: std::collections::HashMap::new(),
+            touched_rows: Default::default(),
+            pending_fits: Default::default(),
             today: self.today,
             manual: false,
             force_calc: false,

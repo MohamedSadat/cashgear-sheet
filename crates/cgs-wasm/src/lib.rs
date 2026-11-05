@@ -190,7 +190,68 @@ impl Engine {
             .0
             .apply_json(json)
             .map_err(|error| JsError::new(&error))?;
-        Ok(applied_json(applied.selection, &self.0.undo_state()))
+        Ok(applied_json(
+            applied.selection,
+            applied.replaced,
+            &self.0.undo_state(),
+        ))
+    }
+
+    /// Rows waiting to be measured, as JSON. See `RowFit` in `packages/engine-client`.
+    pub fn take_row_fits(&mut self) -> String {
+        self.0.take_row_fits()
+    }
+
+    /// Rows from another program's file that wrap and hold no height, as JSON.
+    pub fn opening_row_fits(&mut self, sheet: u32) -> String {
+        self.0.opening_row_fits(sheet)
+    }
+
+    /// What to measure to fit columns, as JSON.
+    pub fn col_fits(&mut self, sheet: u32, first: u32, last: u32) -> String {
+        self.0.col_fits(sheet, first, last)
+    }
+
+    /// Whether merging would throw away anything. `areas` is JSON.
+    pub fn merge_discards(&self, sheet: u32, areas: &str, across: bool) -> Result<bool, JsError> {
+        self.0
+            .merge_discards_json(sheet, areas, across)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// How a cell is formatted, as JSON.
+    pub fn cell_format(&self, sheet: u32, row: u32, col: u32) -> String {
+        self.0.cell_format_json(sheet, row, col)
+    }
+
+    /// The workbook's theme colours and its own number formats, as JSON.
+    pub fn format_lists(&self) -> String {
+        self.0.format_lists_json()
+    }
+
+    /// What a cell looks like in a format code, or nothing if the code can't be used.
+    pub fn format_sample(&mut self, sheet: u32, row: u32, col: u32, code: &str) -> Option<String> {
+        self.0.format_sample(sheet, row, col, code)
+    }
+
+    /// The next match after a cell, as JSON. `query` is JSON too. See `FindQuery`.
+    pub fn find_next(
+        &mut self,
+        query: &str,
+        row: u32,
+        col: u32,
+        back: bool,
+    ) -> Result<String, JsError> {
+        self.0
+            .find_next_json(query, row, col, back)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Every match, as JSON.
+    pub fn find_all(&mut self, query: &str) -> Result<String, JsError> {
+        self.0
+            .find_all_json(query)
+            .map_err(|error| JsError::new(&error))
     }
 
     /// What the UI hasn't been told about yet: see `dirty_numbers`.

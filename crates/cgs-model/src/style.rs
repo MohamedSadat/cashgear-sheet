@@ -40,12 +40,126 @@ impl Default for Font {
     }
 }
 
+/// What a stretch of rich text says about its font. A size, name or colour it leaves out is the
+/// cell's. Bold and the like are off unless it says so, as a run's properties are complete in that.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RunFont {
+    pub name: Option<String>,
+    pub size: Option<f32>,
+    pub bold: bool,
+    pub italic: bool,
+    pub strike: bool,
+    pub underline: Option<Underline>,
+    pub color: Option<Color>,
+}
+
+/// A stretch of a rich string, from this byte of its text to the next run's.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RichRun {
+    pub start: u32,
+    /// `None` means the cell's own font.
+    pub font: Option<RunFont>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pattern {
     None,
     Solid,
-    /// Share of the foreground colour in percent, for patterns drawn as a flat mix.
-    Mixed(u8),
+    Hatch(Hatch),
+}
+
+/// Excel's patterns other than solid, in a fixed order that tiles use as their number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hatch {
+    Gray125 = 1,
+    Gray0625,
+    LightGray,
+    MediumGray,
+    DarkGray,
+    DarkHorizontal,
+    DarkVertical,
+    DarkDown,
+    DarkUp,
+    DarkGrid,
+    DarkTrellis,
+    LightHorizontal,
+    LightVertical,
+    LightDown,
+    LightUp,
+    LightGrid,
+    LightTrellis,
+}
+
+impl Hatch {
+    pub const ALL: [Self; 17] = [
+        Self::Gray125,
+        Self::Gray0625,
+        Self::LightGray,
+        Self::MediumGray,
+        Self::DarkGray,
+        Self::DarkHorizontal,
+        Self::DarkVertical,
+        Self::DarkDown,
+        Self::DarkUp,
+        Self::DarkGrid,
+        Self::DarkTrellis,
+        Self::LightHorizontal,
+        Self::LightVertical,
+        Self::LightDown,
+        Self::LightUp,
+        Self::LightGrid,
+        Self::LightTrellis,
+    ];
+
+    /// The name a file uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Gray125 => "gray125",
+            Self::Gray0625 => "gray0625",
+            Self::LightGray => "lightGray",
+            Self::MediumGray => "mediumGray",
+            Self::DarkGray => "darkGray",
+            Self::DarkHorizontal => "darkHorizontal",
+            Self::DarkVertical => "darkVertical",
+            Self::DarkDown => "darkDown",
+            Self::DarkUp => "darkUp",
+            Self::DarkGrid => "darkGrid",
+            Self::DarkTrellis => "darkTrellis",
+            Self::LightHorizontal => "lightHorizontal",
+            Self::LightVertical => "lightVertical",
+            Self::LightDown => "lightDown",
+            Self::LightUp => "lightUp",
+            Self::LightGrid => "lightGrid",
+            Self::LightTrellis => "lightTrellis",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|hatch| hatch.name() == name)
+    }
+
+    /// How much of a cell the pattern covers, in percent, for places that can't draw it.
+    pub fn coverage(self) -> u32 {
+        match self {
+            Self::Gray0625 => 6,
+            Self::Gray125 => 12,
+            Self::LightGray
+            | Self::LightHorizontal
+            | Self::LightVertical
+            | Self::LightDown
+            | Self::LightUp
+            | Self::LightGrid
+            | Self::LightTrellis => 25,
+            Self::MediumGray
+            | Self::DarkTrellis
+            | Self::DarkHorizontal
+            | Self::DarkVertical
+            | Self::DarkDown
+            | Self::DarkUp
+            | Self::DarkGrid => 50,
+            Self::DarkGray => 75,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -281,6 +395,11 @@ pub fn base_col_width_to_px(base: f64, digit: f64) -> u32 {
     ((padded / 8.0).ceil() * 8.0).min(4096.0) as u32
 }
 
+/// The height Excel fits a row to for this font, in pixels at 100%.
+pub fn fitted_row_px(font: &Font) -> u32 {
+    (f64::from(font.size) * 1.75).ceil() as u32
+}
+
 /// Points to whole pixels at 100%.
 pub fn points_to_px(points: f64) -> u32 {
     (points * 96.0 / 72.0).round().clamp(0.0, 4096.0) as u32
@@ -332,6 +451,21 @@ mod tests {
             ..Font::default()
         };
         assert_eq!(max_digit_width(&font), 7.0);
+    }
+
+    #[test]
+    fn rows_fit_large_fonts_as_excel_fits_them() {
+        let at = |size| {
+            fitted_row_px(&Font {
+                size,
+                ..Font::default()
+            })
+        };
+        assert_eq!(at(11.0), 20);
+        assert_eq!(at(14.0), 25);
+        assert_eq!(at(16.0), 28);
+        assert_eq!(at(20.0), 35);
+        assert_eq!(at(24.0), 42);
     }
 
     #[test]

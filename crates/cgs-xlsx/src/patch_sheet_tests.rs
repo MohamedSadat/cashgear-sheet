@@ -44,6 +44,7 @@ fn run_with(
         Vec::new,
         &map,
         elements,
+        &SheetExtras::default(),
         &mut strings,
         false,
     )
@@ -413,6 +414,7 @@ fn a_non_utf8_part_gets_character_references() {
         Vec::new,
         &map,
         &[],
+        &SheetExtras::default(),
         &mut strings,
         true,
     )
@@ -431,6 +433,7 @@ fn a_damaged_sheet_fails_rather_than_saving_something_wrong() {
         Vec::new,
         &map,
         &[],
+        &SheetExtras::default(),
         &mut strings,
         false
     )
@@ -509,4 +512,226 @@ fn numbers_read_back_exactly() {
     assert_eq!(number_text(0.00001), "0.00001");
     assert_eq!(cell_name(1, 1), "A1");
     assert_eq!(cell_name(1048576, 16384), "XFD1048576");
+}
+
+fn with_extras(xml: &str, extras: &SheetExtras) -> String {
+    let map = BTreeMap::new();
+    let mut strings = StringTable::new(0);
+    let (out, _) = patch_into(
+        || Ok(xml.as_bytes()),
+        Vec::new,
+        &map,
+        &[],
+        extras,
+        &mut strings,
+        false,
+    )
+    .unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn a_row_says_what_changed_and_keeps_the_rest() {
+    let xml = sheet(r#"<row r="2" ht="14.4" x14ac:dyDescent="0.3"><c r="A2"><v>1</v></c></row>"#);
+    let mut extras = SheetExtras::default();
+    // The height comes to the same pixels, so it stays as stored.
+    extras.rows.insert(
+        2,
+        RowPatch {
+            size_px: Some(19),
+            custom: false,
+            hidden: true,
+            style: Some(4),
+        },
+    );
+    extras.rows.insert(
+        5,
+        RowPatch {
+            size_px: Some(40),
+            custom: true,
+            ..RowPatch::default()
+        },
+    );
+    let out = with_extras(&xml, &extras);
+    assert!(out.contains(r#"ht="14.4""#), "{out}");
+    assert!(out.contains(r#"x14ac:dyDescent="0.3""#), "{out}");
+    assert!(out.contains(r#"hidden="1""#), "{out}");
+    assert!(out.contains(r#"s="4" customFormat="1""#), "{out}");
+    assert!(out.contains(r#"<c r="A2"><v>1</v></c>"#), "{out}");
+    assert!(
+        out.contains(r#"<row r="5" ht="30" customHeight="1"></row>"#),
+        "{out}"
+    );
+}
+
+#[test]
+fn columns_split_where_a_change_lands_and_keep_what_they_said() {
+    let xml = r#"<worksheet><cols><col min="2" max="6" width="20" customWidth="1" outlineLevel="1"/></cols><sheetData/></worksheet>"#;
+    let extras = SheetExtras {
+        cols: vec![ColPatch {
+            first: 4,
+            last: 8,
+            size_px: Some(100),
+            default_px: 64,
+            digit: 7.0,
+            custom: true,
+            hidden: false,
+            style: Some(3),
+        }],
+        ..SheetExtras::default()
+    };
+    let out = with_extras(xml, &extras);
+    assert!(
+        out.contains(r#"<col min="2" max="3" width="20" customWidth="1" outlineLevel="1"/>"#),
+        "{out}"
+    );
+    assert!(out.contains(r#"min="4" max="6""#), "{out}");
+    assert!(out.contains(r#"outlineLevel="1" style="3""#), "{out}");
+    assert!(
+        out.contains(r#"<col min="7" max="8" width="14.28515625" customWidth="1" style="3"/>"#),
+        "{out}"
+    );
+    assert_eq!(cgs_model::style::col_width_to_px(14.28515625, 7.0), 100);
+}
+
+#[test]
+fn every_pixel_width_reads_back_as_itself() {
+    for digit in [5.0, 6.0, 7.0, 8.0, 9.0, 11.0] {
+        for px in 1..2000 {
+            let width = px_to_col_width(px, digit);
+            assert_eq!(cgs_model::style::col_width_to_px(width, digit), px);
+        }
+    }
+}
+
+#[test]
+fn a_sheet_with_no_cols_gets_them_in_their_place() {
+    let xml = r#"<worksheet><sheetFormatPr defaultRowHeight="15"/><sheetData/></worksheet>"#;
+    let extras = SheetExtras {
+        cols: vec![ColPatch {
+            first: 1,
+            last: 1,
+            size_px: Some(64),
+            default_px: 64,
+            digit: 7.0,
+            hidden: true,
+            ..ColPatch::default()
+        }],
+        ..SheetExtras::default()
+    };
+    let out = with_extras(xml, &extras);
+    assert!(
+        out.contains(r#"<sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="9.140625" hidden="1"/></cols><sheetData"#),
+        "{out}"
+    );
+}
+
+#[test]
+fn styles_come_from_the_sheet_for_cells_in_an_area() {
+    let xml = sheet(r#"<row r="1"><c r="A1" s="1"><v>1</v></c><c r="C1" s="2"><v>3</v></c></row>"#);
+    let mut info = cgs_model::SheetInfo::default();
+    info.set_style(1, 1, 7);
+    info.set_style(1, 2, 8);
+    info.set_style(1, 3, 2);
+    info.set_style(3, 2, 9);
+    info.used = (3, 3);
+    let extras = SheetExtras {
+        styled: Some((
+            info,
+            vec![cgs_model::Rect {
+                top: 1,
+                left: 1,
+                bottom: 3,
+                right: 2,
+            }],
+        )),
+        ..SheetExtras::default()
+    };
+    let out = with_extras(&xml, &extras);
+    assert!(out.contains(r#"<c r="A1" s="7"><v>1</v></c>"#), "{out}");
+    assert!(out.contains(r#"<c r="B1" s="8"/>"#), "{out}");
+    assert!(out.contains(r#"<c r="C1" s="2"><v>3</v></c>"#), "{out}");
+    assert!(
+        out.contains(r#"<row r="3"><c r="B3" s="9"/></row>"#),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_style_that_does_not_change_leaves_the_row_alone() {
+    let xml = sheet(r#"<row r="1" spans="1:1"><c r="A1"   s="7" ><v>1</v></c></row>"#);
+    let mut info = cgs_model::SheetInfo::default();
+    info.set_style(1, 1, 7);
+    info.used = (1, 1);
+    let extras = SheetExtras {
+        styled: Some((
+            info,
+            vec![cgs_model::Rect {
+                top: 1,
+                left: 1,
+                bottom: 1,
+                right: 1,
+            }],
+        )),
+        ..SheetExtras::default()
+    };
+    let out = with_extras(&xml, &extras);
+    assert!(out.contains(r#"<c r="A1"   s="7" ><v>1</v></c>"#), "{out}");
+}
+
+#[test]
+fn a_frozen_view_writes_its_pane_and_selections() {
+    let xml = r#"<worksheet><sheetViews><sheetView tabSelected="1" workbookViewId="0"><selection activeCell="B2" sqref="B2"/></sheetView></sheetViews><sheetData/></worksheet>"#;
+    let extras = SheetExtras {
+        view: Some(ViewPatch {
+            freeze: Some(Some(cgs_model::Freeze {
+                rows: 2,
+                cols: 1,
+                top: 1,
+                left: 1,
+            })),
+            show_grid: Some(false),
+            show_headers: None,
+            active_cell: (3, 2),
+        }),
+        ..SheetExtras::default()
+    };
+    let out = with_extras(xml, &extras);
+    assert!(out.contains(r#"showGridLines="0""#), "{out}");
+    assert!(
+        out.contains(r#"<pane xSplit="1" ySplit="2" topLeftCell="B3" activePane="bottomRight" state="frozen"/><selection pane="topRight" activeCell="B3" sqref="B3"/><selection pane="bottomLeft" activeCell="B3" sqref="B3"/><selection pane="bottomRight" activeCell="B3" sqref="B3"/></sheetView>"#),
+        "{out}"
+    );
+    let unfrozen = SheetExtras {
+        view: Some(ViewPatch {
+            freeze: Some(None),
+            active_cell: (3, 2),
+            ..ViewPatch::default()
+        }),
+        ..SheetExtras::default()
+    };
+    let back = with_extras(&out, &unfrozen);
+    assert!(!back.contains("<pane"), "{back}");
+    assert!(
+        back.contains(r#"<selection activeCell="B3" sqref="B3"/>"#),
+        "{back}"
+    );
+}
+
+#[test]
+fn a_sheet_with_no_views_gets_one_in_its_place() {
+    let xml = r#"<worksheet><sheetFormatPr defaultRowHeight="15"/><sheetData/></worksheet>"#;
+    let extras = SheetExtras {
+        view: Some(ViewPatch {
+            show_headers: Some(false),
+            active_cell: (1, 1),
+            ..ViewPatch::default()
+        }),
+        ..SheetExtras::default()
+    };
+    let out = with_extras(xml, &extras);
+    assert!(
+        out.contains(r#"<worksheet><sheetViews><sheetView workbookViewId="0" showRowColHeaders="0"/></sheetViews><sheetFormatPr"#),
+        "{out}"
+    );
 }

@@ -125,11 +125,6 @@ pub struct Loader {
     total_bytes: u64,
 }
 
-/// The height Excel fits a row to for a font of this size, in pixels at 100%.
-fn fitted_row_px(points: f32) -> u32 {
-    (f64::from(points) * 1.75).ceil() as u32
-}
-
 impl Loader {
     /// Opens the package, and reads what must come before any cell.
     pub fn open(source: Rc<dyn ByteSource>) -> Result<(Self, Book), ReadError> {
@@ -145,7 +140,11 @@ impl Loader {
             .styles
             .xfs
             .iter()
-            .map(|xf| fitted_row_px(book.styles.font(xf).size))
+            .map(|xf| {
+                let turns = xf.alignment.wrap || xf.alignment.rotation != 0;
+                cgs_model::style::fitted_row_px(book.styles.font(xf))
+                    | if turns { sheet::WRAPS } else { 0 }
+            })
             .collect();
 
         let mut total_bytes = 0;
@@ -250,6 +249,7 @@ impl Loader {
             if let Some(done) = self.strings_loader.take() {
                 self.finished_bytes += done.consumed();
                 self.strings = done.finish();
+                book.rich_strings = self.strings.rich_strings();
             }
         }
         loop {
@@ -323,20 +323,6 @@ impl Loader {
                 info.drawings = workbook::read_drawing(&xml);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::fitted_row_px;
-
-    #[test]
-    fn rows_fit_large_fonts_as_excel_fits_them() {
-        assert_eq!(fitted_row_px(11.0), 20);
-        assert_eq!(fitted_row_px(14.0), 25);
-        assert_eq!(fitted_row_px(16.0), 28);
-        assert_eq!(fitted_row_px(20.0), 35);
-        assert_eq!(fitted_row_px(24.0), 42);
     }
 }
 

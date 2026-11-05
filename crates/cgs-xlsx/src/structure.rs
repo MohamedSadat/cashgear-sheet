@@ -70,8 +70,17 @@ pub fn book_edits(ops: &[BookOp]) -> Vec<BookEdit> {
         .collect()
 }
 
-/// A sheet's own edits, in order.
+/// A sheet's own edits, in order. Cells that shift within a band move as ordinary changes to cells,
+/// so only rows and columns that move whole come back here. `all_own_edits` has them all, for what
+/// holds addresses of cells.
 pub fn own_edits(ops: &[BookOp], sheet: u32) -> Vec<AxisEdit> {
+    all_own_edits(ops, sheet)
+        .into_iter()
+        .filter(|edit| edit.band.is_none())
+        .collect()
+}
+
+pub fn all_own_edits(ops: &[BookOp], sheet: u32) -> Vec<AxisEdit> {
     ops.iter()
         .filter_map(|op| match op {
             BookOp::Axis {
@@ -86,6 +95,8 @@ pub fn own_edits(ops: &[BookOp], sheet: u32) -> Vec<AxisEdit> {
 #[derive(Debug, Clone, Copy)]
 pub struct SheetEdits<'a> {
     pub own: &'a [AxisEdit],
+    /// `own` with cells that shift within a band, in order, for what holds addresses of cells.
+    pub all_own: &'a [AxisEdit],
     pub book: &'a [BookEdit],
     /// The sheet's name in the file.
     pub home: &'a str,
@@ -124,22 +135,30 @@ impl SheetEdits<'_> {
 
     fn sqref(&self, text: &str) -> String {
         let mut current = text.to_string();
-        for edit in self.own {
+        for edit in self.all_own {
             current = edit_sqref(&current, edit);
         }
         current
     }
 
     fn cell(&self, text: &[u8]) -> Option<String> {
-        let (row, col) = parse_cell(text)?;
-        Some(cell_name(
-            self.clamp(Axis::Row, row),
-            self.clamp(Axis::Col, col),
-        ))
+        let (mut row, mut col) = parse_cell(text)?;
+        for edit in self.all_own {
+            match edit.axis {
+                Axis::Row if edit.covers((col, col)) => row = edit.clamp(row),
+                Axis::Col if edit.covers((row, row)) => col = edit.clamp(col),
+                _ => {}
+            }
+        }
+        Some(cell_name(row, col))
     }
 
     fn moves_nothing(&self) -> bool {
         self.own.is_empty()
+    }
+
+    fn changes_nothing(&self) -> bool {
+        self.all_own.is_empty()
     }
 }
 
@@ -687,7 +706,7 @@ pub fn rewrite_sheet<R: Read, W: Write>(
 ) -> io::Result<Rewritten> {
     let mut scanner = Scanner::new(reader);
     let mut result = Rewritten {
-        changed: !edits.moves_nothing(),
+        changed: !edits.changes_nothing(),
         again: false,
         left_extensions: Vec::new(),
     };
@@ -737,8 +756,106 @@ pub fn rewrite_sheet<R: Read, W: Write>(
     Ok(result)
 }
 
+/// A worksheet's `<sheetViews>` with its first view changed, keeping whatever else it says.
+pub fn edit_sheet_views(xml: &[u8], patch: &crate::patch_sheet::ViewPatch) -> io::Result<Vec<u8>> {
+    let mut tree = parse_tree(xml)?;
+    for node in &mut tree {
+        let Node::Element(views) = node else { continue };
+        if let Some(view) = views
+            .elements_mut()
+            .find(|view| view.local() == b"sheetView")
+        {
+            edit_view(view, patch);
+        }
+    }
+    let mut out = Vec::with_capacity(xml.len() + 128);
+    write_tree(&tree, &mut out);
+    Ok(out)
+}
+
+fn edit_view(view: &mut Element, patch: &crate::patch_sheet::ViewPatch) {
+    let flag = |on: bool| if on { None } else { Some("0") };
+    if let Some(show) = patch.show_grid {
+        view.set_attr("showGridLines", flag(show));
+    }
+    if let Some(show) = patch.show_headers {
+        view.set_attr("showRowColHeaders", flag(show));
+    }
+    let Some(freeze) = patch.freeze else {
+        return;
+    };
+    // The name a new child needs, in a part that has a prefix.
+    let prefix = crate::scan::prefix(&view.tag);
+    let active = (patch.active_cell.0.max(1), patch.active_cell.1.max(1));
+    let cell = crate::patch_sheet::cell_name(active.0, active.1);
+    let selection = |pane: Option<&str>| {
+        let pane = pane.map_or(String::new(), |pane| format!(" pane=\"{pane}\""));
+        Node::Element(Element {
+            tag: format!("<{prefix}selection{pane} activeCell=\"{cell}\" sqref=\"{cell}\"/>")
+                .into_bytes(),
+            empty: true,
+            children: Vec::new(),
+            end: Vec::new(),
+        })
+    };
+    view.children.retain(|child| {
+        !matches!(child, Node::Element(inner) if matches!(inner.local(), b"pane" | b"selection"))
+    });
+    let mut front = Vec::new();
+    match freeze {
+        Some(freeze) if freeze.rows > 0 || freeze.cols > 0 => {
+            let first_row = freeze.top.max(1);
+            let first_col = freeze.left.max(1);
+            let top_left =
+                crate::patch_sheet::cell_name(first_row + freeze.rows, first_col + freeze.cols);
+            let pane_name = match (freeze.cols > 0, freeze.rows > 0) {
+                (true, true) => "bottomRight",
+                (true, false) => "topRight",
+                _ => "bottomLeft",
+            };
+            let mut tag = format!("<{prefix}pane");
+            if freeze.cols > 0 {
+                tag.push_str(&format!(" xSplit=\"{}\"", freeze.cols));
+            }
+            if freeze.rows > 0 {
+                tag.push_str(&format!(" ySplit=\"{}\"", freeze.rows));
+            }
+            tag.push_str(&format!(
+                " topLeftCell=\"{top_left}\" activePane=\"{pane_name}\" state=\"frozen\"/>"
+            ));
+            front.push(Node::Element(Element {
+                tag: tag.into_bytes(),
+                empty: true,
+                children: Vec::new(),
+                end: Vec::new(),
+            }));
+            if freeze.cols > 0 && freeze.rows > 0 {
+                front.push(selection(Some("topRight")));
+                front.push(selection(Some("bottomLeft")));
+            }
+            front.push(selection(Some(pane_name)));
+            let corner = (first_row, first_col) != (1, 1);
+            let name = crate::patch_sheet::cell_name(first_row, first_col);
+            view.set_attr("topLeftCell", corner.then_some(name.as_str()));
+        }
+        _ => {
+            view.set_attr("topLeftCell", None);
+            front.push(selection(None));
+        }
+    }
+    let rest = std::mem::take(&mut view.children);
+    view.children = front;
+    view.children.extend(rest);
+    if view.empty && !view.children.is_empty() {
+        let tag = crate::scan::opened(&view.tag);
+        view.tag = tag;
+        view.empty = false;
+        view.end = format!("</{prefix}sheetView>").into_bytes();
+    }
+}
+
 /// Copies tokens up to the end of the element that has just opened.
-fn read_element<R: Read>(scanner: &mut Scanner<R>, out: &mut Vec<u8>) -> io::Result<()> {
+pub(crate) fn read_element<R: Read>(scanner: &mut Scanner<R>, out: &mut Vec<u8>) -> io::Result<()> {
     let mut depth = 1u32;
     while let Some(kind) = scanner.next()? {
         out.extend_from_slice(scanner.token());
@@ -1478,6 +1595,7 @@ mod tests {
         let list = book("S", edit);
         let edits = SheetEdits {
             own: &own,
+            all_own: &own,
             book: &list,
             home: "S",
             gone_tables: &[],
@@ -1720,6 +1838,7 @@ mod tests {
         let list = book("Other", rows(1, 1));
         let edits = SheetEdits {
             own: &[],
+            all_own: &[],
             book: &list,
             home: "S",
             gone_tables: &[],
@@ -1747,6 +1866,7 @@ mod tests {
         let list = book("S", own[0]);
         let edits = SheetEdits {
             own: &own,
+            all_own: &own,
             book: &list,
             home: "S",
             gone_tables: &[],
@@ -1769,6 +1889,7 @@ mod tests {
         let own = [cols(3, 1)];
         let edits = SheetEdits {
             own: &own,
+            all_own: &own,
             book: &[],
             home: "S",
             gone_tables: &[],
@@ -1789,6 +1910,7 @@ mod tests {
         let own = [AxisEdit::delete(Axis::Row, 2, 1)];
         let edits = SheetEdits {
             own: &own,
+            all_own: &own,
             book: &[],
             home: "S",
             gone_tables: &[],
@@ -1807,6 +1929,7 @@ mod tests {
         let own = [AxisEdit::delete(Axis::Row, 2, 1)];
         let edits = SheetEdits {
             own: &own,
+            all_own: &own,
             book: &[],
             home: "S",
             gone_tables: &[],
@@ -1818,6 +1941,7 @@ mod tests {
         let inserted = [rows(1, 1)];
         let edits = SheetEdits {
             own: &inserted,
+            all_own: &inserted,
             book: &[],
             home: "S",
             gone_tables: &[],
@@ -1837,6 +1961,7 @@ mod tests {
         let own = [rows(5, 2)];
         let edits = SheetEdits {
             own: &own,
+            all_own: &own,
             book: &[],
             home: "S",
             gone_tables: &[],
@@ -1849,6 +1974,7 @@ mod tests {
         let own = [rows(1, 2)];
         let edits = SheetEdits {
             own: &own,
+            all_own: &own,
             book: &[],
             home: "S",
             gone_tables: &[],

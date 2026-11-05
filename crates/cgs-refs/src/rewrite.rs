@@ -32,6 +32,9 @@ pub struct AxisEdit {
     pub at: u32,
     pub count: u32,
     pub delete: bool,
+    /// Only cells in this stretch of the other axis move, as when cells shift down or across. A
+    /// reference has to lie inside it to follow, and anything else stays as it is.
+    pub band: Option<(u32, u32)>,
 }
 
 /// An inclusive stretch of rows or columns.
@@ -44,6 +47,7 @@ impl AxisEdit {
             at,
             count,
             delete: false,
+            band: None,
         }
     }
 
@@ -53,7 +57,14 @@ impl AxisEdit {
             at,
             count,
             delete: true,
+            band: None,
         }
+    }
+
+    /// Whether something across this stretch of the other axis moves with the edit.
+    pub fn covers(&self, (first, last): Span) -> bool {
+        self.band
+            .is_none_or(|(from, to)| first >= from && last <= to)
     }
 
     /// The edit that puts positions back. What a delete removed has to come back some other way.
@@ -489,6 +500,29 @@ fn push_row(out: &mut String, abs: bool, row: u32) {
 
 /// The target after the edit, or `None` if nothing is left of it.
 fn edited(target: &Target, edit: &AxisEdit) -> Option<Target> {
+    if edit.band.is_some() {
+        let across = match target {
+            Target::Cell { col, row, .. } => match edit.axis {
+                Axis::Row => Some((*col, *col)),
+                Axis::Col => Some((*row, *row)),
+            },
+            Target::Cells {
+                top,
+                left,
+                bottom,
+                right,
+                ..
+            } => match edit.axis {
+                Axis::Row => Some((*left, *right)),
+                Axis::Col => Some((*top, *bottom)),
+            },
+            // A whole line has no part of itself that moves.
+            Target::Cols { .. } | Target::Rows { .. } => None,
+        };
+        if !across.is_some_and(|span| edit.covers(span)) {
+            return Some(target.clone());
+        }
+    }
     match target.clone() {
         Target::Cell {
             abs_col,
@@ -1259,6 +1293,13 @@ pub fn edit_rect(
     (top, left, bottom, right): (u32, u32, u32, u32),
     edit: &AxisEdit,
 ) -> Option<(u32, u32, u32, u32)> {
+    let across = match edit.axis {
+        Axis::Row => (left, right),
+        Axis::Col => (top, bottom),
+    };
+    if !edit.covers(across) {
+        return Some((top, left, bottom, right));
+    }
     match edit.axis {
         Axis::Row => {
             let (top, bottom) = edit.span((top, bottom))?;

@@ -180,6 +180,237 @@ impl Engine {
         Some((sheet as u32, read_area(reference)?))
     }
 
+    /// Rows waiting to be measured, as JSON: see `RowFit` in `packages/engine-client`. Each goes
+    /// back as `Command::FitRows`.
+    pub fn take_row_fits(&mut self) -> String {
+        let options_locale = self.locale.clone();
+        let Some(session) = self.session.as_mut() else {
+            return "[]".to_string();
+        };
+        let rows: Vec<(u32, u32)> = std::mem::take(&mut session.pending_fits)
+            .into_iter()
+            .collect();
+        if rows.is_empty() {
+            return "[]".to_string();
+        }
+        let options = cgs_numfmt::Options {
+            locale: &options_locale,
+            date1904: session.book.date1904,
+        };
+        session.fit_rows_json(&rows, &options)
+    }
+
+    /// Rows of a sheet that wrap and hold no stored height, from another program's file, as
+    /// `take_row_fits` gives them. Their heights only change how the file looks here.
+    pub fn opening_row_fits(&mut self, sheet: u32) -> String {
+        let options_locale = self.locale.clone();
+        let Some(session) = self.session.as_mut() else {
+            return "[]".to_string();
+        };
+        let Some(info) = session.book.sheets.get_mut(sheet as usize) else {
+            return "[]".to_string();
+        };
+        let rows: Vec<(u32, u32)> = std::mem::take(&mut info.unfitted_rows)
+            .into_iter()
+            .map(|row| (sheet, row))
+            .collect();
+        if rows.is_empty() {
+            return "[]".to_string();
+        }
+        let options = cgs_numfmt::Options {
+            locale: &options_locale,
+            date1904: session.book.date1904,
+        };
+        session.fit_rows_json(&rows, &options)
+    }
+
+    /// What to measure to fit columns, as JSON: see `ColFit` in `packages/engine-client`.
+    pub fn col_fits(&mut self, sheet: u32, first: u32, last: u32) -> String {
+        let options_locale = self.locale.clone();
+        let Some(session) = self.session.as_mut() else {
+            return "[]".to_string();
+        };
+        let options = cgs_numfmt::Options {
+            locale: &options_locale,
+            date1904: session.book.date1904,
+        };
+        session.fit_cols_json(sheet, first, last, &options)
+    }
+
+    /// Whether merging these areas, given as JSON, would throw away anything but their first values.
+    pub fn merge_discards_json(
+        &self,
+        sheet: u32,
+        areas: &str,
+        across: bool,
+    ) -> Result<bool, String> {
+        let areas: Vec<Area> = serde_json::from_str(areas).map_err(|error| error.to_string())?;
+        Ok(self.merge_discards(sheet, &areas, across))
+    }
+
+    pub fn merge_discards(&self, sheet: u32, areas: &[Area], across: bool) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        areas.iter().any(|area| {
+            let filled = session.merge_discards(sheet, *area);
+            if across {
+                let mut rows: Vec<u32> = filled.iter().map(|&(row, _)| row).collect();
+                let before = rows.len();
+                rows.dedup();
+                before > rows.len()
+            } else {
+                filled.len() > 1
+            }
+        })
+    }
+
+    /// How a cell is formatted, for the ribbon, as JSON.
+    pub fn cell_format_json(&self, sheet: u32, row: u32, col: u32) -> String {
+        let Some(book) = self.book() else {
+            return "null".to_string();
+        };
+        let Some(info) = book.sheets.get(sheet as usize) else {
+            return "null".to_string();
+        };
+        let table = &book.styles;
+        let index = match info.merge_at(row, col) {
+            Some(merge) => info.style_at(merge.top, merge.left),
+            None => info.style_at(row, col),
+        };
+        let xf = table.xf(index);
+        let font = table.font(xf);
+        let fill = table.fill(xf);
+        let border = table.border(xf);
+        let code = table
+            .num_fmts
+            .get(&xf.num_fmt)
+            .cloned()
+            .or_else(|| cgs_numfmt::builtin_code(xf.num_fmt).map(str::to_string))
+            .unwrap_or_else(|| "General".to_string());
+        let color = |color: cgs_model::Color| -> String {
+            let hex = table
+                .colors
+                .resolve(color, None)
+                .map(|rgb| format!("#{rgb:06x}"));
+            match (color.kind, hex) {
+                (cgs_model::ColorKind::Theme(theme), Some(hex)) => format!(
+                    "{{\"kind\":\"theme\",\"theme\":{theme},\"tint\":{},\"color\":\"{hex}\"}}",
+                    color.tint
+                ),
+                (_, Some(hex)) => format!("{{\"kind\":\"rgb\",\"color\":\"{hex}\"}}"),
+                _ => "{\"kind\":\"auto\"}".to_string(),
+            }
+        };
+        let line = |line: cgs_model::Line| -> String {
+            let style = crate::format::line_style_name(line.style);
+            format!("{{\"style\":\"{style}\",\"color\":{}}}", color(line.color))
+        };
+        let mut out = String::from("{\"fontName\":");
+        json::push_string(&mut out, &font.name);
+        out.push_str(&format!(
+            ",\"fontSize\":{},\"bold\":{},\"italic\":{},\"strike\":{},\"underline\":\"{}\",\"fontColor\":{}",
+            font.size,
+            font.bold,
+            font.italic,
+            font.strike,
+            crate::format::underline_name(font.underline),
+            color(font.color)
+        ));
+        out.push_str(&format!(
+            ",\"fill\":{{\"pattern\":\"{}\",\"color\":{},\"patternColor\":{}}}",
+            crate::format::pattern_name(fill.pattern),
+            match fill.pattern {
+                cgs_model::Pattern::Solid => color(fill.fg),
+                _ => color(fill.bg),
+            },
+            color(fill.fg)
+        ));
+        let alignment = xf.alignment;
+        out.push_str(&format!(
+            ",\"horizontal\":\"{}\",\"vertical\":\"{}\",\"wrap\":{},\"shrink\":{},\"indent\":{},\"rotation\":{},\"readingOrder\":{}",
+            crate::format::horizontal_name(alignment.horizontal),
+            crate::format::vertical_name(alignment.vertical),
+            alignment.wrap,
+            alignment.shrink,
+            alignment.indent,
+            alignment.rotation,
+            match alignment.reading_order {
+                cgs_model::ReadingOrder::Context => 0,
+                cgs_model::ReadingOrder::LeftToRight => 1,
+                cgs_model::ReadingOrder::RightToLeft => 2,
+            }
+        ));
+        out.push_str(",\"numberFormat\":");
+        json::push_string(&mut out, &code);
+        out.push_str(&format!(
+            ",\"numberFormatId\":{},\"merged\":{},\"border\":{{\"top\":{},\"bottom\":{},\"left\":{},\"right\":{},\"diagonal\":{},\"diagonalUp\":{},\"diagonalDown\":{}}}}}",
+            xf.num_fmt,
+            info.merge_at(row, col).is_some(),
+            line(border.top),
+            line(border.bottom),
+            line(border.left),
+            line(border.right),
+            line(border.diagonal),
+            border.diagonal_up,
+            border.diagonal_down,
+        ));
+        out
+    }
+
+    /// The workbook's theme colours and the codes of its own number formats, as JSON.
+    pub fn format_lists_json(&self) -> String {
+        let Some(book) = self.book() else {
+            return "null".to_string();
+        };
+        let mut out = String::from("{\"theme\":[");
+        for (index, rgb) in book.styles.colors.theme.0.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("\"#{rgb:06x}\""));
+        }
+        out.push_str("],\"codes\":[");
+        let mut codes: Vec<(&u32, &String)> = book.styles.num_fmts.iter().collect();
+        codes.sort();
+        for (index, (_, code)) in codes.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            json::push_string(&mut out, code);
+        }
+        out.push_str("]}");
+        out
+    }
+
+    /// What a value looks like in a format code, for the Format Cells dialog's sample. Nothing if the
+    /// code can't be used.
+    pub fn format_sample(&mut self, sheet: u32, row: u32, col: u32, code: &str) -> Option<String> {
+        let format = cgs_numfmt::NumFmt::parse(code);
+        if !format.is_valid() {
+            return None;
+        }
+        let session = self.session.as_ref()?;
+        let options = cgs_numfmt::Options {
+            locale: &self.locale,
+            date1904: session.book.date1904,
+        };
+        let value = session.value_of(cgs_calc::CellRef { sheet, row, col });
+        let mut out = String::new();
+        match &value {
+            CalcValue::Number(number) => {
+                format.format(cgs_numfmt::Value::Number(*number), &options, &mut out);
+            }
+            CalcValue::Text(text) => {
+                format.format(cgs_numfmt::Value::Text(text), &options, &mut out);
+            }
+            CalcValue::Bool(flag) => out.push_str(if *flag { "TRUE" } else { "FALSE" }),
+            CalcValue::Error(text) => out.push_str(text),
+            CalcValue::Empty => {}
+        }
+        Some(out)
+    }
+
     /// Every function the engine knows, for autocomplete, sorted.
     pub fn function_names(&self) -> Vec<String> {
         cgs_calc::formualizer::function_names()
@@ -219,8 +450,8 @@ pub fn dirty_numbers(dirty: &Dirty) -> Vec<u32> {
 }
 
 /// What a command leaves for the shell, as JSON.
-pub fn applied_json(selection: Option<(u32, Area)>, state: &UndoState) -> String {
-    let mut out = String::from("{\"selection\":");
+pub fn applied_json(selection: Option<(u32, Area)>, replaced: u32, state: &UndoState) -> String {
+    let mut out = format!("{{\"replaced\":{replaced},\"selection\":");
     match selection {
         Some((sheet, area)) => out.push_str(&format!(
             "{{\"sheet\":{sheet},\"top\":{},\"left\":{},\"bottom\":{},\"right\":{}}}",

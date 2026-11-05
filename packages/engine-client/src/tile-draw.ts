@@ -44,9 +44,11 @@ import {
   VALIGN_BOTTOM,
   VALIGN_CENTER,
   VALIGN_TOP,
+  type TileRun,
   type TileStyle,
   type ViewBlock,
 } from './view-block';
+import { patternImage } from './patterns';
 
 export const TILE_ROWS = 64;
 export const TILE_COLS = 16;
@@ -68,12 +70,15 @@ const EMPTY_STYLE: TileStyle = {
   rightColor: 0,
   bottomColor: 0,
   diagonalColor: 0,
+  pattern: 0,
+  patternColor: 0,
 };
 
 export type TileContext = Pick<
   OffscreenCanvasRenderingContext2D,
   | 'beginPath'
   | 'clip'
+  | 'createPattern'
   | 'direction'
   | 'fillRect'
   | 'fillStyle'
@@ -137,6 +142,33 @@ interface FontMetrics {
   px: number;
 }
 
+interface RichPiece {
+  run: TileRun;
+  style: TileStyle;
+  metrics: FontMetrics;
+  text: string;
+  width: number;
+}
+
+interface RichLine {
+  pieces: RichPiece[];
+  width: number;
+  ascent: number;
+  descent: number;
+}
+
+function lineOf(pieces: RichPiece[]): RichLine {
+  let width = 0;
+  let ascent = 0;
+  let descent = 0;
+  for (const piece of pieces) {
+    width += piece.width;
+    ascent = Math.max(ascent, piece.metrics.ascent);
+    descent = Math.max(descent, piece.metrics.descent);
+  }
+  return { pieces, width, ascent, descent };
+}
+
 /** Everything drawing one tile needs. It lives as long as the drawing does. */
 class Painter {
   private fonts = new Map<number, FontMetrics>();
@@ -161,6 +193,7 @@ class Painter {
     const { cells } = this.block;
     const packed = cells[at + 4]!;
     return {
+      textOffset: cells[at]!,
       textLength: cells[at + 1]!,
       fill: cells[at + 2]!,
       color: cells[at + 3]!,
@@ -221,8 +254,13 @@ class Painter {
         const left = xs[col]!;
         const width = xs[col + 1]! - left;
         if (!width) continue;
-        const { fill, flags } = this.cell(row, col);
-        if (hasAlpha(fill)) {
+        const { fill, flags, style } = this.cell(row, col);
+        const pattern = this.styleOf(style).pattern;
+        if (pattern) {
+          context.fillStyle = hasAlpha(fill) ? cssColor(fill) : palette.background;
+          context.fillRect(left, top, width, height);
+          this.fillPattern(pattern, this.styleOf(style).patternColor, left, top, width, height);
+        } else if (hasAlpha(fill)) {
           context.fillStyle = cssColor(fill);
           context.fillRect(left, top, width, height);
         } else if (palette.showGrid !== false) {
@@ -234,6 +272,23 @@ class Painter {
         }
       }
     }
+  }
+
+  /** One of Excel's patterns, lined up with the tile so that neighbours join. */
+  private fillPattern(
+    pattern: number,
+    color: number,
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+  ) {
+    const { context, scale } = this;
+    const image = patternImage(pattern, cssColor(color), Math.max(1, Math.round(scale)));
+    const fill = image && context.createPattern?.(image, 'repeat');
+    if (!fill) return;
+    context.fillStyle = fill;
+    context.fillRect(left, top, width, height);
   }
 
   /** Is this cell free for text to overflow across? */
@@ -263,11 +318,11 @@ class Painter {
       if (ys[row + 1] === ys[row]) continue;
       for (let col = 0; col < block.cols; col++) {
         if (xs[col + 1] === xs[col]) continue;
-        const { textLength, flags, style, color, fillAt } = this.cell(row, col);
+        const { textOffset, textLength, flags, style, color, fillAt } = this.cell(row, col);
         if (!textLength && !(flags & CELL_HASHES)) continue;
         this.drawText(
           cellText(block, row, col),
-          { row, col, flags, style, color, fillAt },
+          { row, col, flags, style, color, fillAt, runs: block.runs.get(textOffset) },
           xs[col]!,
           ys[row]!,
           xs[col + 1]! - xs[col]!,
@@ -305,6 +360,7 @@ class Painter {
             style: extra.style,
             color: extra.color,
             fillAt: extra.fillAt,
+            runs: block.runs.get(extra.textOffset),
           },
           left,
           top,
@@ -319,7 +375,10 @@ class Painter {
       const style = this.styleOf(extra.style);
       const metrics = this.fontFor(extra.style, style);
       const line = singleLine(extra.text);
-      const width = this.width(line);
+      const runs = block.runs.get(extra.textOffset);
+      const rich = runs ? this.richLine(runs) : undefined;
+      if (!rich) this.fontFor(extra.style, style);
+      const width = rich ? rich.width : this.width(line);
       const inset = devicePx(CELL_INSET, this.scale);
       const fromLeft = extra.x < 0;
       const start = this.textStart(style, left, right, width, inset);
@@ -347,9 +406,120 @@ class Painter {
       context.beginPath();
       context.rect(clipLeft, top, clipRight - clipLeft, bottom - top);
       context.clip();
-      this.paintLine(line, style, metrics, extra.color, extra.flags, start, width, top, bottom);
+      if (rich) this.paintRichLine(rich, style, extra.flags, start, top, bottom);
+      else
+        this.paintLine(line, style, metrics, extra.color, extra.flags, start, width, top, bottom);
       context.restore();
     }
+  }
+
+  /** Each run of a line, measured. A line is as tall as its tallest font. */
+  private richPieces(runs: TileRun[]) {
+    return runs.map((run) => {
+      const style = this.styleOf(run.style);
+      const metrics = this.fontFor(run.style, style);
+      return { run, style, metrics, text: run.text, width: 0 };
+    });
+  }
+
+  private richLine(runs: TileRun[]): RichLine {
+    const pieces: RichPiece[] = [];
+    for (const piece of this.richPieces(runs)) {
+      const text = singleLine(piece.text);
+      this.fontFor(piece.run.style, piece.style);
+      pieces.push({ ...piece, text, width: this.width(text) });
+    }
+    return lineOf(pieces);
+  }
+
+  /** Runs broken into words, then into lines that fit. */
+  private richLines(runs: TileRun[], room: number): RichLine[] {
+    const lines: RichPiece[][] = [[]];
+    let used = 0;
+    for (const piece of this.richPieces(runs)) {
+      this.fontFor(piece.run.style, piece.style);
+      for (const word of piece.text.split(/(\r?\n|\s+)/)) {
+        if (!word) continue;
+        if (word === '\n' || word === '\r\n') {
+          lines.push([]);
+          used = 0;
+          continue;
+        }
+        const width = this.width(word);
+        const line = lines[lines.length - 1]!;
+        if (used + width > room && line.length) {
+          // Spaces at a break go nowhere.
+          if (!word.trim()) continue;
+          lines.push([]);
+          used = 0;
+        }
+        lines[lines.length - 1]!.push({ ...piece, text: word, width });
+        used += width;
+      }
+    }
+    return lines.map(lineOf);
+  }
+
+  /** Reading order runs from the right in right-to-left text. */
+  private paintRichLine(
+    line: RichLine,
+    style: TileStyle,
+    flags: number,
+    start: number,
+    top: number,
+    bottom: number,
+    y?: number,
+  ) {
+    const baseline = y ?? this.baseline(style, line, top, bottom);
+    const pieces = flags & CELL_RTL ? [...line.pieces].reverse() : line.pieces;
+    let x = start;
+    for (const piece of pieces) {
+      const metrics = this.fontFor(piece.run.style, piece.style);
+      this.paintLine(
+        piece.text,
+        piece.style,
+        metrics,
+        piece.run.color,
+        flags,
+        x,
+        piece.width,
+        top,
+        bottom,
+        baseline,
+      );
+      x += piece.width;
+    }
+  }
+
+  private drawRichWrapped(
+    runs: TileRun[],
+    style: TileStyle,
+    flags: number,
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+    room: number,
+    inset: number,
+  ) {
+    const { context } = this;
+    const lines = this.richLines(runs, room);
+    const total = lines.reduce((sum, line) => sum + line.ascent + line.descent, 0);
+    let y: number;
+    if (style.vertical === VALIGN_CENTER) y = (top + bottom - total) / 2;
+    else if (style.vertical === VALIGN_BOTTOM)
+      y = bottom - total - Math.max(1, Math.round(this.scale));
+    else y = top;
+    context.save();
+    context.beginPath();
+    context.rect(left, top, right - left - 1, bottom - top);
+    context.clip();
+    for (const line of lines) {
+      const start = this.textStart(style, left, right, line.width, inset);
+      this.paintRichLine(line, style, flags, start, top, bottom, y + line.ascent);
+      y += line.ascent + line.descent;
+    }
+    context.restore();
   }
 
   private rowAt(css: number) {
@@ -377,7 +547,12 @@ class Painter {
     }
   }
 
-  private baseline(style: TileStyle, metrics: FontMetrics, top: number, bottom: number) {
+  private baseline(
+    style: TileStyle,
+    metrics: { ascent: number; descent: number },
+    top: number,
+    bottom: number,
+  ) {
     const pixel = Math.max(1, Math.round(this.scale));
     switch (style.vertical) {
       case VALIGN_TOP:
@@ -432,6 +607,7 @@ class Painter {
       style: number;
       color: number;
       fillAt: number;
+      runs?: TileRun[] | undefined;
     },
     left: number,
     top: number,
@@ -475,9 +651,20 @@ class Painter {
     }
 
     if (wrap && kind === KIND_TEXT) {
+      if (cell.runs) {
+        const { flags } = cell;
+        this.drawRichWrapped(cell.runs, style, flags, left, top, right, bottom, room, inset);
+        return;
+      }
       this.drawWrapped(raw, style, metrics, cell, left, top, right, bottom, room, inset);
       return;
     }
+
+    // Rich text on one line. It can't shrink or repeat, which only its plain text does.
+    const rich =
+      cell.runs && kind === KIND_TEXT && !(style.layout & LAYOUT_SHRINK) && !cell.fillAt
+        ? this.richLine(cell.runs)
+        : undefined;
 
     let line = singleLine(raw);
     if (style.layout & LAYOUT_SHRINK) {
@@ -514,7 +701,8 @@ class Painter {
       }
     }
 
-    const measured = this.width(line);
+    if (!rich) metrics = this.fontFor(cell.style, style);
+    const measured = rich ? rich.width : this.width(line);
     const start = this.textStart(style, left, right, measured, inset);
     let clipLeft = left;
     let clipRight = right - 1;
@@ -538,7 +726,8 @@ class Painter {
     context.beginPath();
     context.rect(clipLeft, top, clipRight - clipLeft, height);
     context.clip();
-    this.paintLine(line, style, metrics, cell.color, cell.flags, start, measured, top, bottom);
+    if (rich) this.paintRichLine(rich, style, cell.flags, start, top, bottom);
+    else this.paintLine(line, style, metrics, cell.color, cell.flags, start, measured, top, bottom);
     context.restore();
   }
 

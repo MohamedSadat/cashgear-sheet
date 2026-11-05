@@ -18,13 +18,13 @@ use crate::patch_parts::{
     remove_relationships, set_full_calc_on_load, set_refresh_on_load, set_table_columns, StylesXml,
 };
 use crate::patch_sheet::{
-    patch_into, patch_sheet, ArrayKind, CellChange, CellPatch, NewElement, StringTable,
+    patch_into, patch_sheet, ArrayKind, CellChange, CellPatch, NewElement, SheetExtras, StringTable,
 };
 use crate::scan::{attr_value, escape_attr, utf8_part, Kind, Scanner};
 use crate::structure::{
-    book_edits, own_edits, parse_tree, rewrite_chart, rewrite_comments, rewrite_drawing,
-    rewrite_pivot_cache, rewrite_pivot_table, rewrite_sheet, rewrite_table, rewrite_vml,
-    write_tree, BookOp, Element, Masters, Node, SheetEdits,
+    all_own_edits, book_edits, own_edits, parse_tree, rewrite_chart, rewrite_comments,
+    rewrite_drawing, rewrite_pivot_cache, rewrite_pivot_table, rewrite_sheet, rewrite_table,
+    rewrite_vml, write_tree, BookOp, Element, Masters, Node, SheetEdits,
 };
 use crate::workbook::read_relationships;
 use crate::xml::{parse_rect, parse_u32, rels_path, unescape_attr};
@@ -105,6 +105,19 @@ pub struct WorkbookEdits {
     pub merges: std::collections::BTreeSet<u32>,
     /// The calculation mode to save, if it was changed: manual or not.
     pub calc_mode: Option<bool>,
+    /// What changes in a sheet apart from its cells' contents, in final coordinates. The engine
+    /// fills this in from the lists below when it saves.
+    pub extras: BTreeMap<u32, SheetExtras>,
+    /// Areas whose cells may have new styles, which the sheet itself holds.
+    pub style_areas: BTreeMap<u32, Vec<cgs_model::Rect>>,
+    /// Rows whose records changed, as sorted spans.
+    pub row_lines: BTreeMap<u32, Vec<(u32, u32)>>,
+    /// Columns whose records changed, as sorted spans.
+    pub col_lines: BTreeMap<u32, Vec<(u32, u32)>>,
+    /// Sheets whose panes changed.
+    pub view_freeze: std::collections::BTreeSet<u32>,
+    /// Sheets whose gridlines or headings may have changed.
+    pub view_flags: std::collections::BTreeSet<u32>,
 }
 
 impl WorkbookEdits {
@@ -116,6 +129,7 @@ impl WorkbookEdits {
             && self.ops.is_empty()
             && self.merges.is_empty()
             && self.calc_mode.is_none()
+            && self.extras.values().all(SheetExtras::is_empty)
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.
@@ -694,6 +708,7 @@ fn apply_structure(
             continue;
         }
         let own = own_edits(ops, index as u32);
+        let all_own = all_own_edits(ops, index as u32);
         let home = file_names
             .get(&(index as u32))
             .cloned()
@@ -728,6 +743,7 @@ fn apply_structure(
         }
         let sheet_edits = SheetEdits {
             own: &own,
+            all_own: &all_own,
             book: &list,
             home: &home,
             gone_tables: &gone_tables,
@@ -1027,6 +1043,14 @@ pub fn save_workbook(
             ));
         }
 
+        // A sheet with changes apart from its cells goes through the same steps as one with cells.
+        let extras = std::mem::take(&mut edits.extras);
+        for (&sheet, extra) in &extras {
+            if !extra.is_empty() {
+                edits.cells.entry(sheet).or_default();
+            }
+        }
+        let none_extra = SheetExtras::default();
         // Which parts already went out, as new ones or with the shape changes.
         let mut written: HashSet<u32> = HashSet::new();
         for (&sheet, patches) in &edits.cells {
@@ -1039,6 +1063,7 @@ pub fn save_workbook(
             }
             written.insert(sheet);
             let elements = edits.elements.get(&sheet).map_or(&[][..], Vec::as_slice);
+            let extra = extras.get(&sheet).unwrap_or(&none_extra);
             let Some(part) = info.part.clone() else {
                 let name = structure
                     .new_parts
@@ -1050,6 +1075,7 @@ pub fn save_workbook(
                     Packer::default,
                     patches,
                     elements,
+                    extra,
                     &mut strings,
                     false,
                 )
@@ -1074,7 +1100,7 @@ pub fn save_workbook(
             if let Some(rewritten) = structure.sheets.get(&part) {
                 let open = || Ok::<_, io::Error>(DeflateDecoder::new(&rewritten.data[..]));
                 let (packed, outcome) =
-                    patch_sheet(open, patches, elements, &mut strings, ascii_only)
+                    patch_sheet(open, patches, elements, extra, &mut strings, ascii_only)
                         .map_err(part_error)?;
                 report.cells_written += outcome.cells_written;
                 report.results_left_to_excel += outcome.results_skipped;
@@ -1091,8 +1117,9 @@ pub fn save_workbook(
                     .stream(&part)
                     .ok_or_else(|| io::Error::other("a part went missing"))
             };
-            let (packed, outcome) = patch_sheet(open, patches, elements, &mut strings, ascii_only)
-                .map_err(part_error)?;
+            let (packed, outcome) =
+                patch_sheet(open, patches, elements, extra, &mut strings, ascii_only)
+                    .map_err(part_error)?;
             report.cells_written += outcome.cells_written;
             report.results_left_to_excel += outcome.results_skipped;
             if let Some(packed) = packed {
@@ -1142,6 +1169,7 @@ pub fn save_workbook(
                         Packer::default,
                         &none,
                         elements,
+                        &none_extra,
                         &mut strings,
                         false,
                     )
@@ -1155,7 +1183,7 @@ pub fn save_workbook(
             };
             let packed = if let Some(rewritten) = structure.sheets.get(&part) {
                 let open = || Ok::<_, io::Error>(DeflateDecoder::new(&rewritten.data[..]));
-                patch_sheet(open, &none, elements, &mut strings, false)
+                patch_sheet(open, &none, elements, &none_extra, &mut strings, false)
                     .map_err(part_error)?
                     .0
             } else {
@@ -1164,7 +1192,7 @@ pub fn save_workbook(
                         .stream(&part)
                         .ok_or_else(|| io::Error::other("a part went missing"))
                 };
-                patch_sheet(open, &none, elements, &mut strings, false)
+                patch_sheet(open, &none, elements, &none_extra, &mut strings, false)
                     .map_err(part_error)?
                     .0
             };
@@ -1561,6 +1589,14 @@ pub fn patched_xml(
     elements: &[NewElement],
     strings: &mut StringTable,
 ) -> io::Result<Vec<u8>> {
-    let (out, _) = patch_into(|| Ok(source), Vec::new, patches, elements, strings, false)?;
+    let (out, _) = patch_into(
+        || Ok(source),
+        Vec::new,
+        patches,
+        elements,
+        &SheetExtras::default(),
+        strings,
+        false,
+    )?;
     Ok(out)
 }

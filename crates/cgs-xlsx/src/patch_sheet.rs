@@ -168,6 +168,104 @@ pub struct NewElement {
     pub xml: String,
 }
 
+/// What a row should say, for a row a change touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RowPatch {
+    /// At 100%, in pixels. Nothing means the sheet's default.
+    pub size_px: Option<u32>,
+    pub custom: bool,
+    pub hidden: bool,
+    pub style: Option<u32>,
+}
+
+/// What a stretch of columns should say, for columns a change touched.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ColPatch {
+    pub first: u32,
+    pub last: u32,
+    /// At 100%, in pixels. Nothing means the sheet's default, which `default_px` says.
+    pub size_px: Option<u32>,
+    pub default_px: u32,
+    /// The widest digit of the workbook's normal font, which widths are counted in.
+    pub digit: f64,
+    pub custom: bool,
+    pub hidden: bool,
+    pub style: Option<u32>,
+}
+
+/// What a sheet's first view should say, where it changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewPatch {
+    /// The frozen rows and columns, and the first of each that shows. `Some(None)` unfreezes.
+    pub freeze: Option<Option<cgs_model::Freeze>>,
+    pub show_grid: Option<bool>,
+    pub show_headers: Option<bool>,
+    /// 1-based, for a pane's selection.
+    pub active_cell: (u32, u32),
+}
+
+/// What changes in a sheet apart from its cells' contents.
+#[derive(Debug, Clone, Default)]
+pub struct SheetExtras {
+    pub rows: BTreeMap<u32, RowPatch>,
+    pub cols: Vec<ColPatch>,
+    /// Areas where cells take their style from this sheet as it now stands, which saves holding a
+    /// patch per cell for a format over a whole sheet.
+    pub styled: Option<(cgs_model::SheetInfo, Vec<cgs_model::Rect>)>,
+    pub view: Option<ViewPatch>,
+}
+
+impl SheetExtras {
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty() && self.cols.is_empty() && self.styled.is_none() && self.view.is_none()
+    }
+}
+
+/// A column width in characters, as Excel writes it, that reads back as these pixels.
+pub fn px_to_col_width(px: u32, digit: f64) -> f64 {
+    (f64::from(px) / digit * 256.0).trunc() / 256.0
+}
+
+/// A row height in points, for these pixels.
+pub fn px_to_points(px: u32) -> f64 {
+    f64::from(px) * 0.75
+}
+
+/// Which rows have something to write, as bits.
+#[derive(Debug, Default, Clone)]
+struct RowBits(Vec<u64>);
+
+impl RowBits {
+    fn set(&mut self, row: u32) {
+        let word = (row / 64) as usize;
+        if word >= self.0.len() {
+            self.0.resize(word + 1, 0);
+        }
+        self.0[word] |= 1 << (row % 64);
+    }
+
+    fn set_span(&mut self, first: u32, last: u32) {
+        for row in first..=last {
+            self.set(row);
+        }
+    }
+
+    /// The first row at or after this one.
+    fn next(&self, from: u32) -> Option<u32> {
+        let mut word = (from / 64) as usize;
+        let mut mask = !0u64 << (from % 64);
+        while let Some(&bits) = self.0.get(word) {
+            let found = bits & mask;
+            if found != 0 {
+                return Some(word as u32 * 64 + found.trailing_zeros());
+            }
+            word += 1;
+            mask = !0;
+        }
+        None
+    }
+}
+
 /// What a pass finds that an earlier part of the sheet needed to know.
 #[derive(Debug, Default, Clone)]
 struct Facts {
@@ -255,6 +353,11 @@ fn has_value(value: &CalcValue) -> bool {
 
 struct Patcher<'a> {
     patches: &'a BTreeMap<(u32, u32), CellPatch>,
+    extras: &'a SheetExtras,
+    wanted_rows: RowBits,
+    /// New columns or views are still to go out, for a sheet that doesn't have them.
+    cols_due: bool,
+    view_due: bool,
     strings: &'a mut StringTable,
     elements: Vec<&'a NewElement>,
     /// Characters outside ASCII become references, because the part isn't in UTF-8.
@@ -293,6 +396,239 @@ fn io_err(error: impl std::fmt::Display) -> io::Error {
 impl Patcher<'_> {
     fn patches_in_row(&self, row: u32) -> impl Iterator<Item = (&(u32, u32), &CellPatch)> {
         self.patches.range((row, 0)..=(row, u32::MAX))
+    }
+
+    /// The areas whose styles come from the sheet as it stands, that reach this row.
+    fn styled_in_row(&self, row: u32) -> bool {
+        self.extras.styled.as_ref().is_some_and(|(_, areas)| {
+            areas
+                .iter()
+                .any(|area| row >= area.top && row <= area.bottom)
+        })
+    }
+
+    /// A row's patches, with what the sheet's styles add. Sorted by column.
+    fn row_list(&self, row: u32) -> Vec<((u32, u32), CellPatch)> {
+        let mut listed: Vec<((u32, u32), CellPatch)> = self
+            .patches_in_row(row)
+            .map(|(&at, patch)| (at, patch.clone()))
+            .collect();
+        let Some((info, areas)) = &self.extras.styled else {
+            return listed;
+        };
+        for area in areas.iter().filter(|a| row >= a.top && row <= a.bottom) {
+            for col in area.left..=area.right.min(info.styled_cols()) {
+                if let Some(style) = info.own_style(row, col) {
+                    match listed.binary_search_by_key(&col, |((_, c), _)| *c) {
+                        Ok(at) => listed[at].1.style = Some(style),
+                        Err(at) => {
+                            listed.insert(
+                                at,
+                                (
+                                    (row, col),
+                                    CellPatch {
+                                        change: CellChange::Keep,
+                                        style: Some(style),
+                                    },
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        listed
+    }
+
+    /// The patch for a cell the file has: its own, with the style the sheet now gives it.
+    fn patch_at(&self, row: u32, col: u32) -> Option<CellPatch> {
+        let own = self.patches.get(&(row, col)).cloned();
+        let Some((info, areas)) = &self.extras.styled else {
+            return own;
+        };
+        if !areas.iter().any(|area| area.contains(row, col)) {
+            return own;
+        }
+        let mut patch = own.unwrap_or(CellPatch {
+            change: CellChange::Keep,
+            style: None,
+        });
+        patch.style = Some(info.style_at(row, col));
+        Some(patch)
+    }
+
+    /// What a row's tag must say differently.
+    fn row_changes(&self, tag: &[u8], row: u32) -> Vec<(&'static str, Option<String>)> {
+        let Some(patch) = self.extras.rows.get(&row) else {
+            return Vec::new();
+        };
+        let stored = attr_value(tag, b"ht")
+            .and_then(|raw| std::str::from_utf8(raw).ok())
+            .and_then(|text| text.parse::<f64>().ok());
+        let mut changes = Vec::new();
+        match patch.size_px {
+            Some(px) => {
+                // A stored height that comes to the same pixels stays exactly as it is.
+                if stored.map(cgs_model::style::points_to_px) != Some(px) {
+                    changes.push(("ht", Some(format!("{}", px_to_points(px)))));
+                }
+            }
+            None => changes.push(("ht", None)),
+        }
+        changes.push(("customHeight", patch.custom.then(|| "1".to_string())));
+        changes.push(("hidden", patch.hidden.then(|| "1".to_string())));
+        match patch.style {
+            Some(style) => {
+                changes.push(("s", Some(style.to_string())));
+                changes.push(("customFormat", Some("1".to_string())));
+            }
+            None => {
+                changes.push(("s", None));
+                changes.push(("customFormat", None));
+            }
+        }
+        changes.retain(|(name, value)| {
+            attr_value(tag, name.as_bytes()).map(|raw| String::from_utf8_lossy(raw).into_owned())
+                != *value
+        });
+        changes
+    }
+
+    /// Writes `<cols>` as the patches leave it. `tags` are the file's, as (first, last, tag).
+    fn write_cols(
+        &mut self,
+        mut tags: Vec<(u32, u32, Vec<u8>)>,
+        open: Option<&[u8]>,
+        out: &mut dyn Write,
+    ) -> io::Result<()> {
+        self.cols_due = false;
+        tags.sort_by_key(|&(first, _, _)| first);
+        let mut patches = self.extras.cols.clone();
+        patches.sort_by_key(|patch| patch.first);
+        let name = self.name("col");
+        let number = |value: u32| value.to_string();
+        let edited = |tag: &[u8], first: u32, last: u32, patch: Option<&ColPatch>| -> Vec<u8> {
+            let (min, max) = (number(first), number(last));
+            let mut changes: Vec<(&str, Option<String>)> =
+                vec![("min", Some(min)), ("max", Some(max))];
+            if let Some(patch) = patch {
+                let px = patch.size_px.unwrap_or(patch.default_px);
+                let stored = attr_value(tag, b"width")
+                    .and_then(|raw| std::str::from_utf8(raw).ok())
+                    .and_then(|text| text.parse::<f64>().ok());
+                let same =
+                    stored.is_some_and(|w| cgs_model::style::col_width_to_px(w, patch.digit) == px);
+                if !same {
+                    changes.push((
+                        "width",
+                        Some(format!("{}", px_to_col_width(px, patch.digit))),
+                    ));
+                }
+                changes.push(("customWidth", patch.custom.then(|| "1".to_string())));
+                changes.push(("hidden", patch.hidden.then(|| "1".to_string())));
+                changes.push(("style", patch.style.map(|style| style.to_string())));
+                if patch.custom {
+                    changes.push(("bestFit", None));
+                }
+            }
+            let list: Vec<(&str, Option<&str>)> = changes
+                .iter()
+                .map(|(key, value)| (*key, value.as_deref()))
+                .collect();
+            edit_tag(tag, &list)
+        };
+        let mut result: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+        for (first, last, tag) in &tags {
+            let mut at = *first;
+            for patch in patches
+                .iter()
+                .filter(|p| p.first <= *last && p.last >= *first)
+            {
+                if patch.first > at {
+                    result.push((at, patch.first - 1, edited(tag, at, patch.first - 1, None)));
+                }
+                let (from, to) = (patch.first.max(at), patch.last.min(*last));
+                if from <= to {
+                    result.push((from, to, edited(tag, from, to, Some(patch))));
+                }
+                at = to.saturating_add(1);
+            }
+            if at <= *last {
+                let bytes = if at == *first {
+                    tag.clone()
+                } else {
+                    edited(tag, at, *last, None)
+                };
+                result.push((at, *last, bytes));
+            }
+        }
+        // Stretches of patches the file holds nothing for.
+        for patch in &patches {
+            let mut at = patch.first;
+            let covered: Vec<(u32, u32)> = tags
+                .iter()
+                .filter(|(first, last, _)| *first <= patch.last && *last >= patch.first)
+                .map(|(first, last, _)| (*first, *last))
+                .collect();
+            let says_something =
+                patch.size_px.is_some() || patch.hidden || patch.style.is_some() || patch.custom;
+            let mut gap = |from: u32, to: u32| {
+                if from > to || !says_something {
+                    return;
+                }
+                let blank = format!("<{name} min=\"{from}\" max=\"{to}\"/>");
+                result.push((from, to, edited(blank.as_bytes(), from, to, Some(patch))));
+            };
+            for (first, last) in covered {
+                if first > at {
+                    gap(at, first - 1);
+                }
+                at = last.saturating_add(1);
+            }
+            gap(at, patch.last);
+        }
+        result.sort_by_key(|&(first, _, _)| first);
+        self.col_styles.clear();
+        for (first, last, tag) in &result {
+            if let Some(style) = attr_value(tag, b"style").and_then(parse_u32) {
+                self.col_styles.push((*first, *last, style));
+            }
+        }
+        self.outcome.changed = true;
+        if result.is_empty() {
+            return Ok(());
+        }
+        match open {
+            Some(open) => out.write_all(open)?,
+            None => {
+                let open = format!("<{}>", self.name("cols"));
+                out.write_all(open.as_bytes())?;
+            }
+        }
+        for (_, _, tag) in &result {
+            out.write_all(tag)?;
+        }
+        let close = format!("</{}>", self.name("cols"));
+        out.write_all(close.as_bytes())
+    }
+
+    /// Writes what's due that belongs before an element of this place in the schema's order.
+    fn due_before(&mut self, order: Option<usize>, out: &mut dyn Write) -> io::Result<()> {
+        if self.view_due && order > worksheet_order(b"sheetViews") {
+            self.view_due = false;
+            if let Some(patch) = self.extras.view {
+                let name = self.name("sheetViews");
+                let view = self.name("sheetView");
+                let xml = format!("<{name}><{view} workbookViewId=\"0\"/></{name}>");
+                let edited = crate::structure::edit_sheet_views(xml.as_bytes(), &patch)?;
+                out.write_all(&edited)?;
+                self.outcome.changed = true;
+            }
+        }
+        if self.cols_due && order > worksheet_order(b"cols") {
+            self.write_cols(Vec::new(), None, out)?;
+        }
+        Ok(())
     }
 
     fn name(&self, local: &str) -> String {
@@ -370,8 +706,12 @@ impl Patcher<'_> {
     }
 
     /// The style a new cell here takes: the row's, or else the column's, as Excel does.
-    fn inherited_style(&self, row_tag: Option<&[u8]>, col: u32) -> Option<u32> {
-        if let Some(tag) = row_tag {
+    fn inherited_style(&self, row_tag: Option<&[u8]>, row: u32, col: u32) -> Option<u32> {
+        if let Some(patch) = self.extras.rows.get(&row) {
+            if let Some(style) = patch.style {
+                return Some(style);
+            }
+        } else if let Some(tag) = row_tag {
             let custom = attr_value(tag, b"customFormat").is_some_and(crate::xml::parse_bool);
             if custom {
                 if let Some(style) = attr_value(tag, b"s").and_then(parse_u32) {
@@ -393,7 +733,9 @@ impl Patcher<'_> {
         patch: &CellPatch,
         row_tag: Option<&[u8]>,
     ) -> Vec<u8> {
-        let style = patch.style.or_else(|| self.inherited_style(row_tag, col));
+        let style = patch
+            .style
+            .or_else(|| self.inherited_style(row_tag, row, col));
         let mut out = Vec::new();
         let mut dynamic = None;
         let (kind, body) = match &patch.change {
@@ -463,11 +805,7 @@ impl Patcher<'_> {
     /// Writes rows the file doesn't have, numbered below `limit`.
     fn new_rows_before(&mut self, limit: u32, out: &mut dyn Write) -> io::Result<()> {
         while let Some(row) = self.next_row_patch.filter(|&row| row < limit) {
-            self.next_row_patch = self
-                .patches
-                .range((row + 1, 0)..)
-                .next()
-                .map(|(&(next, _), _)| next);
+            self.next_row_patch = self.wanted_rows.next(row + 1);
             if self
                 .facts
                 .rows
@@ -478,20 +816,28 @@ impl Patcher<'_> {
             }
             let mut body = Vec::new();
             let list: Vec<((u32, u32), CellPatch)> = self
-                .patches_in_row(row)
+                .row_list(row)
+                .into_iter()
                 .filter(|(at, _)| !self.applied_elsewhere.contains(at))
-                .map(|(&at, patch)| (at, patch.clone()))
                 .collect();
             for ((_, col), patch) in &list {
                 let cell = self.new_cell(row, *col, patch, None);
                 body.extend_from_slice(&cell);
             }
-            if body.is_empty() {
+            let name = self.name("row");
+            let tag = format!("<{name} r=\"{row}\">");
+            let changes = self.row_changes(tag.as_bytes(), row);
+            if body.is_empty() && changes.is_empty() {
                 continue;
             }
-            out.write_all(format!("<{} r=\"{row}\">", self.name("row")).as_bytes())?;
+            self.outcome.changed = true;
+            let list: Vec<(&str, Option<&str>)> = changes
+                .iter()
+                .map(|(key, value)| (*key, value.as_deref()))
+                .collect();
+            out.write_all(&edit_tag(tag.as_bytes(), &list))?;
             out.write_all(&body)?;
-            out.write_all(format!("</{}>", self.name("row")).as_bytes())?;
+            out.write_all(format!("</{name}>").as_bytes())?;
         }
         Ok(())
     }
@@ -736,7 +1082,11 @@ impl Patcher<'_> {
         let children = self.children(cell)?;
         let tag = self.row_buffer[cell.start..cell.tag_end].to_vec();
         let address = (!cell.has_address).then(|| cell_name(cell.row, cell.col));
-        let style = patch.style.map(|style| style.to_string());
+        let held = attr_value(&tag, b"s").and_then(parse_u32).unwrap_or(0);
+        let style = patch
+            .style
+            .filter(|&style| style != held)
+            .map(|style| style.to_string());
         let mut changes: Vec<(&str, Option<&str>)> = Vec::new();
         if let Some(address) = &address {
             changes.push(("r", Some(address)));
@@ -941,9 +1291,10 @@ impl Patcher<'_> {
         closing: Option<&[u8]>,
         out: &mut dyn Write,
     ) -> io::Result<()> {
-        let has_patches = self.patches_in_row(row).next().is_some();
+        let has_patches = self.patches_in_row(row).next().is_some() || self.styled_in_row(row);
         let spreads = self.cells.iter().any(|cell| cell.row != row);
-        if !has_patches && !spreads && self.facts.masters.is_empty() {
+        let row_changes = self.row_changes(row_tag, row);
+        if !has_patches && !spreads && self.facts.masters.is_empty() && row_changes.is_empty() {
             out.write_all(row_tag)?;
             out.write_all(&self.row_buffer)?;
             if let Some(closing) = closing {
@@ -954,10 +1305,7 @@ impl Patcher<'_> {
         let mut body = std::mem::take(&mut self.scratch);
         body.clear();
         let cells = std::mem::take(&mut self.cells);
-        let listed: Vec<((u32, u32), CellPatch)> = self
-            .patches_in_row(row)
-            .map(|(&at, patch)| (at, patch.clone()))
-            .collect();
+        let listed = self.row_list(row);
         let matched: FxHashSet<u32> = cells
             .iter()
             .filter(|c| c.row == row)
@@ -985,11 +1333,11 @@ impl Patcher<'_> {
                 }
                 waiting.next();
             }
-            let patch = self
-                .patches
-                .get(&(cell.row, cell.col))
-                .filter(|_| cell.col != 0)
-                .cloned();
+            let patch = if cell.col == 0 {
+                None
+            } else {
+                self.patch_at(cell.row, cell.col)
+            };
             if patch.is_some() && cell.row != row {
                 self.applied_elsewhere.insert((cell.row, cell.col));
             }
@@ -1039,7 +1387,7 @@ impl Patcher<'_> {
         body.extend_from_slice(&self.row_buffer[copied..]);
         self.cells = cells;
 
-        if !changed_here {
+        if !changed_here && row_changes.is_empty() {
             out.write_all(row_tag)?;
             out.write_all(&self.row_buffer)?;
             if let Some(closing) = closing {
@@ -1048,8 +1396,14 @@ impl Patcher<'_> {
             self.scratch = body;
             return Ok(());
         }
+        if !row_changes.is_empty() {
+            self.outcome.changed = true;
+        }
         let number = row.to_string();
-        let mut changes: Vec<(&str, Option<&str>)> = Vec::new();
+        let mut changes: Vec<(&str, Option<&str>)> = row_changes
+            .iter()
+            .map(|(key, value)| (*key, value.as_deref()))
+            .collect();
         if attr_value(row_tag, b"r").is_none() {
             changes.push(("r", Some(&number)));
         }
@@ -1123,11 +1477,7 @@ impl Patcher<'_> {
     /// A row that exists takes its own patches, so the row-by-row walk moves past them.
     fn skip_row_patches(&mut self, row: u32) {
         if self.next_row_patch == Some(row) {
-            self.next_row_patch = self
-                .patches
-                .range((row + 1, 0)..)
-                .next()
-                .map(|(&(next, _), _)| next);
+            self.next_row_patch = self.wanted_rows.next(row + 1);
         }
     }
 
@@ -1183,6 +1533,21 @@ impl Patcher<'_> {
                 bounds = Some((top.min(row), left.min(col), bottom.max(row), right.max(col)));
             }
         }
+        if let Some((info, areas)) = &self.extras.styled {
+            for area in areas {
+                let (bottom, right) = (area.bottom.min(info.used.0), area.right.min(info.used.1));
+                if area.top <= bottom && area.left <= right {
+                    let (top, left, low, far): (u32, u32, u32, u32) =
+                        bounds.unwrap_or((area.top, area.left, bottom, right));
+                    bounds = Some((
+                        top.min(area.top),
+                        left.min(area.left),
+                        low.max(bottom),
+                        far.max(right),
+                    ));
+                }
+            }
+        }
         let Some((top, left, bottom, right)) = bounds else {
             return tag.to_vec();
         };
@@ -1215,7 +1580,7 @@ impl Patcher<'_> {
         let mut scanner = Scanner::new(reader);
         let mut depth = 0u32;
         let mut wrote_data = false;
-        let needs_data = !self.patches.is_empty();
+        let needs_data = !self.patches.is_empty() || self.wanted_rows.next(0).is_some();
         while let Some(kind) = scanner.next()? {
             let token = scanner.token();
             match kind {
@@ -1227,11 +1592,15 @@ impl Patcher<'_> {
                     if needs_data && !wrote_data && order > data_order && local != b"sheetData" {
                         // A worksheet with no `<sheetData>` at all, which the schema requires.
                         self.elements_before(data_order, out)?;
+                        self.due_before(data_order, out)?;
                         self.write_new_sheet_data(out)?;
                         wrote_data = true;
                     }
                     if order.is_some() {
                         self.elements_before(order, out)?;
+                        if local != b"cols" && local != b"sheetViews" {
+                            self.due_before(order, out)?;
+                        }
                     }
                     match local.as_slice() {
                         b"sheetData" if kind == Kind::Start => {
@@ -1282,10 +1651,33 @@ impl Patcher<'_> {
                                 depth += 1;
                             }
                         }
+                        b"cols" if self.cols_due => {
+                            self.due_before(worksheet_order(b"cols"), out)?;
+                            let tags = if kind == Kind::Start {
+                                self.gather_cols(&mut scanner)?
+                            } else {
+                                Vec::new()
+                            };
+                            let open = opened(&tag);
+                            self.write_cols(tags, Some(&open), out)?;
+                        }
                         b"cols" => {
+                            self.due_before(worksheet_order(b"cols"), out)?;
                             out.write_all(&tag)?;
                             if kind == Kind::Start {
                                 self.read_cols(&mut scanner, out)?;
+                            }
+                        }
+                        b"sheetViews" if self.view_due => {
+                            self.view_due = false;
+                            let mut xml = tag.clone();
+                            if kind == Kind::Start {
+                                crate::structure::read_element(&mut scanner, &mut xml)?;
+                            }
+                            if let Some(patch) = self.extras.view {
+                                let edited = crate::structure::edit_sheet_views(&xml, &patch)?;
+                                self.outcome.changed = self.outcome.changed || edited != xml;
+                                out.write_all(&edited)?;
                             }
                         }
                         _ => {
@@ -1314,6 +1706,7 @@ impl Patcher<'_> {
                 Kind::End => {
                     if depth == 1 {
                         let closing = token.to_vec();
+                        self.due_before(worksheet_order(b"sheetData"), out)?;
                         if needs_data && !wrote_data {
                             self.write_new_sheet_data(out)?;
                             wrote_data = true;
@@ -1351,6 +1744,29 @@ impl Patcher<'_> {
         out.write_all(format!("<{name}>").as_bytes())?;
         self.new_rows_before(u32::MAX, out)?;
         out.write_all(format!("</{name}>").as_bytes())
+    }
+
+    /// Reads `<col>` tags up to the end of `<cols>`, as (first, last, tag).
+    fn gather_cols<R: Read>(
+        &mut self,
+        scanner: &mut Scanner<R>,
+    ) -> io::Result<Vec<(u32, u32, Vec<u8>)>> {
+        let mut tags = Vec::new();
+        while let Some(kind) = scanner.next()? {
+            let token = scanner.token();
+            match kind {
+                Kind::Start | Kind::Empty if local_name(token) == b"col" => {
+                    let first = attr_value(token, b"min").and_then(parse_u32);
+                    let last = attr_value(token, b"max").and_then(parse_u32).or(first);
+                    if let (Some(first), Some(last)) = (first, last) {
+                        tags.push((first, last.min(cgs_model::MAX_COLS), closed(token)));
+                    }
+                }
+                Kind::End if local_name(token) == b"cols" => break,
+                _ => {}
+            }
+        }
+        Ok(tags)
     }
 
     /// Copies `<cols>`, noting column styles, which a new cell takes.
@@ -1398,6 +1814,7 @@ pub fn patch_into<R: Read, W: Write>(
     mut output: impl FnMut() -> W,
     patches: &BTreeMap<(u32, u32), CellPatch>,
     elements: &[NewElement],
+    extras: &SheetExtras,
     strings: &mut StringTable,
     ascii_only: bool,
 ) -> io::Result<(W, Outcome)> {
@@ -1409,11 +1826,33 @@ pub fn patch_into<R: Read, W: Write>(
     });
     let references = strings.references;
     let mut facts = Facts::default();
+    let mut wanted_rows = RowBits::default();
+    for &(row, _) in patches.keys() {
+        wanted_rows.set(row);
+    }
+    for &row in extras.rows.keys() {
+        wanted_rows.set(row);
+    }
+    if let Some((info, areas)) = &extras.styled {
+        for area in areas {
+            let bottom = area.bottom.min(info.used.0.max(area.top));
+            for col in area.left..=area.right.min(info.styled_cols()) {
+                for (first, last, style) in info.style_spans(col, area.top, bottom) {
+                    if style != cgs_model::NO_CELL {
+                        wanted_rows.set_span(first, last);
+                    }
+                }
+            }
+        }
+    }
     // Two rounds learn everything there is to learn, so a third can only be a bug.
     for _ in 0..3 {
         strings.references = references;
         let mut patcher = Patcher {
             patches,
+            extras,
+            cols_due: !extras.cols.is_empty(),
+            view_due: extras.view.is_some(),
             strings: &mut *strings,
             elements: elements.iter().collect(),
             ascii_only,
@@ -1423,7 +1862,8 @@ pub fn patch_into<R: Read, W: Write>(
             prefix: String::new(),
             namespace: Vec::new(),
             col_styles: Vec::new(),
-            next_row_patch: patches.keys().next().map(|&(row, _)| row),
+            next_row_patch: wanted_rows.next(0),
+            wanted_rows: wanted_rows.clone(),
             row: 0,
             last_row: 0,
             seen_rows: FxHashSet::default(),
@@ -1450,10 +1890,12 @@ pub fn patch_sheet<R: Read>(
     mut open: impl FnMut() -> io::Result<R>,
     patches: &BTreeMap<(u32, u32), CellPatch>,
     elements: &[NewElement],
+    extras: &SheetExtras,
     strings: &mut StringTable,
     ascii_only: bool,
 ) -> io::Result<(Option<Packed>, Outcome)> {
     let only_results = elements.is_empty()
+        && extras.is_empty()
         && patches.values().all(|patch| {
             matches!(
                 patch.change,
@@ -1461,7 +1903,15 @@ pub fn patch_sheet<R: Read>(
             ) && patch.style.is_none()
         });
     if only_results {
-        let (_, probe) = patch_into(&mut open, io::sink, patches, elements, strings, ascii_only)?;
+        let (_, probe) = patch_into(
+            &mut open,
+            io::sink,
+            patches,
+            elements,
+            extras,
+            strings,
+            ascii_only,
+        )?;
         if !probe.changed {
             return Ok((None, probe));
         }
@@ -1471,6 +1921,7 @@ pub fn patch_sheet<R: Read>(
         Packer::default,
         patches,
         elements,
+        extras,
         strings,
         ascii_only,
     )?;

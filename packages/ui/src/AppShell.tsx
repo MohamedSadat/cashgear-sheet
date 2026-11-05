@@ -235,6 +235,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
             for (const index of event.ready) {
               controller.current?.sheetReady(index);
               if (index === sheetRef.current) void showSheet(engine, index).catch(report);
+              void engine.fitOpeningRows(index).catch(report);
             }
           }
           break;

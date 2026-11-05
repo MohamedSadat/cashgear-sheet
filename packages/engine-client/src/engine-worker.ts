@@ -15,6 +15,11 @@ import type {
   EngineTilePort,
   FileSource,
   LoadEvent,
+  CellFormat,
+  ColFit,
+  FormatLists,
+  FoundCell,
+  RowFit,
   Recoverable,
   SaveReport,
 } from './types';
@@ -590,6 +595,34 @@ const api: EngineApi = {
     appendJournal({ c: command });
     afterChange(wasm);
     return applied;
+  },
+  async takeRowFits() {
+    return JSON.parse((await ensureEngine()).take_row_fits()) as RowFit[];
+  },
+  async openingRowFits(sheet) {
+    return JSON.parse((await ensureEngine()).opening_row_fits(sheet)) as RowFit[];
+  },
+  async colFits(sheet, first, last) {
+    return JSON.parse((await ensureEngine()).col_fits(sheet, first, last)) as ColFit[];
+  },
+  async mergeDiscards(sheet, areas, across) {
+    return (await ensureEngine()).merge_discards(sheet, JSON.stringify(areas), across);
+  },
+  async cellFormat(sheet, row, col) {
+    return JSON.parse((await ensureEngine()).cell_format(sheet, row, col)) as CellFormat | null;
+  },
+  async formatLists() {
+    return JSON.parse((await ensureEngine()).format_lists()) as FormatLists | null;
+  },
+  async formatSample(sheet, row, col, code) {
+    return (await ensureEngine()).format_sample(sheet, row, col, code) ?? null;
+  },
+  async findNext(query, row, col, back) {
+    const wasm = await ensureEngine();
+    return JSON.parse(wasm.find_next(JSON.stringify(query), row, col, back)) as FoundCell | null;
+  },
+  async findAll(query) {
+    return JSON.parse((await ensureEngine()).find_all(JSON.stringify(query))) as FoundCell[];
   },
   async watchChanges(changes, calc) {
     onChanges = changes;

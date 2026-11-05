@@ -17,6 +17,33 @@ export interface TilePalette {
   showGrid?: boolean;
 }
 
+/** One cell to measure for a row or column to fit. */
+export interface FitCell {
+  text: string;
+  font: string;
+  /** In points. */
+  size: number;
+  bold: boolean;
+  italic: boolean;
+  /** The column's width in pixels at 100%, for text that wraps. */
+  width: number;
+  rotation: number;
+  indent: number;
+  wrap: boolean;
+}
+
+/** What it takes to fit one row: see `Session::fit_rows_json`. */
+export interface RowFit {
+  sheet: number;
+  row: number;
+  /** What its fonts need anyway, in pixels at 100%. */
+  base: number;
+  cells: FitCell[];
+}
+
+/** A cell to measure for a column to fit: see `Session::fit_cols_json`. */
+export type ColFit = FitCell & { col: number };
+
 export interface TileRequest {
   sheet: number;
   /** The tile's top-left cell, counted from 0. */
@@ -80,11 +107,163 @@ export type Command =
   | { kind: 'insertSheet'; position: number; name?: string }
   | { kind: 'deleteSheet'; sheet: number }
   | { kind: 'renameSheet'; sheet: number; name: string }
+  | {
+      kind: 'format';
+      sheet: number;
+      areas: CellArea[];
+      change: FormatChange;
+      /** The cell a relative change, such as more decimals, goes by: [row, col], 1-based. */
+      active?: [number, number];
+    }
+  | {
+      kind: 'lines';
+      sheet: number;
+      axis: 'row' | 'col';
+      first: number;
+      last: number;
+      size?: number;
+      hidden?: boolean;
+    }
+  | { kind: 'autoFitRows'; sheet: number; first: number; last: number }
+  | { kind: 'fitCols'; sheet: number; cols: [number, number][] }
+  | { kind: 'fitRows'; rows: [number, number, number][]; quiet?: boolean }
+  | { kind: 'merge'; sheet: number; areas: CellArea[]; center?: boolean; across?: boolean }
+  | { kind: 'unmerge'; sheet: number; areas: CellArea[] }
+  | { kind: 'freeze'; sheet: number; rows: number; cols: number; top?: number; left?: number }
+  | { kind: 'shiftCells'; sheet: number; area: CellArea; down: boolean; delete?: boolean }
+  | {
+      kind: 'replaceOne';
+      query: FindQuery;
+      with: string;
+      sheet: number;
+      row: number;
+      col: number;
+    }
+  | { kind: 'replaceAll'; query: FindQuery; with: string }
+  | { kind: 'viewFlags'; sheet: number; grid?: boolean; headings?: boolean }
   | { kind: 'undo' }
   | { kind: 'redo' };
 
+/** A colour as a format gives it. Theme colours stay references to the theme. */
+export type FormatColor =
+  { kind: 'auto' } | { kind: 'rgb'; rgb: string } | { kind: 'theme'; theme: number; tint?: number };
+
+export interface FormatLine {
+  /** Excel's name for the style, or `none`. */
+  style: string;
+  color?: FormatColor;
+}
+
+/** Lines by where a cell's edge falls in the selection. */
+export interface BorderChange {
+  top?: FormatLine;
+  bottom?: FormatLine;
+  left?: FormatLine;
+  right?: FormatLine;
+  insideHorizontal?: FormatLine;
+  insideVertical?: FormatLine;
+  diagonal?: FormatLine;
+  diagonalUp?: boolean;
+  diagonalDown?: boolean;
+}
+
+/** What a format does. Anything left out stays as it is in each cell. */
+export interface FormatChange {
+  clear?: boolean;
+  fontName?: string;
+  fontSize?: number;
+  fontStep?: number;
+  bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
+  underline?: 'none' | 'single' | 'double' | 'singleAccounting' | 'doubleAccounting';
+  fontColor?: FormatColor;
+  fill?: { pattern: string; color?: FormatColor; patternColor?: FormatColor };
+  numberFormat?: string;
+  numberFormatId?: number;
+  decimals?: number;
+  horizontal?: string;
+  vertical?: string;
+  wrap?: boolean;
+  shrink?: boolean;
+  indent?: number;
+  indentStep?: number;
+  rotation?: number;
+  readingOrder?: number;
+  border?: BorderChange;
+}
+
+/** A colour as a cell has it, with how it looks here. */
+export type StoredColor =
+  | { kind: 'auto' }
+  | { kind: 'rgb'; color: string }
+  | { kind: 'theme'; theme: number; tint: number; color: string };
+
+export interface StoredLine {
+  style: string;
+  color: StoredColor;
+}
+
+/** How a cell is formatted, for the ribbon. */
+export interface CellFormat {
+  fontName: string;
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  strike: boolean;
+  underline: NonNullable<FormatChange['underline']>;
+  fontColor: StoredColor;
+  fill: { pattern: string; color: StoredColor; patternColor: StoredColor };
+  horizontal: string;
+  vertical: string;
+  wrap: boolean;
+  shrink: boolean;
+  indent: number;
+  rotation: number;
+  readingOrder: number;
+  numberFormat: string;
+  numberFormatId: number;
+  merged: boolean;
+  border: {
+    top: StoredLine;
+    bottom: StoredLine;
+    left: StoredLine;
+    right: StoredLine;
+    diagonal: StoredLine;
+    diagonalUp: boolean;
+    diagonalDown: boolean;
+  };
+}
+
+/** The workbook's theme colours and its own number formats. */
+export interface FormatLists {
+  theme: string[];
+  codes: string[];
+}
+
+/** A search, as the dialog sets it up. See `FindQuery` in `crates/cgs-engine/src/find.rs`. */
+export interface FindQuery {
+  text: string;
+  sheet: number;
+  workbook?: boolean;
+  byColumns?: boolean;
+  formulas?: boolean;
+  matchCase?: boolean;
+  wholeCell?: boolean;
+  within?: CellArea;
+}
+
+export interface FoundCell {
+  sheet: number;
+  row: number;
+  col: number;
+  text: string;
+}
+
 /** What a command did. */
 export interface Applied {
+  /** How many cells a replace changed. */
+  replaced?: number;
   selection: (CellArea & { sheet: number }) | null;
   undo: string | null;
   redo: string | null;
@@ -227,6 +406,19 @@ export interface EngineApi {
   protectSource(source?: FileSource): Promise<boolean>;
   /** Runs a command. Rejects with a message people can read, changing nothing. */
   command(command: Command): Promise<Applied>;
+  /** Rows waiting to be measured. */
+  takeRowFits(): Promise<RowFit[]>;
+  /** Rows of a sheet from another program's file that wrap and hold no height. */
+  openingRowFits(sheet: number): Promise<RowFit[]>;
+  /** What to measure to fit columns. */
+  colFits(sheet: number, first: number, last: number): Promise<ColFit[]>;
+  mergeDiscards(sheet: number, areas: CellArea[], across: boolean): Promise<boolean>;
+  cellFormat(sheet: number, row: number, col: number): Promise<CellFormat | null>;
+  formatLists(): Promise<FormatLists | null>;
+  /** What a cell looks like in a format code, or null if the code can't be used. */
+  formatSample(sheet: number, row: number, col: number, code: string): Promise<string | null>;
+  findNext(query: FindQuery, row: number, col: number, back: boolean): Promise<FoundCell | null>;
+  findAll(query: FindQuery): Promise<FoundCell[]>;
   /** Tells the main thread what changed and whether calculation is running, from now on. */
   watchChanges(
     onChanges: (numbers: Uint32Array) => void,
@@ -295,4 +487,8 @@ export interface EngineTilePort {
 export interface TileWorkerApi {
   attachEngine(port: MessagePort): void;
   draw(request: TileRequest): Promise<TileImage>;
+  /** Each row's height, as [sheet, row, pixels]. */
+  fitRows(rows: RowFit[], palette: TilePalette): Promise<[number, number, number][]>;
+  /** Each column's width, as [column, pixels]. */
+  fitColumns(cells: ColFit[], palette: TilePalette): Promise<[number, number][]>;
 }

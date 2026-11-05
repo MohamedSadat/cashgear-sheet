@@ -45,22 +45,22 @@ export function encodeTile(options: {
   };
   const styles = options.styles ?? [{}];
   const extras = options.extras ?? [];
-  const sizes = 32 + (rowPx.length + colPx.length) * 2;
+  const sizes = 36 + (rowPx.length + colPx.length) * 2;
   const cellsAt = sizes + ((4 - (sizes % 4)) % 4);
   const stylesAt = cellsAt + count * 24;
-  const extrasAt = stylesAt + styles.length * 32;
+  const extrasAt = stylesAt + styles.length * 40;
   const fixed = extrasAt + extras.length * 40;
   const scratch = new DataView(new ArrayBuffer(fixed));
   scratch.setUint32(0, 0x42564743, true);
-  scratch.setUint16(4, 2, true);
+  scratch.setUint16(4, 3, true);
   scratch.setUint16(6, rowPx.length, true);
   scratch.setUint16(8, colPx.length, true);
   scratch.setUint16(10, flags, true);
   scratch.setUint32(20, styles.length, true);
   scratch.setUint32(24, extras.length, true);
-  [...rowPx, ...colPx].forEach((px, at) => scratch.setUint16(32 + at * 2, px, true));
+  [...rowPx, ...colPx].forEach((px, at) => scratch.setUint16(36 + at * 2, px, true));
   styles.forEach((style, index) => {
-    const at = stylesAt + index * 32;
+    const at = stylesAt + index * 40;
     const [offset, length] = pushText(style.font ?? '');
     scratch.setUint32(at, offset, true);
     scratch.setUint32(at + 4, length, true);

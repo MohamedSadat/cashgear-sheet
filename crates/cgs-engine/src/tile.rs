@@ -7,7 +7,8 @@ use cgs_calc::{CalcEngine, CalcValue, CellSink, Rect as CalcRect, SheetRect};
 use cgs_model::color::{ensure_contrast, MIN_CONTRAST};
 use cgs_model::{
     Book, ColorSpace, DarkColors, Fill, HAlign, LineStyle, Pattern, ReadingOrder, Rect, Rgb,
-    SheetInfo, StyleTable, Underline, VAlign, Xf, MAX_COLS, MAX_ROWS, TILE_COLS, TILE_ROWS,
+    RichRun, SheetInfo, StyleTable, Underline, VAlign, Xf, MAX_COLS, MAX_ROWS, TILE_COLS,
+    TILE_ROWS,
 };
 use cgs_numfmt::{FormatColor, NumFmt, Options, Value};
 
@@ -47,25 +48,13 @@ fn rgba(rgb: Rgb) -> u32 {
     (rgb << 8) | 0xFF
 }
 
-fn mix(top: Rgb, under: Rgb, share: u32) -> Rgb {
-    let channel = |shift: u32| {
-        let a = (top >> shift) & 0xFF;
-        let b = (under >> shift) & 0xFF;
-        ((a * share + b * (100 - share) + 50) / 100) << shift
-    };
-    channel(16) | channel(8) | channel(0)
-}
-
 fn fill_color(fill: &Fill, colors: &ColorSpace, screen: &Screen) -> Option<Rgb> {
     let dark = screen.dark_colors();
     match fill.pattern {
         Pattern::None => None,
         Pattern::Solid => Some(colors.resolve(fill.fg, dark).unwrap_or(screen.text)),
-        Pattern::Mixed(share) => {
-            let top = colors.resolve(fill.fg, dark).unwrap_or(screen.text);
-            let under = colors.resolve(fill.bg, dark).unwrap_or(screen.background);
-            Some(mix(top, under, u32::from(share)))
-        }
+        // What the pattern is drawn on, which is the sheet's own if the file names nothing.
+        Pattern::Hatch(_) => colors.resolve(fill.bg, dark),
     }
 }
 
@@ -285,6 +274,7 @@ struct Styles<'a> {
     table: &'a StyleTable,
     screen: Screen,
     by_key: HashMap<StyleKey, u16>,
+    by_name: HashMap<(String, StyleRecord), u16>,
 }
 
 impl Styles<'_> {
@@ -309,12 +299,72 @@ impl Styles<'_> {
         right: Option<(LineStyle, cgs_model::Color)>,
         bottom: Option<(LineStyle, cgs_model::Color)>,
     ) -> u16 {
+        let record = self.record(xf, flags, starts_rtl, has_text, right, bottom);
+        let key = StyleKey {
+            font: if has_text { xf.font } else { 0 },
+            record,
+        };
+        if let Some(&index) = self.by_key.get(&key) {
+            return index;
+        }
+        let name = if has_text {
+            self.table.font(xf).name.as_str()
+        } else {
+            ""
+        };
+        let index = writer.style(name, record);
+        self.by_key.insert(key, index);
+        index
+    }
+
+    /// The style of one run of a rich text: its cell's, with the run's font.
+    fn run_index(
+        &mut self,
+        writer: &mut TileWriter,
+        xf: &Xf,
+        flags: u16,
+        starts_rtl: bool,
+        font: &cgs_model::RunFont,
+    ) -> u16 {
+        let cell_font = self.table.font(xf);
+        let mut record = self.record(xf, flags, starts_rtl, true, None, None);
+        record.size = (f64::from(font.size.unwrap_or(cell_font.size)) * 100.0).round() as u16;
+        record.font_flags = (u8::from(font.bold) * FONT_BOLD)
+            | (u8::from(font.italic) * FONT_ITALIC)
+            | (u8::from(font.strike) * FONT_STRIKE);
+        record.underline = underline_code(font.underline.unwrap_or(Underline::None));
+        let name = font.name.as_deref().unwrap_or(cell_font.name.as_str());
+        if let Some(&index) = self.by_name.get(&(name.to_string(), record)) {
+            return index;
+        }
+        let index = writer.style(name, record);
+        self.by_name.insert((name.to_string(), record), index);
+        index
+    }
+
+    fn record(
+        &self,
+        xf: &Xf,
+        flags: u16,
+        starts_rtl: bool,
+        has_text: bool,
+        right: Option<(LineStyle, cgs_model::Color)>,
+        bottom: Option<(LineStyle, cgs_model::Color)>,
+    ) -> StyleRecord {
         let border = self.table.border(xf);
         let mut record = StyleRecord::default();
-        let mut font_id = 0;
+        let fill = self.table.fill(xf);
+        if let Pattern::Hatch(hatch) = fill.pattern {
+            record.pattern = hatch as u8;
+            let color = self
+                .table
+                .colors
+                .resolve(fill.fg, self.screen.dark_colors())
+                .unwrap_or(self.screen.text);
+            record.pattern_color = rgba(color);
+        }
         if has_text {
             let font = self.table.font(xf);
-            font_id = xf.font;
             record.size = (f64::from(font.size) * 100.0).round() as u16;
             record.font_flags = (u8::from(font.bold) * FONT_BOLD)
                 | (u8::from(font.italic) * FONT_ITALIC)
@@ -346,21 +396,7 @@ impl Styles<'_> {
             record.layout |= (u8::from(border.diagonal_up) * LAYOUT_DIAGONAL_UP)
                 | (u8::from(border.diagonal_down) * LAYOUT_DIAGONAL_DOWN);
         }
-        let key = StyleKey {
-            font: font_id,
-            record,
-        };
-        if let Some(&index) = self.by_key.get(&key) {
-            return index;
-        }
-        let name = if has_text {
-            self.table.font(xf).name.as_str()
-        } else {
-            ""
-        };
-        let index = writer.style(name, record);
-        self.by_key.insert(key, index);
-        index
+        record
     }
 }
 
@@ -538,6 +574,7 @@ pub fn build_tile(
         table,
         screen,
         by_key: HashMap::new(),
+        by_name: HashMap::new(),
     };
     let mut text = String::new();
 
@@ -550,13 +587,7 @@ pub fn build_tile(
             .entry(xf_index)
             .or_insert_with(|| fill_color(table.fill(xf), &table.colors, &screen))
     };
-    let text_color = |xf: &Xf, shown: Option<FormatColor>, fill: Option<Rgb>| -> u32 {
-        let base = match shown {
-            Some(color) => Some(format_color(color, &table.colors)),
-            None => table
-                .colors
-                .resolve(table.font(xf).color, screen.dark_colors()),
-        };
+    let shown_color = |base: Option<Rgb>, fill: Option<Rgb>| -> u32 {
         match (base, screen.dark, fill) {
             (None, false, _) | (None, true, None) => AUTOMATIC,
             (None, true, Some(fill)) => {
@@ -573,6 +604,66 @@ pub fn build_tile(
             (Some(color), true, fill) => {
                 rgba(ensure_contrast(color, fill.unwrap_or(screen.background)))
             }
+        }
+    };
+    let text_color = |xf: &Xf, shown: Option<FormatColor>, fill: Option<Rgb>| -> u32 {
+        let base = match shown {
+            Some(color) => Some(format_color(color, &table.colors)),
+            None => table
+                .colors
+                .resolve(table.font(xf).color, screen.dark_colors()),
+        };
+        shown_color(base, fill)
+    };
+    // The looks of a rich string, once its text is in the tile. A format that changes the text
+    // leaves positions meaning nothing, so then it shows in the cell's font.
+    let add_runs = |writer: &mut TileWriter,
+                    styles: &mut Styles<'_>,
+                    at: (u32, u32),
+                    value: &CalcValue,
+                    text: &str,
+                    offset: u32,
+                    xf: &Xf,
+                    flags: u16,
+                    starts_rtl: bool,
+                    fill: Option<Rgb>,
+                    base_color: u32| {
+        let Some(runs) = info
+            .rich
+            .get(&at)
+            .and_then(|index| input.book.rich_strings.get(index))
+        else {
+            return;
+        };
+        if !matches!(value, CalcValue::Text(stored) if stored == text) {
+            return;
+        }
+        for (index, run) in runs.iter().enumerate() {
+            let start = (run.start as usize).min(text.len());
+            let end = runs.get(index + 1).map_or(text.len(), |next: &RichRun| {
+                (next.start as usize).min(text.len())
+            });
+            if start >= end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+                continue;
+            }
+            let (style, color) = match &run.font {
+                Some(font) => {
+                    let stored = font
+                        .color
+                        .and_then(|color| table.colors.resolve(color, screen.dark_colors()));
+                    let color = if font.color.is_some() {
+                        shown_color(stored, fill)
+                    } else {
+                        base_color
+                    };
+                    (styles.run_index(writer, xf, flags, starts_rtl, font), color)
+                }
+                None => (
+                    styles.index(writer, xf, flags, starts_rtl, true, None, None),
+                    base_color,
+                ),
+            };
+            writer.run(offset, start as u32, (end - start) as u32, color, style);
         }
     };
 
@@ -599,6 +690,7 @@ pub fn build_tile(
             };
             let mut has_text = false;
             let mut text_starts_rtl = false;
+            let mut value_here = None;
             if let Some(area) = merge {
                 flags |= CELL_MERGED;
                 if col < area.right {
@@ -621,6 +713,7 @@ pub fn build_tile(
                 text_starts_rtl = shown.starts_rtl;
                 has_text = !text.is_empty() || flags & CELL_HASHES != 0;
                 record.color = text_color(xf, shown.color, fill);
+                value_here = Some(value);
             }
 
             // Lines belong to the cell above and to the left of them, so each is drawn by
@@ -656,7 +749,22 @@ pub fn build_tile(
                 right_line,
                 bottom_line,
             );
-            writer.cell(&text, record);
+            let offset = writer.cell(&text, record);
+            if let Some(value) = value_here {
+                add_runs(
+                    &mut writer,
+                    &mut styles,
+                    (row, col),
+                    value,
+                    &text,
+                    offset,
+                    xf,
+                    flags,
+                    text_starts_rtl,
+                    fill,
+                    record.color,
+                );
+            }
         }
     }
 
@@ -714,7 +822,7 @@ pub fn build_tile(
             None,
             None,
         );
-        writer.extra(
+        let offset = writer.extra(
             &text,
             ExtraRecord {
                 kind: EXTRA_MERGE,
@@ -727,6 +835,19 @@ pub fn build_tile(
                 flags: shown.flags,
                 fill_at: shown.fill_at,
             },
+        );
+        add_runs(
+            &mut writer,
+            &mut styles,
+            (area.top, area.left),
+            &value,
+            &text,
+            offset,
+            xf,
+            shown.flags,
+            shown.starts_rtl,
+            fill,
+            color,
         );
     }
 
@@ -768,7 +889,7 @@ pub fn build_tile(
         let fill = fill_of(cache, xf_index, xf);
         let color = text_color(xf, shown.color, fill);
         let style = styles.index(writer, xf, shown.flags, shown.starts_rtl, true, None, None);
-        writer.extra(
+        let offset = writer.extra(
             text,
             ExtraRecord {
                 kind: EXTRA_OVERFLOW,
@@ -781,6 +902,19 @@ pub fn build_tile(
                 flags: shown.flags,
                 fill_at: 0,
             },
+        );
+        add_runs(
+            writer,
+            styles,
+            (row, col),
+            value,
+            text,
+            offset,
+            xf,
+            shown.flags,
+            shown.starts_rtl,
+            fill,
+            color,
         );
     };
     for row in top..=bottom {
@@ -954,11 +1088,5 @@ mod tests {
             r#"IF(D1>100,"a b",'My Sheet'!A1-1)"#
         );
         assert_eq!(formula_for_people("A1:A3 B1:B3"), "A1:A3 B1:B3");
-    }
-
-    #[test]
-    fn a_pattern_fill_mixes_its_two_colours() {
-        assert_eq!(mix(0x000000, 0xFFFFFF, 50), 0x808080);
-        assert_eq!(mix(0xFF0000, 0x0000FF, 100), 0xFF0000);
     }
 }
