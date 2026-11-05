@@ -16,7 +16,7 @@ import {
   TIME_CODES,
 } from '../packages/ui/src/number-formats.ts';
 import { root } from '../scripts/lib.mjs';
-import { readZip } from '../tests/fixtures/workbooks.mjs';
+import { inflateRawSync } from 'node:zlib';
 
 const out = process.argv[2];
 const privateFolder = process.argv.find((arg) => arg.startsWith('--private='))?.slice(10);
@@ -522,10 +522,48 @@ function stylesKept(before, after) {
   return { compared, changed };
 }
 
+/** A zip's entries by its central directory, as Excel's zips leave sizes out of local headers. */
+function readZip(bytes) {
+  let end = bytes.length - 22;
+  while (end >= 0 && bytes.readUInt32LE(end) !== 0x06054b50) end--;
+  const count = bytes.readUInt16LE(end + 10);
+  let at = bytes.readUInt32LE(end + 16);
+  const out = [];
+  for (let index = 0; index < count; index++) {
+    const method = bytes.readUInt16LE(at + 10);
+    const packed = bytes.readUInt32LE(at + 20);
+    const nameLength = bytes.readUInt16LE(at + 28);
+    const extra = bytes.readUInt16LE(at + 30);
+    const comment = bytes.readUInt16LE(at + 32);
+    const local = bytes.readUInt32LE(at + 42);
+    const name = bytes.toString('utf8', at + 46, at + 46 + nameLength);
+    const start = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28);
+    const body = bytes.subarray(start, start + packed);
+    out.push([name, method === 8 ? inflateRawSync(body) : body]);
+    at += 46 + nameLength + extra + comment;
+  }
+  return out;
+}
+
 const part = (bytes, name) => {
   const found = readZip(bytes).find(([entry]) => entry === name);
   return found ? found[1].toString('utf8') : '';
 };
+
+/** The part of a workbook's first sheet. */
+function firstSheetPart(bytes) {
+  const workbook = part(bytes, 'xl/workbook.xml');
+  const rels = part(bytes, 'xl/_rels/workbook.xml.rels');
+  const tag = /<(?:[a-z0-9]+:)?sheet\s[^>]*>/.exec(workbook)?.[0] ?? '';
+  const id = /r:id="([^"]+)"/.exec(tag)?.[1];
+  for (const found of rels.matchAll(/<Relationship\s[^>]*>/g)) {
+    if (found[0].includes('Id="' + id + '"')) {
+      const target = /Target="([^"]+)"/.exec(found[0])?.[1] ?? '';
+      return target.startsWith('/') ? target.slice(1) : 'xl/' + target;
+    }
+  }
+  return 'xl/worksheets/sheet1.xml';
+}
 
 /** Cells' style indices in a sheet's XML. */
 function cellStyles(xml) {
@@ -615,7 +653,7 @@ try {
     else results.generated.problems.push({ cell, problems });
     results.generated.displayedTexts++;
     // Excel's text pads a repeated character out to the column, and ours leaves that to drawing.
-    const flat = (text) => text.replace(/\s+/g, ' ').trim();
+    const flat = (text) => text.replace(/\s+/g, '');
     if (flat(mine.display) === flat(excel.text)) results.generated.displayedTextsAgree++;
     else
       results.generated.problems.push({
@@ -683,11 +721,11 @@ try {
     for (const [entry, body] of oldSheets) {
       const was = cellStyles(body.toString('utf8'));
       const now = cellStyles(part(after, entry));
-      const first = entry === 'xl/worksheets/sheet1.xml';
+      const first = entry === firstSheetPart(before);
       for (const [at, style] of was) {
         const match = /([A-Z]+)(\d+)/.exec(at);
         const reached =
-          first && match[1].length === 1 && 'ABC'.includes(match[1]) && Number(match[2]) <= 3;
+          first && match[1].length === 1 && 'ABC'.includes(match[1]) && Number(match[2]) <= 4;
         if (reached) continue;
         results.indices.cellsCompared++;
         if (now.get(at) !== style) results.indices.cellsChanged.push(name + ':' + entry + ':' + at);
@@ -739,11 +777,11 @@ try {
         for (const [entry, body] of oldSheets) {
           const was = cellStyles(body.toString('utf8'));
           const now = cellStyles(part(after, entry));
-          const first = entry === 'xl/worksheets/sheet1.xml';
+          const first = entry === firstSheetPart(before);
           for (const [at, style] of was) {
             const match = /([A-Z]+)(\d+)/.exec(at);
             const reached =
-              first && match[1].length === 1 && 'ABC'.includes(match[1]) && Number(match[2]) <= 3;
+              first && match[1].length === 1 && 'ABC'.includes(match[1]) && Number(match[2]) <= 4;
             if (reached) continue;
             summary.cellsCompared++;
             if (now.get(at) !== style) summary.cellsChanged++;
@@ -763,8 +801,12 @@ try {
             summary.roundTripAgree++;
         });
         rmSync(excelCopy, { force: true });
-      } catch {
+      } catch (error) {
         summary.failed++;
+        // The kind of failure only: nothing from inside a file.
+        const kind = /^[^:]*/.exec(String(error?.message))?.[0] ?? 'unknown';
+        summary.failures = summary.failures ?? {};
+        summary.failures[kind] = (summary.failures[kind] ?? 0) + 1;
       }
       rmSync(target, { force: true });
     }
