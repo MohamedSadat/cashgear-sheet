@@ -557,6 +557,59 @@ fn next_sheet_name(book: &cgs_model::Book) -> String {
     }
 }
 
+impl Session {
+    /// A formula's new text for a cell that already has one. An array keeps its area, or Excel's
+    /// `{=...}` would become a single formula.
+    pub(crate) fn rewritten(&self, at: CellRef, text: String) -> EditInput {
+        match self.calc.cell_input(at) {
+            CellInput::Formula {
+                shape: shape @ (FormulaShape::Array(_) | FormulaShape::Dynamic(_)),
+                ..
+            } => EditInput::Array(text, shape),
+            _ => EditInput::Formula(text),
+        }
+    }
+}
+
+/// The areas a fill writes or empties: `to` beyond `from`, or `from` beyond `to` when dragged back.
+fn fill_written(from: Area, to: Area) -> impl Iterator<Item = Area> {
+    let (outer, inner) = if to.top <= from.top
+        && to.left <= from.left
+        && to.bottom >= from.bottom
+        && to.right >= from.right
+    {
+        (to, from)
+    } else {
+        (from, to)
+    };
+    let mut areas = Vec::new();
+    if outer.top < inner.top {
+        areas.push(Area {
+            bottom: inner.top - 1,
+            ..outer
+        });
+    }
+    if outer.bottom > inner.bottom {
+        areas.push(Area {
+            top: inner.bottom + 1,
+            ..outer
+        });
+    }
+    if outer.left < inner.left {
+        areas.push(Area {
+            right: inner.left - 1,
+            ..outer
+        });
+    }
+    if outer.right > inner.right {
+        areas.push(Area {
+            left: inner.right + 1,
+            ..outer
+        });
+    }
+    areas.into_iter()
+}
+
 /// `input` as a command list wants it.
 fn to_edit_input(input: &CellInput) -> Option<EditInput> {
     Some(match input {
@@ -1439,11 +1492,12 @@ impl Session {
                 }
             }
             if let std::borrow::Cow::Owned(changed) = next {
+                let input = self.rewritten(at, changed);
                 rewrites.push(EditCell {
                     sheet: at.sheet,
                     row: at.row,
                     col: at.col,
-                    input: Some(EditInput::Formula(changed)),
+                    input: Some(input),
                     style: None,
                 });
             }
@@ -2108,13 +2162,14 @@ impl Session {
             if let std::borrow::Cow::Owned(next) =
                 cgs_refs::follow_moved_cells(&text, home, &change)
             {
+                let input = self.rewritten(at, next);
                 edits.insert(
                     (at.sheet, at.row, at.col),
                     EditCell {
                         sheet: at.sheet,
                         row: at.row,
                         col: at.col,
-                        input: Some(EditInput::Formula(next)),
+                        input: Some(input),
                         style: None,
                     },
                 );
@@ -2205,6 +2260,10 @@ impl Session {
             } => {
                 let info = self.sheet_for_edit(sheet)?;
                 number_only(info)?;
+                // What a fill writes can't be part of an array, as in Excel. Reading from part of one is fine.
+                if fill_written(from, to).any(|area| self.cuts_an_array(sheet, area)) {
+                    return Err("You can't change part of an array.".to_string());
+                }
                 let edits = self.fill_edits(sheet, from, to, copy)?;
                 self.refuse_array_in_table(sheet, to, &edits)?;
                 self.perform("filling", Op::Cells(edits), Some((sheet, to)))

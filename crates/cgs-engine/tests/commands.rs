@@ -839,3 +839,82 @@ fn typed_no_settle(engine: &mut Engine, sheet: u32, row: u32, col: u32, text: &s
         })
         .unwrap();
 }
+
+/// Read off Excel through the edit fuzz: a `{=...}` array keeps its area when cells shift or move
+/// under what it reads, so a smaller result repeats a single row and fills the rest with `#N/A`.
+#[test]
+fn an_array_keeps_its_area_when_what_it_reads_shifts_or_moves() {
+    let start = || {
+        let mut engine = opened(cgs_xlsx::blank::blank_workbook().unwrap());
+        for row in 1..=5u32 {
+            let json = format!(
+                r#"{{"kind":"input","sheet":0,"row":{row},"col":1,"text":"{}"}}"#,
+                row * 10
+            );
+            engine.apply_json(&json).unwrap();
+        }
+        engine
+            .apply_json(r#"{"kind":"input","sheet":0,"row":1,"col":7,"text":"1"}"#)
+            .unwrap();
+        engine
+            .apply_json(r#"{"kind":"input","sheet":0,"row":2,"col":7,"text":"2"}"#)
+            .unwrap();
+        engine
+            .apply_json(r#"{"kind":"arrayInput","sheet":0,"area":{"top":2,"left":3,"bottom":4,"right":3},"text":"=A2:A4*2"}"#)
+            .unwrap();
+        settle(&mut engine);
+        engine
+    };
+    let column = |engine: &mut Engine| {
+        settle(engine);
+        (2..=4)
+            .map(|row| engine.display_text(0, row, 3))
+            .collect::<Vec<_>>()
+    };
+
+    // A2:A3 deleted, cells shifting up: one cell left, repeated down the area.
+    let mut engine = start();
+    engine
+        .apply_json(r#"{"kind":"shiftCells","sheet":0,"area":{"top":2,"left":1,"bottom":3,"right":1},"down":true,"delete":true}"#)
+        .unwrap();
+    assert_eq!(engine.formula_text(0, 2, 3).as_deref(), Some("A2:A2 * 2"));
+    assert_eq!(column(&mut engine), ["80", "80", "80"]);
+
+    // A1:A2 deleted: two cells left, and the third of the area has nothing.
+    let mut engine = start();
+    engine
+        .apply_json(r#"{"kind":"shiftCells","sheet":0,"area":{"top":1,"left":1,"bottom":2,"right":1},"down":true,"delete":true}"#)
+        .unwrap();
+    assert_eq!(column(&mut engine), ["60", "80", "#N/A"]);
+
+    // G1:G2 moved over A1:A2: the array stops reading what was covered.
+    let mut engine = start();
+    engine
+        .apply_json(r#"{"kind":"move","fromSheet":0,"from":{"top":1,"left":7,"bottom":2,"right":7},"sheet":0,"row":1,"col":1}"#)
+        .unwrap();
+    assert_eq!(engine.formula_text(0, 2, 3).as_deref(), Some("A3:A4 * 2"));
+    assert_eq!(column(&mut engine), ["60", "80", "#N/A"]);
+
+    // Filling down from part of it would write into the rest of it.
+    let mut engine = start();
+    let refused = engine.apply_json(
+        r#"{"kind":"fill","sheet":0,"from":{"top":2,"left":3,"bottom":3,"right":3},"to":{"top":2,"left":3,"bottom":6,"right":3}}"#,
+    );
+    assert_eq!(
+        refused.err().as_deref(),
+        Some("You can't change part of an array.")
+    );
+}
+
+/// Read off Excel: deleting the cell at a range's end, with cells shifting across, trims the range.
+#[test]
+fn deleting_a_ranges_last_cell_sideways_trims_it() {
+    let mut engine = opened(cgs_xlsx::blank::blank_workbook().unwrap());
+    engine
+        .apply_json(r#"{"kind":"input","sheet":0,"row":1,"col":5,"text":"=SUM(A2:A5)"}"#)
+        .unwrap();
+    engine
+        .apply_json(r#"{"kind":"shiftCells","sheet":0,"area":{"top":5,"left":1,"bottom":5,"right":1},"down":false,"delete":true}"#)
+        .unwrap();
+    assert_eq!(engine.formula_text(0, 1, 5).as_deref(), Some("SUM(A2:A4)"));
+}

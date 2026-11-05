@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use cgs_calc::{CalcEngine, CellRef};
+use cgs_calc::{CalcEngine, CellInput, CellRef, FormulaShape};
 use cgs_model::{Rect, SheetKind};
 use cgs_refs::{edit_rect, Axis, AxisEdit};
 
@@ -161,13 +161,14 @@ impl Session {
             let home = self.book.sheets[at.sheet as usize].name.as_str();
             if let std::borrow::Cow::Owned(next) = cgs_refs::edit_formula(&text, home, &name, &edit)
             {
+                let input = self.rewritten(at, next);
                 edits.insert(
                     (at.sheet, at.row, at.col),
                     EditCell {
                         sheet: at.sheet,
                         row: at.row,
                         col: at.col,
-                        input: Some(EditInput::Formula(next)),
+                        input: Some(input),
                         style: None,
                     },
                 );
@@ -232,10 +233,15 @@ impl Session {
                 .get(&(sheet, row, col))
                 .and_then(|edit| edit.input.clone())
                 .or_else(|| match self.calc.cell_input(source) {
-                    cgs_calc::CellInput::Formula { text, .. } => Some(EditInput::Formula(text)),
-                    cgs_calc::CellInput::Value(value) => Some(EditInput::Value(value)),
-                    cgs_calc::CellInput::Clear => Some(EditInput::Clear),
-                    cgs_calc::CellInput::Spill { .. } => None,
+                    CellInput::Formula {
+                        text,
+                        shape: FormulaShape::Normal,
+                        ..
+                    } => Some(EditInput::Formula(text)),
+                    CellInput::Formula { text, shape, .. } => Some(EditInput::Array(text, shape)),
+                    CellInput::Value(value) => Some(EditInput::Value(value)),
+                    CellInput::Clear => Some(EditInput::Clear),
+                    CellInput::Spill { .. } => None,
                 })
                 .unwrap_or(EditInput::Clear);
             taken.push((row, col, input, info.style_at(row, col)));
@@ -253,6 +259,7 @@ impl Session {
                 },
             );
         }
+        let mut filled: Vec<(u32, u32, cgs_calc::Rect)> = Vec::new();
         for (row, col, input, style) in taken {
             let gone = delete
                 && row >= area.top
@@ -266,6 +273,27 @@ impl Session {
                 (i64::from(row) + step_rows) as u32,
                 (i64::from(col) + step_cols) as u32,
             );
+            // An array that moves whole takes its area along, and what it fills isn't cleared.
+            let input = match input {
+                EditInput::Array(text, shape) => {
+                    let moved = |rect: cgs_calc::Rect| cgs_calc::Rect {
+                        top: (i64::from(rect.top) + step_rows) as u32,
+                        left: (i64::from(rect.left) + step_cols) as u32,
+                        bottom: (i64::from(rect.bottom) + step_rows) as u32,
+                        right: (i64::from(rect.right) + step_cols) as u32,
+                    };
+                    let shape = match shape {
+                        FormulaShape::Array(rect) => FormulaShape::Array(moved(rect)),
+                        FormulaShape::Dynamic(rect) => FormulaShape::Dynamic(moved(rect)),
+                        FormulaShape::Normal => FormulaShape::Normal,
+                    };
+                    if let FormulaShape::Array(rect) | FormulaShape::Dynamic(rect) = shape {
+                        filled.push((new_row, new_col, rect));
+                    }
+                    EditInput::Array(text, shape)
+                }
+                input => input,
+            };
             edits.insert(
                 (sheet, new_row, new_col),
                 EditCell {
@@ -276,6 +304,14 @@ impl Session {
                     style: Some(style),
                 },
             );
+        }
+        for (row, col, rect) in filled {
+            edits.retain(|&(at_sheet, r, c), edit| {
+                at_sheet != sheet
+                    || (r, c) == (row, col)
+                    || !rect.contains(r, c)
+                    || !matches!(edit.input, Some(EditInput::Clear))
+            });
         }
         let mut list = vec![
             Op::ShiftLog { sheet, edit },
