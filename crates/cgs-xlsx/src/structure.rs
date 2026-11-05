@@ -34,6 +34,15 @@ pub enum BookOp {
     Insert {
         sheet: u32,
     },
+    /// Tables nothing is left of.
+    DeleteTables {
+        names: Vec<String>,
+    },
+    /// Columns gone from a table.
+    DeleteTableColumns {
+        table: String,
+        columns: Vec<String>,
+    },
 }
 
 /// The list as formula text sees it.
@@ -49,6 +58,13 @@ pub fn book_edits(ops: &[BookOp]) -> Vec<BookEdit> {
                 new: new.clone(),
             }),
             BookOp::Delete { name, .. } => Some(BookEdit::DeleteSheet { name: name.clone() }),
+            BookOp::DeleteTables { names } => Some(BookEdit::DeleteTables {
+                names: names.clone(),
+            }),
+            BookOp::DeleteTableColumns { table, columns } => Some(BookEdit::DeleteTableColumns {
+                table: table.clone(),
+                columns: columns.clone(),
+            }),
             BookOp::Insert { .. } => None,
         })
         .collect()
@@ -73,6 +89,8 @@ pub struct SheetEdits<'a> {
     pub book: &'a [BookEdit],
     /// The sheet's name in the file.
     pub home: &'a str,
+    /// Relationships of table parts that have gone from this sheet.
+    pub gone_tables: &'a [String],
 }
 
 impl SheetEdits<'_> {
@@ -401,9 +419,12 @@ fn visit(element: &mut Element, edits: &SheetEdits<'_>) -> Keep {
                 element.set_attr("sqref", Some(&next));
             }
         }
-        b"brk" => {
-            // `id` is the row or column the break comes after.
-            return Keep::Yes;
+        b"tablePart" => {
+            let gone = edits
+                .gone_tables
+                .iter()
+                .any(|id| sheet_rel_id(&element.tag).as_deref() == Some(id.as_str()));
+            return if gone { Keep::No } else { Keep::Yes };
         }
         b"formula"
         | b"formula1"
@@ -499,6 +520,15 @@ fn visit_children(element: &mut Element, edits: &SheetEdits<'_>) -> Keep {
     }
     set_count(element, before);
     Keep::Yes
+}
+
+/// A tag's relationship id: `r:id`, whatever its prefix.
+fn sheet_rel_id(tag: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(tag);
+    let found = text.find(":id=\"")?;
+    let rest = &text[found + 5..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 /// An autofilter's columns are counted from its left edge.
@@ -1214,7 +1244,9 @@ pub fn rewrite_pivot_cache(xml: &[u8], book: &[BookEdit]) -> io::Result<Option<V
                                     name = new.clone();
                                 }
                             }
-                            BookEdit::DeleteSheet { .. } => {}
+                            BookEdit::DeleteSheet { .. }
+                            | BookEdit::DeleteTables { .. }
+                            | BookEdit::DeleteTableColumns { .. } => {}
                         }
                     }
                     if name != sheet {
@@ -1295,6 +1327,7 @@ mod tests {
             own: &own,
             book: &list,
             home: "S",
+            gone_tables: &[],
         };
         let mut masters = Masters::default();
         let mut out = Vec::new();
@@ -1459,6 +1492,7 @@ mod tests {
             own: &[],
             book: &list,
             home: "S",
+            gone_tables: &[],
         };
         let mut out = Vec::new();
         let mut masters = Masters::default();
@@ -1485,6 +1519,7 @@ mod tests {
             own: &own,
             book: &list,
             home: "S",
+            gone_tables: &[],
         };
         let mut masters = Masters::default();
         let mut out = Vec::new();
@@ -1506,6 +1541,7 @@ mod tests {
             own: &own,
             book: &[],
             home: "S",
+            gone_tables: &[],
         };
         let out = rewrite_table(xml, &edits, &mut |_| "Column1".to_string())
             .unwrap()
@@ -1525,6 +1561,7 @@ mod tests {
             own: &own,
             book: &[],
             home: "S",
+            gone_tables: &[],
         };
         let out = rewrite_comments(xml, &edits).unwrap().unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -1542,6 +1579,7 @@ mod tests {
             own: &own,
             book: &[],
             home: "S",
+            gone_tables: &[],
         };
         let out = rewrite_vml(xml, &edits).unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -1552,6 +1590,7 @@ mod tests {
             own: &inserted,
             book: &[],
             home: "S",
+            gone_tables: &[],
         };
         let out = rewrite_vml(xml, &edits).unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -1570,6 +1609,7 @@ mod tests {
             own: &own,
             book: &[],
             home: "S",
+            gone_tables: &[],
         };
         let out = rewrite_drawing(xml, &edits).unwrap().unwrap();
         let text = String::from_utf8(out).unwrap();
@@ -1581,6 +1621,7 @@ mod tests {
             own: &own,
             book: &[],
             home: "S",
+            gone_tables: &[],
         };
         let out = rewrite_drawing(xml, &edits).unwrap().unwrap();
         let text = String::from_utf8(out).unwrap();

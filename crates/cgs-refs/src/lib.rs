@@ -7,9 +7,10 @@ pub mod rewrite;
 
 pub use file_text::{formula_for_file, formula_for_people};
 pub use rewrite::{
-    apply_edits, delete_sheet_in_formula, edit_formula, edit_rect, edit_sqref, follow_moved_cells,
-    moved_formula, quote_sheet, reads_sheet, rename_in_formula, sheet_key, touches_band, Axis,
-    AxisEdit, BookEdit, MovedCells, Span,
+    apply_edits, delete_sheet_in_formula, delete_table_columns, delete_tables_in_formula,
+    edit_formula, edit_rect, edit_sqref, follow_moved_cells, moved_formula, quote_sheet,
+    reads_sheet, reads_tables, rename_in_formula, rename_table_column, sheet_key, touches_band,
+    Axis, AxisEdit, BookEdit, MovedCells, Span,
 };
 
 pub const MAX_ROW: i64 = 1_048_576;

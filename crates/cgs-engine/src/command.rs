@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use cgs_calc::{
     edits_bytes, CalcEngine, CalcValue, CellEdit, CellInput, CellRef, FormulaShape, NameInfo,
-    StructuralOp,
+    StructuralOp, TableInfo,
 };
 use cgs_model::{DefinedName, Rect, SheetInfo, SheetKind, SheetShape, SheetState, Table};
 use cgs_refs::{sheet_key, Axis, AxisEdit};
@@ -221,6 +221,8 @@ pub(crate) enum Op {
         tables: Vec<Table>,
     },
     Names(Vec<NameInfo>),
+    /// The engine's tables as they were.
+    Tables(Vec<TableInfo>),
     Merges {
         sheet: u32,
         merges: Vec<Rect>,
@@ -238,6 +240,7 @@ pub(crate) enum Op {
         cells: Vec<CellEdit>,
         readers: Vec<CellEdit>,
         names: Vec<NameInfo>,
+        tables: Vec<TableInfo>,
     },
     Rename {
         sheet: u32,
@@ -258,14 +261,16 @@ impl Op {
                 ..
             } => shape.bytes() + names.len() * 128 + tables.len() * 256,
             Self::Names(names) => names.len() * 128,
+            Self::Tables(tables) => tables.len() * 256,
             Self::Merges { merges, .. } => merges.len() * 16,
             Self::AddSheet { name, .. } => 64 + name.len(),
             Self::RestoreSheet {
                 cells,
                 readers,
                 names,
+                tables,
                 ..
-            } => edits_bytes(cells) + edits_bytes(readers) + names.len() * 128,
+            } => edits_bytes(cells) + edits_bytes(readers) + (names.len() + tables.len()) * 128,
             Self::Many(list) => list.iter().map(Self::bytes).sum(),
         }
     }
@@ -279,6 +284,10 @@ struct Step {
     before: u64,
     after: u64,
     selection: Option<(u32, Area)>,
+    /// How long the list of shape changes was before this step, and against which file. Undoing
+    /// takes this step's changes back off the list, so that the file's own rows and sheets stand.
+    log_before: usize,
+    log_file: u64,
 }
 
 /// Undo and redo, and which state of the workbook is the file's.
@@ -292,6 +301,8 @@ pub struct History {
     next_state: u64,
     /// The last change couldn't be kept, so there is no going back past it.
     lost: bool,
+    /// Which file the list of shape changes is against, which changes with each save.
+    file: u64,
 }
 
 impl History {
@@ -306,9 +317,17 @@ impl History {
 
     pub(crate) fn mark_clean(&mut self) {
         self.clean = self.state;
+        self.file += 1;
     }
 
-    fn push(&mut self, label: &'static str, op: Op, before: u64, selection: Option<(u32, Area)>) {
+    fn push(
+        &mut self,
+        label: &'static str,
+        op: Op,
+        before: u64,
+        selection: Option<(u32, Area)>,
+        log_before: usize,
+    ) {
         let bytes = op.bytes();
         for step in self.redo.drain(..) {
             self.bytes -= step.bytes;
@@ -321,6 +340,8 @@ impl History {
             before,
             after: self.state,
             selection,
+            log_before,
+            log_file: self.file,
         });
         self.lost = false;
         while self.undo.len() > UNDO_STEPS || self.bytes > UNDO_BYTES {
@@ -716,6 +737,20 @@ impl Session {
         if back.is_none() && self.array_blocks(sheet, area, &edit) {
             return Err("You can't change part of an array.".to_string());
         }
+        // A table can't lose its headings and keep its data.
+        if back.is_none() && edit.delete && edit.axis == Axis::Row {
+            let band = (edit.at, edit.at + edit.count - 1);
+            let splits = self.calc.tables().iter().any(|table| {
+                table.sheet == sheet
+                    && table.header_row
+                    && table.range.top >= band.0
+                    && table.range.top <= band.1
+                    && table.range.bottom > band.1
+            });
+            if splits {
+                return Err("This would delete a table's headings and not its data.".to_string());
+            }
+        }
         let shape = info.shape();
         let names_before = self.book.names.clone();
         let tables_before = self.book.tables.clone();
@@ -751,6 +786,32 @@ impl Session {
             .structural(&StructuralOp::new(sheet, edit))
             .map_err(|error| error.0)?;
         self.move_model(sheet, &edit);
+        if !undo.gone_tables.is_empty() {
+            self.edits.ops.push(BookOp::DeleteTables {
+                names: undo.gone_tables.clone(),
+            });
+        }
+        for (table, columns) in &undo.gone_columns {
+            self.edits.ops.push(BookOp::DeleteTableColumns {
+                table: table.clone(),
+                columns: columns.clone(),
+            });
+        }
+        // A column an insert puts inside a table gets a heading.
+        let heading_edits: Vec<EditCell> = undo
+            .new_headers
+            .iter()
+            .map(|(at, name)| EditCell {
+                sheet: at.sheet,
+                row: at.row,
+                col: at.col,
+                input: Some(EditInput::Value(CalcValue::Text(name.clone()))),
+                style: None,
+            })
+            .collect();
+        if !heading_edits.is_empty() {
+            self.apply_cells(heading_edits)?;
+        }
         match back {
             Some((shape, names, tables)) => {
                 self.book.sheets[sheet as usize].restore_shape(shape);
@@ -798,6 +859,7 @@ impl Session {
         if !undo.names.is_empty() {
             list.push(Op::Names(undo.names));
         }
+        list.push(Op::Tables(undo.tables));
         Ok(Op::Many(list))
     }
 
@@ -844,6 +906,21 @@ impl Session {
                 // Their positions come back through the inverse of the edit that moved them.
                 Ok(Op::Names(names))
             }
+            Op::Tables(tables) => {
+                let before = self.calc.tables().to_vec();
+                self.calc.restore_tables(&tables).map_err(|error| error.0)?;
+                for table in &tables {
+                    if let Some(entry) = self
+                        .book
+                        .tables
+                        .iter_mut()
+                        .find(|entry| entry.name == table.name)
+                    {
+                        entry.columns = table.columns.clone();
+                    }
+                }
+                Ok(Op::Tables(before))
+            }
             Op::Merges { sheet, merges } => {
                 let info = &mut self.book.sheets[sheet as usize];
                 let before = std::mem::replace(&mut info.merges, merges);
@@ -887,6 +964,11 @@ impl Session {
                 self.book.sheets[sheet as usize].deleted = true;
                 self.edits.cells.remove(&sheet);
                 self.edits.ops.push(BookOp::Delete { sheet, name });
+                if !undo.gone_tables.is_empty() {
+                    self.edits.ops.push(BookOp::DeleteTables {
+                        names: undo.gone_tables.clone(),
+                    });
+                }
                 for reader in &undo.readers {
                     let patches = self.edits.cells.entry(reader.at.sheet).or_default();
                     patches.insert(
@@ -910,6 +992,7 @@ impl Session {
                     cells: undo.cells,
                     readers: undo.readers,
                     names: undo.names,
+                    tables: undo.tables,
                 })
             }
             Op::RestoreSheet {
@@ -918,6 +1001,7 @@ impl Session {
                 cells,
                 readers,
                 names,
+                tables,
             } => {
                 self.calc.restore_sheet(sheet).map_err(|error| error.0)?;
                 self.book.sheets[sheet as usize].deleted = false;
@@ -943,6 +1027,7 @@ impl Session {
                 self.apply_cells(to_edits(cells))?;
                 self.apply_cells(to_edits(readers))?;
                 self.calc.restore_names(&names).map_err(|error| error.0)?;
+                self.calc.restore_tables(&tables).map_err(|error| error.0)?;
                 Ok(Op::RemoveSheet { sheet })
             }
             Op::Rename { sheet, name } => {
@@ -988,6 +1073,132 @@ impl Session {
         self.typed_edit(sheet, at.0, at.1, typed, at)
     }
 
+    /// The table a cell is a heading of, with its column's place.
+    fn heading_at(&self, sheet: u32, row: u32, col: u32) -> Option<(usize, usize)> {
+        self.calc
+            .tables()
+            .iter()
+            .enumerate()
+            .find_map(|(index, table)| {
+                (table.sheet == sheet
+                    && table.header_row
+                    && table.range.top == row
+                    && col >= table.range.left
+                    && col <= table.range.right)
+                    .then(|| (index, (col - table.range.left) as usize))
+            })
+    }
+
+    /// A table's headings are always text, and always different: this makes edits to them so, and
+    /// carries a new name into the table and the formulas that use it.
+    fn with_table_headings(&mut self, op: Op) -> Result<Op, String> {
+        if self.calc.tables().is_empty() {
+            return Ok(op);
+        }
+        let mut list = match op {
+            Op::Many(list) => list,
+            other => vec![other],
+        };
+        let mut tables = self.calc.tables().to_vec();
+        let mut renames: Vec<(String, String, String)> = Vec::new();
+        for item in &mut list {
+            let Op::Cells(edits) = item else {
+                continue;
+            };
+            for edit in edits.iter_mut() {
+                let Some((index, column)) = self.heading_at(edit.sheet, edit.row, edit.col) else {
+                    continue;
+                };
+                let Some(input) = &edit.input else {
+                    continue;
+                };
+                let wanted = match input {
+                    EditInput::Clear | EditInput::Value(CalcValue::Empty) => String::new(),
+                    EditInput::Value(CalcValue::Text(text)) => text.clone(),
+                    EditInput::Value(CalcValue::Number(number)) => {
+                        cgs_xlsx::patch_sheet::number_text(*number)
+                    }
+                    EditInput::Value(CalcValue::Bool(flag)) => {
+                        if *flag { "TRUE" } else { "FALSE" }.to_string()
+                    }
+                    EditInput::Value(CalcValue::Error(text)) => text.clone(),
+                    // A heading can't be a formula, and Excel leaves what it would be as 0.
+                    EditInput::Formula(_) | EditInput::Array(..) => "0".to_string(),
+                };
+                let table = &mut tables[index];
+                let clash = |name: &str, columns: &[String]| {
+                    columns
+                        .iter()
+                        .enumerate()
+                        .any(|(at, other)| at != column && other.eq_ignore_ascii_case(name))
+                };
+                let name = if wanted.is_empty() {
+                    let mut number = 1;
+                    loop {
+                        let name = format!("Column{number}");
+                        if !clash(&name, &table.columns) {
+                            break name;
+                        }
+                        number += 1;
+                    }
+                } else if clash(&wanted, &table.columns) {
+                    let mut number = 2;
+                    loop {
+                        let name = format!("{wanted}{number}");
+                        if !clash(&name, &table.columns) {
+                            break name;
+                        }
+                        number += 1;
+                    }
+                } else {
+                    wanted
+                };
+                edit.input = Some(EditInput::Value(CalcValue::Text(name.clone())));
+                let old = std::mem::replace(&mut table.columns[column], name.clone());
+                if !old.eq_ignore_ascii_case(&name) || old != name {
+                    renames.push((table.name.clone(), old, name));
+                }
+            }
+        }
+        if renames.is_empty() {
+            return Ok(Op::Many(list));
+        }
+        // Formulas follow the new names.
+        let mut rewrites = Vec::new();
+        let formulas = self.calc.all_formulas().map_err(|error| error.0)?;
+        for (at, text) in formulas {
+            let mut next = std::borrow::Cow::Borrowed(text.as_str());
+            for (table_name, old, new) in &renames {
+                let inside = tables.iter().any(|table| {
+                    table.name == *table_name
+                        && table.sheet == at.sheet
+                        && table.range.contains(at.row, at.col)
+                });
+                if let std::borrow::Cow::Owned(changed) =
+                    cgs_refs::rename_table_column(&next, table_name, old, new, inside)
+                {
+                    next = std::borrow::Cow::Owned(changed);
+                }
+            }
+            if let std::borrow::Cow::Owned(changed) = next {
+                rewrites.push(EditCell {
+                    sheet: at.sheet,
+                    row: at.row,
+                    col: at.col,
+                    input: Some(EditInput::Formula(changed)),
+                    style: None,
+                });
+            }
+        }
+        // The table first, so that the new text finds its column.
+        let mut all = vec![Op::Tables(tables)];
+        all.extend(list);
+        if !rewrites.is_empty() {
+            all.push(Op::Cells(rewrites));
+        }
+        Ok(Op::Many(all))
+    }
+
     /// Applies a change and remembers how to undo it.
     fn perform(
         &mut self,
@@ -996,10 +1207,13 @@ impl Session {
         selection: Option<(u32, Area)>,
     ) -> Result<Applied, String> {
         self.absorb_results();
+        let op = self.with_table_headings(op)?;
         let before = self.history.state;
+        let log_before = self.edits.ops.len();
         let inverse = self.apply_op(op)?;
         self.history.touch();
-        self.history.push(label, inverse, before, selection);
+        self.history
+            .push(label, inverse, before, selection, log_before);
         Ok(Applied { selection })
     }
 
@@ -1016,6 +1230,11 @@ impl Session {
         self.history.bytes += step.bytes;
         self.history.state = step.before;
         let selection = step.selection;
+        // Against the same file, this step's changes come off the list: what they did to the file
+        // is undone by not doing it. Against a newer file, they stay as changes to that file.
+        if step.log_file == self.history.file {
+            self.edits.ops.truncate(step.log_before);
+        }
         self.history.redo.push(step);
         self.arrive_at_state();
         Ok(Applied { selection })
@@ -1028,6 +1247,8 @@ impl Session {
         };
         self.history.bytes -= step.bytes;
         let op = std::mem::replace(&mut step.op, Op::Many(Vec::new()));
+        step.log_before = self.edits.ops.len();
+        step.log_file = self.history.file;
         let inverse = self.apply_op(op)?;
         step.bytes = inverse.bytes();
         step.op = inverse;
@@ -1121,8 +1342,16 @@ impl Session {
         areas: &[Area],
         locale: &cgs_numfmt::Locale,
     ) -> Result<Applied, String> {
-        let typed = parse_input(text, locale, self.book.date1904, self.today);
-        let mut typed = typed;
+        let mut typed = parse_input(text, locale, self.book.date1904, self.today);
+        // A table's heading keeps what was typed as it was typed.
+        if areas.is_empty()
+            && self.heading_at(sheet, row, col).is_some()
+            && matches!(typed, Typed::Value(_) | Typed::Formatted(..))
+        {
+            typed = Typed::Value(CalcValue::Text(
+                text.strip_prefix('\'').unwrap_or(text).to_string(),
+            ));
+        }
         if let Typed::Formula(formula) = &typed {
             let fixed = self.calc.check_formula(formula).map_err(|error| error.0)?;
             typed = Typed::Formula(fixed);
@@ -1233,6 +1462,28 @@ impl Session {
         self.perform("array formula", Op::Cells(vec![edit]), Some((sheet, area)))
     }
 
+    /// The `{=...}` array a cell belongs to: its anchor's formula and its area.
+    fn legacy_array_at(&self, sheet: u32, row: u32, col: u32) -> Option<(String, cgs_calc::Rect)> {
+        let area = self.calc.spill_areas().into_iter().find(|area| {
+            area.sheet == sheet
+                && area.rect.contains(row, col)
+                && matches!(
+                    self.calc.formula_shape(CellRef {
+                        sheet,
+                        row: area.rect.top,
+                        col: area.rect.left,
+                    }),
+                    FormulaShape::Array(_)
+                )
+        })?;
+        let text = self.calc.formula_text(CellRef {
+            sheet,
+            row: area.rect.top,
+            col: area.rect.left,
+        })?;
+        Some((text, area.rect))
+    }
+
     /// What copying one cell to another place would put there.
     pub(crate) fn copied_input(
         &self,
@@ -1244,6 +1495,25 @@ impl Session {
         mode: PasteMode,
     ) -> Option<EditInput> {
         let at = CellRef { sheet, row, col };
+        // A cell of a `{=...}` array copies as an array of its own, as in Excel. Only the whole
+        // array can stay one, which `paste_command` sees to.
+        if mode != PasteMode::Values {
+            if let Some((text, _)) = self.legacy_array_at(sheet, row, col) {
+                let (new_row, new_col) = (
+                    (i64::from(row) + rows) as u32,
+                    (i64::from(col) + cols) as u32,
+                );
+                return Some(EditInput::Array(
+                    cgs_refs::moved_formula(&text, rows, cols),
+                    FormulaShape::Array(cgs_calc::Rect {
+                        top: new_row,
+                        left: new_col,
+                        bottom: new_row,
+                        right: new_col,
+                    }),
+                ));
+            }
+        }
         let input = self.calc.cell_input(at);
         Some(match input {
             CellInput::Formula { text, cached, .. } => match mode {
@@ -1256,6 +1526,23 @@ impl Session {
             CellInput::Value(value) => EditInput::Value(value),
             CellInput::Clear => EditInput::Clear,
             CellInput::Spill { .. } => return None,
+        })
+    }
+
+    /// Whether a copied cell belongs to an array the copied area holds all of.
+    fn whole_array_copy(&self, sheet: u32, from: Area, row: u32, col: u32) -> Option<WholeArray> {
+        let (text, rect) = self.legacy_array_at(sheet, row, col)?;
+        let whole = from.top <= rect.top
+            && from.left <= rect.left
+            && from.bottom >= rect.bottom
+            && from.right >= rect.right;
+        if !whole {
+            return None;
+        }
+        Some(if (rect.top, rect.left) == (row, col) {
+            WholeArray::Anchor(text, rect)
+        } else {
+            WholeArray::Inside
         })
     }
 
@@ -1317,7 +1604,26 @@ impl Session {
                         let new_col = (i64::from(col) + cols) as u32;
                         let input = match mode {
                             PasteMode::Formats => None,
-                            _ => self.copied_input(from_sheet, row, col, rows, cols, mode),
+                            // A table's heading takes what a formula comes to.
+                            _ if self.heading_at(sheet, new_row, new_col).is_some() => self
+                                .copied_input(from_sheet, row, col, rows, cols, PasteMode::Values),
+                            _ => match self.whole_array_copy(from_sheet, from, row, col) {
+                                Some(WholeArray::Anchor(text, rect))
+                                    if mode != PasteMode::Values =>
+                                {
+                                    Some(EditInput::Array(
+                                        cgs_refs::moved_formula(&text, rows, cols),
+                                        FormulaShape::Array(cgs_calc::Rect {
+                                            top: new_row,
+                                            left: new_col,
+                                            bottom: new_row + (rect.bottom - rect.top),
+                                            right: new_col + (rect.right - rect.left),
+                                        }),
+                                    ))
+                                }
+                                Some(WholeArray::Inside) if mode != PasteMode::Values => None,
+                                _ => self.copied_input(from_sheet, row, col, rows, cols, mode),
+                            },
                         };
                         let style = match mode {
                             PasteMode::All | PasteMode::Formats => {
@@ -1616,6 +1922,12 @@ impl Session {
             .get(sheet as usize)
             .ok_or_else(|| format!("There is no sheet {sheet}."))
     }
+}
+
+/// What a copied cell is to an array that is copied whole.
+enum WholeArray {
+    Anchor(String, cgs_calc::Rect),
+    Inside,
 }
 
 /// Undo and redo as the menu shows them.

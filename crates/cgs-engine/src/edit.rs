@@ -161,6 +161,24 @@ impl Session {
         }
         let mut edits = self.edits.clone();
         let areas = self.calc.spill_areas();
+        let spaced_columns: Vec<(String, String, String)> = self
+            .calc
+            .tables()
+            .iter()
+            .flat_map(|table| {
+                table
+                    .columns
+                    .iter()
+                    .filter(|column| column.trim() != column.as_str())
+                    .map(|column| {
+                        (
+                            table.name.clone(),
+                            column.trim().to_string(),
+                            column.clone(),
+                        )
+                    })
+            })
+            .collect();
         for (&sheet, patches) in &mut edits.cells {
             let here: Vec<Rect> = areas
                 .iter()
@@ -191,10 +209,18 @@ impl Session {
                                     },
                                 };
                                 let in_array = *array != ArrayKind::None;
-                                *text = cgs_refs::formula_for_file(
-                                    &cgs_refs::formula_for_people(&formula),
-                                    in_array,
-                                );
+                                let mut plain = cgs_refs::formula_for_people(&formula);
+                                // The engine trims spaces from a column's name, and Excel doesn't.
+                                for (table, trimmed, exact) in &spaced_columns {
+                                    if let std::borrow::Cow::Owned(next) =
+                                        cgs_refs::rename_table_column(
+                                            &plain, table, trimmed, exact, false,
+                                        )
+                                    {
+                                        plain = next;
+                                    }
+                                }
+                                *text = cgs_refs::formula_for_file(&plain, in_array);
                                 *value = value_at(self, sheet, row, col);
                             }
                             // It was overwritten by something a formula doesn't own, such as a spill.

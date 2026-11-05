@@ -140,6 +140,15 @@ pub enum BookEdit {
     DeleteSheet {
         name: String,
     },
+    /// Tables that no longer exist.
+    DeleteTables {
+        names: Vec<String>,
+    },
+    /// Columns gone from a table that stays.
+    DeleteTableColumns {
+        table: String,
+        columns: Vec<String>,
+    },
 }
 
 /// How sheet names compare: Excel ignores case, for all of Unicode.
@@ -647,6 +656,51 @@ pub fn delete_sheet_in_formula<'a>(text: &'a str, name: &str) -> Cow<'a, str> {
     })
 }
 
+/// `text` with references to tables that have gone turned to `#REF!`.
+pub fn delete_tables_in_formula<'a>(text: &'a str, names: &[String]) -> Cow<'a, str> {
+    if names.is_empty() || !text.contains('[') {
+        return Cow::Borrowed(text);
+    }
+    let bytes = text.as_bytes();
+    let mut out: Option<String> = None;
+    let mut copied = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' | b'\'' => at = skip_quoted(bytes, at, bytes[at]),
+            b'[' => at = skip_brackets(bytes, at),
+            byte if is_word(byte) => {
+                let start = at;
+                at = word_end(bytes, at);
+                if bytes.get(at) == Some(&b'[') {
+                    let end = skip_brackets(bytes, at);
+                    let word = &text[start..at];
+                    if names.iter().any(|name| same_sheet(name, word)) {
+                        let buffer = out.get_or_insert_with(|| String::with_capacity(text.len()));
+                        buffer.push_str(&text[copied..start]);
+                        buffer.push_str("#REF!");
+                        copied = end;
+                    }
+                    at = end;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    match out {
+        Some(mut buffer) => {
+            buffer.push_str(&text[copied..]);
+            Cow::Owned(buffer)
+        }
+        None => Cow::Borrowed(text),
+    }
+}
+
+/// Whether `text` uses any of these tables.
+pub fn reads_tables(text: &str, names: &[String]) -> bool {
+    matches!(delete_tables_in_formula(text, names), Cow::Owned(_))
+}
+
 /// `text`, read from a cell on sheet `home`, through a list of edits in order. `home` follows
 /// renames, as the list names sheets as they were called at the time.
 pub fn apply_edits<'a>(text: &'a str, home: &str, edits: &[BookEdit]) -> Cow<'a, str> {
@@ -672,6 +726,16 @@ pub fn apply_edits<'a>(text: &'a str, home: &str, edits: &[BookEdit]) -> Cow<'a,
                 Cow::Owned(owned) => Some(owned),
                 Cow::Borrowed(_) => None,
             },
+            BookEdit::DeleteTables { names } => match delete_tables_in_formula(&current, names) {
+                Cow::Owned(owned) => Some(owned),
+                Cow::Borrowed(_) => None,
+            },
+            BookEdit::DeleteTableColumns { table, columns } => {
+                match delete_table_columns(&current, table, columns) {
+                    Cow::Owned(owned) => Some(owned),
+                    Cow::Borrowed(_) => None,
+                }
+            }
         };
         if let Some(next) = next {
             current = Cow::Owned(next);
@@ -812,6 +876,108 @@ pub fn follow_moved_cells<'a>(text: &'a str, home: &str, moved: &MovedCells<'_>)
         let held = from_here
             && inside(moved.area, corners.0, corners.1)
             && inside(moved.area, corners.2, corners.3);
+        // A block that takes one whole edge of a range moves that edge, and a block landing on one
+        // takes it away, on the same sheet.
+        if !held && from_here && same_place {
+            if let Target::Cells {
+                abs,
+                top: range_top,
+                left: range_left,
+                bottom: range_bottom,
+                right: range_right,
+            } = found.target
+            {
+                let (new_top, new_left, new_bottom, new_right) = new_area;
+                let mut next = (range_top, range_left, range_bottom, range_right);
+                let mut changed = false;
+                let spans_width = left <= range_left && right >= range_right;
+                let spans_height = top <= range_top && bottom >= range_bottom;
+                let lands_across = new_left <= range_left && new_right >= range_right;
+                let lands_along = new_top <= range_top && new_bottom >= range_bottom;
+                if spans_width && moved.cols == 0 {
+                    if top <= range_top && bottom >= range_top {
+                        next.0 = if new_top < range_top {
+                            new_top
+                        } else {
+                            bottom + 1
+                        };
+                        changed = true;
+                    } else if top <= range_bottom && bottom >= range_bottom {
+                        next.2 = if new_bottom > range_bottom {
+                            new_bottom
+                        } else {
+                            top.saturating_sub(1)
+                        };
+                        changed = true;
+                    }
+                    // Landing over the far edge carries that edge out too.
+                    if changed && new_top <= range_bottom && new_bottom > range_bottom {
+                        next.2 = new_bottom;
+                    }
+                } else if spans_height && moved.rows == 0 {
+                    if left <= range_left && right >= range_left {
+                        next.1 = if new_left < range_left {
+                            new_left
+                        } else {
+                            right + 1
+                        };
+                        changed = true;
+                    } else if left <= range_right && right >= range_right {
+                        next.3 = if new_right > range_right {
+                            new_right
+                        } else {
+                            left.saturating_sub(1)
+                        };
+                        changed = true;
+                    }
+                    if changed && new_left <= range_right && new_right > range_right {
+                        next.3 = new_right;
+                    }
+                }
+                // Landing across an edge takes it away. Ending exactly on it leaves it.
+                if !changed && lands_across {
+                    if new_top <= range_top && new_bottom >= range_bottom {
+                        return Some("#REF!".to_string());
+                    }
+                    if new_top < range_top && new_bottom >= range_top {
+                        next.0 = new_bottom + 1;
+                        changed = true;
+                    } else if new_top <= range_bottom && new_bottom > range_bottom {
+                        next.2 = new_top.saturating_sub(1);
+                        changed = true;
+                    }
+                }
+                if !changed && lands_along {
+                    if new_left <= range_left && new_right >= range_right {
+                        return Some("#REF!".to_string());
+                    }
+                    if new_left < range_left && new_right >= range_left {
+                        next.1 = new_right + 1;
+                        changed = true;
+                    } else if new_left <= range_right && new_right > range_right {
+                        next.3 = new_left.saturating_sub(1);
+                        changed = true;
+                    }
+                }
+                if changed && next.0 <= next.2 && next.1 <= next.3 {
+                    let mut out = String::new();
+                    if let Some((from, to)) = found.prefix {
+                        out.push_str(&text[from..to]);
+                    }
+                    push_target(
+                        &mut out,
+                        &Target::Cells {
+                            abs,
+                            top: next.0,
+                            left: next.1,
+                            bottom: next.2,
+                            right: next.3,
+                        },
+                    );
+                    return Some(out);
+                }
+            }
+        }
         if !held {
             let overwritten = to_here
                 && inside(new_area, corners.0, corners.1)
@@ -858,6 +1024,200 @@ pub fn follow_moved_cells<'a>(text: &'a str, home: &str, moved: &MovedCells<'_>)
         push_target(&mut out, &next);
         Some(out)
     })
+}
+
+/// A table column's name as a reference writes it, with Excel's escapes.
+fn escape_column(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if matches!(ch, '[' | ']' | '#' | '\'') {
+            out.push('\'');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn unescape_column(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\'' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Renames a column inside one table reference, whose brackets span `start..end`.
+fn rename_in_brackets(text: &str, old: &str, new: &str, out: &mut String) {
+    // The innermost brackets hold a column's name or a keyword: `[x]`, `[@x]`, `[[#All],[x]]`.
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    let mut copied = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\'' => at += 2,
+            b'[' => {
+                // Find its end, and whether anything is nested inside.
+                let mut end = at + 1;
+                let mut nested = false;
+                while end < bytes.len() && bytes[end] != b']' {
+                    match bytes[end] {
+                        b'\'' => end += 1,
+                        b'[' => nested = true,
+                        _ => {}
+                    }
+                    end += 1;
+                }
+                if nested || end >= bytes.len() {
+                    at += 1;
+                    continue;
+                }
+                let inner = &text[at + 1..end];
+                let (mark, name) = match inner.strip_prefix('@') {
+                    Some(rest) => ("@", rest),
+                    None => ("", inner),
+                };
+                if !name.starts_with('#') && same_sheet(&unescape_column(name), old) {
+                    out.push_str(&text[copied..at + 1]);
+                    out.push_str(mark);
+                    let plain = new
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+                    // A name with spaces after `@` has brackets of its own.
+                    if !mark.is_empty() && !plain {
+                        out.push('[');
+                        out.push_str(&escape_column(new));
+                        out.push(']');
+                    } else {
+                        out.push_str(&escape_column(new));
+                    }
+                    copied = end;
+                }
+                at = end + 1;
+            }
+            _ => at += 1,
+        }
+    }
+    out.push_str(&text[copied..]);
+}
+
+/// `text` with references to a table's lost columns turned to `#REF!`.
+pub fn delete_table_columns<'a>(text: &'a str, table: &str, columns: &[String]) -> Cow<'a, str> {
+    if !text.contains('[') {
+        return Cow::Borrowed(text);
+    }
+    let bytes = text.as_bytes();
+    let mut out: Option<String> = None;
+    let mut copied = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' | b'\'' => at = skip_quoted(bytes, at, bytes[at]),
+            b'[' => at = skip_brackets(bytes, at),
+            byte if is_word(byte) => {
+                let start = at;
+                at = word_end(bytes, at);
+                if bytes.get(at) == Some(&b'[') {
+                    let end = skip_brackets(bytes, at);
+                    if same_sheet(&text[start..at], table) {
+                        let inside = &text[at..end];
+                        let reads = columns.iter().any(|column| {
+                            let mut piece = String::new();
+                            rename_in_brackets(inside, column, "\u{1}", &mut piece);
+                            piece != inside
+                        });
+                        if reads {
+                            let buffer =
+                                out.get_or_insert_with(|| String::with_capacity(text.len()));
+                            buffer.push_str(&text[copied..start]);
+                            buffer.push_str("#REF!");
+                            copied = end;
+                        }
+                    }
+                    at = end;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    match out {
+        Some(mut buffer) => {
+            buffer.push_str(&text[copied..]);
+            Cow::Owned(buffer)
+        }
+        None => Cow::Borrowed(text),
+    }
+}
+
+/// `text` after a table's column has a new name. `inside` says the formula sits in that table, where
+/// `[@x]` and `[x]` with no table's name mean this one.
+pub fn rename_table_column<'a>(
+    text: &'a str,
+    table: &str,
+    old: &str,
+    new: &str,
+    inside: bool,
+) -> Cow<'a, str> {
+    if !text.contains('[') {
+        return Cow::Borrowed(text);
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut copied = 0;
+    let mut at = 0;
+    let mut changed = false;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' | b'\'' => at = skip_quoted(bytes, at, bytes[at]),
+            b'[' => {
+                let end = skip_brackets(bytes, at);
+                // A workbook's `[1]Sheet!A1` isn't a column.
+                let next = word_end(bytes, end);
+                let foreign = bytes.get(next) == Some(&b'!');
+                if inside && !foreign {
+                    let mut piece = String::new();
+                    rename_in_brackets(&text[at..end], old, new, &mut piece);
+                    if piece != text[at..end] {
+                        out.push_str(&text[copied..at]);
+                        out.push_str(&piece);
+                        copied = end;
+                        changed = true;
+                    }
+                }
+                at = end;
+            }
+            byte if is_word(byte) => {
+                let start = at;
+                at = word_end(bytes, at);
+                if bytes.get(at) == Some(&b'[') {
+                    let end = skip_brackets(bytes, at);
+                    if same_sheet(&text[start..at], table) {
+                        let mut piece = String::new();
+                        rename_in_brackets(&text[at..end], old, new, &mut piece);
+                        if piece != text[at..end] {
+                            out.push_str(&text[copied..at]);
+                            out.push_str(&piece);
+                            copied = end;
+                            changed = true;
+                        }
+                    }
+                    at = end;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    if !changed {
+        return Cow::Borrowed(text);
+    }
+    out.push_str(&text[copied..]);
+    Cow::Owned(out)
 }
 
 /// Whether any reference in `text`, read from sheet `home`, is on a sheet with this name.
@@ -1070,6 +1430,17 @@ mod tests {
     }
 
     #[test]
+    fn a_table_that_has_gone_leaves_ref() {
+        let names = ["Sales".to_string()];
+        assert_eq!(
+            delete_tables_in_formula("SUM(sales[Cost])+Other[a]+\"Sales[x]\"", &names),
+            "SUM(#REF!)+Other[a]+\"Sales[x]\""
+        );
+        assert!(reads_tables("Sales[[#All],[Cost]]", &names));
+        assert!(!reads_tables("SalesTax[x]", &names));
+    }
+
+    #[test]
     fn deleting_a_sheet_leaves_ref() {
         assert_eq!(delete_sheet_in_formula("S!A1+T!A1", "S"), "#REF!+T!A1");
         assert_eq!(delete_sheet_in_formula("SUM('S'!A1:B2)", "S"), "SUM(#REF!)");
@@ -1145,6 +1516,89 @@ mod tests {
         assert_eq!(follow_moved_cells("A1", "S", &across), "T!A2");
         assert_eq!(follow_moved_cells("A1", "T", &across), "A1");
         assert_eq!(follow_moved_cells("S!A1", "T", &across), "T!A2");
+    }
+
+    #[test]
+    fn moving_a_ranges_edge_moves_the_edge() {
+        let moved = |area, rows, cols| MovedCells {
+            from_sheet: "S",
+            area,
+            to_sheet: "S",
+            rows,
+            cols,
+        };
+        // Inward, what is left of the range stays.
+        assert_eq!(
+            follow_moved_cells("SUM(E2:E13)", "S", &moved((2, 5, 3, 5), 6, 0)),
+            "SUM(E4:E13)"
+        );
+        // Outward, the edge goes with it.
+        assert_eq!(
+            follow_moved_cells("SUM(A1:A5)", "S", &moved((5, 1, 5, 1), 5, 0)),
+            "SUM(A1:A10)"
+        );
+        assert_eq!(
+            follow_moved_cells("SUM(A1:D1)", "S", &moved((1, 4, 1, 4), 0, 2)),
+            "SUM(A1:F1)"
+        );
+        // A block that only takes part of an edge leaves it.
+        assert_eq!(
+            follow_moved_cells("SUM(A1:B5)", "S", &moved((5, 1, 5, 1), 5, 0)),
+            "SUM(A1:B5)"
+        );
+        // Landing on a range's edge takes it away.
+        assert_eq!(
+            follow_moved_cells("SUM($C$2:C5)", "S", &moved((10, 6, 11, 6), -5, -3)),
+            "SUM($C$2:C4)"
+        );
+        // Ending exactly on the edge leaves the range as it was.
+        assert_eq!(
+            follow_moved_cells("SUM(C2:C6)", "S", &moved((10, 6, 11, 6), -5, -3)),
+            "SUM(C2:C6)"
+        );
+        assert_eq!(
+            follow_moved_cells("A2:A4*2", "S", &moved((1, 1, 2, 1), 3, 0)),
+            "A3:A5*2"
+        );
+    }
+
+    #[test]
+    fn a_lost_table_column_leaves_ref() {
+        let columns = ["b".to_string()];
+        assert_eq!(
+            delete_table_columns("SUM(T[b])+T[a]", "T", &columns),
+            "SUM(#REF!)+T[a]"
+        );
+        assert_eq!(
+            delete_table_columns("T[[#All],[B]]", "T", &columns),
+            "#REF!"
+        );
+        assert_eq!(delete_table_columns("U[b]", "T", &columns), "U[b]");
+    }
+
+    #[test]
+    fn a_renamed_table_column_follows() {
+        let run = |text, inside| rename_table_column(text, "T", "b", "new", inside).into_owned();
+        assert_eq!(run("SUM(T[b])", false), "SUM(T[new])");
+        assert_eq!(run("SUM(t[B])+U[b]", false), "SUM(t[new])+U[b]");
+        assert_eq!(run("T[[#All],[b]]", false), "T[[#All],[new]]");
+        assert_eq!(run("T[@b]", false), "T[@new]");
+        assert_eq!(run("T[@[b]]", false), "T[@[new]]");
+        assert_eq!(run("[@b]*2", false), "[@b]*2");
+        assert_eq!(run("[@b]*2", true), "[@new]*2");
+        assert_eq!(run("\"T[b]\"", false), "\"T[b]\"");
+        assert_eq!(
+            rename_table_column("T[@b]+T[b]", "T", "b", "a b", false),
+            "T[@[a b]]+T[a b]"
+        );
+        assert_eq!(
+            rename_table_column("T[b]", "T", "b", "x[y", false),
+            "T[x'[y]"
+        );
+        assert_eq!(
+            rename_table_column("T[x'[y]", "T", "x[y", "b", false),
+            "T[b]"
+        );
     }
 
     #[test]

@@ -1224,6 +1224,128 @@ fn random_reference(rng: &mut Rng) -> String {
 }
 
 #[test]
+fn a_legacy_array_fills_its_area_whatever_its_result() {
+    let mut engine = fresh(&[vec![(1, 1, num(2.0)), (2, 1, num(3.0))]]);
+    let array = |text: &str, rows: u32| CellEdit {
+        at: cell(0, 1, 3),
+        input: CellInput::Formula {
+            text: text.to_string(),
+            shape: FormulaShape::Array(Rect {
+                top: 1,
+                left: 3,
+                bottom: rows,
+                right: 3,
+            }),
+            cached: None,
+        },
+    };
+    engine.set_cells(&[array("A1:A2*2", 3)]).unwrap();
+    settle(&mut engine);
+    assert_eq!(value_at(&engine, 0, 2, 3), Some(CalcValue::Number(6.0)));
+    assert_eq!(
+        value_at(&engine, 0, 3, 3),
+        Some(CalcValue::Error("#N/A".to_string()))
+    );
+    // A single value repeats, and an error fills it too.
+    engine.set_cells(&[array("1+1", 2)]).unwrap();
+    settle(&mut engine);
+    assert_eq!(value_at(&engine, 0, 2, 3), Some(CalcValue::Number(2.0)));
+    assert_eq!(value_at(&engine, 0, 3, 3), None);
+    engine.set_cells(&[array("1/0", 2)]).unwrap();
+    settle(&mut engine);
+    assert_eq!(
+        value_at(&engine, 0, 2, 3),
+        Some(CalcValue::Error("#DIV/0!".to_string()))
+    );
+}
+
+#[test]
+fn an_array_moves_with_its_rows() {
+    let mut engine = fresh(&[vec![
+        (1, 1, num(2.0)),
+        (2, 1, num(3.0)),
+        (1, 3, text("head")),
+    ]]);
+    engine
+        .set_cells(&[CellEdit {
+            at: cell(0, 2, 3),
+            input: CellInput::Formula {
+                text: "A1:A2*2".to_string(),
+                shape: FormulaShape::Array(Rect {
+                    top: 2,
+                    left: 3,
+                    bottom: 3,
+                    right: 3,
+                }),
+                cached: None,
+            },
+        }])
+        .unwrap();
+    settle(&mut engine);
+    engine
+        .structural(&StructuralOp::InsertRows {
+            sheet: 0,
+            at: 1,
+            count: 1,
+        })
+        .unwrap();
+    settle(&mut engine);
+    // What moved into the array's old place stays, and the array comes out one row down.
+    assert_eq!(
+        value_at(&engine, 0, 2, 3),
+        Some(CalcValue::Text("head".to_string()))
+    );
+    assert_eq!(value_at(&engine, 0, 3, 3), Some(CalcValue::Number(4.0)));
+    assert_eq!(value_at(&engine, 0, 4, 3), Some(CalcValue::Number(6.0)));
+    assert_eq!(
+        engine.formula_text(cell(0, 3, 3)).as_deref(),
+        Some("A2:A3 * 2")
+    );
+}
+
+#[test]
+fn a_circle_comes_to_zero_and_a_range_it_never_reads_is_no_circle() {
+    let mut engine = fresh(&[vec![(1, 1, num(5.0)), (2, 1, num(6.0))]]);
+    let at = |row, col, text: &str| CellEdit {
+        at: cell(0, row, col),
+        input: CellInput::Formula {
+            text: text.to_string(),
+            shape: FormulaShape::Normal,
+            cached: None,
+        },
+    };
+    engine
+        .set_cells(&[at(3, 1, "SUM(A1:A3)"), at(1, 3, "A3+1")])
+        .unwrap();
+    settle(&mut engine);
+    assert_eq!(value_at(&engine, 0, 3, 1), Some(CalcValue::Number(0.0)));
+    assert_eq!(value_at(&engine, 0, 1, 3), Some(CalcValue::Number(1.0)));
+    engine.set_cells(&[at(4, 2, "INDEX(A1:B5,1,1)")]).unwrap();
+    settle(&mut engine);
+    assert_eq!(value_at(&engine, 0, 4, 2), Some(CalcValue::Number(5.0)));
+}
+
+#[test]
+fn a_sheet_named_like_a_cell_keeps_its_quotes() {
+    let mut engine = fresh(&[
+        vec![(1, 1, num(7.0))],
+        vec![(1, 1, formula("Sheet1!A1", 7.0))],
+    ]);
+    engine.rename_sheet(0, "R23").unwrap();
+    settle(&mut engine);
+    assert_eq!(
+        engine.formula_text(cell(1, 1, 1)).as_deref(),
+        Some("'R23'!A1")
+    );
+    engine.rename_sheet(0, "AB12").unwrap();
+    settle(&mut engine);
+    assert_eq!(
+        engine.formula_text(cell(1, 1, 1)).as_deref(),
+        Some("'AB12'!A1")
+    );
+}
+
+#[test]
 fn rewriting_text_agrees_with_the_engine() {
     // How the two print a range of one cell, `#REF!` or spaces makes no difference to its meaning.
     let normal = |text: &str| {

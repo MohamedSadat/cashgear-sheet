@@ -8,6 +8,7 @@ pub mod edit;
 mod fill;
 pub mod input;
 mod json;
+pub mod query;
 pub mod tile;
 pub mod view_block;
 

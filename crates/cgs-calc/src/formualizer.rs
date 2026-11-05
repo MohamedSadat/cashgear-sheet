@@ -19,7 +19,9 @@ use formualizer_eval::arrow_store::{
 };
 use formualizer_eval::engine::eval::{Engine, EvaluationSlice};
 use formualizer_eval::engine::named_range::{NameScope, NamedDefinition};
-use formualizer_eval::engine::{EvalConfig, FormulaParsePolicy, TemporalEgress};
+use formualizer_eval::engine::{
+    CycleConfig, CycleDetection, CyclePolicy, EvalConfig, FormulaParsePolicy, TemporalEgress,
+};
 use formualizer_eval::reference::{CellRef as FzCell, Coord, RangeRef};
 use formualizer_parse::parser::{
     parse, ASTNode, ASTNodeType, BinaryOperator, ReferenceType, UnaryOperator,
@@ -29,7 +31,8 @@ use formualizer_workbook::workbook::WBResolver;
 use formualizer_workbook::{CustomFnOptions, Workbook, WorkbookConfig};
 
 use cgs_refs::{
-    delete_sheet_in_formula, edit_formula, reads_sheet, rename_in_formula, touches_band,
+    delete_sheet_in_formula, delete_tables_in_formula, edit_formula, reads_sheet, reads_tables,
+    rename_in_formula, touches_band,
 };
 
 use crate::{
@@ -62,6 +65,8 @@ pub struct FormualizerEngine {
     gone: Vec<bool>,
     /// Defined names as they read now, for telling what a change to the workbook's shape does.
     names: Vec<NameInfo>,
+    /// Tables as they stand now, as the engine doesn't move them with rows and columns.
+    tables: Vec<crate::TableInfo>,
     /// Sheets between `begin_sheet` and `finish_sheet`.
     loads: Vec<Option<SheetLoad>>,
     /// What `load_batch` holds until `finish_load`.
@@ -96,6 +101,12 @@ fn config(date1904: bool) -> WorkbookConfig {
     let eval = EvalConfig {
         defer_graph_building: true,
         enable_parallel: false,
+        circular_as_zero: true,
+        // A formula that only names itself in a range it never reads isn't circular, as in Excel.
+        cycle: CycleConfig {
+            detection: CycleDetection::Runtime,
+            policy: CyclePolicy::Error,
+        },
         // A formula the parser can't read becomes an error cell instead of failing the load.
         formula_parse_policy: FormulaParsePolicy::CoerceToError,
         temporal_egress: TemporalEgress::Serial,
@@ -215,6 +226,19 @@ fn error_kind(text: &str) -> ExcelErrorKind {
         "#CALC!" => ExcelErrorKind::Calc,
         _ => ExcelErrorKind::Error,
     }
+}
+
+/// Every function the engine knows, sorted.
+pub fn function_names() -> Vec<String> {
+    formualizer_eval::builtins::load_builtins();
+    let mut names: Vec<String> = formualizer_eval::function_registry::snapshot_registered()
+        .into_iter()
+        .filter(|(namespace, _, _)| namespace.is_empty())
+        .map(|(_, name, _)| name)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 pub fn from_literal(value: &LiteralValue) -> CalcValue {
@@ -350,6 +374,7 @@ impl FormualizerEngine {
             sheets: Vec::new(),
             gone: Vec::new(),
             names: Vec::new(),
+            tables: Vec::new(),
             loads: Vec::new(),
             pending: Vec::new(),
             extents: Vec::new(),
@@ -469,32 +494,192 @@ impl FormualizerEngine {
         }
     }
 
-    /// Runs array formulas again where they now stand, as their spills don't move with the rows
-    /// and columns under them.
-    fn rearm_moved_arrays(&mut self, sheet: u32) -> Result<()> {
-        let anchors: Vec<CellRef> = self
+    /// Takes down every array on a sheet before its rows or columns move, as an array's spill
+    /// doesn't move with them. `put_back_arrays` makes them again where they land.
+    fn take_down_arrays(&mut self, sheet: u32) -> Result<Vec<(CellRef, String)>> {
+        let name = self.sheet_name(sheet)?.to_string();
+        let mut taken = Vec::new();
+        let mut anchors: Vec<CellRef> = self
             .array_anchors
             .iter()
             .filter(|(at, _, _)| at.sheet == sheet)
             .map(|(at, _, _)| *at)
             .collect();
+        for area in self.spill_areas() {
+            if area.sheet == sheet {
+                let at = CellRef {
+                    sheet,
+                    row: area.rect.top,
+                    col: area.rect.left,
+                };
+                if !anchors.contains(&at) {
+                    anchors.push(at);
+                }
+            }
+        }
         for at in anchors {
-            let name = self.sheet_name(at.sheet)?.to_string();
-            let Some(text) = self.workbook.get_formula(&name, at.row, at.col) else {
+            let Some(text) = self.formula_text(at) else {
                 continue;
             };
             self.workbook
-                .set_formula(&name, at.row, at.col, &text)
+                .set_value(&name, at.row, at.col, LiteralValue::Empty)
                 .map_err(err)?;
+            taken.push((at, text));
+        }
+        Ok(taken)
+    }
+
+    /// Makes arrays again after their rows or columns moved. `move_anchors` has already moved
+    /// their shapes.
+    fn put_back_arrays(
+        &mut self,
+        sheet: u32,
+        edit: &cgs_refs::AxisEdit,
+        taken: Vec<(CellRef, String)>,
+    ) -> Result<()> {
+        let name = self.sheet_name(sheet)?.to_string();
+        for (at, text) in taken {
+            let (row, col) = match edit.axis {
+                cgs_refs::Axis::Row => (edit.point(at.row), Some(at.col)),
+                cgs_refs::Axis::Col => (Some(at.row), edit.point(at.col)),
+            };
+            let (Some(row), Some(col)) = (row, col) else {
+                continue;
+            };
+            let moved = CellRef { sheet, row, col };
+            let staged = format!("={}", edit_formula(&text, &name, &name, edit));
+            self.workbook
+                .set_formula(&name, row, col, &staged)
+                .map_err(err)?;
+            let mut shape = FormulaShape::Normal;
             if let Some(entry) = self
                 .array_anchors
                 .iter_mut()
-                .find(|(cell, _, _)| *cell == at)
+                .find(|(cell, _, _)| *cell == moved)
             {
-                entry.1 = text;
+                entry.1 = staged;
+                shape = entry.2;
             }
+            self.declare_array(&name, moved, shape);
         }
         Ok(())
+    }
+
+    fn table_range(&mut self, table: &crate::TableInfo) -> Result<RangeRef> {
+        let sheet = self.sheet_name(table.sheet)?.to_string();
+        let id = self
+            .engine()
+            .sheet_id(&sheet)
+            .ok_or_else(|| err("no sheet id"))?;
+        let start = FzCell::new(
+            id,
+            Coord::from_excel(table.range.top, table.range.left, true, true),
+        );
+        let end = FzCell::new(
+            id,
+            Coord::from_excel(table.range.bottom, table.range.right, true, true),
+        );
+        Ok(RangeRef::new(start, end))
+    }
+
+    /// Tells the engine about one table, as it now stands.
+    fn sync_table(&mut self, table: &crate::TableInfo) -> Result<()> {
+        let range = self.table_range(table)?;
+        let engine = self.engine();
+        if engine
+            .update_table(
+                &table.name,
+                range,
+                table.header_row,
+                table.columns.clone(),
+                table.totals_row,
+            )
+            .is_err()
+        {
+            engine
+                .define_table(
+                    &table.name,
+                    range,
+                    table.header_row,
+                    table.columns.clone(),
+                    table.totals_row,
+                )
+                .map_err(err)?;
+        }
+        Ok(())
+    }
+
+    /// Moves tables with an edit: returns the header cells of new columns, and what has gone.
+    fn move_tables(&mut self, sheet: u32, edit: &cgs_refs::AxisEdit) -> Result<MovedTables> {
+        let mut headers = Vec::new();
+        let mut gone = Vec::new();
+        let mut tables = std::mem::take(&mut self.tables);
+        let mut kept = Vec::with_capacity(tables.len());
+        for mut table in tables.drain(..) {
+            if table.sheet != sheet {
+                kept.push(table);
+                continue;
+            }
+            let area = (
+                table.range.top,
+                table.range.left,
+                table.range.bottom,
+                table.range.right,
+            );
+            let Some((top, left, bottom, right)) = cgs_refs::edit_rect(area, edit) else {
+                gone.push(table.name.clone());
+                let _ = self.engine().delete_table(&table.name);
+                continue;
+            };
+            if edit.axis == cgs_refs::Axis::Col {
+                if edit.delete {
+                    let first = table.range.left;
+                    let mut index = 0;
+                    table.columns.retain(|_| {
+                        let col = first + index;
+                        index += 1;
+                        edit.point(col).is_some()
+                    });
+                } else if edit.at > table.range.left && edit.at <= table.range.right {
+                    let at = (edit.at - table.range.left) as usize;
+                    for step in 0..edit.count as usize {
+                        let mut number = 1;
+                        let name = loop {
+                            let name = format!("Column{number}");
+                            if !table
+                                .columns
+                                .iter()
+                                .any(|other| other.eq_ignore_ascii_case(&name))
+                            {
+                                break name;
+                            }
+                            number += 1;
+                        };
+                        table.columns.insert(at + step, name.clone());
+                        if table.header_row {
+                            headers.push((
+                                CellRef {
+                                    sheet,
+                                    row: top,
+                                    col: edit.at + step as u32,
+                                },
+                                name,
+                            ));
+                        }
+                    }
+                }
+            }
+            table.range = Rect {
+                top,
+                left,
+                bottom,
+                right,
+            };
+            self.sync_table(&table)?;
+            kept.push(table);
+        }
+        self.tables = kept;
+        Ok((headers, gone))
     }
 
     /// Puts names back through the engine and into this adapter's own list.
@@ -640,13 +825,28 @@ impl FormualizerEngine {
                 .set_value(&name, cell.row, cell.col, LiteralValue::Empty)
                 .map_err(err)?;
         }
-        for (cell, text, _) in self.array_anchors.clone() {
+        for (cell, text, shape) in self.array_anchors.clone() {
             let name = self.sheets[cell.sheet as usize].clone();
             self.workbook
                 .set_formula(&name, cell.row, cell.col, &text)
                 .map_err(err)?;
+            self.declare_array(&name, cell, shape);
         }
         Ok(())
+    }
+
+    /// A `{=...}` formula fills its area whatever size its result is, as Excel's do. If the area
+    /// is blocked it spills as far as it can instead, as a dynamic array would.
+    fn declare_array(&mut self, name: &str, cell: CellRef, shape: FormulaShape) {
+        if let FormulaShape::Array(rect) = shape {
+            let _ = self.engine().declare_fixed_array_formula(
+                name,
+                cell.row,
+                cell.col,
+                rect.bottom - rect.top + 1,
+                rect.right - rect.left + 1,
+            );
+        }
     }
 
     fn date_system(&self) -> DateSystem {
@@ -669,6 +869,9 @@ impl FormualizerEngine {
 fn well_formed(_ast: &ASTNode) -> bool {
     true
 }
+
+/// Header cells of new columns with their names, and tables nothing is left of.
+type MovedTables = (Vec<(CellRef, String)>, Vec<String>);
 
 /// Where an array's area goes.
 fn moved_shape(shape: FormulaShape, edit: &cgs_refs::AxisEdit) -> FormulaShape {
@@ -729,6 +932,7 @@ impl CalcEngine for FormualizerEngine {
         self.sheets = book.sheets.clone();
         self.gone = vec![false; book.sheets.len()];
         self.names = book.names.clone();
+        self.tables = book.tables.clone();
         self.loads = book.sheets.iter().map(|_| None).collect();
         self.pending = vec![Vec::new(); book.sheets.len()];
         self.extents = vec![(0, 0); book.sheets.len()];
@@ -1024,11 +1228,18 @@ impl CalcEngine for FormualizerEngine {
                 }
                 CellInput::Formula { text, shape, .. } => {
                     let staged = format!("={text}");
+                    // An array that was here takes what it spilled with it first.
+                    if *shape != FormulaShape::Normal {
+                        self.workbook
+                            .set_value(&name, row, col, LiteralValue::Empty)
+                            .map_err(err)?;
+                    }
                     self.workbook
                         .set_formula(&name, row, col, &staged)
                         .map_err(err)?;
                     if *shape != FormulaShape::Normal {
                         self.array_anchors.push((edit.at, staged, *shape));
+                        self.declare_array(&name, edit.at, *shape);
                     }
                 }
                 CellInput::Spill { .. } => {}
@@ -1049,6 +1260,48 @@ impl CalcEngine for FormualizerEngine {
         // Everything else comes back when the rows or columns do.
         let mut removed = Vec::new();
         let mut names = Vec::new();
+        let tables_before = self.tables.clone();
+        // Formulas that read a table this leaves nothing of.
+        let lost: Vec<String> = self
+            .tables
+            .iter()
+            .filter(|table| {
+                table.sheet == sheet
+                    && cgs_refs::edit_rect(
+                        (
+                            table.range.top,
+                            table.range.left,
+                            table.range.bottom,
+                            table.range.right,
+                        ),
+                        &edit,
+                    )
+                    .is_none()
+            })
+            .map(|table| table.name.clone())
+            .collect();
+        // Columns it takes from tables that stay.
+        let lost_columns: Vec<(String, Vec<String>)> = if edit.delete
+            && edit.axis == cgs_refs::Axis::Col
+        {
+            self.tables
+                .iter()
+                .filter(|table| table.sheet == sheet && !lost.contains(&table.name))
+                .filter_map(|table| {
+                    let names: Vec<String> = table
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| edit.point(table.range.left + *index as u32).is_none())
+                        .map(|(_, name)| name.clone())
+                        .collect();
+                    (!names.is_empty()).then(|| (table.name.clone(), names))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut table_rewrites = Vec::new();
         if edit.delete {
             let band = |at: &CellRef| {
                 let place = match edit.axis {
@@ -1059,10 +1312,42 @@ impl CalcEngine for FormualizerEngine {
             };
             for (at, text) in self.formulas() {
                 let home = self.sheets[at.sheet as usize].as_str();
-                if band(&at) || touches_band(&text, home, &name, &edit) {
+                let without = lost_columns.iter().fold(
+                    std::borrow::Cow::Borrowed(text.as_str()),
+                    |current, (table, names)| match cgs_refs::delete_table_columns(
+                        &current, table, names,
+                    ) {
+                        std::borrow::Cow::Owned(next) => std::borrow::Cow::Owned(next),
+                        std::borrow::Cow::Borrowed(_) => current,
+                    },
+                );
+                let reads_lost = reads_tables(&text, &lost) || without != text;
+                if band(&at) || reads_lost || touches_band(&text, home, &name, &edit) {
                     removed.push(CellEdit {
                         at,
                         input: self.cell_input(at),
+                    });
+                }
+                if reads_lost && !band(&at) {
+                    let place = match edit.axis {
+                        cgs_refs::Axis::Row => CellRef {
+                            row: edit.point(at.row).unwrap_or(at.row),
+                            ..at
+                        },
+                        cgs_refs::Axis::Col => CellRef {
+                            col: edit.point(at.col).unwrap_or(at.col),
+                            ..at
+                        },
+                    };
+                    let place = if at.sheet == sheet { place } else { at };
+                    let moved = edit_formula(&without, home, &name, &edit);
+                    table_rewrites.push(CellEdit {
+                        at: place,
+                        input: CellInput::Formula {
+                            text: delete_tables_in_formula(&moved, &lost).into_owned(),
+                            shape: self.formula_shape(at),
+                            cached: None,
+                        },
                     });
                 }
             }
@@ -1112,6 +1397,7 @@ impl CalcEngine for FormualizerEngine {
                 info.formula = next;
             }
         }
+        let arrays = self.take_down_arrays(sheet)?;
         let engine = self.engine();
         match *op {
             StructuralOp::InsertRows { at, count, .. } => {
@@ -1128,11 +1414,19 @@ impl CalcEngine for FormualizerEngine {
             }
         }
         self.move_anchors(sheet, &edit);
-        self.rearm_moved_arrays(sheet)?;
+        let (new_headers, gone_tables) = self.move_tables(sheet, &edit)?;
+        self.put_back_arrays(sheet, &edit, arrays)?;
+        if !table_rewrites.is_empty() {
+            self.set_cells(&table_rewrites)?;
+        }
         Ok(StructuralUndo {
             inverse,
             removed,
             names,
+            tables: tables_before,
+            new_headers,
+            gone_tables,
+            gone_columns: lost_columns,
         })
     }
 
@@ -1219,6 +1513,13 @@ impl CalcEngine for FormualizerEngine {
         // The sheet's cells and what reads it, as they were.
         let (mut cells, mut readers) = (Vec::new(), Vec::new());
         let mut rewrites = Vec::new();
+        let tables_before = self.tables.clone();
+        let gone_tables: Vec<String> = self
+            .tables
+            .iter()
+            .filter(|table| table.sheet == sheet)
+            .map(|table| table.name.clone())
+            .collect();
         for (at, text) in self.formulas() {
             let edit = CellEdit {
                 at,
@@ -1226,18 +1527,23 @@ impl CalcEngine for FormualizerEngine {
             };
             if at.sheet == sheet {
                 cells.push(edit);
-            } else if reads_sheet(&text, "", &name) {
+            } else if reads_sheet(&text, "", &name) || reads_tables(&text, &gone_tables) {
                 readers.push(edit);
+                let without_sheet = delete_sheet_in_formula(&text, &name);
                 rewrites.push(CellEdit {
                     at,
                     input: CellInput::Formula {
-                        text: delete_sheet_in_formula(&text, &name).into_owned(),
+                        text: delete_tables_in_formula(&without_sheet, &gone_tables).into_owned(),
                         shape: self.formula_shape(at),
                         cached: None,
                     },
                 });
             }
         }
+        for table in &gone_tables {
+            let _ = self.engine().delete_table(table);
+        }
+        self.tables.retain(|table| table.sheet != sheet);
         let spills = self.spill_areas();
         let extent = self.extents[sheet as usize];
         let mut values = Collected::default();
@@ -1287,6 +1593,8 @@ impl CalcEngine for FormualizerEngine {
             cells,
             readers,
             names,
+            tables: tables_before,
+            gone_tables,
         })
     }
 
@@ -1338,6 +1646,18 @@ impl CalcEngine for FormualizerEngine {
         for name in names {
             self.set_name(name)?;
         }
+        Ok(())
+    }
+
+    fn tables(&self) -> &[crate::TableInfo] {
+        &self.tables
+    }
+
+    fn restore_tables(&mut self, tables: &[crate::TableInfo]) -> Result<()> {
+        for table in tables {
+            self.sync_table(table)?;
+        }
+        self.tables = tables.to_vec();
         Ok(())
     }
 

@@ -214,6 +214,14 @@ pub struct StructuralUndo {
     pub removed: Vec<CellEdit>,
     /// Defined names as they were.
     pub names: Vec<NameInfo>,
+    /// Tables as they were.
+    pub tables: Vec<TableInfo>,
+    /// Header cells of columns an insert added inside a table, and the names they got.
+    pub new_headers: Vec<(CellRef, String)>,
+    /// Tables this edit left nothing of.
+    pub gone_tables: Vec<String>,
+    /// Columns this edit took from tables that stay.
+    pub gone_columns: Vec<(String, Vec<String>)>,
 }
 
 /// What putting a sheet back needs, in the order to do it.
@@ -224,6 +232,10 @@ pub struct SheetUndo {
     /// Formulas elsewhere that read it, and defined names, as they were.
     pub readers: Vec<CellEdit>,
     pub names: Vec<NameInfo>,
+    /// Tables as they were.
+    pub tables: Vec<TableInfo>,
+    /// The tables that went with it.
+    pub gone_tables: Vec<String>,
 }
 
 impl StructuralUndo {
@@ -333,6 +345,10 @@ pub trait CalcEngine {
     fn rename_sheet(&mut self, sheet: u32, name: &str) -> Result<String>;
     /// Puts defined names back as they were.
     fn restore_names(&mut self, names: &[NameInfo]) -> Result<()>;
+    /// Puts tables back as they were, making any that have gone.
+    fn restore_tables(&mut self, tables: &[TableInfo]) -> Result<()>;
+    /// Tables as they stand now.
+    fn tables(&self) -> &[TableInfo];
     /// What a cell holds now, in a form `set_cells` can put back.
     fn cell_input(&self, at: CellRef) -> CellInput;
     /// Every array that has spilled: its anchor, and the area it covers, anchor included.

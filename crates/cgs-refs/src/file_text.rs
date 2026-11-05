@@ -343,7 +343,18 @@ pub fn formula_for_file(text: &str, array: bool) -> String {
             }
             b'[' => {
                 let end = skip_brackets(bytes, at);
-                out.push_str(&text[at..end]);
+                // A column whose name has spaces at its edge needs brackets of its own.
+                let inner = &text[at + 1..end.saturating_sub(1).max(at + 1)];
+                if !inner.contains('[')
+                    && !inner.starts_with('@')
+                    && (inner.starts_with(' ') || inner.ends_with(' '))
+                {
+                    out.push_str("[[");
+                    out.push_str(inner);
+                    out.push_str("]]");
+                } else {
+                    out.push_str(&text[at..end]);
+                }
                 at = end;
             }
             b'(' => {
@@ -525,6 +536,16 @@ mod tests {
         assert_eq!(
             formula_for_file("\"XLOOKUP(\"&'LET(x'!A1", false),
             "\"XLOOKUP(\"&'LET(x'!A1"
+        );
+    }
+
+    #[test]
+    fn a_table_column_with_spaces_at_its_edge_gets_more_brackets() {
+        assert_eq!(formula_for_file("SUM(T[  a  ])", false), "SUM(T[[  a  ]])");
+        assert_eq!(formula_for_file("SUM(T[a b])", false), "SUM(T[a b])");
+        assert_eq!(
+            formula_for_file("SUM(T[[  a  ]])", false),
+            "SUM(T[[  a  ]])"
         );
     }
 

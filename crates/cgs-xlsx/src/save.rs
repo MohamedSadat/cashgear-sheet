@@ -686,10 +686,39 @@ fn apply_structure(
             .get(&(index as u32))
             .cloned()
             .unwrap_or_else(|| info.name.clone());
+        // Tables whose whole area has gone take their parts with them.
+        let mut gone_tables = Vec::new();
+        for (id, (kind, target)) in read_relationships(package, part) {
+            if !kind.ends_with("/table") {
+                continue;
+            }
+            let Some(table) = package.read(&target).and_then(|xml| read_table_part(&xml)) else {
+                continue;
+            };
+            let Some(area) = parse_rect(&table.reference) else {
+                continue;
+            };
+            let bounds = (area.top, area.left, area.bottom, area.right);
+            if crate::structure::moved_rect(bounds, &own).is_none() {
+                gone_tables.push(id);
+                done.removed.push(target.clone());
+                let rels = rels_path(&target);
+                if package.part(&rels).is_some() {
+                    done.removed.push(rels);
+                }
+            }
+        }
+        if !gone_tables.is_empty() {
+            let rels_name = rels_path(part);
+            if let Some(rels) = package.read(&rels_name) {
+                overlay.insert(rels_name, remove_relationship_ids(&rels, &gone_tables));
+            }
+        }
         let sheet_edits = SheetEdits {
             own: &own,
             book: &list,
             home: &home,
+            gone_tables: &gone_tables,
         };
         if info.kind == cgs_model::SheetKind::Worksheet {
             let mut masters = Masters::default();
@@ -717,6 +746,9 @@ fn apply_structure(
             let Some(xml) = package.read(&target) else {
                 continue;
             };
+            if done.removed.contains(&target) {
+                continue;
+            }
             let new = if kind.ends_with("/table") {
                 let mut made = 0;
                 rewrite_table(&xml, &sheet_edits, &mut |_| {
