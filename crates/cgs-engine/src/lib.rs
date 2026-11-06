@@ -7,6 +7,7 @@ pub mod cf;
 pub mod cf_edit;
 pub mod clip;
 pub mod command;
+pub mod dv;
 pub mod edit;
 mod fill;
 pub mod filter;
@@ -89,6 +90,8 @@ struct Session {
     /// Why this workbook's formulas can't be made ready for an edit, if they can't.
     cannot_edit: Option<String>,
     loader: Option<Loader>,
+    /// Sheets showing Circle Invalid Data.
+    circled: std::collections::HashSet<u32>,
     cache: tile::TileCache,
     phase: LoadPhase,
     last_progress: (u64, u64),
@@ -245,6 +248,7 @@ impl Engine {
             pending_save: None,
             cannot_edit: None,
             loader: Some(loader),
+            circled: Default::default(),
             cache: tile::TileCache::default(),
             phase: LoadPhase::Reading,
             last_progress: (0, 0),
@@ -356,6 +360,10 @@ impl Engine {
                     calc: &session.calc,
                     options: &options,
                     today: session.today,
+                    invalid: session
+                        .circled
+                        .contains(&sheet)
+                        .then(|| session.invalid_cells(sheet)),
                 };
                 tile::build_tile(
                     &input,
@@ -553,6 +561,7 @@ impl Engine {
             calc: &session.calc,
             options: &options,
             today: session.today,
+            invalid: None,
         };
         tile::display_text(&input, &mut session.cache, sheet, row, col)
     }
@@ -574,6 +583,7 @@ impl Engine {
             calc: &session.calc,
             options: &options,
             today: session.today,
+            invalid: None,
         };
         tile::edit_text(&input, &mut session.cache, sheet, row, col)
     }

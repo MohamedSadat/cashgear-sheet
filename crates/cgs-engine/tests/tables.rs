@@ -63,6 +63,7 @@ fn typed(engine: &mut Engine, row: u32, col: u32, text: &str) {
             col,
             text: text.to_string(),
             areas: Vec::new(),
+            force: false,
         })
         .unwrap();
     settle(engine);

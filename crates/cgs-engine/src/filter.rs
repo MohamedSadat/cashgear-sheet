@@ -289,9 +289,6 @@ impl Session {
                 continue;
             }
             let col = r.left + column.col_id;
-            if std::env::var("CGS_TIMING").is_ok() {
-                eprintln!("read start {:?}", std::time::Instant::now());
-            }
             let mut block = Column {
                 first,
                 values: vec![None; (r.bottom - first + 1) as usize],
@@ -308,9 +305,6 @@ impl Session {
                 },
                 &mut block,
             );
-            if std::env::var("CGS_TIMING").is_ok() {
-                eprintln!("read done {:?}", std::time::Instant::now());
-            }
             let value_at = |row: u32| block.values[(row - first) as usize].as_ref();
             // What each value and format came to, for a test that only looks at them.
             let mut known = Known::default();
@@ -469,9 +463,6 @@ impl Session {
                     }
                 }
             }
-        }
-        if std::env::var("CGS_TIMING").is_ok() {
-            eprintln!("match done {:?}", std::time::Instant::now());
         }
         (first..=r.bottom).zip(keep).collect()
     }
@@ -785,11 +776,7 @@ impl Session {
             }
         }
         let mut list = Vec::new();
-        let t0 = std::time::Instant::now();
         list.extend(self.rows_op(sheet, &filter, &options));
-        if std::env::var("CGS_TIMING").is_ok() {
-            eprintln!("rows_op {:?}", t0.elapsed());
-        }
         let area = Area {
             top: filter.range.top,
             left: filter.range.left,
@@ -797,12 +784,7 @@ impl Session {
             right: filter.range.right,
         };
         list.push(self.set_filter_op(which, Some(filter))?);
-        let t0 = std::time::Instant::now();
-        let done = self.perform("filter", Op::Many(list), Some((sheet, area)));
-        if std::env::var("CGS_TIMING").is_ok() {
-            eprintln!("perform {:?}", t0.elapsed());
-        }
-        done
+        self.perform("filter", Op::Many(list), Some((sheet, area)))
     }
 
     /// Takes every column's criteria away, and shows the rows.

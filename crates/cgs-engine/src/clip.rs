@@ -832,6 +832,7 @@ impl Session {
                     calc: &self.calc,
                     options: &options,
                     today: self.today,
+                    invalid: None,
                 };
                 cells.push(crate::tile::display_text(
                     &input,

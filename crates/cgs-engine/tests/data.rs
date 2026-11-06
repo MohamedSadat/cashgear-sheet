@@ -63,6 +63,7 @@ fn typed(engine: &mut Engine, row: u32, col: u32, text: &str) {
             col,
             text: text.to_string(),
             areas: Vec::new(),
+            force: false,
         })
         .unwrap();
     settle(engine);
@@ -439,4 +440,60 @@ fn rules_added_save_as_excel_writes_them_and_read_back() {
         !sheet.contains("conditionalFormatting") && !sheet.contains("x14:"),
         "{sheet}"
     );
+}
+
+#[test]
+fn validation_refuses_what_it_should_and_lists_what_it_offers() {
+    let mut engine = opened();
+    run(
+        &mut engine,
+        r#"{"kind":"setValidation","sheet":0,"areas":[{"top":1,"left":1,"bottom":5,"right":1}],"rule":{"kind":"whole","op":"between","formula1":"1","formula2":"10","errorTitle":"Nope","errorText":"1 to 10"}}"#,
+    );
+    let refused = engine
+        .apply_json(r#"{"kind":"input","sheet":0,"row":2,"col":1,"text":"11"}"#)
+        .unwrap_err();
+    assert_eq!(refused, "VALIDATION\u{1}stop\u{1}Nope\u{1}1 to 10");
+    typed(&mut engine, 2, 1, "7");
+    assert_eq!(text(&engine, 2, 1), "7");
+    // A warning the user said yes to goes in.
+    run(
+        &mut engine,
+        r#"{"kind":"input","sheet":0,"row":3,"col":1,"text":"2.5","force":true}"#,
+    );
+    assert_eq!(text(&engine, 3, 1), "2.5");
+    typed(&mut engine, 1, 3, "Red");
+    typed(&mut engine, 2, 3, "Green");
+    run(
+        &mut engine,
+        r#"{"kind":"setValidation","sheet":0,"areas":[{"top":1,"left":2,"bottom":9,"right":2}],"rule":{"kind":"list","formula1":"$C$1:$C$2"}}"#,
+    );
+    let at: serde_json::Value = serde_json::from_str(
+        &engine
+            .query(r#"{"kind":"validationAt","sheet":0,"row":4,"col":2}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(at["items"], serde_json::json!(["Red", "Green"]));
+    assert_eq!(at["dropdown"], true);
+    assert!(engine
+        .apply_json(r#"{"kind":"input","sheet":0,"row":4,"col":2,"text":"blue"}"#)
+        .is_err());
+    typed(&mut engine, 4, 2, "green");
+    let invalid: serde_json::Value = serde_json::from_str(
+        &engine
+            .query(r#"{"kind":"invalidCells","sheet":0}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(invalid, serde_json::json!([[3, 1]]));
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+    assert!(sheet.contains(r#"<dataValidations count="2"><dataValidation type="whole" allowBlank="1" showInputMessage="1" showErrorMessage="1" errorTitle="Nope" error="1 to 10" sqref="A1:A5"><formula1>1</formula1><formula2>10</formula2></dataValidation><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="B1:B9"><formula1>$C$1:$C$2</formula1></dataValidation></dataValidations>"#), "{sheet}");
+    let mut again = Engine::new();
+    again.open(Rc::new(bytes)).unwrap();
+    while again.load_step(1000.0).unwrap().phase == LoadPhase::Reading {}
+    assert!(again
+        .apply_json(r#"{"kind":"input","sheet":0,"row":5,"col":1,"text":"0"}"#)
+        .is_err());
 }

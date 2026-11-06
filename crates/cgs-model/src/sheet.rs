@@ -542,6 +542,7 @@ pub struct SheetShape {
     rich: HashMap<(u32, u32), u32>,
     filter: Option<crate::AutoFilter>,
     cf: Vec<crate::CfBlock>,
+    validations: Vec<crate::Validation>,
 }
 
 impl SheetShape {
@@ -589,6 +590,8 @@ pub struct SheetInfo {
     pub filter: Option<crate::AutoFilter>,
     /// Conditional formats, classic and extended.
     pub cf: Vec<crate::CfBlock>,
+    /// Data validation, the sheet's own and its extension's.
+    pub validations: Vec<crate::Validation>,
     /// The XML of `conditionalFormatting`, `dataValidations`, `hyperlinks` and `extLst`, as the file
     /// has them, for what reads them once the sheet is in.
     pub captured: Vec<(String, Vec<u8>)>,
@@ -620,6 +623,7 @@ impl SheetInfo {
         self.rich.clear();
         self.filter = None;
         self.cf.clear();
+        self.validations.clear();
         self.captured.clear();
     }
 
@@ -770,6 +774,7 @@ impl SheetInfo {
             rich: self.rich.clone(),
             filter: self.filter.clone(),
             cf: self.cf.clone(),
+            validations: self.validations.clone(),
         }
     }
 
@@ -784,6 +789,7 @@ impl SheetInfo {
         self.rich = shape.rich;
         self.filter = shape.filter;
         self.cf = shape.cf;
+        self.validations = shape.validations;
         self.index_merges();
     }
 
@@ -909,6 +915,42 @@ impl SheetInfo {
                         *formula = next;
                         block.raw = None;
                     }
+                }
+            }
+            true
+        });
+        // Validation follows its cells too.
+        self.validations.retain_mut(|validation| {
+            let areas: Vec<Rect> = validation
+                .areas
+                .iter()
+                .filter_map(|area| {
+                    let (top, left, bottom, right) =
+                        edit_rect((area.top, area.left, area.bottom, area.right), edit)?;
+                    Some(Rect {
+                        top,
+                        left,
+                        bottom,
+                        right,
+                    })
+                })
+                .collect();
+            if areas.is_empty() {
+                return false;
+            }
+            if areas != validation.areas {
+                validation.raw = None;
+                validation.areas = areas;
+            }
+            for formula in [&mut validation.formula1, &mut validation.formula2]
+                .into_iter()
+                .flatten()
+            {
+                if let std::borrow::Cow::Owned(next) =
+                    cgs_refs::edit_formula(formula, &name, &name, edit)
+                {
+                    *formula = next;
+                    validation.raw = None;
                 }
             }
             true

@@ -878,6 +878,12 @@ impl SheetLoader {
             .find(|(name, _)| name == "extLst")
             .map(|(_, xml)| xml.as_slice());
         info.cf = crate::cf::read_cf(&classic, ext);
+        let own = info
+            .captured
+            .iter()
+            .find(|(name, _)| name == "dataValidations")
+            .map(|(_, xml)| xml.as_slice());
+        info.validations = crate::dv::read_validations(own, ext);
         for (row, col, index) in std::mem::take(&mut self.orphans) {
             if let Some((master, master_row, master_col)) = self.shared.get(&index) {
                 self.scratch.clear();

@@ -407,6 +407,126 @@ Object.assign(MOVES, {
   ],
 });
 
+// Phase 6: sorting, filters and conditional formats.
+const block70 = cells(70, 20, 75, 22);
+const blockAreas = [cells(71, 20, 75, 22)];
+const addCf = (rule) => ({ kind: 'addCf', sheet: 0, areas: blockAreas, rule });
+const red = { color: '9C0006', fill: 'FFC7CE' };
+Object.assign(MOVES, {
+  'a sort by two keys with a header': [
+    ...block(70, 20),
+    {
+      kind: 'sort',
+      sheet: 0,
+      area: block70,
+      header: true,
+      keys: [{ index: 22, descending: true }, { index: 20 }],
+    },
+  ],
+  'a filter by value and by condition': [
+    ...block(70, 20),
+    { kind: 'toggleFilter', sheet: 0, area: block70 },
+    {
+      kind: 'setFilter',
+      sheet: 0,
+      col: 20,
+      criteria: { kind: 'values', values: ['t1', 't3', 't4'] },
+    },
+    {
+      kind: 'setFilter',
+      sheet: 0,
+      col: 21,
+      criteria: { kind: 'custom', conditions: [{ op: 'greaterThan', value: '15' }] },
+    },
+  ],
+  'a filter by top ten, average and a date, then cleared': [
+    ...block(70, 20),
+    { kind: 'toggleFilter', sheet: 0, area: block70 },
+    { kind: 'setFilter', sheet: 0, col: 21, criteria: { kind: 'top10', value: 2 } },
+    { kind: 'setFilter', sheet: 0, col: 22, criteria: { kind: 'dynamic', name: 'aboveAverage' } },
+    { kind: 'setFilter', sheet: 0, col: 20, criteria: { kind: 'dynamic', name: 'thisMonth' } },
+    { kind: 'clearFilter', sheet: 0 },
+  ],
+  'a filter by colour': [
+    ...block(70, 20),
+    {
+      kind: 'format',
+      sheet: 0,
+      areas: [cells(72, 21)],
+      change: { fill: { pattern: 'solid', color: { kind: 'rgb', rgb: 'FFFF00' } } },
+    },
+    { kind: 'toggleFilter', sheet: 0, area: block70 },
+    { kind: 'setFilter', sheet: 0, col: 21, criteria: { kind: 'color', color: 'FFFF00' } },
+  ],
+  "a table's filter": [
+    ...made(),
+    {
+      kind: 'setFilter',
+      sheet: 0,
+      table: 'Phase6',
+      col: 22,
+      criteria: { kind: 'top10', value: 1, top: false },
+    },
+  ],
+  'rules of every kind': [
+    ...block(70, 20),
+    addCf({ type: 'cellIs', op: 'between', formulas: ['2', '4'], format: red }),
+    addCf({ type: 'expression', formula: 'MOD(ROW(),2)=0', format: { bold: true } }),
+    addCf({ type: 'text', op: 'contains', text: 't', format: { italic: true } }),
+    addCf({ type: 'text', op: 'beginsWith', text: 't1', format: red }),
+    addCf({ type: 'blanks', format: { fill: 'EEEEEE' } }),
+    addCf({ type: 'errors', not: true, format: { border: '0000FF' } }),
+    addCf({ type: 'timePeriod', period: 'last7Days', format: red }),
+    addCf({ type: 'top10', rank: 2, percent: true, format: red }),
+    addCf({ type: 'average', above: false, format: { color: '0000FF' } }),
+    addCf({ type: 'duplicates', format: { fill: 'FFEB9C' } }),
+    addCf({
+      type: 'colorScale',
+      points: [
+        { kind: 'min', color: 'F8696B' },
+        { kind: 'percentile', value: '50', color: 'FFEB84' },
+        { kind: 'max', color: '63BE7B' },
+      ],
+    }),
+    addCf({
+      type: 'dataBar',
+      min: { kind: 'autoMin' },
+      max: { kind: 'autoMax' },
+      color: '638EC6',
+    }),
+    addCf({
+      type: 'dataBar',
+      min: { kind: 'num', value: '0' },
+      max: { kind: 'percent', value: '90' },
+      color: '63C384',
+      gradient: false,
+    }),
+    addCf({ type: 'iconSet', set: '3Arrows' }),
+    addCf({ type: 'iconSet', set: '5Rating', reverse: true, showValue: false }),
+  ],
+  'rules cleared from part, then rows in': [
+    ...block(70, 20),
+    addCf({ type: 'cellIs', op: 'greaterThan', formulas: ['3'], format: red }),
+    addCf({ type: 'dataBar', min: { kind: 'min' }, max: { kind: 'max' }, color: 'FF555A' }),
+    { kind: 'clearCf', sheet: 0, areas: [cells(72, 20, 73, 22)] },
+    rows(0, 72, 2),
+  ],
+  'every rule cleared from a sheet': [{ kind: 'clearCf', sheet: 0 }],
+  'rules reordered in the manager': [
+    ...block(70, 20),
+    addCf({ type: 'cellIs', op: 'lessThan', formulas: ['3'], format: red }),
+    addCf({ type: 'iconSet', set: '3TrafficLights1' }),
+    {
+      kind: 'setCf',
+      sheet: 0,
+      rules: [
+        { block: 0, rule: 0, areas: blockAreas, stop: true },
+        { areas: [cells(76, 20, 80, 20)], spec: { type: 'duplicates', unique: true, format: red } },
+      ],
+    },
+  ],
+});
+
 const MOVED = {
   'moving-parts.xlsx': 'xlsx',
   'prefixed.xlsx': 'xlsx',

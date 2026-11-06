@@ -1346,6 +1346,7 @@ impl Session {
                         calc: &self.calc,
                         options,
                         today: self.today,
+                        invalid: None,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1404,6 +1405,7 @@ impl Session {
                         calc: &self.calc,
                         options,
                         today: self.today,
+                        invalid: None,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1427,6 +1429,7 @@ impl Session {
                             calc: &self.calc,
                             options,
                             today: self.today,
+                            invalid: None,
                         };
                         crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                     };

@@ -133,6 +133,9 @@ pub enum Command {
         text: String,
         #[serde(default)]
         areas: Vec<Area>,
+        /// Typed anyway, past a validation warning the user said yes to.
+        #[serde(default)]
+        force: bool,
     },
     /// `{=...}`.
     ArrayInput {
@@ -336,6 +339,18 @@ pub enum Command {
         #[serde(default)]
         by_columns: bool,
     },
+    /// A validation rule on these cells, or none to take rules off them.
+    SetValidation {
+        sheet: u32,
+        areas: Vec<Area>,
+        #[serde(default)]
+        rule: Option<crate::dv::DvSpec>,
+    },
+    /// Circle Invalid Data on a sheet, or off.
+    CircleInvalid {
+        sheet: u32,
+        on: bool,
+    },
     /// A conditional format over these cells, above the sheet's other rules.
     AddCf {
         sheet: u32,
@@ -409,6 +424,11 @@ pub(crate) enum Op {
     Tables(Vec<TableInfo>),
     /// The model's tables, which hold how each looks.
     BookTables(Vec<Table>),
+    /// A sheet's data validation.
+    SheetDv {
+        sheet: u32,
+        list: Vec<cgs_model::Validation>,
+    },
     /// A sheet's conditional formats.
     SheetCf {
         sheet: u32,
@@ -502,6 +522,7 @@ impl Op {
             Self::BookTables(tables) => tables.len() * 512,
             Self::SheetFilter { .. } => 512,
             Self::SheetCf { blocks, .. } => 256 + blocks.len() * 512,
+            Self::SheetDv { list, .. } => 256 + list.len() * 512,
             Self::Merges { merges, .. } => merges.len() * 16,
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
             Self::Styles(before) => before.bytes(),
@@ -1268,6 +1289,16 @@ impl Session {
                     }
                 }
                 Ok(Op::Tables(before))
+            }
+            Op::SheetDv { sheet, list } => {
+                let info = &mut self.book.sheets[sheet as usize];
+                let before = std::mem::replace(&mut info.validations, list);
+                self.edits.dv_sheets.insert(sheet);
+                self.dirty.sheets.insert(sheet);
+                Ok(Op::SheetDv {
+                    sheet,
+                    list: before,
+                })
             }
             Op::SheetCf { sheet, blocks } => {
                 let info = &mut self.book.sheets[sheet as usize];
@@ -2499,10 +2530,34 @@ impl Session {
                 col,
                 text,
                 areas,
+                force,
             } => {
                 let info = self.sheet_for_edit(sheet)?;
                 number_only(info)?;
-                self.input_command(sheet, row, col, &text, &areas, locale)
+                if !force && areas.is_empty() {
+                    let typed = parse_input(&text, locale, self.book.date1904, self.today);
+                    let value = match &typed {
+                        Typed::Value(value) => Some(value.clone()),
+                        Typed::Formatted(number, _) => Some(CalcValue::Number(*number)),
+                        Typed::Clear => Some(CalcValue::Empty),
+                        _ => None,
+                    };
+                    if let Some(refused) =
+                        value.and_then(|value| self.refusal(sheet, row, col, &value))
+                    {
+                        return Err(refused);
+                    }
+                }
+                let applied = self.input_command(sheet, row, col, &text, &areas, locale)?;
+                // A custom rule reads the cell as typed, so it's asked afterwards.
+                if !force && areas.is_empty() {
+                    if let Some(refused) = self.custom_refusal(sheet, row, col) {
+                        self.step_back()?;
+                        self.history.redo.pop();
+                        return Err(refused);
+                    }
+                }
+                Ok(applied)
             }
             Command::ArrayInput { sheet, area, text } => self.array_command(sheet, area, &text),
             Command::Clear { sheet, areas } => {
@@ -2832,6 +2887,18 @@ impl Session {
             }
             Command::ConvertToRange { table } => self.convert_to_range_command(&table),
             Command::AddCf { sheet, areas, rule } => self.add_cf_command(sheet, &areas, &rule),
+            Command::SetValidation { sheet, areas, rule } => {
+                self.set_validation_command(sheet, &areas, rule.as_ref())
+            }
+            Command::CircleInvalid { sheet, on } => {
+                if on {
+                    self.circled.insert(sheet);
+                } else {
+                    self.circled.remove(&sheet);
+                }
+                self.dirty.sheets.insert(sheet);
+                Ok(Applied::default())
+            }
             Command::ClearCf { sheet, areas } => self.clear_cf_command(sheet, areas.as_deref()),
             Command::SetCf { sheet, rules } => self.set_cf_command(sheet, &rules),
             Command::ToggleFilter { sheet, area } => {

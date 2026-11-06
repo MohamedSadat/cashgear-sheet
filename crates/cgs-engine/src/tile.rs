@@ -640,6 +640,8 @@ pub struct TileInput<'a> {
     pub options: &'a Options<'a>,
     /// Today's date serial, for conditional formats about dates.
     pub today: f64,
+    /// Cells to ring for Circle Invalid Data, when it's on.
+    pub invalid: Option<Vec<(u32, u32)>>,
 }
 
 fn row_span(info: &SheetInfo, from: u32, to: u32) -> i32 {
@@ -1275,6 +1277,18 @@ pub fn build_tile(
     }
     for (row, col, mark) in cf_marks {
         writer.mark(row, col, mark);
+    }
+    for &(row, col) in input.invalid.iter().flatten() {
+        if row >= top && row <= bottom && col >= left && col <= right {
+            writer.mark(
+                row - top,
+                col - left,
+                MarkRecord {
+                    kind: MARK_INVALID,
+                    ..MarkRecord::default()
+                },
+            );
+        }
     }
     let tile = writer.finish();
     cache.derived = derived;

@@ -407,6 +407,16 @@ impl Session {
                 active_cell: info.view.active_cell,
             });
         }
+        for &sheet in &edits.dv_sheets.clone() {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            edits.elements.entry(sheet).or_default().push(NewElement {
+                name: "dataValidations".to_string(),
+                xml: cgs_xlsx::dv::validations_xml(&info.validations),
+                replace: true,
+            });
+        }
         for &sheet in &edits.cf_sheets.clone() {
             let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
                 continue;

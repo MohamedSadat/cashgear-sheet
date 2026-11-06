@@ -28,6 +28,10 @@ enum Question {
     Filters { sheet: u32 },
     /// A sheet's conditional formats, in priority order, for the rules manager.
     CfRules { sheet: u32 },
+    /// A cell's validation rule, with a list's items.
+    ValidationAt { sheet: u32, row: u32, col: u32 },
+    /// Cells their rules don't allow, at most 255.
+    InvalidCells { sheet: u32 },
 }
 
 fn area_json(top: u32, left: u32, bottom: u32, right: u32) -> Value {
@@ -148,6 +152,13 @@ impl Session {
                 Value::Array(list)
             }
             Question::CfRules { sheet } => self.cf_rules(sheet),
+            Question::ValidationAt { sheet, row, col } => self.validation_json(sheet, row, col),
+            Question::InvalidCells { sheet } => Value::Array(
+                self.invalid_cells(sheet)
+                    .into_iter()
+                    .map(|(row, col)| json!([row, col]))
+                    .collect(),
+            ),
             Question::Tables => Value::Array(
                 self.book
                     .tables

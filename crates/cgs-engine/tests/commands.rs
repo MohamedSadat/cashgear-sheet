@@ -252,6 +252,7 @@ fn typed(engine: &mut Engine, sheet: u32, row: u32, col: u32, text: &str) {
             col,
             text: text.to_string(),
             areas: Vec::new(),
+            force: false,
         })
         .unwrap();
     settle(engine);
@@ -414,6 +415,7 @@ fn a_bad_formula_is_refused_and_an_open_bracket_is_closed() {
         col: 1,
         text: "=1+)".to_string(),
         areas: Vec::new(),
+        force: false,
     });
     assert!(bad.is_err());
     assert_eq!(engine.undo_state().undo, None);
@@ -836,6 +838,7 @@ fn typed_no_settle(engine: &mut Engine, sheet: u32, row: u32, col: u32, text: &s
             col,
             text: text.to_string(),
             areas: Vec::new(),
+            force: false,
         })
         .unwrap();
 }
