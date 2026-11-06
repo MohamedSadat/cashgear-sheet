@@ -18,11 +18,16 @@ use crate::ReadError;
 
 /// A part's relationships: id to (type, resolved target).
 pub fn read_relationships(package: &Package, part: &str) -> HashMap<String, (String, String)> {
+    match package.read(&rels_path(part)) {
+        Some(xml) => relationships_in(&xml, part),
+        None => HashMap::new(),
+    }
+}
+
+/// The relationships a part's rels hold, from their XML.
+pub fn relationships_in(xml: &[u8], part: &str) -> HashMap<String, (String, String)> {
     let mut out = HashMap::new();
-    let Some(xml) = package.read(&rels_path(part)) else {
-        return out;
-    };
-    let mut reader = Reader::from_reader(xml.as_slice());
+    let mut reader = Reader::from_reader(xml);
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {

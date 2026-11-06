@@ -271,6 +271,8 @@ pub struct SavePlan {
     copied: Vec<(String, u32, u64)>,
     /// New sheets' parts, by the sheet's index, and which sheet each `<sheet>` element now holds.
     pub new_parts: Vec<(u32, String)>,
+    /// New tables' parts, by their sheet and name.
+    pub table_parts: Vec<(u32, String, String)>,
     pub file_sheets: Vec<u32>,
 }
 
@@ -364,6 +366,179 @@ fn free_part_name(package: &Package, main: &str, base: &str) -> String {
 
 fn file_name(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, file)| file)
+}
+
+/// What saving the model's tables does to the package.
+#[derive(Debug, Default)]
+struct TableSave {
+    added: Vec<String>,
+    removed: Vec<String>,
+    parts: Vec<(u32, String, String)>,
+}
+
+/// Tables the model made, changed or dropped: new parts for new ones, patches for changed ones,
+/// and parts taken out for ones that are cells again, with each sheet's relationships and
+/// `<tableParts>` to match. Tables that only moved with rows and columns are left to the shape pass.
+fn save_tables(
+    package: &Package,
+    book: &Book,
+    edits: &mut WorkbookEdits,
+    overlay: &mut BTreeMap<String, Vec<u8>>,
+    already_removed: &[String],
+    changes: &mut ZipChanges,
+    report: &mut SaveReport,
+) -> Result<TableSave, SaveError> {
+    let mut save = TableSave::default();
+    let mut taken: HashSet<String> = package
+        .parts()
+        .iter()
+        .map(|part| normalize(&part.name))
+        .collect();
+    for (index, info) in book.sheets.iter().enumerate() {
+        let sheet = index as u32;
+        let Some(part) = info.part.as_ref().filter(|_| !info.deleted) else {
+            continue;
+        };
+        let rels_name = rels_path(part);
+        let rels_had = overlay
+            .get(&rels_name)
+            .cloned()
+            .or_else(|| package.read(&rels_name));
+        let mut rels = rels_had.clone().unwrap_or_else(|| {
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"></Relationships>".to_vec()
+        });
+        let file_tables: Vec<(String, String)> = crate::workbook::relationships_in(&rels, part)
+            .into_iter()
+            .filter(|(_, (kind, _))| kind.ends_with("/table"))
+            .map(|(id, (_, target))| (id, target))
+            .collect();
+        let mine: Vec<&cgs_model::Table> = book
+            .tables
+            .iter()
+            .filter(|table| table.sheet == sheet)
+            .collect();
+        let mut sheet_changed = false;
+        let mut gone_ids = Vec::new();
+        for (id, target) in &file_tables {
+            let kept = mine
+                .iter()
+                .any(|table| table.part.as_deref().map(normalize) == Some(normalize(target)));
+            if kept || already_removed.contains(target) {
+                continue;
+            }
+            gone_ids.push(id.clone());
+            changes.remove.push(normalize(target));
+            report.removed_parts.push(target.clone());
+            save.removed.push(target.clone());
+            let table_rels = rels_path(target);
+            if package.part(&table_rels).is_some() {
+                changes.remove.push(normalize(&table_rels));
+                report.removed_parts.push(table_rels);
+            }
+            overlay.remove(target);
+            sheet_changed = true;
+        }
+        if !gone_ids.is_empty() {
+            rels = remove_relationship_ids(&rels, &gone_ids);
+        }
+        for table in &mine {
+            match &table.part {
+                Some(target) if table.edited => {
+                    let Some(xml) = overlay
+                        .get(target)
+                        .cloned()
+                        .or_else(|| package.read(target))
+                    else {
+                        continue;
+                    };
+                    let patched =
+                        crate::tables::patch_table_part(&xml, table).map_err(part_error)?;
+                    if patched != xml {
+                        overlay.insert(target.clone(), patched);
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    let mut number = 1;
+                    let name = loop {
+                        let name = format!("xl/tables/table{number}.xml");
+                        if !taken.contains(&normalize(&name)) {
+                            break name;
+                        }
+                        number += 1;
+                    };
+                    taken.insert(normalize(&name));
+                    let xml = crate::tables::new_table_part(table);
+                    changes
+                        .add
+                        .push((name.clone(), pack(xml.as_bytes()).map_err(zip_error)?));
+                    report.added_parts.push(name.clone());
+                    let target = relative_target(part, &name);
+                    let (updated, _) =
+                        add_relationship_with_id(&rels, crate::tables::TABLE_REL, &target);
+                    rels = updated;
+                    save.added.push(name.clone());
+                    save.parts.push((sheet, table.name.clone(), name));
+                    sheet_changed = true;
+                }
+            }
+        }
+        if !sheet_changed {
+            continue;
+        }
+        if rels_had.is_some() {
+            overlay.insert(rels_name, rels.clone());
+        } else {
+            changes
+                .add
+                .push((rels_name.clone(), pack(&rels).map_err(zip_error)?));
+            report.added_parts.push(rels_name);
+        }
+        let mut ids: Vec<String> = crate::workbook::relationships_in(&rels, part)
+            .into_iter()
+            .filter(|(_, (kind, _))| kind.ends_with("/table"))
+            .map(|(id, _)| id)
+            .collect();
+        ids.sort();
+        let xml = if ids.is_empty() {
+            String::new()
+        } else {
+            let mut xml = format!(
+                "<tableParts count=\"{}\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">",
+                ids.len()
+            );
+            for id in &ids {
+                xml.push_str(&format!("<tablePart r:id=\"{}\"/>", escape_attr(id)));
+            }
+            xml.push_str("</tableParts>");
+            xml
+        };
+        edits.elements.entry(sheet).or_default().push(NewElement {
+            name: "tableParts".to_string(),
+            xml,
+        });
+    }
+    Ok(save)
+}
+
+/// A part's path as a relationship from `from` names it.
+fn relative_target(from: &str, to: &str) -> String {
+    let from_dir: Vec<&str> = from.split('/').collect();
+    let from_dir = &from_dir[..from_dir.len().saturating_sub(1)];
+    let to_parts: Vec<&str> = to.split('/').collect();
+    let common = from_dir
+        .iter()
+        .zip(to_parts.iter())
+        .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+        .count();
+    let mut out: Vec<String> = Vec::new();
+    for _ in common..from_dir.len() {
+        out.push("..".to_string());
+    }
+    for part in &to_parts[common..] {
+        out.push((*part).to_string());
+    }
+    out.join("/")
 }
 
 /// Text a table header holds, which Excel requires to be a string that matches the table part.
@@ -997,6 +1172,7 @@ pub fn save_workbook(
     let mut report = SaveReport::default();
     let mut file_sheets_after = None;
     let mut new_parts_after = Vec::new();
+    let mut table_parts_after = Vec::new();
     if !edits.is_empty() {
         let main =
             main_part(package).ok_or_else(|| SaveError::Damaged("no workbook part".to_string()))?;
@@ -1010,6 +1186,19 @@ pub fn save_workbook(
             apply_structure(package, book, &main, &edits, &mut overlay, &mut report)?
         };
         sync_table_headers(package, book, &mut edits, &mut overlay, &mut report)?;
+        let table_save = if edits.tables_changed {
+            save_tables(
+                package,
+                book,
+                &mut edits,
+                &mut overlay,
+                &structure.removed,
+                &mut changes,
+                &mut report,
+            )?
+        } else {
+            TableSave::default()
+        };
 
         // Formulas that spill need Excel's mark for a dynamic array, once for the workbook.
         let wants_dynamic = edits
@@ -1298,6 +1487,16 @@ pub fn save_workbook(
             }
         }
 
+        // Tables made and taken out.
+        for name in &table_save.added {
+            content_types = add_override(&content_types, name, crate::tables::TABLE_TYPE);
+            types_changed = true;
+        }
+        if !table_save.removed.is_empty() {
+            content_types = remove_overrides(&content_types, &table_save.removed);
+            types_changed = true;
+        }
+        table_parts_after = table_save.parts;
         // Parts taken out, and new sheets linked in.
         if !structure.removed.is_empty() {
             for part in &structure.removed {
@@ -1477,6 +1676,7 @@ pub fn save_workbook(
     report.kept_content = kept.into_iter().collect();
     plan.report = report;
     plan.new_parts = new_parts_after;
+    plan.table_parts = table_parts_after;
     plan.file_sheets = file_sheets_after.unwrap_or_default();
     Ok(plan)
 }

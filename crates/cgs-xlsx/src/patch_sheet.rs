@@ -146,6 +146,19 @@ pub const WORKSHEET_ORDER: &[&str] = &[
     "extLst",
 ];
 
+/// Elements that a new one of the same name replaces, all of them, wherever the first stood. A
+/// new one with no XML just takes them out.
+pub const REPLACED: &[&str] = &[
+    "mergeCells",
+    "tableParts",
+    "autoFilter",
+    "sortState",
+    "conditionalFormatting",
+    "dataValidations",
+    "hyperlinks",
+    "legacyDrawing",
+];
+
 /// Excel wraps `oleObjects` and `controls` this way, which sets where the wrapper sits.
 const ALTERNATE_CONTENT_ORDER: &str = "oleObjects";
 
@@ -366,6 +379,8 @@ struct Patcher<'a> {
     view_due: bool,
     strings: &'a mut StringTable,
     elements: Vec<&'a NewElement>,
+    /// Elements written in place of the file's, whose later namesakes go.
+    replaced: Vec<String>,
     /// Characters outside ASCII become references, because the part isn't in UTF-8.
     ascii_only: bool,
     facts: Facts,
@@ -1622,9 +1637,10 @@ impl Patcher<'_> {
                                 out.write_all(&tag)?;
                             }
                         }
-                        // Merges that are given anew replace what the file holds, whatever it holds.
-                        b"mergeCells"
-                            if self.elements.iter().any(|new| new.name == "mergeCells") =>
+                        // Elements given anew replace what the file holds, whatever it holds.
+                        name if REPLACED.iter().any(|known| known.as_bytes() == name)
+                            && (self.elements.iter().any(|new| new.name.as_bytes() == name)
+                                || self.replaced.iter().any(|done| done.as_bytes() == name)) =>
                         {
                             if kind == Kind::Start {
                                 let mut inner = 1u32;
@@ -1642,13 +1658,12 @@ impl Patcher<'_> {
                                 }
                             }
                             self.outcome.changed = true;
-                            if let Some(at) = self
-                                .elements
-                                .iter()
-                                .position(|new| new.name == "mergeCells")
+                            let name = String::from_utf8_lossy(&local).into_owned();
+                            if let Some(at) = self.elements.iter().position(|new| new.name == name)
                             {
                                 let new = self.elements.remove(at);
                                 out.write_all(&self.element_bytes(&new.xml))?;
+                                self.replaced.push(name);
                             }
                         }
                         b"dimension" => {
@@ -1873,6 +1888,7 @@ pub fn patch_into<R: Read, W: Write>(
             view_due: extras.view.is_some(),
             strings: &mut *strings,
             elements: elements.iter().collect(),
+            replaced: Vec::new(),
             ascii_only,
             facts: facts.clone(),
             outcome: Outcome::default(),

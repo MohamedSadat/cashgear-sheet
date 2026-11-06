@@ -298,6 +298,9 @@ pub enum Command {
         headers: Option<bool>,
         #[serde(default)]
         style: Option<String>,
+        /// Its name, or else the next free TableN.
+        #[serde(default)]
+        name: Option<String>,
     },
     TableOptions {
         table: String,
@@ -2722,11 +2725,12 @@ impl Session {
                 area,
                 headers,
                 style,
+                name,
             } => {
                 if !area.valid() {
                     return Err("That's off the sheet.".to_string());
                 }
-                self.create_table_command(sheet, area, headers, style)
+                self.create_table_command(sheet, area, headers, style, name)
             }
             Command::TableOptions { table, options } => self.table_options_command(&table, options),
             Command::TotalsFunction {

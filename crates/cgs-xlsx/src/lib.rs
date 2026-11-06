@@ -18,6 +18,7 @@ pub mod sheet;
 pub mod strings;
 pub mod structure;
 pub mod styles;
+pub mod tables;
 pub mod workbook;
 pub mod xml;
 pub mod zipdir;

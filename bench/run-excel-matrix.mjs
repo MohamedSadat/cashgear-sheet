@@ -2,7 +2,8 @@
 // structural ones, and what a save kept must still work there. Only generated fixtures and, with `--private=<folder>`, your private
 // workbooks go through it, as public files never open in Excel. Saved files go to a temporary
 // folder that is always deleted, and originals are only read.
-// Usage: node bench/run-excel-matrix.mjs <out.json> [--private=<folder>]
+// Usage: node bench/run-excel-matrix.mjs <out.json> [--private=<folder>] [--only=<text>]
+// `--only` runs just the edits whose names hold that text, for a quick look; a full run has none.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -21,6 +22,8 @@ import { readZip } from '../tests/fixtures/workbooks.mjs';
 
 const out = process.argv[2];
 const privateFolder = process.argv.find((arg) => arg.startsWith('--private='))?.slice(10);
+const only = process.argv.find((arg) => arg.startsWith('--only='))?.slice(7);
+const wanted = (name) => !only || name.includes(only);
 const scratch = mkdtempSync(join(tmpdir(), 'cgs-excel-matrix-'));
 const tool = join(root, 'target/fast/savecheck.exe');
 const openScript = readFileSync(join(root, 'bench/excel-open.ps1'), 'utf8');
@@ -328,6 +331,82 @@ Object.assign(MOVES, {
   ],
 });
 
+// Phase 6: tables made and changed on cells of their own, far from what each fixture holds, and the
+// fixtures' own tables changed where they have them.
+const block = (top, left) => {
+  const list = [];
+  ['Item', 'Cost', 'Qty'].forEach((name, at) => list.push(input(0, top, left + at, name)));
+  for (let row = 1; row <= 5; row++) {
+    list.push(input(0, top + row, left, 't' + row));
+    list.push(input(0, top + row, left + 1, String(row * 10)));
+    list.push(input(0, top + row, left + 2, String(row)));
+  }
+  return list;
+};
+const made = (name = 'Phase6', extra = {}) => [
+  ...block(70, 20),
+  { kind: 'createTable', sheet: 0, area: cells(70, 20, 75, 22), name, ...extra },
+];
+const options = (table, extra) => ({ kind: 'tableOptions', table, ...extra });
+Object.assign(MOVES, {
+  'a table made': made(),
+  'a table made without headings': [
+    ...block(70, 20).slice(3),
+    {
+      kind: 'createTable',
+      sheet: 0,
+      area: cells(71, 20, 75, 22),
+      headers: false,
+      name: 'Phase6',
+    },
+  ],
+  'a table with totals, stripes and a style': [
+    ...made(),
+    options('Phase6', {
+      totalsRow: true,
+      columnStripes: true,
+      firstColumn: true,
+      style: 'TableStyleDark3',
+    }),
+    { kind: 'totalsFunction', table: 'Phase6', column: 'Cost', function: 'average' },
+  ],
+  'a table with no style or filter buttons': [
+    ...made(),
+    options('Phase6', { style: '', filterButton: false, rowStripes: false }),
+  ],
+  'a table without its header row': [...made(), options('Phase6', { headerRow: false })],
+  'a table renamed and resized': [
+    ...made(),
+    { kind: 'renameTable', table: 'Phase6', name: 'Renamed6' },
+    { kind: 'resizeTable', table: 'Renamed6', area: cells(70, 20, 78, 24) },
+  ],
+  'a table converted to a range': [
+    ...made(),
+    input(0, 80, 20, '=SUM(Phase6[Cost])'),
+    { kind: 'convertToRange', table: 'Phase6' },
+  ],
+  'a table grown by typing, with a calculated column': [
+    ...made(),
+    input(0, 76, 20, 't6'),
+    input(0, 71, 23, '=[@Cost]*[@Qty]'),
+  ],
+  'a table made, then undone': [...made(), { kind: 'undo' }],
+  'a table made, then rows in through it': [...made(), rows(0, 72, 2)],
+  'cells deleted in a new table': [
+    ...made(),
+    { kind: 'shiftCells', sheet: 0, area: cells(72, 21, 73, 21), down: true, delete: true },
+    { kind: 'shiftCells', sheet: 0, area: cells(72, 21, 72, 21), down: false, delete: true },
+  ],
+  "a fixture's own tables restyled with totals": [
+    options('Table1', { totalsRow: true, style: 'TableStyleLight1', lastColumn: true }),
+    options('Sales', { totalsRow: true, columnStripes: true }),
+  ],
+  "a fixture's own tables converted": [
+    { kind: 'convertToRange', table: 'Table1' },
+    { kind: 'convertToRange', table: 'Sales' },
+  ],
+});
+
 const MOVED = {
   'moving-parts.xlsx': 'xlsx',
   'prefixed.xlsx': 'xlsx',
@@ -357,6 +436,7 @@ try {
   }
 
   for (const [name, sets] of Object.entries(STRUCTURES)) {
+    if (!wanted(name)) continue;
     const { saved, report } = save(join(fixtures, 'structures.xlsx'), 'xlsx', sets);
     const seen = opens(saved);
     results.scenarios[name] = {
@@ -384,6 +464,7 @@ try {
     if (!before.opened || before.repaired) throw new Error(file + ' does not open cleanly.');
     results.structural[file] = { clean: 0, repaired: [] };
     for (const [name, commands] of Object.entries(MOVES)) {
+      if (!wanted(name)) continue;
       const { saved } = save(source, extension, [], [], commands);
       const seen = opens(saved);
       if (seen.opened && !seen.repaired) results.structural[file].clean++;
@@ -393,115 +474,117 @@ try {
     console.log('structural', file, results.structural[file]);
   }
 
-  // What a structural edit must leave working: the chart, the pivot and the macros.
-  {
-    const moved = save(join(fixtures, 'moving-parts.xlsx'), 'xlsx', [], [], [rows(0, 1, 2)]);
-    results.features.chartAfterRowsIn = feature(moved.saved, 'chart');
-    const pivot = save(join(fixtures, 'pivot.xlsx'), 'xlsx', [], [], [rows(0, 1, 2)]);
-    results.features.pivotAfterRowsIn = {
-      opens: opens(pivot.saved).opened,
-      excel: feature(pivot.saved, 'pivot'),
-      changedParts: pivot.report.changedParts,
-    };
-    const source = join(fixtures, 'macro.xlsm');
-    const macro = save(source, 'xlsm', [], [], [rows(0, 50, 2)]);
-    results.features.macroAfterRowsIn = {
-      projectIdentical:
-        hashes(macro.saved)['xl/vbaProject.bin'] === hashes(source)['xl/vbaProject.bin'],
-      opens: opens(macro.saved).opened,
-    };
-  }
-
-  // Each kept feature, after a save that changed cells around it.
-  {
-    const source = join(fixtures, 'formatting.xlsx');
-    const original = hashes(source);
-    const { saved, report } = save(source, 'xlsx', ['0,100,1,n:1']);
-    const after = hashes(saved);
-    const kept = Object.keys(original).filter(
-      (name) => /charts|drawings|media/.test(name) && after[name] === original[name],
-    );
-    const all = Object.keys(original).filter((name) => /charts|drawings|media/.test(name));
-    results.features.chart = {
-      partsKept: `${kept.length} of ${all.length}`,
-      opens: opens(saved).opened,
-      excel: feature(saved, 'chart'),
-      untouchedBy: report.changedParts,
-    };
-  }
-  {
-    const source = join(fixtures, 'pivot.xlsx');
-    const original = hashes(source);
-    const edited = ['0,2,2,n:1000'];
-    const plain = save(source, 'xlsx', edited);
-    const after = hashes(plain.saved);
-    const all = Object.keys(original).filter((name) => /pivot/i.test(name));
-    results.features.pivot = {
-      partsKept: `${all.filter((name) => after[name] === original[name]).length} of ${all.length}`,
-      opens: opens(plain.saved).opened,
-      // Data changed, and nothing asked for a refresh: as Excel leaves a pivot after an edit.
-      excel: feature(plain.saved, 'pivot'),
-    };
-    // The spike: is `refreshOnLoad` enough to bring a pivot up to date by itself?
-    const refresh = save(source, 'xlsx', edited, ['--refresh-pivots']);
-    const fresh = hashes(refresh.saved);
-    results.features.pivotRefreshOnLoad = {
-      changedParts: refresh.report.changedParts,
-      recordsKept:
-        fresh['xl/pivotCache/pivotCacheRecords1.xml'] ===
-        original['xl/pivotCache/pivotCacheRecords1.xml'],
-      opens: opens(refresh.saved).opened,
-      excel: feature(refresh.saved, 'pivot'),
-      readOnlyOpen: feature(refresh.saved, 'pivotReadOnly'),
-    };
-    // And with no cell edits at all, only the flag.
-    const flagOnly = save(source, 'xlsx', [], ['--refresh-pivots']);
-    results.features.pivotFlagOnly = {
-      changedParts: flagOnly.report.changedParts,
-      recalculates: flagOnly.report.recalculatesOnOpen,
-      excel: feature(flagOnly.saved, 'pivot'),
-    };
-  }
-  {
-    const source = join(fixtures, 'macro.xlsm');
-    const original = hashes(source);
-    const untouched = save(source, 'xlsm');
-    const edited = save(source, 'xlsm', ['0,1,1,n:100']);
-    const after = hashes(edited.saved);
-    results.features.macro = {
-      projectIdentical: after['xl/vbaProject.bin'] === original['xl/vbaProject.bin'],
-      source: feature(source, 'macro'),
-      noEdit: feature(untouched.saved, 'macro'),
-      edited: feature(edited.saved, 'macro'),
-      expected: 'the source and no-edit saves give 42, and the edit gives 200',
-    };
-  }
-
-  // Everything else this repo generates, with the checker's general test edits.
-  const keep = join(scratch, 'kept');
-  const jsonl = join(scratch, 'kept.jsonl');
-  const generated = [fixtures, join(root, 'tests/workbooks/generated')];
-  const checked = spawnSync(tool, [jsonl, ...generated, `--keep=${keep}`, '--jobs=4'], {
-    stdio: 'inherit',
-  });
-  if (checked.status !== 0) throw new Error('The checker failed.');
-  for (const line of readFileSync(jsonl, 'utf8').split('\n').filter(Boolean)) {
-    const record = JSON.parse(line);
-    if (!record.report.saved) {
-      results.generated.failures.push({ file: record.file, error: record.report.error });
-      continue;
+  // A quick look with `--only` stops at the edits.
+  if (!only) {
+    // What a structural edit must leave working: the chart, the pivot and the macros.
+    {
+      const moved = save(join(fixtures, 'moving-parts.xlsx'), 'xlsx', [], [], [rows(0, 1, 2)]);
+      results.features.chartAfterRowsIn = feature(moved.saved, 'chart');
+      const pivot = save(join(fixtures, 'pivot.xlsx'), 'xlsx', [], [], [rows(0, 1, 2)]);
+      results.features.pivotAfterRowsIn = {
+        opens: opens(pivot.saved).opened,
+        excel: feature(pivot.saved, 'pivot'),
+        changedParts: pivot.report.changedParts,
+      };
+      const source = join(fixtures, 'macro.xlsm');
+      const macro = save(source, 'xlsm', [], [], [rows(0, 50, 2)]);
+      results.features.macroAfterRowsIn = {
+        projectIdentical:
+          hashes(macro.saved)['xl/vbaProject.bin'] === hashes(source)['xl/vbaProject.bin'],
+        opens: opens(macro.saved).opened,
+      };
     }
-    if (statSync(record.report.saved).size > 40 * 1024 * 1024) continue;
-    results.generated.files++;
-    const before = opens(record.source);
-    const after = opens(record.report.saved);
-    if (before.opened && !before.repaired) results.generated.sourcesOpened++;
-    if (after.opened && !after.repaired) results.generated.savedOpened++;
-    else results.generated.failures.push({ file: record.file, opened: after.opened });
-    console.log('generated', record.file.split('/').pop(), after.opened ? 'clean' : 'REPAIR');
-    rmSync(record.report.saved, { force: true });
-  }
 
+    // Each kept feature, after a save that changed cells around it.
+    {
+      const source = join(fixtures, 'formatting.xlsx');
+      const original = hashes(source);
+      const { saved, report } = save(source, 'xlsx', ['0,100,1,n:1']);
+      const after = hashes(saved);
+      const kept = Object.keys(original).filter(
+        (name) => /charts|drawings|media/.test(name) && after[name] === original[name],
+      );
+      const all = Object.keys(original).filter((name) => /charts|drawings|media/.test(name));
+      results.features.chart = {
+        partsKept: `${kept.length} of ${all.length}`,
+        opens: opens(saved).opened,
+        excel: feature(saved, 'chart'),
+        untouchedBy: report.changedParts,
+      };
+    }
+    {
+      const source = join(fixtures, 'pivot.xlsx');
+      const original = hashes(source);
+      const edited = ['0,2,2,n:1000'];
+      const plain = save(source, 'xlsx', edited);
+      const after = hashes(plain.saved);
+      const all = Object.keys(original).filter((name) => /pivot/i.test(name));
+      results.features.pivot = {
+        partsKept: `${all.filter((name) => after[name] === original[name]).length} of ${all.length}`,
+        opens: opens(plain.saved).opened,
+        // Data changed, and nothing asked for a refresh: as Excel leaves a pivot after an edit.
+        excel: feature(plain.saved, 'pivot'),
+      };
+      // The spike: is `refreshOnLoad` enough to bring a pivot up to date by itself?
+      const refresh = save(source, 'xlsx', edited, ['--refresh-pivots']);
+      const fresh = hashes(refresh.saved);
+      results.features.pivotRefreshOnLoad = {
+        changedParts: refresh.report.changedParts,
+        recordsKept:
+          fresh['xl/pivotCache/pivotCacheRecords1.xml'] ===
+          original['xl/pivotCache/pivotCacheRecords1.xml'],
+        opens: opens(refresh.saved).opened,
+        excel: feature(refresh.saved, 'pivot'),
+        readOnlyOpen: feature(refresh.saved, 'pivotReadOnly'),
+      };
+      // And with no cell edits at all, only the flag.
+      const flagOnly = save(source, 'xlsx', [], ['--refresh-pivots']);
+      results.features.pivotFlagOnly = {
+        changedParts: flagOnly.report.changedParts,
+        recalculates: flagOnly.report.recalculatesOnOpen,
+        excel: feature(flagOnly.saved, 'pivot'),
+      };
+    }
+    {
+      const source = join(fixtures, 'macro.xlsm');
+      const original = hashes(source);
+      const untouched = save(source, 'xlsm');
+      const edited = save(source, 'xlsm', ['0,1,1,n:100']);
+      const after = hashes(edited.saved);
+      results.features.macro = {
+        projectIdentical: after['xl/vbaProject.bin'] === original['xl/vbaProject.bin'],
+        source: feature(source, 'macro'),
+        noEdit: feature(untouched.saved, 'macro'),
+        edited: feature(edited.saved, 'macro'),
+        expected: 'the source and no-edit saves give 42, and the edit gives 200',
+      };
+    }
+
+    // Everything else this repo generates, with the checker's general test edits.
+    const keep = join(scratch, 'kept');
+    const jsonl = join(scratch, 'kept.jsonl');
+    const generated = [fixtures, join(root, 'tests/workbooks/generated')];
+    const checked = spawnSync(tool, [jsonl, ...generated, `--keep=${keep}`, '--jobs=4'], {
+      stdio: 'inherit',
+    });
+    if (checked.status !== 0) throw new Error('The checker failed.');
+    for (const line of readFileSync(jsonl, 'utf8').split('\n').filter(Boolean)) {
+      const record = JSON.parse(line);
+      if (!record.report.saved) {
+        results.generated.failures.push({ file: record.file, error: record.report.error });
+        continue;
+      }
+      if (statSync(record.report.saved).size > 40 * 1024 * 1024) continue;
+      results.generated.files++;
+      const before = opens(record.source);
+      const after = opens(record.report.saved);
+      if (before.opened && !before.repaired) results.generated.sourcesOpened++;
+      if (after.opened && !after.repaired) results.generated.savedOpened++;
+      else results.generated.failures.push({ file: record.file, opened: after.opened });
+      console.log('generated', record.file.split('/').pop(), after.opened ? 'clean' : 'REPAIR');
+      rmSync(record.report.saved, { force: true });
+    }
+  }
   if (privateFolder) {
     // Counts only, from here on. Nothing names a file or says what is in one.
     const privateKeep = join(scratch, 'private');

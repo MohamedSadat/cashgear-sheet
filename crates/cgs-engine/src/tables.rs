@@ -159,22 +159,24 @@ impl Session {
             .find(|table| table.sheet == sheet && table.range.contains(row, col))
     }
 
-    fn next_table_name(&self) -> String {
-        let taken = |name: &str| {
-            self.calc
-                .tables()
+    /// Whether a table or a defined name already has this name.
+    pub(crate) fn taken_name(&self, name: &str) -> bool {
+        self.calc
+            .tables()
+            .iter()
+            .any(|table| table.name.eq_ignore_ascii_case(name))
+            || self
+                .book
+                .names
                 .iter()
-                .any(|table| table.name.eq_ignore_ascii_case(name))
-                || self
-                    .book
-                    .names
-                    .iter()
-                    .any(|defined| defined.name.eq_ignore_ascii_case(name))
-        };
+                .any(|defined| defined.name.eq_ignore_ascii_case(name))
+    }
+
+    fn next_table_name(&self) -> String {
         let mut number = 1;
         loop {
             let name = format!("Table{number}");
-            if !taken(&name) {
+            if !self.taken_name(&name) {
                 return name;
             }
             number += 1;
@@ -314,6 +316,7 @@ impl Session {
         area: Area,
         headers: Option<bool>,
         style: Option<String>,
+        name: Option<String>,
     ) -> Result<Applied, String> {
         let info = self.sheet_for_edit(sheet)?;
         if info.kind != cgs_model::SheetKind::Worksheet || !info.loaded {
@@ -347,7 +350,18 @@ impl Session {
             return Err("There's no room for the table's headings.".to_string());
         }
         let style = style.filter(|name| !name.is_empty());
-        let name = self.next_table_name();
+        let name = match name {
+            Some(name) => {
+                if let Some(problem) = name_problem(&name) {
+                    return Err(problem.to_string());
+                }
+                if self.taken_name(&name) {
+                    return Err("That name is already taken.".to_string());
+                }
+                name
+            }
+            None => self.next_table_name(),
+        };
         let id = self.next_table_id();
         self.perform_steps(
             "making a table",

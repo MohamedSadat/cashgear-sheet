@@ -560,6 +560,19 @@ impl Engine {
         for (sheet, part) in &plan.new_parts {
             session.book.sheets[*sheet as usize].part = Some(part.clone());
         }
+        for (sheet, name, part) in &plan.table_parts {
+            if let Some(table) = session
+                .book
+                .tables
+                .iter_mut()
+                .find(|table| table.sheet == *sheet && table.name == *name)
+            {
+                table.part = Some(part.clone());
+            }
+        }
+        for table in &mut session.book.tables {
+            table.edited = false;
+        }
         if !plan.file_sheets.is_empty() {
             session.book.file_sheets = plan.file_sheets.clone();
         }

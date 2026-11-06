@@ -449,3 +449,72 @@ fn this_row_references_keep_their_spelling() {
     assert_eq!(engine.formula_text(0, 4, 9).unwrap(), "[@Qty]+1");
     assert_eq!(text(&engine, 4, 9), "4");
 }
+
+fn saved(engine: &mut Engine) -> Vec<u8> {
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    out
+}
+
+fn reopened(bytes: Vec<u8>) -> Engine {
+    let mut engine = Engine::new();
+    engine.open(Rc::new(bytes)).unwrap();
+    while engine.load_step(1000.0).unwrap().phase == LoadPhase::Reading {}
+    engine
+}
+
+fn part(bytes: &[u8], name: &str) -> Option<String> {
+    use std::io::Read;
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut text = String::new();
+    zip.by_name(name).ok()?.read_to_string(&mut text).unwrap();
+    Some(text)
+}
+
+#[test]
+fn a_new_table_saves_as_its_own_part_and_reads_back() {
+    let mut engine = sales();
+    run(&mut engine, r#"{"kind":"tableOptions","table":"Sales","totalsRow":true,"columnStripes":true,"style":"TableStyleLight9"}"#);
+    let bytes = saved(&mut engine);
+    let table_xml = part(&bytes, "xl/tables/table1.xml").expect("a table part");
+    assert!(table_xml.contains(r#"name="Sales""#), "{table_xml}");
+    assert!(table_xml.contains(r#"ref="H1:J7""#) && table_xml.contains(r#"totalsRowCount="1""#), "{table_xml}");
+    assert!(table_xml.contains(r#"totalsRowFunction="sum""#), "{table_xml}");
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml").unwrap();
+    assert!(sheet.contains("<tableParts count=\"1\""), "{sheet}");
+    let rels = part(&bytes, "xl/worksheets/_rels/sheet1.xml.rels").unwrap();
+    assert!(rels.contains("../tables/table1.xml"), "{rels}");
+    assert!(part(&bytes, "[Content_Types].xml").unwrap().contains("/xl/tables/table1.xml"));
+    let mut again = reopened(bytes);
+    settle(&mut again);
+    let back = table(&again, "Sales");
+    assert_eq!(back["style"], "TableStyleLight9");
+    assert_eq!(back["columnStripes"], true);
+    assert_eq!(back["totalsRow"], true);
+    assert_eq!(text(&again, 7, 10), "20");
+    // Converting it takes its part out.
+    run(&mut again, r#"{"kind":"convertToRange","table":"Sales"}"#);
+    let bytes = saved(&mut again);
+    assert!(part(&bytes, "xl/tables/table1.xml").is_none());
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml").unwrap();
+    assert!(!sheet.contains("tablePart"), "{sheet}");
+    assert!(!part(&bytes, "[Content_Types].xml").unwrap().contains("/xl/tables/"));
+}
+
+#[test]
+fn a_calculated_column_and_this_row_are_saved_as_excel_spells_them() {
+    let mut engine = sales();
+    run(
+        &mut engine,
+        r#"{"kind":"clear","sheet":0,"areas":[{"top":2,"left":10,"bottom":6,"right":10}]}"#,
+    );
+    typed(&mut engine, 3, 10, "=[@Cost]*2");
+    let bytes = saved(&mut engine);
+    let table_xml = part(&bytes, "xl/tables/table1.xml").unwrap();
+    assert!(
+        table_xml.contains("<calculatedColumnFormula>Sales[[#This Row],[Cost]]*2</calculatedColumnFormula>"),
+        "{table_xml}"
+    );
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml").unwrap();
+    assert!(sheet.contains("<f>Sales[[#This Row],[Cost]]*2</f>"), "{sheet}");
+}
