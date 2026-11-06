@@ -69,7 +69,7 @@ test.beforeEach(async ({ page, context }) => {
 test.describe('the ribbon', () => {
   test('shows only tabs with working commands', async ({ page }) => {
     const tabs = ribbon(page).getByRole('tab');
-    await expect(tabs).toHaveText(['Home', 'Insert', 'Formulas', 'View']);
+    await expect(tabs).toHaveText(['Home', 'Insert', 'Formulas', 'Data', 'Review', 'View']);
     await expect(ribbon(page).getByRole('menuitem', { name: 'File' })).toBeVisible();
   });
 
