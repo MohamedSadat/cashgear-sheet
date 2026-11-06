@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 // SharedArrayBuffer needs cross-origin isolation. The Tauri config sets the same
-// headers, and whichever static host Phase 9 picks must set them too.
+// headers, and public/staticwebapp.config.json sets them on Azure Static Web Apps.
 const headers = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
