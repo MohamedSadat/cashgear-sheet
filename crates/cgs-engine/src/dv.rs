@@ -221,7 +221,9 @@ impl Session {
             .collect()
     }
 
-    /// Whether a value is allowed in a cell. Custom rules read the cell as it now stands.
+    /// Whether a value is allowed in a cell. Custom rules read the cell as it now stands. Excel
+    /// takes a list's item typed in any case, but counts a cell that differs in case from an item
+    /// of a list typed into the rule as invalid when it circles them, so `exact` says which.
     pub(crate) fn allowed(
         &self,
         sheet: u32,
@@ -229,6 +231,7 @@ impl Session {
         row: u32,
         col: u32,
         value: &CalcValue,
+        exact: bool,
     ) -> bool {
         let blank = matches!(value, CalcValue::Empty)
             || matches!(value, CalcValue::Text(text) if text.is_empty());
@@ -262,10 +265,19 @@ impl Session {
             },
             DvKind::TextLength => numbers(as_text(value).chars().count() as f64),
             DvKind::List => {
-                let text = as_text(value).to_lowercase();
-                self.list_items(sheet, validation, row, col)
-                    .iter()
-                    .any(|item| item.to_lowercase() == text)
+                let text = as_text(value);
+                // Only a list typed into the rule; one read from cells takes any case.
+                let literal = validation
+                    .formula1
+                    .as_deref()
+                    .is_some_and(|formula| formula.trim_start().starts_with('"'));
+                self.list_items(sheet, validation, row, col).iter().any(|item| {
+                    if exact && literal {
+                        *item == text
+                    } else {
+                        item.to_lowercase() == text.to_lowercase()
+                    }
+                })
             }
             DvKind::Custom => validation.formula1.as_deref().is_none_or(|formula| {
                 matches!(
@@ -288,7 +300,7 @@ impl Session {
         if !validation.show_error || validation.kind == DvKind::Custom {
             return None;
         }
-        if self.allowed(sheet, validation, row, col, value) {
+        if self.allowed(sheet, validation, row, col, value, false) {
             return None;
         }
         Some(self.refusal_text(validation))
@@ -317,7 +329,8 @@ impl Session {
             cgs_calc::CellInput::Value(value) => value,
             _ => return None,
         };
-        (!self.allowed(sheet, validation, row, col, &value)).then(|| self.refusal_text(validation))
+        (!self.allowed(sheet, validation, row, col, &value, false))
+            .then(|| self.refusal_text(validation))
     }
 
     /// Puts a rule on cells, or takes rules off them with none.
@@ -465,7 +478,7 @@ impl Session {
                             }
                             _ => continue,
                         };
-                        if !self.allowed(sheet, validation, row, col, &value) {
+                        if !self.allowed(sheet, validation, row, col, &value, true) {
                             out.push((row, col));
                         }
                     }

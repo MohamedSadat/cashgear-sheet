@@ -42,6 +42,9 @@ enum Question {
     Notes { sheet: u32 },
     /// The Cell Styles gallery.
     CellStyles,
+    /// What conditional formats make of each cell of an area, for checking against Excel: its
+    /// fill and font colours, whether bold, and its icon.
+    CfLook { sheet: u32, area: Area },
     /// The table styles gallery: the file's own, then Excel's, each with a small preview drawn
     /// with the table's options.
     TableStyles {
@@ -186,6 +189,7 @@ impl Session {
             Question::LinkAt { sheet, row, col } => self.link_json(sheet, row, col),
             Question::Notes { sheet } => self.notes_list(sheet),
             Question::CellStyles => crate::cell_styles::cell_styles_json(),
+            Question::CfLook { sheet, area } => self.cf_look_json(sheet, area),
             Question::TableStyles { options } => {
                 self.table_styles_json(&options.unwrap_or_default())
             }
@@ -304,5 +308,50 @@ impl Session {
             json!({ "name": style.name, "group": group, "cells": preview(style) })
         });
         Value::Array(own.chain(excel).collect())
+    }
+}
+
+impl Session {
+    fn cf_look_json(&self, sheet: u32, area: Area) -> Value {
+        let Some(info) = self.book.sheets.get(sheet as usize) else {
+            return Value::Array(Vec::new());
+        };
+        let reader = crate::cf::CfReader::new(
+            &self.calc,
+            &self.book.styles,
+            sheet,
+            &info.name,
+            &info.cf,
+            info.used,
+            self.today,
+        );
+        let colors = &self.book.styles.colors;
+        let rgb = |color: Option<cgs_model::Color>| -> Value {
+            color
+                .and_then(|color| colors.resolve(color, None))
+                .map_or(Value::Null, |rgb| Value::String(format!("{rgb:06X}")))
+        };
+        let mut out = Vec::new();
+        for row in area.top..=area.bottom {
+            for col in area.left..=area.right {
+                let Some(cell) = reader.cell(row, col) else {
+                    continue;
+                };
+                let dxf = cell.dxf.as_ref();
+                out.push(json!({
+                    "row": row,
+                    "col": col,
+                    "fill": rgb(dxf
+                        .and_then(|d| d.fill)
+                        .filter(|fill| fill.pattern != cgs_model::Pattern::None)
+                        .map(|fill| fill.color)),
+                    "color": rgb(dxf.and_then(|d| d.font.color)),
+                    "bold": dxf.and_then(|d| d.font.bold),
+                    "icon": cell.icon.as_ref().map(|(set, place)| json!([set, place])),
+                    "bar": cell.bar.is_some(),
+                }));
+            }
+        }
+        Value::Array(out)
     }
 }

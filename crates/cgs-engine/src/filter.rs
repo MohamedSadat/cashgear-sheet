@@ -492,7 +492,12 @@ impl Session {
                 }
                 _ => None,
             };
-            test.average = if numbers.is_empty() {
+            // An error in the column makes Excel's average 0, as checked over COM.
+            let errors =
+                (first..=r.bottom).any(|row| matches!(value_at(row), Some(CalcValue::Error(_))));
+            test.average = if errors {
+                Some(0.0)
+            } else if numbers.is_empty() {
                 None
             } else {
                 Some(numbers.iter().sum::<f64>() / numbers.len() as f64)
@@ -518,6 +523,37 @@ impl Session {
             }
         }
         keep
+    }
+
+    /// The average of a filter column's numbers, under its headings.
+    fn column_average(&self, sheet: u32, range: Rect, col: u32) -> Option<f64> {
+        if range.top + 1 > range.bottom {
+            return None;
+        }
+        let (mut sum, mut count, mut errors) = (0.0, 0u32, false);
+        self.calc.read_block(
+            SheetRect {
+                sheet,
+                rect: CalcRect {
+                    top: range.top + 1,
+                    left: col,
+                    bottom: range.bottom,
+                    right: col,
+                },
+            },
+            &mut Each(|_row: u32, value: &CalcValue| match value {
+                CalcValue::Number(number) => {
+                    sum += number;
+                    count += 1;
+                }
+                CalcValue::Error(_) => errors = true,
+                _ => {}
+            }),
+        );
+        if errors {
+            return Some(0.0);
+        }
+        (count > 0).then(|| sum / f64::from(count))
     }
 
     /// Whether one cell passes one column's test.
@@ -912,14 +948,19 @@ impl Session {
             locale,
             date1904: self.book.date1904,
         };
+        let range = filter.range;
         for column in &mut filter.columns {
+            let col = range.left + column.col_id;
             if let Some(FilterCriteria::Dynamic {
                 kind,
                 value,
                 max_value,
             }) = &mut column.criteria
             {
-                if kind != "aboveAverage" && kind != "belowAverage" {
+                if kind == "aboveAverage" || kind == "belowAverage" {
+                    // Excel applies such a filter again by the average the file holds.
+                    *value = self.column_average(sheet, range, col);
+                } else {
                     let (from, to) = self.dynamic_dates(kind);
                     *value = from;
                     *max_value = to;

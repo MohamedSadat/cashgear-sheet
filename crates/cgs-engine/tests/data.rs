@@ -485,6 +485,7 @@ fn validation_refuses_what_it_should_and_lists_what_it_offers() {
             .unwrap(),
     )
     .unwrap();
+    // A list read from cells takes `green` for `Green`, typed or circled, as Excel does.
     assert_eq!(invalid, serde_json::json!([[3, 1]]));
     let mut bytes = Vec::new();
     engine.save(&mut bytes).unwrap();
