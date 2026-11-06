@@ -5,7 +5,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Work | Status | Tag |
 | --- | --- | --- |
 | Planning | Done 2026-11-01 | |
-| Track U: components in `CashGear.React.UI` | All seven components built, and `CgChart` extended for spreadsheet charts; pinned at `814fa187`. Firefox can't run here, so `npm run verify` stops there | |
+| Track U: components in `CashGear.React.UI` | All seven components built, `CgChart` extended for spreadsheet charts, and `CgPivotFieldList` added; pinned at `bcd95bc2`. Firefox can't run here, so `npm run verify` stops there | |
 | Phase 0: Scaffold, toolchain, CI | Done 2026-11-01 | `phase-0` |
 | Phase 1: Formula engine bake-off | Done 2026-11-02: Formualizer, with the accuracy target moved to Phase 4 | `phase-1` |
 | Phase 2: Open xlsx | Done 2026-11-02 | `phase-2` |
@@ -14,7 +14,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 5: Ribbon and formatting | Done 2026-11-05, with your sign-off on the visual review | `v0.1.0-mvp` |
 | Phase 6: Data tools | Done 2026-11-06 | `phase-6` |
 | Phase 7: Charts | Done 2026-11-06, with your sign-off on the chart review | `phase-7` |
-| Phase 8: Pivot tables | Not started | |
+| Phase 8: Pivot tables | Done 2026-11-07 | `phase-8` |
 | Phase 9: Scale and release | Not started | |
 
 ## Planning
@@ -433,3 +433,46 @@ Charts from files draw live from their cells, and new ones can be made, changed,
 - Shifting cells (Insert or Delete with shift) doesn't move what a chart reads; inserting and deleting rows, columns and sheets does.
 - A chart's legend can't be laid out by hand, and its title and legend move with automatic layout only.
 - Outside this phase: the Azure Static Web Apps workflow still fails, as before.
+
+## Phase 8: Pivot tables
+
+Pivot tables from files refresh and can be rearranged, and new ones can be made from a range or a table, as Excel 2016 does them. Measured on 2026-11-06 and 07 on the reference machine, in Chrome 156, with Excel 2016 (16.0), `@cashgear/ui` pinned at `bcd95bc2` and Formualizer pinned at fork commit `4dd2e77a`.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Refresh matches Excel on test files | Pass | `bench/run-pivot-check.mjs` has Excel 2016 make 40 pivot tables over generated sales, one per sheet: every summary, Show Values As (all 14 kinds), compact, outline, tabular and mixed forms, values on rows and columns, report filters with one and several items, hidden items, label and value sorts, date and number groups, custom and absent subtotals, blank rows, repeated labels, collapsed items, captions, number formats and empty and error text. Excel then edits the source (a new region, a new product, a blank, a later date, new values) and refreshes them all. **Refresh from the file's own records** (`pivotcheck`): 40 of 40 match Excel exactly in both of Excel's files, cells, location, `rowItems` and `colItems`, over 2,198 and 2,716 cells. **The app's refresh after the same edits**, read from the source through the engine (`pivotrefresh`): 40 of 40 match Excel's refresh, cell for cell and line for line, over 2,716 cells. **Excel's refresh of what the app saved**: Excel opens the refreshed file and the file after 15 more changes and two new pivots, refreshes every pivot itself, and all 40 and 42 show exactly what the app wrote, over 2,716 and 2,789 cells. **Public test files** (only those Excel saved, never opened in Excel): 243 pivots; 191 can be laid out from their records, and 178 of them match Excel's saved output exactly. The other 13 are listed under known gaps |
+| No repair prompts | Pass | Excel opens every file the app saved above with no repair. `bench/run-excel-matrix.mjs` now makes 105 edits on each of 8 fixtures, 6 of them new: a pivot made and laid out, an empty pivot on a new sheet, one rearranged 13 ways (layouts, forms, subtotals, grand totals, repeated labels, styles, sorts, filters, custom subtotals, report filter choice, blank rows, collapsing, empty and error text), one refreshed after its source changed, one deleted, and rows put in above one. 840 of 840 saved files open with no repair, and all 12 broken controls are still refused. The fixture's own pivot, refreshed by the app after an edit, opens and gives 1,030 and 1,090 in Excel, as Excel's own refresh does. Your 5 private files: 5 of 5 clean, and 5,107 of 5,107 cells match. The Open XML validator finds nothing in the saved pivot files |
+
+**What else was checked**
+
+- Pivot styles: Excel 2016's 84 built-in pivot styles, all 28 element types, read over COM and checked against Excel's own saved copies. `bench/run-pivot-looks.mjs` compares every pivot cell's fill, font colour and weight, and edges with Excel's `DisplayFormat`: on Excel's own 40 pivots, 33 look exactly as Excel shows them, and 2,685 of 2,781 cells. The rest are listed under known gaps.
+- Editing against Excel: `bench/run-excel-rules.mjs` 43 of 43 cases, 1,572 of 1,572 comparisons.
+- Edit fuzz: `bench/run-edit-fuzz.mjs`, 250 episodes on each of 2 seeds. Seed 1: 1,120 steps match and 0 diverge, over 123,614 cell comparisons. Seed 2: 1,100 match and 0 diverge, over 120,290. All 414 saved files open clean and match what Excel makes of the same edits.
+- Browsers: 209 tests in Chrome and Edge, 10 more than in Phase 7. The new `tests/e2e/pivots.spec.ts` makes a pivot from Insert onto a new sheet, lays it out from the field list, changes the report layout from Design, refreshes after the source changes, filters from the button on Row Labels, changes the summary in Value Field Settings, and holds a pivot's golden images in light and dark.
+- Unit tests: 175 in Vitest and 554 in Rust, among them the reader, the refresh, the writer and the engine's pivot commands with undo.
+- WASM gzip: 3.83 MB, against the 5 MB budget.
+
+**Track U**
+
+`CgPivotFieldList` is Excel's PivotTable Fields pane: a field checklist with search, Filters, Columns, Rows and Σ Values areas with drag and drop and a keyboard path, each item's menu (move, remove, field and value field settings), deferred update, a read-only state, and stacked or side-by-side sections. Built in `CashGear.React.UI` on its branch at `bcd95bc2`, with 1,013 unit tests passing and 14 new browser checks in Chromium and WebKit. Firefox can't launch on this PC, and the library's existing browser suites weren't rerun, as the change only adds files.
+
+**Found and fixed on the way**
+
+- A number field only ever summed has no items listed in its cache. Put on an axis, its pivot items pointed at nothing and Excel refused the file. The matrix found it.
+- Grouped cache fields were copied as they were while their pivot items pointed at new group items (a new year), and Excel refused the file.
+- An empty `groupItems` was written for a date field that other fields group, where Excel writes a bare `fieldGroup`.
+- Excel turns COM calls away while it refreshes a file's pivots after opening it. The bench's Excel scripts now retry them.
+- Count and Count Numbers look past an error in a single cell, but a total that gathers it shows the error, as Excel does.
+- A share of a total shows 0 where nothing falls under a total that has something.
+
+**Known gaps**
+
+- Public files: 13 of 191 pivots differ from what the file holds: 4 with duplicate members in a filter (`mail`, two files each in two copies), 2 copies of a pivot on a chart sheet's workbook, 2 with a custom caption ("Filter rows"), 1 with a Hungarian error text in a cell, 1 with time labels in a format the check can't read, 1 with % Of over errors, 1 with a blank item's label and 1 with a single value field in columns. None of them is a file Excel made on this PC.
+- Calculated fields and items, OLAP, and label and value filters are shown as saved and can't be changed here; they save byte for byte. External, consolidation and other-workbook sources can be rearranged from their records but not refreshed.
+- Pivot styles: 7 of Excel's 40 pivots still differ in some cells, in tabular-form parent labels and values on rows. A pivot the app makes on a new sheet reads unstyled in Excel's `DisplayFormat`, though its style is in the file; the cause wasn't found.
+- Excel's own cell `formats` on a pivot (formatting made by hand in Excel) are kept but not laid out again after a change of layout.
+- Captions are English. Grouping is kept and refreshed, but new groups can't be made yet; nor can items be dragged by hand or renamed, and there is no Show Report Filter Pages, Change Data Source, Move PivotTable, Drill Down or GETPIVOTDATA from a click.
+- Fitting columns after a layout is a second undo step.
+- Outside this phase: nothing new.

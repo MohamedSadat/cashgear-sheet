@@ -421,3 +421,21 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | When pivots refresh | As in Excel: Refresh, Refresh All (Ctrl+Alt+F5), and on open when the file asks for it. Editing the source doesn't refresh |
 | Looks | Excel's built-in pivot styles, drawn from Excel's definitions as table styles were in Phase 6 |
 | Private workbooks | None of your 5 files holds a pivot, so pivots are checked on generated fixtures and the public test files (294 pivots in 157 files) |
+
+**Defaults picked during the phase**
+
+| Choice | Default |
+| --- | --- |
+| Where pivots are worked out | `cgs-pivot` lays a pivot table out from its cache: item trees, compact, outline and tabular lines, subtotals, grand totals, Show Values As, grouping, sorting and filters, with the cells, location, `rowItems` and `colItems` Excel writes. The engine writes the output into ordinary cells with undo |
+| A cache's records | Read the first time a pivot table needs them: from the file's records part when it has one, else from the source. Rearranging uses the cache, as Excel does; only Refresh reads the source again |
+| Saving after a refresh | The cache definition keeps its old shared items at their indexes and adds new values after them, and asks Excel to refresh on open (`refreshOnLoad`). The records part stays as it was. When the records no longer fit the fields (a field gone or newly listed), the records part goes and the cache says `saveData="0"` |
+| New pivots | A cache definition with no records, `saveData="0"` and `refreshOnLoad="1"`, linked from the workbook's `pivotCaches`; the table part as Excel 2016 writes one. Excel opens them clean and its refresh gives what the app wrote |
+| Refresh semantics | As measured in Excel 2016: new items go last in a field sorted by hand, hidden when the field's filter hides others (unless `includeNewItemsInFilter`), and in display order in a sorted field. Date groups with automatic ends follow the data (from the first date to the day after the last). Ties in a sort by value keep their last order |
+| A field put on an axis | Its items are listed in the cache, so the table's items can point at them. The matrix found that a number field used as a report filter otherwise made Excel refuse the file |
+| Output cells' formats | Compact labels left-aligned with Excel's indent, values in their value field's number format. A refresh that changes no lines leaves cell formats alone; Excel's own `formats` (made by hand in Excel) are kept in the file but not laid out again |
+| Pivot styles | Excel 2016's 84 built-in pivot styles, all 28 element types, read over COM into `crates/cgs-model/data/pivot-styles.json` and checked against Excel's own saved copies. Drawn under the cells' own formats, display only |
+| Captions | English, as Excel 2016 writes them ("Row Labels", "Grand Total", "(blank)"). `Engine::set_pivot_captions` takes another language; the checks against this PC's Excel use its Arabic words |
+| Insert › PivotTable | Starts with the block of data around a single selected cell, or a table's name when the selection is a table. A new worksheet goes before the source sheet with the pivot at A3, as Excel puts it. The field list opens with it |
+| Field list | Checking a field puts numbers in Values and anything else in Rows, as Excel does. The Σ Values field appears in Columns once there are two value fields. Value fields are named "Sum of Sales" and numbered when two would share a name |
+| Column widths | Fitted to what they hold after each layout, as Excel's "Autofit column widths on update" does. The fit is its own undo step |
+| What can't be laid out here | Calculated fields and items, OLAP and label or value filters: shown as saved, read-only in the field list. External, consolidation and other-workbook sources: rearranged from their records, never refreshed |
