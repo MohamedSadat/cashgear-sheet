@@ -400,7 +400,11 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
     let mut image_rel: Option<String> = None;
     let mut id = 0u32;
     let mut description = String::new();
+    // Anchors and `mc:AlternateContent` blocks at the top, counted as the writer counts them. A
+    // block's choice is the drawing; its fallback is the same drawing for older programs.
     let mut anchors = 0u32;
+    let mut alternate = 0u32;
+    let mut fallback = false;
     let mut reader = Reader::from_reader(xml);
     let mut buf = Vec::new();
     let mut out = Vec::new();
@@ -438,6 +442,21 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                         text.clear();
                     }
                     b"to" => in_to = false,
+                    b"Fallback" if anchor_kind == 0 => fallback = false,
+                    b"AlternateContent" if anchor_kind == 0 => {
+                        alternate = alternate.saturating_sub(1);
+                        if alternate == 0 {
+                            anchors += 1;
+                        }
+                    }
+                    b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor" if fallback => {
+                        kind = None;
+                        name.clear();
+                        anchor_kind = 0;
+                        depth = 0;
+                        chart_rel = None;
+                        image_rel = None;
+                    }
                     b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor" => {
                         let anchor = match anchor_kind {
                             1 => Anchor::TwoCell {
@@ -467,7 +486,9 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                                 image_rel: image_rel.take(),
                             });
                         }
-                        anchors += 1;
+                        if alternate == 0 {
+                            anchors += 1;
+                        }
                         id = 0;
                         chart_rel = None;
                         image_rel = None;
@@ -492,6 +513,8 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
         };
         let Some(element) = element else { continue };
         match element.local_name().as_ref() {
+            b"AlternateContent" if anchor_kind == 0 && !empty => alternate += 1,
+            b"Fallback" if anchor_kind == 0 && alternate > 0 && !empty => fallback = true,
             b"twoCellAnchor" => {
                 anchor_kind = 1;
                 (from, to) = (Marker::default(), Marker::default());
@@ -562,6 +585,32 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_alternate_block_is_one_drawing() {
+        let xml = br#"<xdr:wsDr xmlns:xdr="x" xmlns:a="y" xmlns:mc="m">
+          <mc:AlternateContent><mc:Choice Requires="cx1"><xdr:twoCellAnchor>
+            <xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+            <xdr:to><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+            <xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Waterfall"/></xdr:nvGraphicFramePr>
+              <a:graphic><a:graphicData uri="u"><cx:chart xmlns:cx="c" r:id="rId1"/></a:graphicData></a:graphic>
+            </xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></mc:Choice>
+          <mc:Fallback><xdr:twoCellAnchor>
+            <xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+            <xdr:to><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+            <xdr:sp><xdr:nvSpPr><xdr:cNvPr id="0" name=""/></xdr:nvSpPr></xdr:sp><xdr:clientData/></xdr:twoCellAnchor></mc:Fallback></mc:AlternateContent>
+          <xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+            <xdr:ext cx="1" cy="1"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="3" name="Logo"/></xdr:nvPicPr>
+            <xdr:blipFill><a:blip r:embed="rId2"/></xdr:blipFill></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+        </xdr:wsDr>"#;
+        let read = read_drawing_parts(xml);
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].drawing.kind, DrawingKind::Chart);
+        assert_eq!(read[0].chart_rel.as_deref(), Some("rId1"));
+        assert_eq!(read[0].drawing.source, Some(0));
+        assert_eq!(read[1].image_rel.as_deref(), Some("rId2"));
+        assert_eq!(read[1].drawing.source, Some(1));
+    }
 
     #[test]
     fn reads_a_drawing_of_each_kind() {

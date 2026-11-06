@@ -135,6 +135,10 @@ pub struct WorkbookEdits {
     pub notes_sheets: std::collections::BTreeSet<u32>,
     /// Sheets whose hyperlinks changed.
     pub link_sheets: std::collections::BTreeSet<u32>,
+    /// Sheets whose drawings were added, moved, resized or deleted.
+    pub drawing_sheets: std::collections::BTreeSet<u32>,
+    /// Pictures added, by the part they will be saved as.
+    pub media: BTreeMap<String, Vec<u8>>,
 }
 
 impl WorkbookEdits {
@@ -154,6 +158,7 @@ impl WorkbookEdits {
             && !self.names_changed
             && self.notes_sheets.is_empty()
             && self.link_sheets.is_empty()
+            && self.drawing_sheets.is_empty()
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.
@@ -293,6 +298,8 @@ pub struct SavePlan {
     /// New tables' parts, by their sheet and name.
     pub table_parts: Vec<(u32, String, String)>,
     pub file_sheets: Vec<u32>,
+    /// What saving drawings and charts made, for the model to follow.
+    pub drawings: crate::drawings::DrawingsSave,
 }
 
 /// A failure reading a part while patching it. Its bytes not making sense says the file is damaged,
@@ -1500,6 +1507,7 @@ pub fn save_workbook(
     let mut file_sheets_after = None;
     let mut new_parts_after = Vec::new();
     let mut table_parts_after = Vec::new();
+    let mut drawings_after = crate::drawings::DrawingsSave::default();
     if !edits.is_empty() {
         let main =
             main_part(package).ok_or_else(|| SaveError::Damaged("no workbook part".to_string()))?;
@@ -1537,6 +1545,29 @@ pub fn save_workbook(
                 &mut changes,
                 &mut report,
             )?
+        };
+
+        let drawings_save = if edits.drawing_sheets.is_empty()
+            && !book.charts.iter().any(|c| c.changed)
+        {
+            crate::drawings::DrawingsSave::default()
+        } else {
+            let input = crate::drawings::DrawingsInput {
+                package,
+                book,
+                sheets: &edits.drawing_sheets,
+                media: &edits.media,
+            };
+            let mut elements = std::mem::take(&mut edits.elements);
+            let saved =
+                crate::drawings::save_drawings(&input, &mut overlay, &mut changes, &mut elements)
+                    .map_err(SaveError::Damaged)?;
+            edits.elements = elements;
+            report
+                .added_parts
+                .extend(saved.added.iter().map(|(name, _)| name.clone()));
+            report.removed_parts.extend(saved.removed.iter().cloned());
+            saved
         };
 
         // Formulas that spill need Excel's mark for a dynamic array, once for the workbook.
@@ -1839,6 +1870,15 @@ pub fn save_workbook(
             content_types = add_override(&content_types, name, kind);
             types_changed = true;
         }
+        for (name, kind) in &drawings_save.added {
+            content_types = add_override(&content_types, name, kind);
+            types_changed = true;
+        }
+        if !drawings_save.removed.is_empty() {
+            content_types = remove_overrides(&content_types, &drawings_save.removed);
+            types_changed = true;
+        }
+        drawings_after = drawings_save;
         if !notes_save.removed.is_empty() {
             content_types = remove_overrides(&content_types, &notes_save.removed);
             types_changed = true;
@@ -2034,6 +2074,7 @@ pub fn save_workbook(
     plan.report = report;
     plan.new_parts = new_parts_after;
     plan.table_parts = table_parts_after;
+    plan.drawings = drawings_after;
     plan.file_sheets = file_sheets_after.unwrap_or_default();
     Ok(plan)
 }

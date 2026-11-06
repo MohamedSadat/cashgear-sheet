@@ -10,6 +10,8 @@
 pub mod blank;
 pub mod cf;
 pub mod chart;
+pub mod chart_write;
+pub mod drawings;
 pub mod dv;
 pub mod dxf;
 pub mod filter;
