@@ -93,7 +93,7 @@ impl Area {
         row >= self.top && row <= self.bottom && col >= self.left && col <= self.right
     }
 
-    fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         self.top >= 1
             && self.left >= 1
             && self.top <= self.bottom
@@ -336,6 +336,23 @@ pub enum Command {
         #[serde(default)]
         by_columns: bool,
     },
+    /// A conditional format over these cells, above the sheet's other rules.
+    AddCf {
+        sheet: u32,
+        areas: Vec<Area>,
+        rule: crate::cf_edit::RuleSpec,
+    },
+    /// Rules taken off these cells, or off the whole sheet with none.
+    ClearCf {
+        sheet: u32,
+        #[serde(default)]
+        areas: Option<Vec<Area>>,
+    },
+    /// The rules manager's list, in priority order.
+    SetCf {
+        sheet: u32,
+        rules: Vec<crate::cf_edit::ManagedRule>,
+    },
     /// Filter buttons on over the block around a selection, or off, on a sheet or a table.
     ToggleFilter {
         sheet: u32,
@@ -392,6 +409,11 @@ pub(crate) enum Op {
     Tables(Vec<TableInfo>),
     /// The model's tables, which hold how each looks.
     BookTables(Vec<Table>),
+    /// A sheet's conditional formats.
+    SheetCf {
+        sheet: u32,
+        blocks: Vec<cgs_model::CfBlock>,
+    },
     /// A sheet's own autofilter.
     SheetFilter {
         sheet: u32,
@@ -479,6 +501,7 @@ impl Op {
             Self::Tables(tables) => tables.len() * 256,
             Self::BookTables(tables) => tables.len() * 512,
             Self::SheetFilter { .. } => 512,
+            Self::SheetCf { blocks, .. } => 256 + blocks.len() * 512,
             Self::Merges { merges, .. } => merges.len() * 16,
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
             Self::Styles(before) => before.bytes(),
@@ -1245,6 +1268,16 @@ impl Session {
                     }
                 }
                 Ok(Op::Tables(before))
+            }
+            Op::SheetCf { sheet, blocks } => {
+                let info = &mut self.book.sheets[sheet as usize];
+                let before = std::mem::replace(&mut info.cf, blocks);
+                self.edits.cf_sheets.insert(sheet);
+                self.dirty.sheets.insert(sheet);
+                Ok(Op::SheetCf {
+                    sheet,
+                    blocks: before,
+                })
             }
             Op::SheetFilter { sheet, filter } => {
                 let info = &mut self.book.sheets[sheet as usize];
@@ -2798,6 +2831,9 @@ impl Session {
                 self.resize_table_command(&table, area)
             }
             Command::ConvertToRange { table } => self.convert_to_range_command(&table),
+            Command::AddCf { sheet, areas, rule } => self.add_cf_command(sheet, &areas, &rule),
+            Command::ClearCf { sheet, areas } => self.clear_cf_command(sheet, areas.as_deref()),
+            Command::SetCf { sheet, rules } => self.set_cf_command(sheet, &rules),
             Command::ToggleFilter { sheet, area } => {
                 if !area.valid() {
                     return Err("That's off the sheet.".to_string());

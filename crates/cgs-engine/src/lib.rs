@@ -4,6 +4,7 @@
 
 mod ask;
 pub mod cf;
+pub mod cf_edit;
 pub mod clip;
 pub mod command;
 pub mod edit;

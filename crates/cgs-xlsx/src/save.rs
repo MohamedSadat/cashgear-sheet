@@ -124,6 +124,8 @@ pub struct WorkbookEdits {
     pub tables_changed: bool,
     /// Sheets whose own autofilter changed.
     pub filters: std::collections::BTreeSet<u32>,
+    /// Sheets whose conditional formats changed.
+    pub cf_sheets: std::collections::BTreeSet<u32>,
 }
 
 impl WorkbookEdits {
@@ -138,6 +140,7 @@ impl WorkbookEdits {
             && self.extras.values().all(SheetExtras::is_empty)
             && !self.tables_changed
             && self.filters.is_empty()
+            && self.cf_sheets.is_empty()
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.

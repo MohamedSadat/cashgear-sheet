@@ -26,6 +26,8 @@ enum Question {
     },
     /// The filters on a sheet, its own and its tables', for drawing their buttons.
     Filters { sheet: u32 },
+    /// A sheet's conditional formats, in priority order, for the rules manager.
+    CfRules { sheet: u32 },
 }
 
 fn area_json(top: u32, left: u32, bottom: u32, right: u32) -> Value {
@@ -145,6 +147,7 @@ impl Session {
                 }
                 Value::Array(list)
             }
+            Question::CfRules { sheet } => self.cf_rules(sheet),
             Question::Tables => Value::Array(
                 self.book
                     .tables

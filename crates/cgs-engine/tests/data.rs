@@ -373,3 +373,70 @@ fn timing_a_filter_on_a_million_rows() {
         .unwrap();
     eprintln!("clear {:?}", started.elapsed());
 }
+
+#[test]
+fn rules_added_save_as_excel_writes_them_and_read_back() {
+    let mut engine = opened();
+    for row in 1..=5 {
+        typed(&mut engine, row, 1, &row.to_string());
+    }
+    let area = r#"[{"top":1,"left":1,"bottom":5,"right":1}]"#;
+    run(
+        &mut engine,
+        &format!(
+            r#"{{"kind":"addCf","sheet":0,"areas":{area},"rule":{{"type":"cellIs","op":"greaterThan","formulas":["3"],"format":{{"color":"9C0006","fill":"FFC7CE"}}}}}}"#
+        ),
+    );
+    run(
+        &mut engine,
+        &format!(
+            r#"{{"kind":"addCf","sheet":0,"areas":{area},"rule":{{"type":"dataBar","min":{{"kind":"autoMin"}},"max":{{"kind":"autoMax"}},"color":"638EC6"}}}}"#
+        ),
+    );
+    run(
+        &mut engine,
+        &format!(
+            r#"{{"kind":"addCf","sheet":0,"areas":{area},"rule":{{"type":"text","op":"contains","text":"2","format":{{"bold":true}}}}}}"#
+        ),
+    );
+    let rules: serde_json::Value =
+        serde_json::from_str(&engine.query(r#"{"kind":"cfRules","sheet":0}"#).unwrap()).unwrap();
+    assert_eq!(rules[0]["kind"], "text");
+    assert_eq!(rules[2]["description"], "Cell Value > 3");
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+    assert!(sheet.contains(r#"<cfRule type="cellIs" dxfId="0" priority="3" operator="greaterThan"><formula>3</formula></cfRule>"#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<formula>NOT(ISERROR(SEARCH("2",A1)))</formula>"#),
+        "{sheet}"
+    );
+    assert!(
+        sheet.contains("<x14:conditionalFormattings>") && sheet.contains("<x14:id>{"),
+        "{sheet}"
+    );
+    let styles = part(&bytes, "xl/styles.xml");
+    assert!(styles.contains(r#"<dxfs count="2">"#), "{styles}");
+    let mut again = Engine::new();
+    again.open(Rc::new(bytes)).unwrap();
+    while again.load_step(1000.0).unwrap().phase == LoadPhase::Reading {}
+    let rules: serde_json::Value =
+        serde_json::from_str(&again.query(r#"{"kind":"cfRules","sheet":0}"#).unwrap()).unwrap();
+    assert_eq!(rules.as_array().unwrap().len(), 3);
+    assert_eq!(rules[1]["kind"], "dataBar");
+    run(
+        &mut again,
+        r#"{"kind":"clearCf","sheet":0,"areas":[{"top":1,"left":1,"bottom":2,"right":1}]}"#,
+    );
+    let rules: serde_json::Value =
+        serde_json::from_str(&again.query(r#"{"kind":"cfRules","sheet":0}"#).unwrap()).unwrap();
+    assert_eq!(rules[0]["areas"], "A3:A5");
+    run(&mut again, r#"{"kind":"clearCf","sheet":0}"#);
+    let mut bytes = Vec::new();
+    again.save(&mut bytes).unwrap();
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+    assert!(
+        !sheet.contains("conditionalFormatting") && !sheet.contains("x14:"),
+        "{sheet}"
+    );
+}

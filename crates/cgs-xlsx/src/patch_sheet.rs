@@ -157,6 +157,7 @@ pub const REPLACED: &[&str] = &[
     "dataValidations",
     "hyperlinks",
     "legacyDrawing",
+    "extLst",
 ];
 
 /// Excel wraps `oleObjects` and `controls` this way, which sets where the wrapper sits.

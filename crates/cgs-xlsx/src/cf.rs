@@ -726,11 +726,12 @@ pub fn cf_ext_xml(blocks: &[CfBlock], kept: &[Vec<u8>]) -> String {
     )
 }
 
-/// The extended blocks of an `extLst` that no classic rule pairs with, kept as their XML.
+/// The extended blocks of an `extLst` that are still extended rules of the sheet's, kept as their
+/// XML. Partners of classic bars are written anew, and rules taken away go.
 pub fn unpaired_extended(ext_list: &[u8], blocks: &[CfBlock]) -> Vec<Vec<u8>> {
     let ids: Vec<&String> = blocks
         .iter()
-        .filter(|block| !block.extended)
+        .filter(|block| block.extended)
         .flat_map(|block| block.rules.iter())
         .filter_map(|rule| rule.x14_id.as_ref())
         .collect();
@@ -738,7 +739,7 @@ pub fn unpaired_extended(ext_list: &[u8], blocks: &[CfBlock]) -> Vec<Vec<u8>> {
         .into_iter()
         .filter(|xml| {
             let text = String::from_utf8_lossy(xml);
-            !ids.iter().any(|id| text.contains(id.as_str()))
+            ids.iter().any(|id| text.contains(id.as_str()))
         })
         .collect()
 }

@@ -737,3 +737,27 @@ fn a_sheet_with_no_views_gets_one_in_its_place() {
         "{out}"
     );
 }
+
+#[test]
+fn new_elements_that_replace_go_in_when_the_file_has_none() {
+    let rules = NewElement {
+        name: "conditionalFormatting".to_string(),
+        xml: r#"<conditionalFormatting sqref="A1"/>"#.to_string(),
+        replace: true,
+    };
+    let ext = NewElement {
+        name: "extLst".to_string(),
+        xml: "<extLst/>".to_string(),
+        replace: true,
+    };
+    let xml = r#"<worksheet xmlns="m"><sheetData/></worksheet>"#;
+    assert_eq!(
+        run_with(xml, &[], &[rules.clone(), ext.clone()]).0,
+        r#"<worksheet xmlns="m"><sheetData/><conditionalFormatting sqref="A1"/><extLst/></worksheet>"#
+    );
+    let xml = r#"<worksheet xmlns="m"><dimension ref="A1"/><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><pageMargins left="1"/></worksheet>"#;
+    assert_eq!(
+        run_with(xml, &[], &[rules, ext]).0,
+        r#"<worksheet xmlns="m"><dimension ref="A1"/><sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><conditionalFormatting sqref="A1"/><pageMargins left="1"/><extLst/></worksheet>"#
+    );
+}

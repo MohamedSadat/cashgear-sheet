@@ -407,6 +407,40 @@ impl Session {
                 active_cell: info.view.active_cell,
             });
         }
+        for &sheet in &edits.cf_sheets.clone() {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            let xml: String = info
+                .cf
+                .iter()
+                .filter(|block| !block.extended)
+                .map(cgs_xlsx::cf::block_xml)
+                .collect();
+            let list = edits.elements.entry(sheet).or_default();
+            list.push(NewElement {
+                name: "conditionalFormatting".to_string(),
+                xml,
+                replace: true,
+            });
+            // The extension: the file's extended rules of their own, and the bars' partners.
+            let ext = info
+                .captured
+                .iter()
+                .find(|(name, _)| name == "extLst")
+                .map(|(_, xml)| xml.as_slice());
+            let kept = ext
+                .map(|ext| cgs_xlsx::cf::unpaired_extended(ext, &info.cf))
+                .unwrap_or_default();
+            let cf_ext = cgs_xlsx::cf::cf_ext_xml(&info.cf, &kept);
+            if ext.is_some() || !cf_ext.is_empty() {
+                list.push(NewElement {
+                    name: "extLst".to_string(),
+                    xml: cgs_xlsx::cf::ext_list_with(ext, &cf_ext),
+                    replace: true,
+                });
+            }
+        }
         for &sheet in &edits.filters.clone() {
             let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
                 continue;
