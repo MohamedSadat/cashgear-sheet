@@ -33,6 +33,11 @@ for (let tries = 0; !(await serverIsUp()); tries++) {
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  page.on('worker', (worker) => {
+    worker.on('console', (message) => {
+      if (message.type() === 'error') console.log('worker:', message.text());
+    });
+  });
   await page.goto(origin);
   await page.waitForFunction(
     () => document.querySelector('[data-testid="engine-status"]')?.textContent === 'Ready',

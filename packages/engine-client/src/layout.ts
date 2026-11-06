@@ -18,7 +18,8 @@ export interface SheetLayout {
   leftCol: number;
   activeRow: number;
   activeCol: number;
-  /** Pairs of 1-based row and pixels, sorted. */
+  /** Triples of 1-based first row, last row and pixels, sorted: rows of other sizes than the
+   * default, in runs. */
   rows: Uint32Array;
   /** Triples of 1-based first column, last column and pixels, sorted. */
   cols: Uint32Array;
@@ -50,7 +51,7 @@ export function decodeLayout(numbers: Uint32Array): SheetLayout {
     colCount,
     mergeCount,
   ] = numbers as unknown as number[] & { length: 18 };
-  const rowsEnd = HEADER + rowCount! * 2;
+  const rowsEnd = HEADER + rowCount! * 3;
   const colsEnd = rowsEnd + colCount! * 3;
   return {
     defaultRowPx: defaultRowPx!,

@@ -642,3 +642,71 @@ fn links_save_external_targets_as_relationships_and_places_as_locations() {
         "Sheet1!C5"
     );
 }
+
+#[test]
+fn remove_duplicates_compares_what_cells_show_whatever_the_case() {
+    let mut engine = opened();
+    for (row, (a, b)) in [
+        ("Name", "Qty"),
+        ("ann", "1"),
+        ("Bob", "2"),
+        ("ANN", "1"),
+        ("bob", "3"),
+        ("Ann", "1"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        typed(&mut engine, row as u32 + 1, 1, a);
+        typed(&mut engine, row as u32 + 1, 2, b);
+    }
+    run(
+        &mut engine,
+        r#"{"kind":"removeDuplicates","sheet":0,"area":{"top":1,"left":1,"bottom":6,"right":2},"columns":[1,2],"header":true}"#,
+    );
+    assert_eq!(column(&engine, 1, 6), ["Name", "ann", "Bob", "bob", "", ""]);
+    assert_eq!(column(&engine, 2, 6), ["Qty", "1", "2", "3", "", ""]);
+    run(&mut engine, r#"{"kind":"undo"}"#);
+    assert_eq!(
+        column(&engine, 1, 6),
+        ["Name", "ann", "Bob", "ANN", "bob", "Ann"]
+    );
+}
+
+#[test]
+fn a_cell_style_gives_the_parts_it_includes() {
+    let mut engine = opened();
+    typed(&mut engine, 1, 1, "5");
+    run(
+        &mut engine,
+        r#"{"kind":"cellStyle","sheet":0,"areas":[{"top":1,"left":1,"bottom":2,"right":1}],"name":"Heading 1"}"#,
+    );
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let styles = part(&bytes, "xl/styles.xml");
+    assert!(styles.contains(r#"<sz val="15"/>"#), "{styles}");
+    // Each cell has its own thick line under it.
+    assert!(styles.contains(r#"<bottom style="thick">"#), "{styles}");
+    let gallery = ask(&engine, r#"{"kind":"cellStyles"}"#);
+    assert_eq!(gallery[0]["group"], "Good, Bad and Neutral");
+    assert_eq!(gallery[0]["styles"][2]["fill"], "#C6EFCE");
+}
+
+#[test]
+fn the_table_style_gallery_previews_each_style() {
+    let engine = opened();
+    let styles = ask(&engine, r#"{"kind":"tableStyles"}"#);
+    let medium2 = styles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|style| style["name"] == "TableStyleMedium2")
+        .unwrap();
+    assert_eq!(medium2["group"], "Medium");
+    // The header row is accent 1 with white bold text, and the first stripe a light tint.
+    assert_eq!(medium2["cells"][0][0][0], "#4472C4");
+    assert_eq!(medium2["cells"][0][0][1], "#FFFFFF");
+    assert_eq!(medium2["cells"][0][0][2], true);
+    assert_eq!(medium2["cells"][1][0][0], "#D9E1F2");
+    assert_eq!(styles.as_array().unwrap().len(), 60);
+}

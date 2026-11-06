@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use cgs_calc::{CalcEngine, CalcValue, CellSink, Rect as CalcRect, SheetRect};
 use cgs_model::{AutoFilter, DateGroup, FilterColumn, FilterCriteria, FilterOp, LineInfo, Rect};
 use cgs_numfmt::{NumFmt, Options};
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
 use crate::command::{Applied, Area, Op};
@@ -13,7 +14,11 @@ use crate::Session;
 
 /// What a column should keep, as the UI asks for it.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum FilterSpec {
     Values {
         #[serde(default)]
@@ -97,17 +102,84 @@ impl CellSink for Column {
     }
 }
 
-/// What a test made of each value and format, looked up without copying the value.
-#[derive(Default)]
+/// A sink that hands each value to a function as it's read.
+struct Each<F: FnMut(u32, &CalcValue)>(F);
+
+impl<F: FnMut(u32, &CalcValue)> CellSink for Each<F> {
+    fn cell(&mut self, row: u32, _col: u32, value: &CalcValue) {
+        (self.0)(row, value);
+    }
+}
+
+/// One column's test, with what it needs worked out from the whole column first.
+struct Test<'a> {
+    criteria: &'a FilterCriteria,
+    /// A top ten's cut-off.
+    cut: Option<f64>,
+    average: Option<f64>,
+    /// A dynamic date filter's span, from and up to.
+    dates: (Option<f64>, Option<f64>),
+}
+
+/// The number format at `row`, moving `at` along `spans` as the rows go down.
+fn span_format(spans: &[(u32, u32, u32)], at: &mut usize, row: u32) -> u32 {
+    if spans.get(*at).is_none_or(|span| row < span.0) {
+        *at = spans.partition_point(|span| span.1 < row);
+    }
+    while spans.get(*at).is_some_and(|span| span.1 < row) {
+        *at += 1;
+    }
+    spans.get(*at).map_or(0, |span| span.2)
+}
+
+/// Slots in `Known`'s table of recent numbers.
+const KNOWN_SLOTS: usize = 1 << 14;
+
+/// What a test made of each value and format, looked up without copying the value. A column of
+/// a million numbers asks a million times, so numbers go through a small table first, where a
+/// hash map would cost several times the read.
 struct Known {
-    numbers: HashMap<(u32, u64), bool>,
-    texts: HashMap<u32, HashMap<String, bool>>,
+    /// (bits, number format, answer), with 0 for an empty slot, 1 for kept and 2 for not.
+    slots: Vec<(u64, u32, u8)>,
+    /// Keyed by the number's bits times an odd constant, which keeps them apart, as their low
+    /// bits are mostly zero.
+    numbers: FxHashMap<(u32, u64), bool>,
+    texts: FxHashMap<u32, FxHashMap<String, bool>>,
+}
+
+impl Default for Known {
+    fn default() -> Self {
+        Self {
+            slots: vec![(0, 0, 0); KNOWN_SLOTS],
+            numbers: FxHashMap::default(),
+            texts: FxHashMap::default(),
+        }
+    }
+}
+
+const SPREAD: u64 = 0x9E37_79B9_7F4A_7C15;
+
+fn slot_of(bits: u64, num_fmt: u32) -> usize {
+    ((bits ^ u64::from(num_fmt).rotate_left(29)).wrapping_mul(SPREAD) >> 50) as usize
 }
 
 impl Known {
-    fn get(&self, num_fmt: u32, value: &CalcValue) -> Option<bool> {
+    fn get(&mut self, num_fmt: u32, value: &CalcValue) -> Option<bool> {
         match value {
-            CalcValue::Number(number) => self.numbers.get(&(num_fmt, number.to_bits())).copied(),
+            CalcValue::Number(number) => {
+                let bits = number.to_bits();
+                let slot = slot_of(bits, num_fmt);
+                let (at_bits, at_fmt, answer) = self.slots[slot];
+                if answer != 0 && at_bits == bits && at_fmt == num_fmt {
+                    return Some(answer == 1);
+                }
+                let found = self
+                    .numbers
+                    .get(&(num_fmt, bits.wrapping_mul(SPREAD)))
+                    .copied()?;
+                self.slots[slot] = (bits, num_fmt, if found { 1 } else { 2 });
+                Some(found)
+            }
             CalcValue::Text(text) => self.texts.get(&num_fmt)?.get(text.as_str()).copied(),
             _ => None,
         }
@@ -116,7 +188,10 @@ impl Known {
     fn put(&mut self, num_fmt: u32, value: &CalcValue, answer: bool) {
         match value {
             CalcValue::Number(number) => {
-                self.numbers.insert((num_fmt, number.to_bits()), answer);
+                let bits = number.to_bits();
+                self.slots[slot_of(bits, num_fmt)] = (bits, num_fmt, if answer { 1 } else { 2 });
+                self.numbers
+                    .insert((num_fmt, bits.wrapping_mul(SPREAD)), answer);
             }
             CalcValue::Text(text) => {
                 self.texts
@@ -231,7 +306,7 @@ impl Session {
     }
 
     /// Text a cell shows, as a value filter lists and matches it.
-    fn shown(
+    pub(crate) fn shown(
         &self,
         value: &CalcValue,
         num_fmt: u32,
@@ -270,13 +345,24 @@ impl Session {
         filter: &AutoFilter,
         options: &Options<'_>,
     ) -> Vec<(u32, bool)> {
+        let first = filter.range.top + 1;
+        self.keep_flags(sheet, filter, options)
+            .into_iter()
+            .enumerate()
+            .map(|(at, keep)| (first + at as u32, keep))
+            .collect()
+    }
+
+    /// Whether each data row of a filter shows, from the row under its headings.
+    fn keep_flags(&self, sheet: u32, filter: &AutoFilter, options: &Options<'_>) -> Vec<bool> {
         let r = filter.range;
         let first = r.top + 1;
         if first > r.bottom {
             return Vec::new();
         }
         let info = &self.book.sheets[sheet as usize];
-        let mut keep: Vec<bool> = vec![true; (r.bottom - first + 1) as usize];
+        let count = (r.bottom - first + 1) as usize;
+        let mut keep: Vec<bool> = vec![true; count];
         let mut formats = HashMap::new();
         for column in &filter.columns {
             let Some(criteria) = &column.criteria else {
@@ -289,26 +375,93 @@ impl Session {
                 continue;
             }
             let col = r.left + column.col_id;
+            let rect = SheetRect {
+                sheet,
+                rect: CalcRect {
+                    top: first,
+                    left: col,
+                    bottom: r.bottom,
+                    right: col,
+                },
+            };
+            // Each stretch of rows with one number format.
+            let spans: Vec<(u32, u32, u32)> = info
+                .drawn_style_spans(col, first, r.bottom)
+                .into_iter()
+                .map(|(top, bottom, style)| (top, bottom, self.book.styles.xf(style).num_fmt))
+                .collect();
+            let mut test = Test {
+                criteria,
+                cut: None,
+                average: None,
+                dates: (None, None),
+            };
+            if matches!(
+                criteria,
+                FilterCriteria::Values { .. } | FilterCriteria::Custom { .. }
+            ) {
+                // A test that only looks at each value and its format runs as the values are
+                // read, once for each value and format: 1 kept, 2 not, 0 for a cell with nothing.
+                let mut seen = vec![0u8; count];
+                let mut known = Known::default();
+                let mut span = 0;
+                let mut sink = Each(|row: u32, value: &CalcValue| {
+                    let at = (row - first) as usize;
+                    if !keep[at] || matches!(value, CalcValue::Empty) {
+                        return;
+                    }
+                    let num_fmt = span_format(&spans, &mut span, row);
+                    let answer = match known.get(num_fmt, value) {
+                        Some(answer) => answer,
+                        None => {
+                            let answer = self.holds(
+                                &test,
+                                (sheet, row, col),
+                                Some(value),
+                                num_fmt,
+                                &mut formats,
+                                options,
+                            );
+                            known.put(num_fmt, value, answer);
+                            answer
+                        }
+                    };
+                    seen[at] = if answer { 1 } else { 2 };
+                });
+                self.calc.read_block(rect, &mut sink);
+                let mut empty: FxHashMap<u32, bool> = FxHashMap::default();
+                let mut span = 0;
+                for (at, keep) in keep.iter_mut().enumerate() {
+                    if !*keep {
+                        continue;
+                    }
+                    *keep = match seen[at] {
+                        1 => true,
+                        2 => false,
+                        _ => {
+                            let row = first + at as u32;
+                            let num_fmt = span_format(&spans, &mut span, row);
+                            *empty.entry(num_fmt).or_insert_with(|| {
+                                self.holds(
+                                    &test,
+                                    (sheet, row, col),
+                                    None,
+                                    num_fmt,
+                                    &mut formats,
+                                    options,
+                                )
+                            })
+                        }
+                    };
+                }
+                continue;
+            }
             let mut block = Column {
                 first,
-                values: vec![None; (r.bottom - first + 1) as usize],
+                values: vec![None; count],
             };
-            self.calc.read_block(
-                SheetRect {
-                    sheet,
-                    rect: CalcRect {
-                        top: first,
-                        left: col,
-                        bottom: r.bottom,
-                        right: col,
-                    },
-                },
-                &mut block,
-            );
+            self.calc.read_block(rect, &mut block);
             let value_at = |row: u32| block.values[(row - first) as usize].as_ref();
-            // What each value and format came to, for a test that only looks at them.
-            let mut known = Known::default();
-            let mut last_style = (u32::MAX, 0u32);
             // What a whole column decides, worked out once: a top ten's cut-off and an average.
             let numbers: Vec<f64> = (first..=r.bottom)
                 .filter_map(|row| match value_at(row) {
@@ -316,7 +469,7 @@ impl Session {
                     _ => None,
                 })
                 .collect();
-            let cut = match criteria {
+            test.cut = match criteria {
                 FilterCriteria::Top10 {
                     top,
                     percent,
@@ -339,132 +492,124 @@ impl Session {
                 }
                 _ => None,
             };
-            let average = if numbers.is_empty() {
+            test.average = if numbers.is_empty() {
                 None
             } else {
                 Some(numbers.iter().sum::<f64>() / numbers.len() as f64)
             };
-            let (date_from, date_to) = match criteria {
+            test.dates = match criteria {
                 FilterCriteria::Dynamic { kind, .. } => self.dynamic_dates(kind),
                 _ => (None, None),
             };
-            let by_value = matches!(
-                criteria,
-                FilterCriteria::Values { .. } | FilterCriteria::Custom { .. }
-            );
+            let mut span = 0;
             for (at, row) in (first..=r.bottom).enumerate() {
                 if !keep[at] {
                     continue;
                 }
-                let value = value_at(row);
-                let style = info.style_at(row, col);
-                let num_fmt = if style == last_style.0 {
-                    last_style.1
-                } else {
-                    let num_fmt = self.book.styles.xf(style).num_fmt;
-                    last_style = (style, num_fmt);
-                    num_fmt
-                };
-                if by_value {
-                    if let Some(answer) = value.and_then(|value| known.get(num_fmt, value)) {
-                        keep[at] = answer;
-                        continue;
-                    }
-                }
-                keep[at] = match criteria {
-                    FilterCriteria::Values {
-                        values,
-                        blank,
-                        dates,
-                    } => match value {
-                        None => *blank,
-                        Some(CalcValue::Text(text)) if text.is_empty() => *blank,
-                        Some(value) => {
-                            let date_hit = match value {
-                                CalcValue::Number(serial)
-                                    if !dates.is_empty() && self.is_date(num_fmt) =>
-                                {
-                                    ymd(*serial, self.book.date1904).is_some_and(|(y, m, d)| {
-                                        dates.iter().any(|group| {
-                                            u32::from(group.year) == y
-                                                && group
-                                                    .month
-                                                    .is_none_or(|month| u32::from(month) == m)
-                                                && group.day.is_none_or(|day| u32::from(day) == d)
-                                        })
-                                    })
-                                }
-                                _ => false,
-                            };
-                            date_hit || {
-                                let text = self.shown(value, num_fmt, &mut formats, options);
-                                values.iter().any(|wanted| {
-                                    wanted.eq_ignore_ascii_case(&text)
-                                        || wanted.to_lowercase() == text.to_lowercase()
-                                })
-                            }
-                        }
-                    },
-                    FilterCriteria::Custom { and, conditions } => {
-                        let results = conditions.iter().map(|(op, wanted)| {
-                            self.condition_holds(*op, wanted, value, num_fmt, &mut formats, options)
-                        });
-                        let results: Vec<bool> = results.collect();
-                        if *and {
-                            results.iter().all(|&hit| hit)
-                        } else {
-                            results.iter().any(|&hit| hit)
-                        }
-                    }
-                    FilterCriteria::Top10 { top, .. } => match (value, cut) {
-                        (Some(CalcValue::Number(number)), Some(cut)) => {
-                            if *top {
-                                *number >= cut
-                            } else {
-                                *number <= cut
-                            }
-                        }
-                        _ => false,
-                    },
-                    FilterCriteria::Dynamic { kind, .. } => match (value, kind.as_str()) {
-                        (Some(CalcValue::Number(number)), "aboveAverage") => {
-                            average.is_some_and(|average| *number > average)
-                        }
-                        (Some(CalcValue::Number(number)), "belowAverage") => {
-                            average.is_some_and(|average| *number < average)
-                        }
-                        (Some(CalcValue::Number(number)), _) => match (date_from, date_to) {
-                            (Some(from), Some(to)) => *number >= from && *number < to,
-                            _ => false,
-                        },
-                        _ => false,
-                    },
-                    FilterCriteria::Color { cell, dxf } => {
-                        let wanted = dxf
-                            .and_then(|index| self.book.styles.dxfs.get(index as usize))
-                            .and_then(|dxf| {
-                                if *cell {
-                                    dxf.fill.and_then(|fill| {
-                                        self.book.styles.colors.resolve(fill.color, None)
-                                    })
-                                } else {
-                                    dxf.font.color.and_then(|color| {
-                                        self.book.styles.colors.resolve(color, None)
-                                    })
-                                }
-                            });
-                        self.shown_color(sheet, row, col, !*cell) == wanted
-                    }
-                    FilterCriteria::Icon { .. } | FilterCriteria::Other(_) => true,
-                };
-                if by_value {
-                    if let Some(value) = value {
-                        known.put(num_fmt, value, keep[at]);
-                    }
-                }
+                let num_fmt = span_format(&spans, &mut span, row);
+                keep[at] = self.holds(
+                    &test,
+                    (sheet, row, col),
+                    value_at(row),
+                    num_fmt,
+                    &mut formats,
+                    options,
+                );
             }
         }
-        (first..=r.bottom).zip(keep).collect()
+        keep
+    }
+
+    /// Whether one cell passes one column's test.
+    fn holds(
+        &self,
+        test: &Test<'_>,
+        (sheet, row, col): (u32, u32, u32),
+        value: Option<&CalcValue>,
+        num_fmt: u32,
+        formats: &mut HashMap<u32, NumFmt>,
+        options: &Options<'_>,
+    ) -> bool {
+        match test.criteria {
+            FilterCriteria::Values {
+                values,
+                blank,
+                dates,
+            } => match value {
+                None => *blank,
+                Some(CalcValue::Text(text)) if text.is_empty() => *blank,
+                Some(value) => {
+                    let date_hit = match value {
+                        CalcValue::Number(serial) if !dates.is_empty() && self.is_date(num_fmt) => {
+                            ymd(*serial, self.book.date1904).is_some_and(|(y, m, d)| {
+                                dates.iter().any(|group| {
+                                    u32::from(group.year) == y
+                                        && group.month.is_none_or(|month| u32::from(month) == m)
+                                        && group.day.is_none_or(|day| u32::from(day) == d)
+                                })
+                            })
+                        }
+                        _ => false,
+                    };
+                    date_hit || {
+                        let text = self.shown(value, num_fmt, formats, options);
+                        values.iter().any(|wanted| {
+                            wanted.eq_ignore_ascii_case(&text)
+                                || wanted.to_lowercase() == text.to_lowercase()
+                        })
+                    }
+                }
+            },
+            FilterCriteria::Custom { and, conditions } => {
+                let mut results = conditions.iter().map(|(op, wanted)| {
+                    self.condition_holds(*op, wanted, value, num_fmt, formats, options)
+                });
+                if *and {
+                    results.all(|hit| hit)
+                } else {
+                    results.any(|hit| hit)
+                }
+            }
+            FilterCriteria::Top10 { top, .. } => match (value, test.cut) {
+                (Some(CalcValue::Number(number)), Some(cut)) => {
+                    if *top {
+                        *number >= cut
+                    } else {
+                        *number <= cut
+                    }
+                }
+                _ => false,
+            },
+            FilterCriteria::Dynamic { kind, .. } => match (value, kind.as_str()) {
+                (Some(CalcValue::Number(number)), "aboveAverage") => {
+                    test.average.is_some_and(|average| *number > average)
+                }
+                (Some(CalcValue::Number(number)), "belowAverage") => {
+                    test.average.is_some_and(|average| *number < average)
+                }
+                (Some(CalcValue::Number(number)), _) => match test.dates {
+                    (Some(from), Some(to)) => *number >= from && *number < to,
+                    _ => false,
+                },
+                _ => false,
+            },
+            FilterCriteria::Color { cell, dxf } => {
+                let wanted = dxf
+                    .and_then(|index| self.book.styles.dxfs.get(index as usize))
+                    .and_then(|dxf| {
+                        if *cell {
+                            dxf.fill
+                                .and_then(|fill| self.book.styles.colors.resolve(fill.color, None))
+                        } else {
+                            dxf.font
+                                .color
+                                .and_then(|color| self.book.styles.colors.resolve(color, None))
+                        }
+                    });
+                self.shown_color(sheet, row, col, !*cell) == wanted
+            }
+            FilterCriteria::Icon { .. } | FilterCriteria::Other(_) => true,
+        }
     }
 
     fn condition_holds(
@@ -553,7 +698,13 @@ impl Session {
         // The sheet's row records walked alongside, as both are in order.
         let records = &info.rows.rows;
         let mut at = records.partition_point(|&(row, _)| row < filter.range.top);
-        for (row, keep) in self.rows_kept(sheet, filter, options) {
+        let first = filter.range.top + 1;
+        for (index, keep) in self
+            .keep_flags(sheet, filter, options)
+            .into_iter()
+            .enumerate()
+        {
+            let row = first + index as u32;
             while at < records.len() && records[at].0 < row {
                 at += 1;
             }

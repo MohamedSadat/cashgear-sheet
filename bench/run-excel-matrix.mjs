@@ -527,6 +527,108 @@ Object.assign(MOVES, {
   ],
 });
 
+// Phase 6: validation, names, notes, links, cell styles and duplicates.
+const note = (row, col, text) => ({ kind: 'setNote', sheet: 0, row, col, text, author: 'Matrix' });
+Object.assign(MOVES, {
+  'validation of every kind': [
+    ...block(70, 20),
+    {
+      kind: 'setValidation',
+      sheet: 0,
+      areas: [cells(71, 20, 75, 20)],
+      rule: { kind: 'list', formula1: 't1,t2,t3', errorTitle: 'No', errorText: 'Pick one.' },
+    },
+    {
+      kind: 'setValidation',
+      sheet: 0,
+      areas: [cells(71, 21, 75, 21)],
+      rule: { kind: 'whole', op: 'between', formula1: '0', formula2: '100', style: 'warning' },
+    },
+    {
+      kind: 'setValidation',
+      sheet: 0,
+      areas: [cells(71, 22, 75, 22)],
+      rule: {
+        kind: 'custom',
+        formula1: '=V71<10',
+        inputTitle: 'Qty',
+        inputText: 'Under ten.',
+        style: 'information',
+      },
+    },
+    {
+      kind: 'setValidation',
+      sheet: 0,
+      areas: [cells(76, 20, 76, 22)],
+      rule: { kind: 'date', op: 'greaterThan', formula1: '45292' },
+    },
+    { kind: 'setValidation', sheet: 0, areas: [cells(76, 21)] },
+    rows(0, 72, 1),
+  ],
+  'names defined, renamed and deleted': [
+    ...block(70, 20),
+    { kind: 'setName', name: 'Costs', formula: '=$U$71:$U$75' },
+    { kind: 'setName', name: 'Local', formula: '=$V$71', sheet: 0 },
+    input(0, 80, 20, '=SUM(Costs)+Local'),
+    { kind: 'setName', old: { name: 'Costs' }, name: 'Spend', formula: '=$U$71:$U$75' },
+    {
+      kind: 'namesFromSelection',
+      sheet: 0,
+      area: cells(70, 20, 75, 22),
+      top: true,
+    },
+    { kind: 'deleteName', name: 'Qty' },
+  ],
+  'notes added, changed and deleted': [
+    note(2, 2, 'First note'),
+    note(3, 4, 'Second\nwith two lines'),
+    note(2, 2, 'First note, changed'),
+    note(90, 30, 'Far away'),
+    { kind: 'setNote', sheet: 0, row: 3, col: 4 },
+    rows(0, 2, 1),
+  ],
+  'every note deleted': [note(5, 5, 'Only one'), { kind: 'setNote', sheet: 0, row: 5, col: 5 }],
+  'hyperlinks of each kind': [
+    {
+      kind: 'setLink',
+      sheet: 0,
+      area: cells(60, 20),
+      link: { address: 'example.com', tooltip: 'Example' },
+    },
+    { kind: 'setLink', sheet: 0, area: cells(61, 20), link: { address: 'someone@example.com' } },
+    {
+      kind: 'setLink',
+      sheet: 0,
+      area: cells(62, 20, 62, 21),
+      link: { location: 'A1', text: 'Back to the top' },
+    },
+    { kind: 'setLink', sheet: 0, area: cells(61, 20) },
+    rows(0, 60, 1),
+  ],
+  'cell styles applied': [
+    ...block(70, 20),
+    { kind: 'cellStyle', sheet: 0, areas: [cells(70, 20, 70, 22)], name: 'Heading 1' },
+    { kind: 'cellStyle', sheet: 0, areas: [cells(71, 20, 72, 22)], name: 'Good' },
+    { kind: 'cellStyle', sheet: 0, areas: [cells(73, 20, 73, 22)], name: 'Input' },
+    { kind: 'cellStyle', sheet: 0, areas: [cells(74, 21, 75, 21)], name: 'Currency' },
+    { kind: 'cellStyle', sheet: 0, areas: [cells(75, 22)], name: '60% - Accent4' },
+    { kind: 'cellStyle', sheet: 0, areas: [cells(71, 20)], name: 'Normal' },
+  ],
+  'duplicates removed': [
+    ...block(70, 20),
+    input(0, 72, 20, 'T1'),
+    input(0, 72, 21, '10'),
+    input(0, 72, 22, '1'),
+    {
+      kind: 'removeDuplicates',
+      sheet: 0,
+      area: block70,
+      columns: [20, 21],
+      header: true,
+    },
+  ],
+});
+
 const MOVED = {
   'moving-parts.xlsx': 'xlsx',
   'prefixed.xlsx': 'xlsx',

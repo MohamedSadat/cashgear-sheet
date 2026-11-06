@@ -45,7 +45,11 @@ fn yes() -> bool {
 
 /// A rule as the UI asks for it.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RuleSpec {
     CellIs {
         op: String,

@@ -695,6 +695,51 @@ impl SheetInfo {
         (own != NO_CELL).then_some(own)
     }
 
+    /// The styles of `top..=bottom` in a column as (first, last, style), each as `style_at` says,
+    /// for reading a long column without looking each cell up.
+    pub fn drawn_style_spans(&self, col: u32, top: u32, bottom: u32) -> Vec<(u32, u32, u32)> {
+        let fallback = self.cols.info(col).and_then(|info| info.style).unwrap_or(0);
+        let own = self.style_spans(col, top, bottom);
+        let mut out: Vec<(u32, u32, u32)> = Vec::new();
+        let mut push = |first: u32, last: u32, style: u32| match out.last_mut() {
+            Some(span) if span.2 == style && span.1 + 1 == first => span.1 = last,
+            _ => out.push((first, last, style)),
+        };
+        let records = &self.rows.rows;
+        for (first, last, style) in own {
+            if style != NO_CELL {
+                push(first, last, style);
+                continue;
+            }
+            // Where a cell has no style of its own, a row's style comes before the column's.
+            let mut row = first;
+            let mut at = records.partition_point(|&(r, _)| r < first);
+            loop {
+                while at < records.len() && records[at].0 <= last && records[at].1.style.is_none() {
+                    at += 1;
+                }
+                match records.get(at).filter(|record| record.0 <= last) {
+                    Some(&(styled, line)) => {
+                        if styled > row {
+                            push(row, styled - 1, fallback);
+                        }
+                        push(styled, styled, line.style.unwrap_or(fallback));
+                        row = styled + 1;
+                        at += 1;
+                        if row > last {
+                            break;
+                        }
+                    }
+                    None => {
+                        push(row, last, fallback);
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The style a cell draws with: its own, or else its row's, or else its column's.
     pub fn style_at(&self, row: u32, col: u32) -> u32 {
         let own = self

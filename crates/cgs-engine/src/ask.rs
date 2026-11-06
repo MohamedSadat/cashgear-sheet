@@ -40,6 +40,26 @@ enum Question {
     LinkAt { sheet: u32, row: u32, col: u32 },
     /// A sheet's notes, in order.
     Notes { sheet: u32 },
+    /// The Cell Styles gallery.
+    CellStyles,
+    /// The table styles gallery: the file's own, then Excel's, each with a small preview drawn
+    /// with the table's options.
+    TableStyles {
+        #[serde(default)]
+        options: Option<PreviewOptions>,
+    },
+}
+
+/// Which parts of a table a gallery preview picks out, as the Table Design tab has them.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct PreviewOptions {
+    header_row: Option<bool>,
+    totals_row: bool,
+    first_column: bool,
+    last_column: bool,
+    row_stripes: Option<bool>,
+    column_stripes: bool,
 }
 
 fn area_json(top: u32, left: u32, bottom: u32, right: u32) -> Value {
@@ -165,6 +185,10 @@ impl Session {
             Question::NoteAt { sheet, row, col } => self.note_json(sheet, row, col),
             Question::LinkAt { sheet, row, col } => self.link_json(sheet, row, col),
             Question::Notes { sheet } => self.notes_list(sheet),
+            Question::CellStyles => crate::cell_styles::cell_styles_json(),
+            Question::TableStyles { options } => {
+                self.table_styles_json(&options.unwrap_or_default())
+            }
             Question::InvalidCells { sheet } => Value::Array(
                 self.invalid_cells(sheet)
                     .into_iter()
@@ -204,5 +228,81 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| "No workbook is open.".to_string())?;
         Ok(session.answer(question, &self.locale)?.to_string())
+    }
+}
+
+impl Session {
+    /// Each table style with a preview of 5 columns by 7 rows: for each cell its fill, text
+    /// colour, whether bold, and its top, bottom, left and right lines' colours.
+    fn table_styles_json(&self, options: &PreviewOptions) -> Value {
+        let header = options.header_row.unwrap_or(true);
+        let rows = 7;
+        let mut table = Table::new(
+            String::new(),
+            0,
+            cgs_model::Rect {
+                top: 1,
+                left: 1,
+                bottom: rows,
+                right: 5,
+            },
+            (1..=5).map(|n| format!("Column{n}")).collect(),
+        );
+        table.header_rows = u32::from(header);
+        table.totals_rows = u32::from(options.totals_row);
+        table.style.first_column = options.first_column;
+        table.style.last_column = options.last_column;
+        table.style.row_stripes = options.row_stripes.unwrap_or(true);
+        table.style.column_stripes = options.column_stripes;
+        let colors = &self.book.styles.colors;
+        let rgb = |color: Option<cgs_model::Color>| -> Value {
+            color
+                .and_then(|color| colors.resolve(color, None))
+                .map_or(Value::Null, |rgb| Value::String(format!("#{rgb:06X}")))
+        };
+        let line = |line: Option<cgs_model::Line>| rgb(line.map(|line| line.color));
+        let preview = |style: &cgs_model::TableStyleDef| -> Value {
+            let cells: Vec<Value> = (1..=rows)
+                .map(|row| {
+                    let row_cells: Vec<Value> = (1..=5)
+                        .map(|col| {
+                            let look = crate::table_style::exact_look(
+                                crate::table_style::cell_look(&table, style, row, col),
+                                &colors.theme,
+                            );
+                            json!([
+                                rgb(look
+                                    .fill
+                                    .filter(|fill| fill.pattern != cgs_model::Pattern::None)
+                                    .map(|fill| fill.color)),
+                                rgb(look.font.color),
+                                look.font.bold.unwrap_or(false),
+                                line(look.border.top),
+                                line(look.border.bottom),
+                                line(look.border.left),
+                                line(look.border.right),
+                            ])
+                        })
+                        .collect();
+                    Value::Array(row_cells)
+                })
+                .collect();
+            Value::Array(cells)
+        };
+        let own =
+            self.book.styles.table_styles.iter().map(
+                |style| json!({ "name": style.name, "group": "Custom", "cells": preview(style) }),
+            );
+        let excel = crate::table_style::built_in().iter().map(|style| {
+            let group = if style.name.contains("Light") {
+                "Light"
+            } else if style.name.contains("Medium") {
+                "Medium"
+            } else {
+                "Dark"
+            };
+            json!({ "name": style.name, "group": group, "cells": preview(style) })
+        });
+        Value::Array(own.chain(excel).collect())
     }
 }

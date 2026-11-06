@@ -265,20 +265,18 @@ export class GridController {
     this.drawings = drawings;
     this.merges = layout.merges;
     this.zoom = sameSheet || kept ? (kept?.zoom ?? this.zoom) : layout.zoom;
-    const rowLines = new Int32Array(layout.rows.length);
-    for (let at = 0; at < layout.rows.length; at += 2) {
-      rowLines[at] = layout.rows[at]! - 1;
-      rowLines[at + 1] = layout.rows[at + 1]!;
-    }
-    const colLines: number[] = [];
-    for (let at = 0; at < layout.cols.length; at += 3) {
-      const last = Math.min(layout.cols[at + 1]!, MAX_COLS);
-      for (let col = layout.cols[at]!; col <= last; col++) {
-        colLines.push(col - 1, layout.cols[at + 2]!);
-      }
-    }
-    this.rows = new Axis(MAX_ROWS, layout.defaultRowPx, rowLines, this.scale);
-    this.cols = new Axis(MAX_COLS, layout.defaultColPx, colLines, this.scale);
+    this.rows = new Axis(
+      MAX_ROWS,
+      layout.defaultRowPx,
+      zeroBased(layout.rows, MAX_ROWS),
+      this.scale,
+    );
+    this.cols = new Axis(
+      MAX_COLS,
+      layout.defaultColPx,
+      zeroBased(layout.cols, MAX_COLS),
+      this.scale,
+    );
     this.applyStyle();
     if (kept) {
       this.scrollX = kept.scrollX;
@@ -1757,4 +1755,15 @@ export class GridController {
     event.preventDefault();
     this.select(row, col, extend);
   };
+}
+
+/** A layout's 1-based runs of (first, last, pixels) as the axis takes them, from 0. */
+function zeroBased(runs: Uint32Array, count: number) {
+  const out = new Int32Array(runs.length);
+  for (let at = 0; at < runs.length; at += 3) {
+    out[at] = runs[at]! - 1;
+    out[at + 1] = Math.min(runs[at + 1]!, count) - 1;
+    out[at + 2] = runs[at + 2]!;
+  }
+  return out;
 }

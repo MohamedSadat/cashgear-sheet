@@ -348,3 +348,15 @@ The visual review against Excel: three generated workbooks drawn by Excel 2016 a
 | Cell Styles | Excel 2016's built-in cell styles plus the file's own, applied from a `CgGallery` beside the table styles. New and Modify Cell Style wait. Applying one appends to `styles.xml` |
 | Name Manager | New, Edit and Delete, workbook or sheet scope, with a filter. Renaming a name follows into formulas |
 | Remove Duplicates | Excel's comparison, checked over COM |
+
+**Defaults picked during the phase**
+
+| Choice | Default |
+| --- | --- |
+| Row layout | A sheet's row sizes go to the page as runs of (first, last, pixels), as columns already did, and the grid's axis keeps runs. A filter that hides most of a million rows was a million records and 8 MB per change |
+| Filter matching | A value or custom filter tests each value as it is read, once per distinct value and number format, through a small direct-mapped table in front of a hash map. Whole-number doubles have zero low bits, which a plain multiplicative hash spreads badly |
+| Notes on a sheet with threaded comments | Shown and kept, but a note there can't be added or changed: each threaded comment has a note standing in for it in older Excel, tied to the thread's parts |
+| New note's author | `Author` until the app has a user name setting |
+| Hyperlink text | A new link writes its address into an empty cell, or the text you typed, in the Hyperlink style's look (theme hyperlink colour, single underline). A bare `name@host` becomes `mailto:` and a bare host `http://` |
+| Cell Styles | Excel 2016's 47 built-in styles, read over COM into `crates/cgs-model/data/cell-styles.json`. Applying one gives the cells the parts the style includes (number, font, fill, borders on every cell), and Normal clears formatting. The cells stay linked to Normal, so Excel shows the same look with Normal highlighted in its gallery. The file's own named styles aren't listed yet |
+| Remove Duplicates | Compares what the chosen columns show, ignoring case, as Microsoft documents it. Kept rows move up inside the selection only, and the rows freed at the bottom are cleared, contents and formats |

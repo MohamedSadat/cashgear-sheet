@@ -572,7 +572,7 @@ fn the_shell_gets_sheets_layout_and_cell_text() {
     let numbers = engine.layout_numbers(0);
     assert_eq!(&numbers[..4], &[20, 64, 1, 2]);
     let layout = engine.layout(0).unwrap();
-    assert_eq!(layout.rows, vec![(1, 40)]);
+    assert_eq!(layout.rows, vec![(1, 1, 40)]);
     assert_eq!(layout.merges, vec![(1, 4, 2, 5)]);
     assert_eq!(engine.edit_text(0, 1, 1), "=1+1");
     assert_eq!(engine.display_text(0, 1, 1), "2");

@@ -21,7 +21,7 @@ describe('Axis', () => {
 
   it('adds up sizes that differ', () => {
     // Line 2 is 40 px, line 3 is hidden.
-    const axis = new Axis(10, 20, [2, 40, 3, 0]);
+    const axis = new Axis(10, 20, [2, 2, 40, 3, 3, 0]);
     expect(axis.size(1)).toBe(20);
     expect(axis.size(2)).toBe(40);
     expect(axis.size(3)).toBe(0);
@@ -33,7 +33,7 @@ describe('Axis', () => {
   });
 
   it('finds the visible line at a position', () => {
-    const axis = new Axis(10, 20, [2, 40, 3, 0]);
+    const axis = new Axis(10, 20, [2, 2, 40, 3, 3, 0]);
     expect(axis.at(0)).toBe(0);
     expect(axis.at(39)).toBe(1);
     expect(axis.at(40)).toBe(2);
@@ -43,7 +43,7 @@ describe('Axis', () => {
   });
 
   it('rounds each line alone, so a line always sits on whole pixels', () => {
-    const axis = new Axis(4, 15, [1, 21], 1.5);
+    const axis = new Axis(4, 15, [1, 1, 21], 1.5);
     expect(axis.size(0)).toBe(23);
     expect(axis.size(1)).toBe(32);
     expect(axis.offset(2)).toBe(55);
@@ -52,9 +52,22 @@ describe('Axis', () => {
   });
 
   it('skips hidden lines when moving', () => {
-    const axis = new Axis(6, 20, [1, 0, 2, 0]);
+    const axis = new Axis(6, 20, [1, 2, 0]);
     expect(axis.nextVisible(1)).toBe(3);
     expect(axis.previousVisible(2)).toBe(0);
+  });
+
+  it('keeps runs of lines as runs, inside and past them', () => {
+    // Lines 2 to 5 are 30 px, and a filter hides 7 to a million.
+    const axis = new Axis(1_048_576, 20, [2, 5, 30, 7, 1_048_574, 0]);
+    expect(axis.size(4)).toBe(30);
+    expect(axis.offset(4)).toBe(2 * 20 + 2 * 30);
+    expect(axis.offset(6)).toBe(2 * 20 + 4 * 30);
+    expect(axis.offset(1_048_575)).toBe(3 * 20 + 4 * 30);
+    expect(axis.total).toBe(4 * 20 + 4 * 30);
+    expect(axis.nextVisible(7)).toBe(1_048_575);
+    expect(axis.previousVisible(1_048_574)).toBe(6);
+    expect(axis.at(3 * 20 + 4 * 30)).toBe(1_048_575);
   });
 });
 

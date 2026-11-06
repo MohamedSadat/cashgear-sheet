@@ -162,8 +162,11 @@ function Open-Excel {
   $excel.AskToUpdateLinks = $false
   $excel.AutomationSecurity = 3
   $excel.ScreenUpdating = $false
-  # Typing beside a table doesn't grow it, and a formula in one doesn't fill its column.
-  $excel.AutoCorrect.AutoExpandListRange = $false
+  # These are Excel's own settings and outlive it, so they go back as they were at the end.
+  $script:autoCorrectWas = @($excel.AutoCorrect.AutoExpandListRange, $excel.AutoCorrect.AutoFillFormulasInLists)
+  # Typing beside a table grows it, as it does here. A formula typed in a table doesn't fill its
+  # column, which this app doesn't do yet.
+  $excel.AutoCorrect.AutoExpandListRange = $true
   $excel.AutoCorrect.AutoFillFormulasInLists = $false
   return $excel
 }
@@ -300,6 +303,10 @@ try {
 } catch {
   throw ($_.Exception.Message + ' at ' + $_.InvocationInfo.ScriptLineNumber + ': ' + $_.InvocationInfo.Line)
 } finally {
+  if ($null -ne $script:autoCorrectWas) {
+    $excel.AutoCorrect.AutoExpandListRange = $script:autoCorrectWas[0]
+    $excel.AutoCorrect.AutoFillFormulasInLists = $script:autoCorrectWas[1]
+  }
   $excel.Quit()
   [void][Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
 }

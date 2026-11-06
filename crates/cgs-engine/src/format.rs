@@ -83,6 +83,9 @@ pub struct BorderChange {
     pub diagonal: Option<LineSpec>,
     pub diagonal_up: Option<bool>,
     pub diagonal_down: Option<bool>,
+    /// Every cell gets the top, bottom, left and right lines, as a cell style gives them,
+    /// rather than the selection's outside.
+    pub each: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -410,22 +413,23 @@ impl Session {
         let new_border = change.border.as_ref().and_then(|border| {
             let mut edits = BorderEdits::default();
             let line = |spec: &Option<LineSpec>| spec.as_ref().map(LineSpec::edit);
-            edits.top = if place & AT_TOP != 0 {
+            let each = border.each;
+            edits.top = if each || place & AT_TOP != 0 {
                 line(&border.top)
             } else {
                 line(&border.inside_horizontal)
             };
-            edits.bottom = if place & AT_BOTTOM != 0 {
+            edits.bottom = if each || place & AT_BOTTOM != 0 {
                 line(&border.bottom)
             } else {
                 line(&border.inside_horizontal)
             };
-            edits.left = if place & AT_LEFT != 0 {
+            edits.left = if each || place & AT_LEFT != 0 {
                 line(&border.left)
             } else {
                 line(&border.inside_vertical)
             };
-            edits.right = if place & AT_RIGHT != 0 {
+            edits.right = if each || place & AT_RIGHT != 0 {
                 line(&border.right)
             } else {
                 line(&border.inside_vertical)

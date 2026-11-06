@@ -12,6 +12,7 @@ cgs-model.workspace = true
 cgs-numfmt = { path = "../cgs-numfmt" }
 cgs-refs = { path = "../cgs-refs" }
 cgs-xlsx = { path = "../cgs-xlsx" }
+rustc-hash = "2"
 serde.workspace = true
 serde_json = "1"
 

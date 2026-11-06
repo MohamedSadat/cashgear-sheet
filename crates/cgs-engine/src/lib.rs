@@ -3,10 +3,12 @@
 //! that a saved value covers.
 
 mod ask;
+pub mod cell_styles;
 pub mod cf;
 pub mod cf_edit;
 pub mod clip;
 pub mod command;
+pub mod duplicates;
 pub mod dv;
 pub mod edit;
 mod fill;
@@ -119,8 +121,9 @@ pub struct SheetLayout {
     pub default_col_px: u32,
     pub used_rows: u32,
     pub used_cols: u32,
-    /// (row, pixels), sorted.
-    pub rows: Vec<(u32, u32)>,
+    /// (first, last, pixels) for rows that aren't the default size, sorted. A filter that hides
+    /// most of a million rows is a few runs, not a million rows.
+    pub rows: Vec<(u32, u32, u32)>,
     /// (first, last, pixels), sorted.
     pub cols: Vec<(u32, u32, u32)>,
     /// (top, left, bottom, right).
@@ -390,12 +393,7 @@ impl Engine {
             default_col_px: info.cols.default_px,
             used_rows: info.used.0,
             used_cols: info.used.1,
-            rows: info
-                .rows
-                .rows
-                .iter()
-                .map(|&(row, _)| (row, info.rows.px(row)))
-                .collect(),
+            rows: row_runs(&info.rows),
             cols: info
                 .cols
                 .ranges
@@ -462,8 +460,8 @@ impl Engine {
             layout.cols.len() as u32,
             layout.merges.len() as u32,
         ];
-        for (row, px) in &layout.rows {
-            out.extend_from_slice(&[*row, *px]);
+        for (first, last, px) in &layout.rows {
+            out.extend_from_slice(&[*first, *last, *px]);
         }
         for (first, last, px) in &layout.cols {
             out.extend_from_slice(&[*first, *last, *px]);
@@ -604,4 +602,24 @@ fn blank_tile(first_row: u32, first_col: u32) -> ViewBlock {
         writer.cell("", view_block::CellRecord::default());
     }
     writer.finish()
+}
+
+/// Rows that differ from the default size, as runs of the same size.
+fn row_runs(rows: &cgs_model::RowAxis) -> Vec<(u32, u32, u32)> {
+    let mut out: Vec<(u32, u32, u32)> = Vec::new();
+    for &(row, line) in &rows.rows {
+        let px = if line.hidden {
+            0
+        } else {
+            line.size.unwrap_or(rows.default_px)
+        };
+        if px == rows.default_px {
+            continue;
+        }
+        match out.last_mut() {
+            Some((_, last, size)) if *last + 1 == row && *size == px => *last = row,
+            _ => out.push((row, row, px)),
+        }
+    }
+    out
 }

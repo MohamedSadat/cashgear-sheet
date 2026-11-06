@@ -334,10 +334,24 @@ pub enum Command {
         keys: Vec<crate::sort::SortKeySpec>,
         #[serde(default)]
         header: bool,
-        #[serde(default)]
+        #[serde(default, rename = "caseSensitive")]
         case_sensitive: bool,
-        #[serde(default)]
+        #[serde(default, rename = "byColumns")]
         by_columns: bool,
+    },
+    /// One of Excel's built-in cell styles, by name.
+    CellStyle {
+        sheet: u32,
+        areas: Vec<Area>,
+        name: String,
+    },
+    /// Takes out rows whose `columns` show what an earlier row does.
+    RemoveDuplicates {
+        sheet: u32,
+        area: Area,
+        columns: Vec<u32>,
+        #[serde(default)]
+        header: bool,
     },
     /// Defines a name, or changes `old`.
     SetName {
@@ -3016,6 +3030,13 @@ impl Session {
                 col,
                 criteria,
             } => self.set_filter_command(sheet, &table, col, criteria, locale),
+            Command::CellStyle { sheet, areas, name } => self.apply_cell_style(sheet, areas, &name),
+            Command::RemoveDuplicates {
+                sheet,
+                area,
+                columns,
+                header,
+            } => self.remove_duplicates_command(sheet, area, &columns, header, locale),
             Command::ClearFilter { sheet, table } => self.clear_filter_command(sheet, &table),
             Command::ReapplyFilter { sheet, table } => {
                 self.reapply_filter_command(sheet, &table, locale)
