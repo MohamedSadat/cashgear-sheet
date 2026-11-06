@@ -355,6 +355,7 @@ fn new_elements_go_where_the_schema_wants_them() {
     let merge = NewElement {
         name: "mergeCells".to_string(),
         xml: r#"<mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells>"#.to_string(),
+        replace: true,
     };
     let xml = r#"<worksheet xmlns="m"><sheetData/><autoFilter ref="A1"/><conditionalFormatting/><pageMargins/><unknownThing/><tableParts/></worksheet>"#;
     let (out, _, outcome) = run_with(xml, &[], std::slice::from_ref(&merge));
@@ -376,6 +377,7 @@ fn an_element_goes_after_others_of_its_own_kind() {
     let rule = NewElement {
         name: "conditionalFormatting".to_string(),
         xml: "<conditionalFormatting/>".to_string(),
+        replace: false,
     };
     let xml = r#"<worksheet xmlns="m"><sheetData/><conditionalFormatting sqref="A1"/><dataValidations/></worksheet>"#;
     assert_eq!(

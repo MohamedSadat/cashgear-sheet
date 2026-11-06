@@ -303,6 +303,7 @@ fn run_one(path: &Path, keep: Option<&Path>, examples: bool) -> Report {
         let element = NewElement {
             name: "mergeCells".to_string(),
             xml: format!(r#"<mergeCells count="1"><mergeCell ref="A{row}:B{row}"/></mergeCells>"#),
+            replace: true,
         };
         if let Err(error) = engine.add_sheet_element(sheet, element) {
             report.error = Some(format!("element: {error}"));

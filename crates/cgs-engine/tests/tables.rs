@@ -474,17 +474,28 @@ fn part(bytes: &[u8], name: &str) -> Option<String> {
 #[test]
 fn a_new_table_saves_as_its_own_part_and_reads_back() {
     let mut engine = sales();
-    run(&mut engine, r#"{"kind":"tableOptions","table":"Sales","totalsRow":true,"columnStripes":true,"style":"TableStyleLight9"}"#);
+    run(
+        &mut engine,
+        r#"{"kind":"tableOptions","table":"Sales","totalsRow":true,"columnStripes":true,"style":"TableStyleLight9"}"#,
+    );
     let bytes = saved(&mut engine);
     let table_xml = part(&bytes, "xl/tables/table1.xml").expect("a table part");
     assert!(table_xml.contains(r#"name="Sales""#), "{table_xml}");
-    assert!(table_xml.contains(r#"ref="H1:J7""#) && table_xml.contains(r#"totalsRowCount="1""#), "{table_xml}");
-    assert!(table_xml.contains(r#"totalsRowFunction="sum""#), "{table_xml}");
+    assert!(
+        table_xml.contains(r#"ref="H1:J7""#) && table_xml.contains(r#"totalsRowCount="1""#),
+        "{table_xml}"
+    );
+    assert!(
+        table_xml.contains(r#"totalsRowFunction="sum""#),
+        "{table_xml}"
+    );
     let sheet = part(&bytes, "xl/worksheets/sheet1.xml").unwrap();
     assert!(sheet.contains("<tableParts count=\"1\""), "{sheet}");
     let rels = part(&bytes, "xl/worksheets/_rels/sheet1.xml.rels").unwrap();
     assert!(rels.contains("../tables/table1.xml"), "{rels}");
-    assert!(part(&bytes, "[Content_Types].xml").unwrap().contains("/xl/tables/table1.xml"));
+    assert!(part(&bytes, "[Content_Types].xml")
+        .unwrap()
+        .contains("/xl/tables/table1.xml"));
     let mut again = reopened(bytes);
     settle(&mut again);
     let back = table(&again, "Sales");
@@ -498,7 +509,9 @@ fn a_new_table_saves_as_its_own_part_and_reads_back() {
     assert!(part(&bytes, "xl/tables/table1.xml").is_none());
     let sheet = part(&bytes, "xl/worksheets/sheet1.xml").unwrap();
     assert!(!sheet.contains("tablePart"), "{sheet}");
-    assert!(!part(&bytes, "[Content_Types].xml").unwrap().contains("/xl/tables/"));
+    assert!(!part(&bytes, "[Content_Types].xml")
+        .unwrap()
+        .contains("/xl/tables/"));
 }
 
 #[test]
@@ -512,9 +525,14 @@ fn a_calculated_column_and_this_row_are_saved_as_excel_spells_them() {
     let bytes = saved(&mut engine);
     let table_xml = part(&bytes, "xl/tables/table1.xml").unwrap();
     assert!(
-        table_xml.contains("<calculatedColumnFormula>Sales[[#This Row],[Cost]]*2</calculatedColumnFormula>"),
+        table_xml.contains(
+            "<calculatedColumnFormula>Sales[[#This Row],[Cost]]*2</calculatedColumnFormula>"
+        ),
         "{table_xml}"
     );
     let sheet = part(&bytes, "xl/worksheets/sheet1.xml").unwrap();
-    assert!(sheet.contains("<f>Sales[[#This Row],[Cost]]*2</f>"), "{sheet}");
+    assert!(
+        sheet.contains("<f>Sales[[#This Row],[Cost]]*2</f>"),
+        "{sheet}"
+    );
 }

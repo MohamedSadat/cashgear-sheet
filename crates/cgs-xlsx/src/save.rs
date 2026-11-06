@@ -516,6 +516,7 @@ fn save_tables(
         edits.elements.entry(sheet).or_default().push(NewElement {
             name: "tableParts".to_string(),
             xml,
+            replace: true,
         });
     }
     Ok(save)

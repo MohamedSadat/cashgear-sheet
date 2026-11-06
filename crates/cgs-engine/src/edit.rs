@@ -414,6 +414,7 @@ impl Session {
             edits.elements.entry(sheet).or_default().push(NewElement {
                 name: "mergeCells".to_string(),
                 xml: merge_element(&info.merges),
+                replace: true,
             });
         }
         edits

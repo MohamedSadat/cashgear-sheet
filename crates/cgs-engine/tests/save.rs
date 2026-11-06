@@ -345,6 +345,7 @@ fn elements_and_pivots_save_through_the_same_path() {
             NewElement {
                 name: "mergeCells".to_string(),
                 xml: r#"<mergeCells count="1"><mergeCell ref="C1:D1"/></mergeCells>"#.to_string(),
+                replace: true,
             },
         )
         .unwrap();

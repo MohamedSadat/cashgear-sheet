@@ -179,6 +179,9 @@ pub fn worksheet_order(local: &[u8]) -> Option<usize> {
 pub struct NewElement {
     pub name: String,
     pub xml: String,
+    /// It takes the place of every element of its name, as one of `REPLACED` can. Otherwise it
+    /// goes after them.
+    pub replace: bool,
 }
 
 /// What a row should say, for a row a change touched.
@@ -1639,7 +1642,10 @@ impl Patcher<'_> {
                         }
                         // Elements given anew replace what the file holds, whatever it holds.
                         name if REPLACED.iter().any(|known| known.as_bytes() == name)
-                            && (self.elements.iter().any(|new| new.name.as_bytes() == name)
+                            && (self
+                                .elements
+                                .iter()
+                                .any(|new| new.replace && new.name.as_bytes() == name)
                                 || self.replaced.iter().any(|done| done.as_bytes() == name)) =>
                         {
                             if kind == Kind::Start {
@@ -1659,7 +1665,10 @@ impl Patcher<'_> {
                             }
                             self.outcome.changed = true;
                             let name = String::from_utf8_lossy(&local).into_owned();
-                            if let Some(at) = self.elements.iter().position(|new| new.name == name)
+                            if let Some(at) = self
+                                .elements
+                                .iter()
+                                .position(|new| new.replace && new.name == name)
                             {
                                 let new = self.elements.remove(at);
                                 out.write_all(&self.element_bytes(&new.xml))?;
