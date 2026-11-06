@@ -5,7 +5,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Work | Status | Tag |
 | --- | --- | --- |
 | Planning | Done 2026-11-01 | |
-| Track U: components in `CashGear.React.UI` | All seven components built, pinned at `65500a73`; Firefox can't run here, so `npm run verify` stops there | |
+| Track U: components in `CashGear.React.UI` | All seven components built, and `CgChart` extended for spreadsheet charts; pinned at `814fa187`. Firefox can't run here, so `npm run verify` stops there | |
 | Phase 0: Scaffold, toolchain, CI | Done 2026-11-01 | `phase-0` |
 | Phase 1: Formula engine bake-off | Done 2026-11-02: Formualizer, with the accuracy target moved to Phase 4 | `phase-1` |
 | Phase 2: Open xlsx | Done 2026-11-02 | `phase-2` |
@@ -13,7 +13,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 4: Editing, formulas, undo | Done 2026-11-05: 3 of 4 exit criteria met, and you accepted 99.35% on the fourth | `phase-4` |
 | Phase 5: Ribbon and formatting | Done 2026-11-05, with your sign-off on the visual review | `v0.1.0-mvp` |
 | Phase 6: Data tools | Done 2026-11-06 | `phase-6` |
-| Phase 7: Charts | Not started | |
+| Phase 7: Charts | Evidence recorded 2026-11-06; waiting for your sign-off on the chart review | |
 | Phase 8: Pivot tables | Not started | |
 | Phase 9: Scale and release | Not started | |
 
@@ -389,4 +389,47 @@ Nothing new was needed in `CashGear.React.UI`: the galleries use `CgGallery`, an
 - Dates typed into the validation and filter dialogs are read as en-US, and the 1904 date system isn't handled there.
 - A formula typed into a table heading becomes 0, as Excel makes it, rather than its value.
 - On this PC, Excel's "Include new rows and columns in table" and "Fill formulas in tables to create calculated columns" are off, most likely left so by earlier fuzz runs. Excel's default is on. The fuzz now puts back what it finds, so they stay off until you turn them on in Excel Options > Proofing > AutoCorrect Options > AutoFormat As You Type.
+- Outside this phase: the Azure Static Web Apps workflow still fails, as before.
+
+## Phase 7: Charts
+
+Charts from files draw live from their cells, and new ones can be made, changed, moved, sized and deleted, as Excel 2016 does them. Pictures show and can be inserted, and chart sheets fill their tab. Measured on 2026-11-06 on the reference machine, in Chrome 156, with Excel 2016 (16.0), `CgChart` pinned at `814fa187` and Formualizer pinned at fork commit `4dd2e77a`.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Five chart types match Excel on review, and stay readable in dark mode | Ready for your sign-off | `bench/run-chart-review.mjs` has Excel 2016 make a workbook over COM: a clustered column, a clustered bar, a line with markers, a pie, a scatter, a combination with a line on a secondary axis, a stacked area, a doughnut, a stacked column and a chart sheet. Excel exports each chart with `Chart.Export`, and the app draws the same file in Chrome, light and dark. `review.html` shows them side by side. Axis scales follow Excel 2016's own rule, measured over COM on 920 charts by `bench/run-chart-axes.mjs`: all 920 minimums and maximums match, and 917 major units. In the review every chart has Excel's scale, colours, gap widths, gridlines, legend place and fonts. The differences are listed under known gaps |
+| Edits write valid XML, and extension elements survive | Pass | The same bench has the app make 53 edits to the charts of Excel's own workbook: titles, legends, data labels, fills, fonts, layouts, colours, gap widths, a type change, Switch Row/Column, a move, and the chart sheet's chart. Excel opens the saved file with no repair. In the 10 chart parts, every extension element Excel wrote is still there: 33 extension lists, 23 series ids (`c16:uniqueId`), 10 `c14:style`, 20 `mc:AlternateContent` and 30 `c16r3` elements, 88 of 88 counts. All 18 chart style and colour parts are byte for byte the same. `bench/run-excel-matrix.mjs` now makes 99 edits on each of 8 fixtures, 9 of them new: a chart of each of 19 kinds, elements added and taken off, looks, axis scales, type and data changes, charts moved, sized and deleted, a picture inserted, and rows inserted and deleted under a chart. 792 of 792 saved files open in Excel with no repair, and all 12 broken controls are still refused. Your 5 private files: 5 of 5 clean, and 5,107 of 5,107 cells match. The writer's own tests check that an unchanged chart keeps its bytes, that edits keep `extLst`, and that a new type keeps each series' extensions |
+
+**What else was checked**
+
+- Editing against Excel: `bench/run-excel-rules.mjs` 43 of 43 cases, 1,572 of 1,572 comparisons.
+- Edit fuzz: `bench/run-edit-fuzz.mjs`, 250 episodes on each of 2 seeds. Seed 1: 1,120 steps match and 0 diverge, over 123,614 cell comparisons. Seed 2: 1,100 match and 0 diverge, over 120,290. All 414 saved files open clean and match what Excel makes of the same edits.
+- Reading: `chartscan` reads all 767 chart parts in the 3,445 test workbooks: 670 of the six editable kinds, 68 with a 3-D view drawn flat, 1 newer `cx:` chart shown as a placeholder, none unreadable, no panics.
+- Browsers: 199 tests in Chrome and Edge in CI, 9 more than in Phase 6 (one existing Format Cells test needed a retry in Edge). The new `tests/e2e/charts.spec.ts` makes a chart from Insert, changes its type from Chart Design, moves it, sizes it, deletes it and undoes that with the mouse and keyboard, inserts a picture, and holds a chart's golden images in light and dark. The formatting workbook's goldens now show its real chart and picture.
+- Unit tests: 172 in Vitest and 545 in Rust. These include the reader, the writer, axis scaling against Excel's measured values, dark mode's colours, chart commands with undo, saving and reading back, chart formulas following inserted rows, chart sheets and pictures.
+- WASM gzip: 3.69 MB, against the 5 MB budget.
+- Licences, the save check and the Open XML validator are clean in CI.
+
+**Track U**
+
+`CgChart` gained a document mode (`appearance`): title, legend and axis titles inside the SVG, exact size, no card styling, and per-element fonts, fills, borders, gridlines, tick marks and crossings. It also gained scatter series, Excel's smoothed lines, gap width and overlap, exact ticks, data labels made of parts, per-point outlines and explosion, element hit-testing with `highlightedElement`, and `interactive={false}`. Built in `CashGear.React.UI` on its branch at `814fa187`, with 984 unit tests and 696 Chromium checks passing there. WebKit ran the chart cases; Firefox can't launch on this PC.
+
+**Found and fixed on the way**
+
+- A scatter chart changed to another type gave both new axes the scatter's x axis's id, and Excel refused the file. The matrix found it.
+- References typed into Select Data without a sheet were saved that way; a chart part must name the sheet, and Excel repaired the file.
+- Anchors wrapped in `mc:AlternateContent`, as Excel writes newer `cx:` charts, were read twice.
+- Line charts put the first category on the axis, where Excel 2016 puts categories between tick marks; plain scatter charts drew lines.
+- A drawing's layout refresh after an edit took the chart out of its selection.
+
+**Known gaps**
+
+- From the review: Excel lists a horizontal bar chart's legend in reverse order, and draws legend keys for bars as wider rectangles. A pie is drawn a little larger than Excel's, and bars in a combination chart a little narrower. An automatic title says "Chart Title" in English, where Excel uses its UI language (Arabic on this PC).
+- 3 of 920 measured axes choose a different major unit: horizontal axes with 7-digit labels, where Excel allows for the labels' width.
+- Radar, stock, surface, bubble and 3-D charts are drawn as their nearest flat chart and can only be changed by Change Chart Type. Newer `cx:` charts stay placeholders, as decided.
+- The format pane covers fill, outline, text, axis bounds, units, number format and gap width; gradients, patterns, effects, shadows and trendlines are kept but not edited. Chart Styles are eight looks, not Excel's full gallery. There is no Picture Format tab, so pictures can't be cropped or recoloured. EMF and WMF pictures show as named placeholders.
+- Shifting cells (Insert or Delete with shift) doesn't move what a chart reads; inserting and deleting rows, columns and sheets does.
+- A chart's legend can't be laid out by hand, and its title and legend move with automatic layout only.
 - Outside this phase: the Azure Static Web Apps workflow still fails, as before.

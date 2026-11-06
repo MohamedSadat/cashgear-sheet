@@ -381,3 +381,19 @@ The visual review against Excel: three generated workbooks drawn by Excel 2016 a
 | Chart sheets | Drawn to fit their tab, and edited like an embedded chart |
 | Dark mode | A chart's background, text, axes and gridlines swap `dk1`/`lt1` and automatic colours for display only, as cells do. Series colours stay as stored. The saved file never changes |
 | Private workbooks | None of your 5 files holds a chart or a picture, so charts are checked on generated fixtures and the public test files (748 charts in 628 files, and 12 `cx:` charts) |
+
+**Defaults picked during the phase**
+
+| Choice | Default |
+| --- | --- |
+| Automatic axis scales | Excel 2016's rule, measured over COM on 920 charts by `bench/run-chart-axes.mjs`. The axis starts at 0 unless the data's minimum is at least 5/6 of its maximum. The maximum gets 5% of headroom, and the minimum half the spread, or 5% on a scatter chart's value axes. The major unit is the next 1, 2 or 5 step above the range divided by a target count. Vertical axes aim at `floor((length − 8) / 11.1)` intervals of their plot height in points, horizontal ones at `floor((length + 34) / 37)`, from 1 to 10. All 920 bounds and 917 units match |
+| Chart colours in dark mode | Colours made from the text and background theme colours (`tx1`, `bg1`, `dk1`, `lt1`) keep their lightness as a share of the way from the screen's text to its background. A light grey gridline stays a quiet line, and grey text stays readable. Accents and stated RGB colours stay as stored. Display only |
+| A new chart | 5 by 3 inches (480 by 288 pixels at 100%), centred in the window as Excel puts it, chosen at once. It carries Excel 2016's look: white chart area with a light grey border, 14 pt grey title, 9 pt grey labels and legend, light grey gridlines, theme accents. A selection of one cell takes the block of filled cells around it. Series run down columns when there are at least as many data rows as columns, and a first row or column with no plain numbers holds headings, dates included |
+| Plain scatter | Written with `scatterStyle` `marker`, where Excel 2016 writes `lineMarker` with no line. The two mean the same in Excel |
+| Chart Styles | Eight looks from Excel 2016's gallery (default, labels without gridlines or a value axis, wide bars, labels inside, grey plot area, dark grey, tinted, black), written into the chart's own elements. Excel 2007's `c:style` number changes nothing on a chart whose series state their colours, which every new one does |
+| Change Colors | Excel 2016's 4 colourful and 13 one-colour palettes, written into each series |
+| Saving a chart's data | Each chart's saved copy of its data (`numCache`, `strCache`) is brought up to its cells when the workbook is saved, as Excel writes it, so programs that read the copy agree. Multi-level categories keep theirs |
+| Deleting a chart | Its chart part goes, with the chart style and colour parts that belong to it |
+| Pictures | Insert › Pictures puts a picture at the active cell at its own size, shrunk to fit 1200 by 900 pixels. An SVG goes in as a PNG, as Excel 2016 can't show an SVG without one. Corner handles keep a picture's proportions |
+| Moving and sizing | A drag moves a drawing by the pointer's travel at the sheet's zoom, and handles size it; the engine gets one command on release. An arrow key nudges a chosen drawing by a pixel. A click on a chosen chart picks the element under the pointer for the Format tab |
+| Chart sheets | Their chart fills the tab with a margin, and is chosen for Chart Design and Format as the sheet shows |
