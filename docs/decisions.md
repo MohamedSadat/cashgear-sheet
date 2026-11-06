@@ -397,3 +397,7 @@ The visual review against Excel: three generated workbooks drawn by Excel 2016 a
 | Pictures | Insert › Pictures puts a picture at the active cell at its own size, shrunk to fit 1200 by 900 pixels. An SVG goes in as a PNG, as Excel 2016 can't show an SVG without one. Corner handles keep a picture's proportions |
 | Moving and sizing | A drag moves a drawing by the pointer's travel at the sheet's zoom, and handles size it; the engine gets one command on release. An arrow key nudges a chosen drawing by a pixel. A click on a chosen chart picks the element under the pointer for the Format tab |
 | Chart sheets | Their chart fills the tab with a margin, and is chosen for Chart Design and Format as the sheet shows |
+
+**Signed off by you, 2026-11-06**
+
+The chart review against Excel: nine charts and a chart sheet drawn by Excel 2016 and by the app, in light and dark, with the differences listed on the review page. You signed it off as it stands, so `phase-7` is tagged. The listed differences stay as known gaps.
