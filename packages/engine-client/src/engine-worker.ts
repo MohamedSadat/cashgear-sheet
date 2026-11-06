@@ -690,6 +690,14 @@ const api: EngineApi = {
   async functionNames() {
     return (await ensureEngine()).function_names();
   },
+  async query(question) {
+    const wasm = await ensureEngine();
+    try {
+      return JSON.parse(wasm.query(JSON.stringify(question))) as unknown;
+    } catch (error) {
+      throw friendly(error);
+    }
+  },
   async definedNames() {
     return (await ensureEngine()).defined_names();
   },

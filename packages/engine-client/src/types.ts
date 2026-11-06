@@ -82,7 +82,16 @@ export interface CellArea {
 }
 
 export type Command =
-  | { kind: 'input'; sheet: number; row: number; col: number; text: string; areas?: CellArea[] }
+  | {
+      kind: 'input';
+      sheet: number;
+      row: number;
+      col: number;
+      text: string;
+      areas?: CellArea[];
+      /** Past a validation rule's Warning or Information message, when the answer was yes. */
+      force?: boolean;
+    }
   | { kind: 'arrayInput'; sheet: number; area: CellArea; text: string }
   | { kind: 'clear'; sheet: number; areas: CellArea[] }
   | { kind: 'fill'; sheet: number; from: CellArea; to: CellArea; copy?: boolean }
@@ -141,8 +150,373 @@ export type Command =
     }
   | { kind: 'replaceAll'; query: FindQuery; with: string }
   | { kind: 'viewFlags'; sheet: number; grid?: boolean; headings?: boolean }
+  | {
+      kind: 'createTable';
+      sheet: number;
+      area: CellArea;
+      headers?: boolean;
+      style?: string;
+      name?: string;
+    }
+  | ({ kind: 'tableOptions'; table: string } & TableOptions)
+  | { kind: 'totalsFunction'; table: string; column: string; function?: string | null }
+  | { kind: 'renameTable'; table: string; name: string }
+  | { kind: 'resizeTable'; table: string; area: CellArea }
+  | { kind: 'convertToRange'; table: string }
+  | {
+      kind: 'sort';
+      sheet: number;
+      area: CellArea;
+      keys: SortKey[];
+      header?: boolean;
+      caseSensitive?: boolean;
+      byColumns?: boolean;
+    }
+  | { kind: 'cellStyle'; sheet: number; areas: CellArea[]; name: string }
+  | {
+      kind: 'removeDuplicates';
+      sheet: number;
+      area: CellArea;
+      columns: number[];
+      header?: boolean;
+    }
+  | { kind: 'setName'; old?: NameRef; name: string; formula: string; sheet?: number | null }
+  | ({ kind: 'deleteName' } & NameRef)
+  | {
+      kind: 'namesFromSelection';
+      sheet: number;
+      area: CellArea;
+      top?: boolean;
+      left?: boolean;
+      bottom?: boolean;
+      right?: boolean;
+    }
+  | { kind: 'setNote'; sheet: number; row: number; col: number; text?: string; author?: string }
+  | { kind: 'setLink'; sheet: number; area: CellArea; link?: LinkSpec }
+  | { kind: 'setValidation'; sheet: number; areas: CellArea[]; rule?: ValidationRule }
+  | { kind: 'circleInvalid'; sheet: number; on: boolean }
+  | { kind: 'addCf'; sheet: number; areas: CellArea[]; rule: CfRuleSpec }
+  | { kind: 'clearCf'; sheet: number; areas?: CellArea[] }
+  | { kind: 'setCf'; sheet: number; rules: ManagedCfRule[] }
+  | { kind: 'toggleFilter'; sheet: number; area: CellArea }
+  | { kind: 'setFilter'; sheet: number; table?: string; col: number; criteria?: FilterCriteria }
+  | { kind: 'clearFilter'; sheet: number; table?: string }
+  | { kind: 'reapplyFilter'; sheet: number; table?: string }
   | { kind: 'undo' }
   | { kind: 'redo' };
+
+// Phase 6's data tools: what their commands take and what `query` answers. See
+// crates/cgs-engine/src/ask.rs and the modules it names, and keep the two in step.
+
+/** A table's options, as the Table Design tab sets them. */
+export interface TableOptions {
+  headerRow?: boolean;
+  totalsRow?: boolean;
+  firstColumn?: boolean;
+  lastColumn?: boolean;
+  rowStripes?: boolean;
+  columnStripes?: boolean;
+  filterButton?: boolean;
+  style?: string | null;
+}
+
+export type SortOn =
+  | { kind: 'value' }
+  /** Cells with this fill first (`RRGGBB`), or with no fill. */
+  | { kind: 'cellColor'; color?: string | null }
+  | { kind: 'fontColor'; color?: string | null };
+
+export interface SortKey {
+  /** The sheet's column, 1-based, or its row for a sort left to right. */
+  index: number;
+  descending?: boolean;
+  by?: SortOn;
+  /** A custom order, such as months: these first, in this order. */
+  list?: string[];
+}
+
+export interface NameRef {
+  name: string;
+  /** A sheet's own name, or none for the workbook's. */
+  sheet?: number | null;
+}
+
+export interface LinkSpec {
+  /** A web address, file or email address. */
+  address?: string;
+  /** A place in this workbook, such as `Sheet2!A1`. */
+  location?: string;
+  tooltip?: string;
+  /** What the cell shows. */
+  text?: string;
+}
+
+export type ValidationKind =
+  'any' | 'whole' | 'decimal' | 'list' | 'date' | 'time' | 'textLength' | 'custom';
+
+export type ValidationOp =
+  | 'between'
+  | 'notBetween'
+  | 'equal'
+  | 'notEqual'
+  | 'greaterThan'
+  | 'lessThan'
+  | 'greaterThanOrEqual'
+  | 'lessThanOrEqual';
+
+export interface ValidationRule {
+  kind: ValidationKind;
+  op?: ValidationOp;
+  /** As typed, with or without `=`. A list's items are comma-separated or a reference. */
+  formula1?: string;
+  formula2?: string;
+  allowBlank?: boolean;
+  /** A list's in-cell dropdown. */
+  dropdown?: boolean;
+  showInput?: boolean;
+  inputTitle?: string;
+  inputText?: string;
+  showError?: boolean;
+  errorTitle?: string;
+  errorText?: string;
+  style?: 'stop' | 'warning' | 'information';
+}
+
+/** A cell's rule, from `validationAt`. */
+export interface ValidationInfo extends Required<Omit<ValidationRule, 'formula1' | 'formula2'>> {
+  formula1: string | null;
+  formula2: string | null;
+  /** A list's items, as the dropdown shows them. */
+  items: string[];
+  /** A rule from newer Excel, kept but not edited. */
+  extended: boolean;
+  /** The cells the rule covers, as `A1:B5 D1`. */
+  areas: string;
+}
+
+/** How a conditional format's cells look. Colours are `RRGGBB`. */
+export interface CfFormat {
+  bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
+  underline?: boolean;
+  color?: string;
+  fill?: string;
+  border?: string;
+  numberFormat?: string;
+}
+
+export interface CfPoint {
+  /** `min`, `max`, `num`, `percent`, `percentile` or `formula`. */
+  kind: string;
+  value?: string;
+  color?: string;
+  gte?: boolean;
+}
+
+export type CfRuleSpec =
+  | { type: 'cellIs'; op: string; formulas: string[]; format?: CfFormat }
+  | { type: 'expression'; formula: string; format?: CfFormat }
+  | {
+      type: 'text';
+      op: 'contains' | 'notContains' | 'beginsWith' | 'endsWith';
+      text: string;
+      format?: CfFormat;
+    }
+  | { type: 'blanks'; not?: boolean; format?: CfFormat }
+  | { type: 'errors'; not?: boolean; format?: CfFormat }
+  | { type: 'timePeriod'; period: string; format?: CfFormat }
+  | { type: 'top10'; bottom?: boolean; percent?: boolean; rank: number; format?: CfFormat }
+  | { type: 'average'; above?: boolean; equal?: boolean; stdDev?: number; format?: CfFormat }
+  | { type: 'duplicates'; unique?: boolean; format?: CfFormat }
+  | { type: 'colorScale'; points: CfPoint[] }
+  | {
+      type: 'dataBar';
+      min: CfPoint;
+      max: CfPoint;
+      color: string;
+      gradient?: boolean;
+      showValue?: boolean;
+    }
+  | { type: 'iconSet'; set: string; points?: CfPoint[]; reverse?: boolean; showValue?: boolean };
+
+/** A rule of the manager's list, in priority order: an existing one by its place, or a new one. */
+export interface ManagedCfRule {
+  block?: number;
+  rule?: number;
+  areas: CellArea[];
+  spec?: CfRuleSpec;
+  stop?: boolean;
+}
+
+/** A rule as the manager lists it, from `cfRules`. */
+export interface CfRuleInfo {
+  block: number;
+  rule: number;
+  priority: number;
+  stop: boolean;
+  /** From newer Excel: shown and kept, not edited. */
+  extended: boolean;
+  kind: string;
+  description: string;
+  /** As `A1:B5 D1`. */
+  areas: string;
+  fill: string | null;
+  color: string | null;
+  bold: boolean | null;
+}
+
+export type FilterCriteria =
+  | {
+      kind: 'values';
+      values?: string[];
+      blank?: boolean;
+      /** `[year]`, `[year, month]` or `[year, month, day]`. */
+      dates?: number[][];
+    }
+  | {
+      kind: 'custom';
+      and?: boolean;
+      conditions: {
+        op:
+          | 'equal'
+          | 'notEqual'
+          | 'lessThan'
+          | 'lessThanOrEqual'
+          | 'greaterThan'
+          | 'greaterThanOrEqual';
+        value: string;
+      }[];
+    }
+  | { kind: 'top10'; top?: boolean; percent?: boolean; value: number }
+  /** `aboveAverage`, `belowAverage`, `today`, `thisMonth` and the rest of Excel's names. */
+  | { kind: 'dynamic'; name: string }
+  | { kind: 'color'; cell?: boolean; color?: string | null };
+
+/** A filter on a sheet, from `filters`: the sheet's own or a table's. */
+export interface FilterInfo {
+  table: string | null;
+  area: CellArea;
+  /** Columns with criteria. */
+  filtered: number[];
+  /** Columns whose button is hidden. */
+  hiddenButtons: number[];
+  sorted: { col: number; descending: boolean } | null;
+}
+
+/** What a filter's dropdown lists for one column, from `filterList`. */
+export interface FilterList {
+  values: { text: string; checked: boolean }[];
+  dates: { date: [number, number, number]; checked: boolean }[];
+  blanks: boolean;
+  blanksChecked: boolean;
+  filtered: 'none' | 'values' | 'custom' | 'top10' | 'dynamic' | 'color' | 'icon' | 'other';
+}
+
+/** A table, from `tableAt` or `tables`. */
+export interface TableInfo {
+  name: string;
+  sheet: number;
+  area: CellArea;
+  headerRow: boolean;
+  totalsRow: boolean;
+  style: string | null;
+  firstColumn: boolean;
+  lastColumn: boolean;
+  rowStripes: boolean;
+  columnStripes: boolean;
+  filterButton: boolean;
+  columns: { name: string; totals: string | null; calculated: boolean }[];
+}
+
+export interface DefinedNameInfo {
+  name: string;
+  /** With its `=`. */
+  formula: string;
+  sheet: number | null;
+  /** `Workbook` or the sheet's name. */
+  scope: string;
+}
+
+export interface NoteInfo {
+  author?: string;
+  text?: string;
+  /** A threaded comment from newer Excel, shown and kept only. */
+  threaded?: boolean;
+}
+
+export interface LinkInfo {
+  address: string | null;
+  location: string | null;
+  tooltip: string | null;
+}
+
+export interface CellStyleInfo {
+  name: string;
+  font: string;
+  size: number;
+  bold: boolean;
+  italic: boolean;
+  /** `#RRGGBB`. */
+  color: string | null;
+  fill: string | null;
+  /** Lines all round, as Note and Input have. */
+  boxed: boolean;
+  bottom: string | null;
+  bottomColor: string | null;
+}
+
+/**
+ * A table style with a preview of 5 columns by 7 rows. Each cell is [fill, text colour, bold,
+ * top, bottom, left, right line colours], colours as `#RRGGBB` or null.
+ */
+export interface TableStyleInfo {
+  name: string;
+  group: 'Custom' | 'Light' | 'Medium' | 'Dark';
+  cells: [
+    string | null,
+    string | null,
+    boolean,
+    string | null,
+    string | null,
+    string | null,
+    string | null,
+  ][][];
+}
+
+/** A question for `EngineClient.query`, and the type of its answer. */
+export type Question =
+  | { kind: 'tableAt'; sheet: number; row: number; col: number }
+  | { kind: 'guessTable'; sheet: number; area: CellArea }
+  | { kind: 'tables' }
+  | { kind: 'filterList'; sheet: number; table?: string | null; col: number }
+  | { kind: 'filters'; sheet: number }
+  | { kind: 'cfRules'; sheet: number }
+  | { kind: 'validationAt'; sheet: number; row: number; col: number }
+  | { kind: 'invalidCells'; sheet: number }
+  | { kind: 'names' }
+  | { kind: 'noteAt'; sheet: number; row: number; col: number }
+  | { kind: 'linkAt'; sheet: number; row: number; col: number }
+  | { kind: 'notes'; sheet: number }
+  | { kind: 'cellStyles' }
+  | { kind: 'tableStyles'; options?: Omit<TableOptions, 'style' | 'filterButton'> };
+
+export interface Answers {
+  tableAt: TableInfo | null;
+  guessTable: { area: CellArea; headers: boolean };
+  tables: TableInfo[];
+  filterList: FilterList;
+  filters: FilterInfo[];
+  cfRules: CfRuleInfo[];
+  validationAt: ValidationInfo | null;
+  invalidCells: [number, number][];
+  names: DefinedNameInfo[];
+  noteAt: NoteInfo | null;
+  linkAt: LinkInfo | null;
+  notes: { row: number; col: number; author: string; text: string }[];
+  cellStyles: { group: string; styles: CellStyleInfo[] }[];
+  tableStyles: TableStyleInfo[];
+}
 
 /** A colour as a format gives it. Theme colours stay references to the theme. */
 export type FormatColor =
@@ -449,6 +823,8 @@ export interface EngineApi {
   resolveName(text: string, sheet: number): Promise<(CellArea & { sheet: number }) | null>;
   functionNames(): Promise<string[]>;
   definedNames(): Promise<string[]>;
+  /** One of the data tools' questions, answered as JSON. See `Question`. */
+  query(question: Question): Promise<unknown>;
   /** The list of sheets as it now stands. */
   bookSummary(): Promise<BookSummary>;
   /** Edits a crashed session left, for the next launch to offer back. */

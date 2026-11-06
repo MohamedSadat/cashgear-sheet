@@ -26,6 +26,7 @@ export type GridContext = Pick<
   | 'clip'
   | 'fillRect'
   | 'fillStyle'
+  | 'fill'
   | 'fillText'
   | 'font'
   | 'lineTo'
@@ -187,6 +188,63 @@ export function drawFillHandle(
   context.fillRect(x - size / 2 - 1, y - size / 2 - 1, size + 2, size + 2);
   context.fillStyle = colors.accent;
   context.fillRect(x - size / 2, y - size / 2, size, size);
+}
+
+/** What a button in a cell shows: a filter's arrow, a filtered funnel, a sort, or a list's arrow. */
+export type CellButtonLook = 'arrow' | 'filtered' | 'sortedUp' | 'sortedDown';
+
+/** A filter's button, or a validation list's, as Excel 2016 draws them. */
+export function drawCellButton(
+  context: GridContext,
+  colors: GridColors,
+  box: { x: number; y: number; width: number; height: number },
+  look: CellButtonLook,
+  pixel: number,
+) {
+  const { x, y, width, height } = box;
+  context.fillStyle = colors.headerBackground;
+  context.fillRect(x, y, width, height);
+  context.strokeStyle = colors.gridline;
+  context.lineWidth = pixel;
+  context.strokeRect(x + pixel / 2, y + pixel / 2, width - pixel, height - pixel);
+  context.fillStyle = colors.text;
+  const middle = x + width / 2;
+  const size = Math.max(2, Math.round(width / 5));
+  const arrow = (left: number, top: number) => {
+    context.beginPath();
+    context.moveTo(left - size, top);
+    context.lineTo(left + size, top);
+    context.lineTo(left, top + size);
+    context.fill();
+  };
+  if (look === 'arrow') {
+    arrow(middle, y + height / 2 - size / 2);
+    return;
+  }
+  // A filtered column's funnel, or a sort's arrow, beside a smaller drop arrow.
+  const left = x + width * 0.32;
+  if (look === 'filtered') {
+    context.beginPath();
+    context.moveTo(left - size, y + height * 0.3);
+    context.lineTo(left + size, y + height * 0.3);
+    context.lineTo(left + pixel, y + height * 0.55);
+    context.lineTo(left + pixel, y + height * 0.75);
+    context.lineTo(left - pixel, y + height * 0.75);
+    context.lineTo(left - pixel, y + height * 0.55);
+    context.fill();
+  } else {
+    const top = y + height * 0.25;
+    const bottom = y + height * 0.75;
+    context.fillRect(left - pixel / 2, top, pixel, bottom - top);
+    context.beginPath();
+    const tip = look === 'sortedUp' ? top : bottom;
+    const base = look === 'sortedUp' ? top + size : bottom - size;
+    context.moveTo(left - size, base);
+    context.lineTo(left + size, base);
+    context.lineTo(left, tip);
+    context.fill();
+  }
+  arrow(x + width * 0.72, y + height / 2 - size / 2);
 }
 
 /** Where a fill would reach, while it is being dragged. */

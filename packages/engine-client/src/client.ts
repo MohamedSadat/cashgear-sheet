@@ -1,5 +1,6 @@
 import { proxy, releaseProxy, transfer, wrap, type Remote } from 'comlink';
 import type {
+  Answers,
   Applied,
   BookSummary,
   CalcStatus,
@@ -16,6 +17,7 @@ import type {
   FoundCell,
   LoadEvent,
   LocaleData,
+  Question,
   Recoverable,
   SavedFile,
   TileImage,
@@ -78,6 +80,8 @@ export interface EngineClient {
   resolveName(text: string, sheet: number): Promise<(CellArea & { sheet: number }) | null>;
   functionNames(): Promise<string[]>;
   definedNames(): Promise<string[]>;
+  /** Asks one of the data tools' questions. */
+  query<Q extends Question>(question: Q): Promise<Answers[Q['kind']]>;
   bookSummary(): Promise<BookSummary>;
   recoverable(): Promise<Recoverable[]>;
   openRecovered(id: string, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
@@ -225,6 +229,8 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     resolveName: (text, sheet) => engine.resolveName(text, sheet),
     functionNames: () => engine.functionNames(),
     definedNames: () => engine.definedNames(),
+    query: <Q extends Question>(question: Q) =>
+      engine.query(question) as Promise<Answers[Q['kind']]>,
     bookSummary: () => engine.bookSummary(),
     recoverable: () => engine.recoverable(),
     openRecovered: (id, onEvent) => engine.openRecovered(id, proxy(onEvent)),

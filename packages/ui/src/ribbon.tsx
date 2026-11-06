@@ -15,6 +15,14 @@ import type { CellFormat, FormatChange, FormatLists } from '@cgs/engine-client';
 import { RIBBON_FORMATS, ribbonFormatName } from './number-formats';
 import { pickedColor, type SheetFormat } from './sheet-format';
 import type { SheetEditing } from './sheet-editing';
+import {
+  dataTabs,
+  insertGroups,
+  namesGroup,
+  stylesGroup,
+  type DataActions,
+  type DataState,
+} from './data/ribbon-data';
 
 export type FormatTab = 'number' | 'alignment' | 'font' | 'border' | 'fill';
 
@@ -168,6 +176,7 @@ export interface RibbonState {
   borderStyle: CgBorderLineStyle;
   borderColor: CgColorPickerValue;
   borderPreset: CgBorderApplyDetails | null;
+  data: DataState;
 }
 
 export interface RibbonActions {
@@ -196,6 +205,7 @@ export interface RibbonActions {
   clearAll(): void;
   clearContents(): void;
   focusGrid(): void;
+  data: DataActions;
 }
 
 const fillOf = (value: CgColorPickerValue): FormatChange['fill'] =>
@@ -703,6 +713,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
             },
           ],
         },
+        stylesGroup(state.data, actions.data),
         {
           key: 'cells',
           text: 'Cells',
@@ -935,6 +946,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
             },
           ],
         },
+        ...insertGroups(state.data, actions.data),
       ],
     },
     {
@@ -956,6 +968,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
             },
           ],
         },
+        namesGroup(state.data, actions.data),
         {
           key: 'calculation',
           text: 'Calculation',
@@ -988,6 +1001,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
         },
       ],
     },
+    ...dataTabs(state.data, actions.data).slice(0, 2),
     {
       key: 'view',
       text: 'View',
@@ -1088,5 +1102,6 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
         },
       ],
     },
+    ...dataTabs(state.data, actions.data).slice(2),
   ];
 }

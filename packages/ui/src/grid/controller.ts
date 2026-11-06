@@ -12,7 +12,9 @@ import { actionFor, startsTyping, type GridAction } from '../shortcuts';
 import {
   drawCopied,
   drawCorner,
+  drawCellButton,
   drawFillHandle,
+  type CellButtonLook,
   drawFillPreview,
   drawHeaderCell,
   drawPlaceholder,
@@ -81,6 +83,28 @@ export interface GridEvents {
   onContextMenu?: (x: number, y: number, region: GridRegion) => void;
   /** A size being dragged, for showing what it comes to. Null when it ends. */
   onResizeHint?: (hint: ResizeHint | null) => void;
+  /** A filter's or a list's button in a cell was clicked. 0-based, with its box in client pixels. */
+  onCellButton?: (button: CellButton, box: ClientBox) => void;
+  /** A cell was clicked, without Shift or Ctrl. 0-based. For following a link. */
+  onCellClick?: (row: number, col: number) => void;
+  /** The pointer rests on another cell, or none. 0-based. For notes and links. */
+  onHover?: (cell: { row: number; col: number } | null, clientX: number, clientY: number) => void;
+}
+
+/** A button the grid draws in a cell: a filter's in its heading, or a list's beside its cell. */
+export interface CellButton {
+  kind: 'filter' | 'list';
+  /** 0-based. */
+  row: number;
+  col: number;
+  look: CellButtonLook;
+}
+
+export interface ClientBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 }
 
 export type GridRegion = 'cells' | 'rowHeader' | 'colHeader';
@@ -171,6 +195,8 @@ export class GridController {
   /** A line's edge being dragged. Sizes are in canvas pixels. */
   private resizing: { axis: 'row' | 'col'; line: number; start: number; at: number } | null = null;
   private painter = false;
+  private buttons: CellButton[] = [];
+  private hovered = '';
   private lastPointer = { x: 0, y: 0 };
   private autoScroll = 0;
 
@@ -829,6 +855,7 @@ export class GridController {
       }
       this.drawDrawings(pane);
       this.drawSelectionIn(pane);
+      this.drawButtons(pane);
       context.restore();
     }
     wanted.push(...visible);
@@ -912,6 +939,79 @@ export class GridController {
       if (x + width < pane.x || y + height < pane.y) continue;
       drawPlaceholder(this.context, this.colors, box, x, y, width, height, pixel, fontPx);
     }
+  }
+
+  /** Where a cell is on the page, in client pixels, if it shows in the scrolling pane. 0-based. */
+  cellBox(row: number, col: number): ClientBox | null {
+    const pane = this.panes().find(
+      (candidate) =>
+        candidate.width > 0 &&
+        this.cols.offset(col) >= candidate.sheetX &&
+        this.cols.offset(col) < candidate.sheetX + candidate.width &&
+        this.rows.offset(row) >= candidate.sheetY &&
+        this.rows.offset(row) < candidate.sheetY + candidate.height,
+    );
+    if (!pane) return null;
+    const box = this.cellRect(row, col, pane);
+    const bounds = this.canvas.getBoundingClientRect();
+    return {
+      left: bounds.left + box.x / this.dpr,
+      top: bounds.top + box.y / this.dpr,
+      width: box.width / this.dpr,
+      height: box.height / this.dpr,
+    };
+  }
+
+  /** Sets the filter buttons and the list button to draw. */
+  setButtons(buttons: CellButton[]) {
+    this.buttons = buttons;
+    this.schedule();
+  }
+
+  /** A button's box in a pane: inside its cell's right edge, or just past it for a list. */
+  private buttonBox(button: CellButton, pane: Pane) {
+    const cell = this.cellRect(button.row, button.col, pane);
+    const size = Math.min(cell.height, Math.round(17 * this.scale * this.dpr));
+    const x = button.kind === 'list' ? cell.x + cell.width + 1 : cell.x + cell.width - size;
+    return { x, y: cell.y + cell.height - size, width: size, height: size };
+  }
+
+  private drawButtons(pane: Pane) {
+    if (!this.buttons.length) return;
+    const pixel = Math.max(1, Math.round(this.dpr));
+    for (const button of this.buttons) {
+      if (this.rows.size(button.row) === 0 || this.cols.size(button.col) === 0) continue;
+      const box = this.buttonBox(button, pane);
+      if (box.x > pane.x + pane.width || box.y > pane.y + pane.height) continue;
+      if (box.x + box.width < pane.x || box.y + box.height < pane.y) continue;
+      drawCellButton(this.context, this.colors, box, button.look, pixel);
+    }
+  }
+
+  /** The button under a canvas position, with its box in client pixels. */
+  private buttonAt(x: number, y: number): { button: CellButton; box: ClientBox } | null {
+    if (!this.buttons.length) return null;
+    const bounds = this.canvas.getBoundingClientRect();
+    for (const pane of this.panes()) {
+      if (x < pane.x || y < pane.y || x >= pane.x + pane.width || y >= pane.y + pane.height) {
+        continue;
+      }
+      for (const button of this.buttons) {
+        const box = this.buttonBox(button, pane);
+        if (x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height) {
+          return {
+            button,
+            box: {
+              left: bounds.left + box.x / this.dpr,
+              top: bounds.top + box.y / this.dpr,
+              width: box.width / this.dpr,
+              height: box.height / this.dpr,
+            },
+          };
+        }
+      }
+    }
+    return null;
   }
 
   private cellRect(row: number, col: number, pane: Pane) {
@@ -1192,6 +1292,18 @@ export class GridController {
     this.schedule();
   };
 
+  /** Tells which cell the pointer rests on, when that changes. */
+  private hover(x: number, y: number, event: PointerEvent) {
+    if (!this.events.onHover || this.sheet < 0) return;
+    const view = this.view();
+    const inside = x >= view.x && y >= view.y && x < this.width && y < this.height;
+    const cell = inside ? this.cellAt(x, y) : null;
+    const key = cell ? cell.row + ':' + cell.col : '';
+    if (key === this.hovered) return;
+    this.hovered = key;
+    this.events.onHover(cell, event.clientX, event.clientY);
+  }
+
   private pointerPosition(event: PointerEvent) {
     const bounds = this.canvas.getBoundingClientRect();
     return {
@@ -1332,6 +1444,11 @@ export class GridController {
       return;
     }
     const view = this.view();
+    const hit = this.editing ? null : this.buttonAt(x, y);
+    if (hit) {
+      this.events.onCellButton?.(hit.button, hit.box);
+      return;
+    }
     const edge = this.editing ? null : this.edgeAt(x, y);
     if (edge) {
       const axis = edge.axis === 'col' ? this.cols : this.rows;
@@ -1400,12 +1517,16 @@ export class GridController {
     this.dragging = 'cells';
     this.lastPointer = { x, y };
     this.select(row, col, event.shiftKey, true, event.ctrlKey || event.metaKey);
+    if (!event.shiftKey && !event.ctrlKey && !event.metaKey) this.events.onCellClick?.(row, col);
   };
 
   private readonly onPointerMove = (event: PointerEvent) => {
     const { x, y } = this.pointerPosition(event);
     if (!this.dragging) {
-      if (event.buttons === 0) this.setCursor(x, y);
+      if (event.buttons === 0) {
+        this.setCursor(x, y);
+        this.hover(x, y, event);
+      }
       return;
     }
     this.lastPointer = { x, y };

@@ -37,6 +37,9 @@ export function SheetCanvas({ client, palette, colors, events, onController }: S
       onAutoFit: (axis, spans) => latest.current.events.onAutoFit?.(axis, spans),
       onContextMenu: (x, y, region) => latest.current.events.onContextMenu?.(x, y, region),
       onResizeHint: (hint) => latest.current.events.onResizeHint?.(hint),
+      onCellButton: (button, box) => latest.current.events.onCellButton?.(button, box),
+      onHover: (cell, x, y) => latest.current.events.onHover?.(cell, x, y),
+      onCellClick: (row, col) => latest.current.events.onCellClick?.(row, col),
     };
     const controller = new GridController(
       canvas,

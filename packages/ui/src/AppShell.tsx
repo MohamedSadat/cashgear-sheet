@@ -67,6 +67,7 @@ import {
   type WorkingCopy,
 } from './platform';
 import { buildRibbonTabs, themeColors, type FormatTab, type RibbonActions } from './ribbon';
+import { useDataTools } from './data/useDataTools';
 import { saveReportLines, saveSummary, workbookExtension } from './save-report';
 import { fromArea, SheetEditing, toArea, type EditingHost } from './sheet-editing';
 import { bordersFromPicker, SheetFormat } from './sheet-format';
@@ -183,6 +184,9 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const editorRef = useRef<CellEditorHandle | null>(null);
   const completionRef = useRef<CompletionControl | null>(null);
   const selectionRef = useRef<GridSelection | null>(null);
+  // The data tools' refresh and message, which come later than what calls them.
+  const dataRefreshRef = useRef<() => void>(() => undefined);
+  const dataNoticeRef = useRef<(message: string | null) => void>(() => undefined);
   const loadedRef = useRef<ReadonlySet<number>>(new Set());
   /** The source has been copied, or there's nowhere to copy it, so edits can go ahead. */
   const protectedRef = useRef(false);
@@ -504,6 +508,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     const selection = selectionRef.current;
     if (!engine || !selection) return;
     const token = ++cellToken.current;
+    dataRefreshRef.current();
     setCell((previous) => ({ ...previous, name: selection.name }));
     engine
       .cellText(sheetRef.current, selection.row + 1, selection.col + 1)
@@ -668,7 +673,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
       });
       return tabs[tabs.indexOf(sheetRef.current) + step] ?? null;
     },
-    notice: setNotice,
+    notice: (message) => dataNoticeRef.current(message),
     focusEditor: () => editorRef.current?.focus(),
     editorElement: () => editorRef.current?.element()?.parentElement ?? null,
     insertSheet: () => insertSheet(false),
@@ -724,6 +729,26 @@ export function AppShell({ platform, theme }: AppShellProps) {
     throughRef.current = through;
   }
   const editing = editingRef.current;
+  const dataTools = useDataTools({
+    engine: () => clientRef.current,
+    grid: () => controller.current,
+    sheet: () => sheetRef.current,
+    selection: () => selectionRef.current,
+    hasBook: Boolean(book),
+    sheetNames: book?.sheets.map((entry) => entry.name) ?? [],
+    run: runCommand,
+    notice: setNotice,
+    goTo: async (index, area) => {
+      await goToSheet(index);
+      controller.current?.selectArea(fromArea(area));
+    },
+    editor: () => ({
+      snapshot: () => editing.session.snapshot(),
+      cancel: () => editing.cancel(),
+    }),
+  });
+  dataRefreshRef.current = dataTools.refresh;
+  dataNoticeRef.current = dataTools.notice;
   if (!sheetFormatRef.current) {
     sheetFormatRef.current = new SheetFormat(throughRef.current!, editing, () => formatRef.current);
   }
@@ -972,8 +997,20 @@ export function AppShell({ platform, theme }: AppShellProps) {
       },
       onResizeHint: setResizeHint,
       onContextMenu: (x, y, region) => void contextMenu.current?.showAt(x, y, region),
+      onCellButton: dataTools.onCellButton,
+      onHover: dataTools.onHover,
+      onCellClick: dataTools.onCellClick,
     }),
-    [editing, refreshCell, report, runCommand, sheetFormat],
+    [
+      dataTools.onCellButton,
+      dataTools.onCellClick,
+      dataTools.onHover,
+      editing,
+      refreshCell,
+      report,
+      runCommand,
+      sheetFormat,
+    ],
   );
 
   const handController = useCallback((next: GridController | null) => {
@@ -1171,8 +1208,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
       mergeCells,
       clearAll,
       clearContents,
+      data: dataTools.actions,
     }),
     [
+      dataTools.actions,
       borderStyle,
       calculate,
       clearAll,
@@ -1211,10 +1250,12 @@ export function AppShell({ platform, theme }: AppShellProps) {
           borderStyle,
           borderColor,
           borderPreset,
+          data: dataTools.state,
         },
         ribbonActions,
       ),
     [
+      dataTools.state,
       book,
       borderColor,
       borderPreset,
@@ -1838,6 +1879,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
           }}
         />
       )}
+      {dataTools.overlays}
       {dialog?.kind === 'find' && (
         <FindDialog
           open
