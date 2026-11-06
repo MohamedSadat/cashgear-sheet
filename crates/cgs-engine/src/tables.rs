@@ -1317,9 +1317,8 @@ impl Session {
                     continue;
                 }
                 let header = info.header_row.then_some(t.top);
-                let sheet_name = self.book.sheets[sheet as usize].name.clone();
-                // A heading typed with the column, as text: a formula's value becomes it, as in
-                // Excel, which keeps a table's headings as plain text.
+                // A heading typed with the column, as text. A formula there becomes 0, as Excel,
+                // which keeps a table's headings as plain text, makes it.
                 let typed_header = |col: u32| {
                     let row = header?;
                     let edit = typed
@@ -1327,10 +1326,7 @@ impl Session {
                         .find(|edit| edit.row == row && edit.col == col)?;
                     let value = match &edit.input {
                         Some(EditInput::Value(value)) => value.clone(),
-                        Some(EditInput::Formula(text)) => {
-                            self.calc
-                                .evaluate_at(&sheet_name, (row, col), row, col, text)
-                        }
+                        Some(EditInput::Formula(_)) => CalcValue::Text("0".to_string()),
                         _ => return None,
                     };
                     match value {

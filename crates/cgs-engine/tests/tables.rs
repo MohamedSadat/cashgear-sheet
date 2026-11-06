@@ -213,6 +213,9 @@ fn deleting_a_cell_sideways_takes_its_table_column() {
     );
     assert_eq!(area_of(&engine, "Sales"), (1, 8, 6, 9));
     assert_eq!(text(&engine, 1, 8), "Cost");
+    // The heading that moved in keeps its name, which is its column's.
+    assert_eq!(text(&engine, 1, 9), "Qty");
+    assert_eq!(table(&engine, "Sales")["columns"][1]["name"], "Qty");
     assert_eq!(engine.formula_text(0, 2, 2).unwrap(), "SUM(#REF!)");
 }
 
@@ -544,10 +547,10 @@ fn a_formula_typed_below_leaves_the_table_and_one_beside_its_heading_becomes_tex
     // As Excel 2016 does with AutoExpand on: a formula under the table doesn't join it.
     typed(&mut engine, 7, 9, "=ROW()");
     assert_eq!(area_of(&engine, "Sales"), (1, 8, 6, 10));
-    // A formula beside the headings grows the table, with its value as the new heading.
+    // A formula beside the headings grows the table, and the heading is 0, as Excel makes it.
     typed(&mut engine, 1, 11, "=2+3");
     assert_eq!(area_of(&engine, "Sales"), (1, 8, 6, 11));
-    assert_eq!(text(&engine, 1, 11), "5");
+    assert_eq!(text(&engine, 1, 11), "0");
     assert!(engine.formula_text(0, 1, 11).is_none());
 }
 

@@ -782,6 +782,14 @@ fn sync_table_headers(
             if !kind.ends_with("/table") {
                 continue;
             }
+            // A table the model changed is written from the model, whose names follow its cells.
+            if edits.tables_changed
+                && book.tables.iter().any(|table| {
+                    table.edited && table.part.as_deref().map(normalize) == Some(normalize(&target))
+                })
+            {
+                continue;
+            }
             let Some(xml) = overlay
                 .get(&target)
                 .cloned()
