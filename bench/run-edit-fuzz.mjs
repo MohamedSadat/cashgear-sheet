@@ -270,6 +270,13 @@ if (!existsSync(excelFile) || fresh) {
 
 const scratch = mkdtempSync(join(tmpdir(), 'cgs-edit-fuzz-'));
 try {
+  // The engine being checked is the one in this checkout, so the tool is built from it first.
+  const built = spawnSync(
+    'cargo',
+    ['build', '--profile', 'fast', '-p', 'cgs-bench', '--bin', 'editfuzz'],
+    { stdio: 'inherit', cwd: root },
+  );
+  if (built.status !== 0) throw new Error('editfuzz did not build.');
   const tool = join(root, 'target/fast/editfuzz.exe');
   const run = spawnSync(tool, ['--check', seedFile, opsFile, excelFile, scratch], {
     encoding: 'utf8',

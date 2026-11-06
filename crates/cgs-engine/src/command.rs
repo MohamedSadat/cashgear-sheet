@@ -2153,7 +2153,7 @@ impl Session {
         }
         let area = areas.first().copied().unwrap_or(Area::cell(row, col));
         // A table beside what was typed may grow to take it in.
-        if let Some(growth) = self.table_growth(sheet, &edits) {
+        if let Some(growth) = self.table_growth(sheet, &edits, false) {
             let mut list = vec![Op::Cells(edits)];
             list.extend(growth);
             return self.perform("typing", Op::Many(list), Some((sheet, area)));
@@ -2671,6 +2671,12 @@ impl Session {
                 }
                 let edits = self.fill_edits(sheet, from, to, copy)?;
                 self.refuse_array_in_table(sheet, to, &edits)?;
+                // A fill beside a table grows it, as typing there does.
+                if let Some(growth) = self.table_growth(sheet, &edits, true) {
+                    let mut list = vec![Op::Cells(edits)];
+                    list.extend(growth);
+                    return self.perform("filling", Op::Many(list), Some((sheet, to)));
+                }
                 self.perform("filling", Op::Cells(edits), Some((sheet, to)))
             }
             Command::Paste {

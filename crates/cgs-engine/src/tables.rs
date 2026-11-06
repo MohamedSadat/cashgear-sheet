@@ -1133,22 +1133,31 @@ impl Session {
     /// What typing these cells does to tables beside them: a table grows by the row below or the
     /// column to its right when the rest of that row or column is empty, and a formula typed in an
     /// empty column of a table fills the column.
-    pub(crate) fn table_growth(&self, sheet: u32, edits: &[EditCell]) -> Option<Vec<Op>> {
+    /// A fill (`fill`) grows a table only to the right, over the columns it writes beside it.
+    pub(crate) fn table_growth(
+        &self,
+        sheet: u32,
+        edits: &[EditCell],
+        fill: bool,
+    ) -> Option<Vec<Op>> {
         if self.calc.tables().is_empty() {
             return None;
         }
-        let typed: Vec<&EditCell> = edits
+        let all_typed: Vec<&EditCell> = edits
             .iter()
             .filter(|edit| {
                 matches!(&edit.input, Some(EditInput::Value(value)) if *value != CalcValue::Empty)
                     || matches!(edit.input, Some(EditInput::Formula(_)))
             })
             .collect();
-        if typed.is_empty() {
+        if all_typed.is_empty() {
             return None;
         }
-        let is_typed =
-            |row: u32, col: u32| typed.iter().any(|edit| edit.row == row && edit.col == col);
+        let is_typed = |row: u32, col: u32| {
+            all_typed
+                .iter()
+                .any(|edit| edit.row == row && edit.col == col)
+        };
         for info in self
             .calc
             .tables()
@@ -1156,8 +1165,17 @@ impl Session {
             .filter(|table| table.sheet == sheet)
         {
             let t = info.range;
+            // A fill writes into the table and beside it at once; what's beside it counts.
+            let typed: Vec<&EditCell> = all_typed
+                .iter()
+                .filter(|edit| !fill || !t.contains(edit.row, edit.col))
+                .copied()
+                .collect();
+            if typed.is_empty() {
+                continue;
+            }
             // A calculated column: a formula in an empty column of the table fills it.
-            if typed.len() == 1 && t.contains(typed[0].row, typed[0].col) {
+            if !fill && typed.len() == 1 && t.contains(typed[0].row, typed[0].col) {
                 let edit = typed[0];
                 let Some(EditInput::Formula(text)) = &edit.input else {
                     continue;
@@ -1217,9 +1235,14 @@ impl Session {
             if typed.iter().any(|edit| t.contains(edit.row, edit.col)) {
                 continue;
             }
-            // The row below, when the table has no totals.
+            // The row below, when the table has no totals. A formula typed there leaves the table
+            // as it is, as Excel 2016 does.
             let below = t.bottom + 1;
-            if !info.totals_row
+            if !fill
+                && !info.totals_row
+                && !typed
+                    .iter()
+                    .any(|edit| matches!(edit.input, Some(EditInput::Formula(_))))
                 && below <= cgs_model::MAX_ROWS
                 && typed
                     .iter()
@@ -1268,76 +1291,103 @@ impl Session {
                 let calc = self.with_calc_table(next, &info.name);
                 return Some(vec![Op::Tables(calc), Op::Cells(cells)]);
             }
-            // The column to the right.
+            // Columns to the right: one typed into, or those a fill writes, side by side.
             let right = t.right + 1;
+            let last = typed.iter().map(|edit| edit.col).max().unwrap_or(right);
             if right <= cgs_model::MAX_COLS
-                && typed
-                    .iter()
-                    .all(|edit| edit.col == right && edit.row >= t.top && edit.row <= t.bottom)
+                && last <= cgs_model::MAX_COLS
+                && typed.iter().all(|edit| {
+                    edit.col >= right
+                        && edit.col <= last
+                        && edit.row >= t.top
+                        && edit.row <= t.bottom
+                })
+                && (right..=last).all(|col| typed.iter().any(|edit| edit.col == col))
             {
-                let rest_empty = (t.top..=t.bottom).all(|row| {
-                    is_typed(row, right)
-                        || matches!(
-                            self.calc.cell_input(CellRef {
-                                sheet,
-                                row,
-                                col: right
-                            }),
-                            CellInput::Clear
-                        )
+                let rest_empty = (right..=last).all(|col| {
+                    (t.top..=t.bottom).all(|row| {
+                        is_typed(row, col)
+                            || matches!(
+                                self.calc.cell_input(CellRef { sheet, row, col }),
+                                CellInput::Clear
+                            )
+                    })
                 });
                 if !rest_empty {
                     continue;
                 }
                 let header = info.header_row.then_some(t.top);
-                let typed_header = header.and_then(|row| {
-                    typed
+                let sheet_name = self.book.sheets[sheet as usize].name.clone();
+                // A heading typed with the column, as text: a formula's value becomes it, as in
+                // Excel, which keeps a table's headings as plain text.
+                let typed_header = |col: u32| {
+                    let row = header?;
+                    let edit = typed
                         .iter()
-                        .find(|edit| edit.row == row)
-                        .and_then(|edit| match &edit.input {
-                            Some(EditInput::Value(CalcValue::Text(text))) => Some(text.clone()),
-                            Some(EditInput::Value(CalcValue::Number(number))) => {
-                                Some(cgs_xlsx::patch_sheet::number_text(*number))
-                            }
-                            _ => None,
-                        })
-                });
-                let name = match typed_header {
-                    Some(text)
-                        if !info
-                            .columns
-                            .iter()
-                            .any(|other| other.eq_ignore_ascii_case(&text)) =>
-                    {
-                        text
+                        .find(|edit| edit.row == row && edit.col == col)?;
+                    let value = match &edit.input {
+                        Some(EditInput::Value(value)) => value.clone(),
+                        Some(EditInput::Formula(text)) => {
+                            self.calc
+                                .evaluate_at(&sheet_name, (row, col), row, col, text)
+                        }
+                        _ => return None,
+                    };
+                    match value {
+                        CalcValue::Text(text) => Some(text),
+                        CalcValue::Number(number) => {
+                            Some(cgs_xlsx::patch_sheet::number_text(number))
+                        }
+                        CalcValue::Bool(flag) => {
+                            Some(if flag { "TRUE" } else { "FALSE" }.to_string())
+                        }
+                        CalcValue::Error(text) => Some(text),
+                        CalcValue::Empty => None,
                     }
-                    _ => cgs_calc::new_column_name(&info.columns),
                 };
                 let mut next = info.clone();
-                next.range.right = right;
-                next.columns.push(name.clone());
-                let mut list = vec![Op::Tables(self.with_calc_table(next, &info.name))];
-                if let Some(row) = header {
-                    list.push(Op::Cells(vec![EditCell {
-                        sheet,
-                        row,
-                        col: right,
-                        input: Some(EditInput::Value(CalcValue::Text(name))),
-                        style: None,
-                    }]));
+                next.range.right = last;
+                let mut heads = Vec::new();
+                for col in right..=last {
+                    let name = match typed_header(col) {
+                        Some(text)
+                            if !text.is_empty()
+                                && !next
+                                    .columns
+                                    .iter()
+                                    .any(|other| other.eq_ignore_ascii_case(&text)) =>
+                        {
+                            text
+                        }
+                        _ => cgs_calc::new_column_name(&next.columns),
+                    };
+                    next.columns.push(name.clone());
+                    if let Some(row) = header {
+                        heads.push(EditCell {
+                            sheet,
+                            row,
+                            col,
+                            input: Some(EditInput::Value(CalcValue::Text(name))),
+                            style: None,
+                        });
+                    }
                 }
-                // A lone formula in the new column fills it.
+                let mut list = vec![Op::Tables(self.with_calc_table(next, &info.name))];
+                if !heads.is_empty() {
+                    list.push(Op::Cells(heads));
+                }
+                // A lone formula typed in the new column fills it.
                 let data: Vec<&&EditCell> = typed
                     .iter()
                     .filter(|edit| Some(edit.row) != header)
                     .collect();
-                if let [edit] = data.as_slice() {
+                if let ([edit], false) = (data.as_slice(), fill) {
                     if let Some(EditInput::Formula(text)) = &edit.input {
-                        let (first, last) = (
+                        let (first, last_row) = (
                             t.top + u32::from(info.header_row),
                             t.bottom - u32::from(info.totals_row),
                         );
-                        let cells = (first..=last)
+                        let cells = (first..=last_row)
                             .filter(|&row| row != edit.row)
                             .map(|row| EditCell {
                                 sheet,

@@ -281,6 +281,8 @@ impl Session {
         let mut tables = tables_before.clone();
         let mut lost_columns: Vec<(String, Vec<String>)> = Vec::new();
         let mut headers: Vec<(u32, u32, String)> = Vec::new();
+        // Tables that lose or gain columns, whose parts must say so.
+        let mut reshaped: Vec<String> = Vec::new();
         for table in tables.iter_mut().filter(|table| table.sheet == sheet) {
             let t = table.range;
             let Some((top, left, bottom, right)) =
@@ -301,10 +303,12 @@ impl Session {
                         keep
                     });
                     if !lost.is_empty() {
+                        reshaped.push(table.name.clone());
                         lost_columns.push((table.name.clone(), lost));
                     }
                 } else if edit.at > t.left && edit.at <= t.right {
                     let at = (edit.at - t.left) as usize;
+                    reshaped.push(table.name.clone());
                     for step in 0..edit.count as usize {
                         let column = cgs_calc::new_column_name(&table.columns);
                         table.columns.insert(at + step, column.clone());
@@ -509,6 +513,28 @@ impl Session {
         ];
         if tables != tables_before {
             list.push(Op::Tables(tables));
+        }
+        if !reshaped.is_empty() {
+            let mut book_tables = self.book.tables.clone();
+            for table in &mut book_tables {
+                if reshaped
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&table.name))
+                {
+                    table.edited = true;
+                    // A calculated column's formula follows the edit, as its cells do.
+                    for extra in &mut table.column_info {
+                        if let Some(text) = &extra.calculated {
+                            if let std::borrow::Cow::Owned(next) =
+                                cgs_refs::edit_formula(text, &name, &name, &edit)
+                            {
+                                extra.calculated = Some(next);
+                            }
+                        }
+                    }
+                }
+            }
+            list.push(Op::BookTables(book_tables));
         }
         // Merged areas in the way move along.
         let info = &self.book.sheets[sheet as usize];

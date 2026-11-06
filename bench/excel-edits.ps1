@@ -164,10 +164,10 @@ function Open-Excel {
   $excel.ScreenUpdating = $false
   # These are Excel's own settings and outlive it, so they go back as they were at the end.
   $script:autoCorrectWas = @($excel.AutoCorrect.AutoExpandListRange, $excel.AutoCorrect.AutoFillFormulasInLists)
-  # Typing beside a table grows it, as it does here. A formula typed in a table doesn't fill its
-  # column, which this app doesn't do yet.
+  # Excel's defaults, as here: typing beside a table grows it, and a formula typed in an empty
+  # table column fills the column.
   $excel.AutoCorrect.AutoExpandListRange = $true
-  $excel.AutoCorrect.AutoFillFormulasInLists = $false
+  $excel.AutoCorrect.AutoFillFormulasInLists = $true
   return $excel
 }
 

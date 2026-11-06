@@ -537,3 +537,54 @@ fn a_calculated_column_and_this_row_are_saved_as_excel_spells_them() {
         "{sheet}"
     );
 }
+
+#[test]
+fn a_formula_typed_below_leaves_the_table_and_one_beside_its_heading_becomes_text() {
+    let mut engine = sales();
+    // As Excel 2016 does with AutoExpand on: a formula under the table doesn't join it.
+    typed(&mut engine, 7, 9, "=ROW()");
+    assert_eq!(area_of(&engine, "Sales"), (1, 8, 6, 10));
+    // A formula beside the headings grows the table, with its value as the new heading.
+    typed(&mut engine, 1, 11, "=2+3");
+    assert_eq!(area_of(&engine, "Sales"), (1, 8, 6, 11));
+    assert_eq!(text(&engine, 1, 11), "5");
+    assert!(engine.formula_text(0, 1, 11).is_none());
+}
+
+#[test]
+fn a_fill_beside_a_table_grows_it_over_every_column_it_writes() {
+    let mut engine = sales();
+    run(
+        &mut engine,
+        r#"{"kind":"fill","sheet":0,"from":{"top":3,"left":10,"bottom":4,"right":10},"to":{"top":3,"left":10,"bottom":4,"right":12}}"#,
+    );
+    assert_eq!(area_of(&engine, "Sales"), (1, 8, 6, 12));
+    assert_eq!(text(&engine, 1, 11), "Column1");
+    assert_eq!(text(&engine, 1, 12), "Column2");
+}
+
+#[test]
+fn a_column_deleted_from_a_table_goes_from_its_part_and_its_formulas() {
+    let mut engine = sales();
+    run(
+        &mut engine,
+        r#"{"kind":"clear","sheet":0,"areas":[{"top":2,"left":10,"bottom":6,"right":10}]}"#,
+    );
+    typed(&mut engine, 2, 10, "=H2&I2");
+    run(
+        &mut engine,
+        r#"{"kind":"shiftCells","sheet":0,"area":{"top":3,"left":9,"bottom":3,"right":9},"down":false,"delete":true}"#,
+    );
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut part = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("xl/tables/table1.xml").unwrap(), &mut part)
+        .unwrap();
+    assert!(part.contains(r#"ref="H1:I6""#), "{part}");
+    assert!(part.contains(r#"<tableColumns count="2">"#), "{part}");
+    assert!(
+        part.contains("<calculatedColumnFormula>H2&amp;#REF!</calculatedColumnFormula>"),
+        "{part}"
+    );
+}

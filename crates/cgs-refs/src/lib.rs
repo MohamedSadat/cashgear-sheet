@@ -9,9 +9,9 @@ pub mod table_text;
 pub use file_text::{formula_for_file, formula_for_people};
 pub use rewrite::{
     apply_edits, delete_sheet_in_formula, delete_table_columns, delete_tables_in_formula,
-    edit_formula, edit_rect, edit_sqref, follow_moved_cells, moved_formula, quote_sheet,
-    reads_sheet, reads_tables, rename_in_formula, rename_table_column, sheet_key, touches_band,
-    Axis, AxisEdit, BookEdit, MovedCells, Span,
+    edit_formula, edit_rect, edit_sqref, follow_moved_cells, moved_formula, qualify_refs,
+    quote_sheet, reads_sheet, reads_tables, rename_in_formula, rename_table_column, sheet_key,
+    touches_band, Axis, AxisEdit, BookEdit, MovedCells, Span,
 };
 pub use table_text::{
     fill_table_columns, own_table_for_people, rename_table, table_refs_for_file,

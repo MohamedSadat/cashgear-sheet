@@ -119,6 +119,14 @@ impl Session {
         if formula.is_empty() {
             return Err("Enter what the name refers to.".to_string());
         }
+        // A reference with no sheet is the active sheet's, as Excel reads it in a name.
+        let active = self
+            .book
+            .sheets
+            .get(sheet.unwrap_or(self.book.active_sheet) as usize)
+            .map(|info| info.name.clone())
+            .unwrap_or_default();
+        let formula = &*cgs_refs::qualify_refs(formula, &active).into_owned();
         self.calc.check_formula(formula).map_err(|error| error.0)?;
         let mut names = self.book.names.clone();
         let existing = old.as_ref().and_then(|old| {

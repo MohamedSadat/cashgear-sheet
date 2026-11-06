@@ -736,6 +736,21 @@ pub fn delete_sheet_in_formula<'a>(text: &'a str, name: &str) -> Cow<'a, str> {
     })
 }
 
+/// `text` with each reference that names no sheet given `sheet`'s name, as a defined name's
+/// formula must have: Excel reads `$A$1` in a name as `Sheet1!$A$1` from the active sheet.
+pub fn qualify_refs<'a>(text: &'a str, sheet: &str) -> Cow<'a, str> {
+    rewritten(text, |found, text| {
+        if found.sheet.is_some() || found.foreign {
+            return None;
+        }
+        Some(format!(
+            "{}!{}",
+            quote_sheet(sheet),
+            &text[found.start..found.end]
+        ))
+    })
+}
+
 /// `text` with references to tables that have gone turned to `#REF!`.
 pub fn delete_tables_in_formula<'a>(text: &'a str, names: &[String]) -> Cow<'a, str> {
     if names.is_empty() || !text.contains('[') {

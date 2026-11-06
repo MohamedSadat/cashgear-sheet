@@ -711,3 +711,14 @@ fn the_table_style_gallery_previews_each_style() {
     assert_eq!(medium2["cells"][1][0][0], "#D9E1F2");
     assert_eq!(styles.as_array().unwrap().len(), 60);
 }
+
+#[test]
+fn a_names_bare_reference_is_the_active_sheets() {
+    let mut engine = opened();
+    run(
+        &mut engine,
+        r#"{"kind":"setName","name":"Rate","formula":"=$A$1:$A$3"}"#,
+    );
+    let names = ask(&engine, r#"{"kind":"names"}"#);
+    assert_eq!(names[0]["formula"], "=Sheet1!$A$1:$A$3");
+}
