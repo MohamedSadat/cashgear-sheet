@@ -2,13 +2,13 @@
 // (DisplayFormat over COM) and as the app draws it, compared for fill, font colour and weight, and
 // which edges have a line. The workbooks are the ones `bench/run-pivot-check.mjs` leaves: Excel's
 // own, and the app's after it changed layouts and styles. Generated workbooks only.
-// Usage: node bench/run-pivot-looks.mjs [folder]
+// Usage: node bench/run-pivot-looks.mjs [folder] [workbook names…]
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { root } from '../scripts/lib.mjs';
 
-const folder = resolve(process.argv[2] ?? join(root, 'bench/results/pivots'));
+const folder = resolve(process.argv[2] || join(root, 'bench/results/pivots'));
 const quoted = (text) => "'" + text.replace(/'/g, "''") + "'";
 const script = readFileSync(join(root, 'bench/excel-pivot-looks.ps1'), 'utf8');
 const build = spawnSync(
@@ -26,7 +26,8 @@ const readJson = (path) => {
 };
 
 const summary = {};
-for (const name of ['excel-pivots.xlsx', 'app-refreshed-changed.xlsx']) {
+const names = process.argv.slice(3);
+for (const name of names.length ? names : ['excel-pivots.xlsx', 'app-refreshed-changed.xlsx']) {
   const workbook = join(folder, name);
   const ours = join(folder, `${name}.looks-app.json`);
   const theirs = join(folder, `${name}.looks-excel.json`);
@@ -76,11 +77,19 @@ for (const name of ['excel-pivots.xlsx', 'app-refreshed-changed.xlsx']) {
       if (!our) continue;
       result.cells++;
       const problems = [];
-      if ((our.fill ?? null) !== (cell.fill ?? null))
+      // A tint can round a step differently: colours within 2 a channel are the same.
+      const near = (x, y) =>
+        x === y ||
+        (x !== null &&
+          y !== null &&
+          [0, 2, 4].every(
+            (i) => Math.abs(parseInt(x.slice(i, i + 2), 16) - parseInt(y.slice(i, i + 2), 16)) <= 2,
+          ));
+      if (!near(our.fill ?? null, cell.fill ?? null))
         problems.push(`fill app ${our.fill} Excel ${cell.fill}`);
       if (Boolean(our.bold) !== Boolean(cell.bold))
         problems.push(`bold app ${our.bold} Excel ${cell.bold}`);
-      if ((our.color ?? '000000') !== cell.color)
+      if (!near(our.color ?? '000000', cell.color))
         problems.push(`colour app ${our.color} Excel ${cell.color}`);
       for (const side of ['top', 'bottom', 'left', 'right']) {
         const a = edge(mine, cell.row, cell.col, side);

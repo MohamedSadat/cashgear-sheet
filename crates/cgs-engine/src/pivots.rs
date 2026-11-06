@@ -1894,7 +1894,7 @@ fn axis_name(axis: Option<PivotAxis>) -> Option<&'static str> {
 }
 
 /// Which column of the row area each row field's labels go in, as `cgs-pivot` lays them out.
-fn row_columns(table: &PivotTable) -> Vec<u32> {
+pub(crate) fn row_columns(table: &PivotTable) -> Vec<u32> {
     let mut out = Vec::new();
     let mut col = 0u32;
     for i in 0..table.row_fields.len() {

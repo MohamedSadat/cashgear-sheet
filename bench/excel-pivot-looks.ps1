@@ -62,7 +62,11 @@ try {
   $excel.AutomationSecurity = 3
   $book = $excel.Workbooks.Open($Workbook, 0, $true)
   foreach ($sheet in $book.Worksheets) {
+    # DisplayFormat reads true only on the sheet showing.
+    if ($sheet.PivotTables().Count -gt 0) { $sheet.Activate() }
     foreach ($table in $sheet.PivotTables()) {
+      # A pivot table saved without records shows its style once refreshed, as on a normal open.
+      [void]$table.RefreshTable()
       $range = $table.TableRange2
       $entry = @{ sheet = [string]$sheet.Name; name = [string]$table.Name; style = [string]$table.TableStyle2.Name; cells = @() }
       foreach ($cell in $range.Cells) {

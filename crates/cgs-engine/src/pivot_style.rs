@@ -155,8 +155,13 @@ fn region(table: &PivotTable, kind: PivotElement, row: u32, col: u32, size: u32)
             return None;
         }
         return match kind {
-            PivotElement::PageFieldLabels if col == r.left => Some(rect(row, col, row, col)),
-            PivotElement::PageFieldValues if col == r.left + 1 => Some(rect(row, col, row, col)),
+            // The report filters' labels are one block, and their choices another.
+            PivotElement::PageFieldLabels if col == r.left => {
+                Some(rect(first, col, first + pages - 1, col))
+            }
+            PivotElement::PageFieldValues if col == r.left + 1 => {
+                Some(rect(first, col, first + pages - 1, col))
+            }
             _ => None,
         };
     }
@@ -186,6 +191,16 @@ fn region(table: &PivotTable, kind: PivotElement, row: u32, col: u32, size: u32)
         PivotElement::WholeTable => Some(r),
         PivotElement::HeaderRow if style.col_headers && row < data_top => {
             Some(rect(r.top, r.left, data_top - 1, r.right))
+        }
+        // With no row fields, the label of the one data row is a heading too.
+        PivotElement::HeaderRow
+            if style.col_headers
+                && real_rows == 0
+                && col < data_left
+                && row_kind == Some(ItemType::Data) =>
+        {
+            // Its bottom edge is not the heading's: Excel draws no line under it.
+            Some(rect(row, r.left, row + 1, data_left - 1))
         }
         PivotElement::FirstHeaderCell if row < data_top && col < data_left => {
             Some(rect(r.top, r.left, data_top - 1, data_left - 1))
@@ -236,9 +251,26 @@ fn region(table: &PivotTable, kind: PivotElement, row: u32, col: u32, size: u32)
         PivotElement::RowSubheading(n) if style.row_headers => {
             let k = row_line?;
             let line = table.row_items.get(k)?;
-            let parent = line.kind == ItemType::Data && depth(&table.row_items, k) < real_rows;
-            (parent && col < data_left && level(depth(&table.row_items, k)) == n)
-                .then(|| rect(row, r.left, row, data_left - 1))
+            if line.kind != ItemType::Data {
+                return None;
+            }
+            let d = depth(&table.row_items, k);
+            // A parent item on a line of its own, in compact and outline form: its whole row.
+            let outline = d >= 1
+                && table
+                    .row_fields
+                    .get(d - 1)
+                    .is_some_and(|&f| f == VALUES_FIELD || table.fields[f as usize].outline);
+            if d < table.row_fields.len() && outline {
+                return (level(d) == n).then(|| rect(row, r.left, row, r.right));
+            }
+            // In tabular form a parent item shares its first child's line: its own label cell.
+            let columns = crate::pivots::row_columns(table);
+            let c = col.checked_sub(r.left)?;
+            (line.repeat as usize..d.saturating_sub(1))
+                .find(|&lv| columns.get(lv) == Some(&c) && columns.get(lv + 1) != Some(&c))
+                .filter(|&lv| table.row_fields.get(lv) != Some(&VALUES_FIELD) && level(lv + 1) == n)
+                .map(|_| rect(row, col, row, col))
         }
         PivotElement::BlankRow if row_kind == Some(ItemType::Blank) => {
             Some(rect(row, r.left, row, r.right))
