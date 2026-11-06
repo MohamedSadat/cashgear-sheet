@@ -12,7 +12,7 @@ pub mod source;
 pub mod view;
 
 pub use agg::{Acc, Out};
-pub use layout::{layout, AxisInfo, Layout, LineInfo, LineRole};
+pub use layout::{compare_values, default_items, layout, AxisInfo, Layout, LineInfo, LineRole};
 pub use view::CacheView;
 
 use cgs_model::pivot::Summary;

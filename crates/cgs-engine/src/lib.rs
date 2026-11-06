@@ -21,6 +21,7 @@ pub mod input;
 mod json;
 pub mod names;
 pub mod notes;
+pub mod pivots;
 pub mod query;
 mod shift;
 pub mod sort;
@@ -98,6 +99,10 @@ struct Session {
     loader: Option<Loader>,
     /// Sheets showing Circle Invalid Data.
     circled: std::collections::HashSet<u32>,
+    /// Each pivot cache's records, once a pivot table has needed them.
+    pivot_records: Vec<Option<Rc<cgs_model::pivot::CacheRecords>>>,
+    /// What pivot tables call things the file doesn't name, in the UI's language.
+    pivot_captions: cgs_pivot::Captions,
     cache: tile::TileCache,
     phase: LoadPhase,
     last_progress: (u64, u64),
@@ -106,6 +111,7 @@ struct Session {
 /// The engine a worker holds.
 pub struct Engine {
     locale: Locale,
+    pivot_captions: cgs_pivot::Captions,
     today: f64,
     session: Option<Session>,
 }
@@ -222,6 +228,7 @@ impl Engine {
     pub fn new() -> Self {
         Self {
             locale: Locale::en_us(),
+            pivot_captions: cgs_pivot::Captions::default(),
             today: 45_000.0,
             session: None,
         }
@@ -256,6 +263,8 @@ impl Engine {
             cannot_edit: None,
             loader: Some(loader),
             circled: Default::default(),
+            pivot_records: Vec::new(),
+            pivot_captions: self.pivot_captions.clone(),
             cache: tile::TileCache::default(),
             phase: LoadPhase::Reading,
             last_progress: (0, 0),

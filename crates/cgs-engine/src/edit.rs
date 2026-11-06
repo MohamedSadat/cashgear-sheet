@@ -485,6 +485,18 @@ impl Session {
                 replace: true,
             });
         }
+        if edits.pivots_changed {
+            for (index, cache) in self.book.pivot_caches.iter().enumerate() {
+                if !cache.changed {
+                    continue;
+                }
+                let records = self.pivot_records.get(index).cloned().flatten();
+                edits.pivot_values.insert(
+                    index as u32,
+                    cgs_xlsx::pivot_write::values_of(&cache.fields, records.as_deref()),
+                );
+            }
+        }
         edits
     }
 }

@@ -489,6 +489,36 @@ pub enum Command {
         index: u32,
         to: u32,
     },
+    /// Refresh, or Refresh All without a pivot table.
+    RefreshPivot {
+        #[serde(default)]
+        pivot: Option<crate::pivots::PivotRef>,
+    },
+    /// A pivot table rearranged, as its field list does it.
+    PivotLayout {
+        pivot: crate::pivots::PivotRef,
+        layout: crate::pivots::LayoutSpec,
+    },
+    /// Options from the PivotTable Analyze and Design tabs.
+    PivotOptions {
+        pivot: crate::pivots::PivotRef,
+        options: crate::pivots::OptionSpec,
+    },
+    /// One field's filter, sort, subtotals or details.
+    PivotField {
+        pivot: crate::pivots::PivotRef,
+        field: u32,
+        change: crate::pivots::FieldChange,
+    },
+    /// Insert › PivotTable.
+    CreatePivot {
+        sheet: u32,
+        area: Area,
+        to: crate::pivots::Destination,
+    },
+    DeletePivot {
+        pivot: crate::pivots::PivotRef,
+    },
     Undo,
     Redo,
 }
@@ -624,6 +654,12 @@ pub(crate) enum Op {
         view: cgs_model::SheetView,
         freeze: bool,
     },
+    /// The model's pivot tables and caches, and the records each cache holds now.
+    BookPivots {
+        tables: Vec<cgs_model::pivot::PivotTable>,
+        caches: Vec<cgs_model::pivot::PivotCache>,
+        records: Vec<Option<std::rc::Rc<cgs_model::pivot::CacheRecords>>>,
+    },
     Many(Vec<Op>),
 }
 
@@ -641,6 +677,18 @@ impl Op {
             Self::Names(names) => names.len() * 128,
             Self::Tables(tables) => tables.len() * 256,
             Self::BookTables(tables) => tables.len() * 512,
+            Self::BookPivots { tables, caches, .. } => {
+                1024 + tables.len() * 4096
+                    + caches
+                        .iter()
+                        .map(|c| {
+                            c.fields
+                                .iter()
+                                .map(|f| 64 + f.shared.len() * 32)
+                                .sum::<usize>()
+                        })
+                        .sum::<usize>()
+            }
             Self::SheetFilter { .. } => 512,
             Self::SheetCf { blocks, .. } => 256 + blocks.len() * 512,
             Self::SheetDv { list, .. } => 256 + list.len() * 512,
@@ -809,7 +857,7 @@ fn sheet_name_problem(book: &cgs_model::Book, name: &str, except: Option<u32>) -
 }
 
 /// A sheet's next free default name.
-fn next_sheet_name(book: &cgs_model::Book) -> String {
+pub(crate) fn next_sheet_name(book: &cgs_model::Book) -> String {
     let mut number = book.sheets.len() + 1;
     loop {
         let name = format!("Sheet{number}");
@@ -1202,6 +1250,7 @@ impl Session {
         }
         self.book.sheets[sheet as usize].apply_axis(edit);
         self.move_patches(sheet, edit);
+        self.move_pivots(sheet, edit);
         for defined in &mut self.book.names {
             let home = defined
                 .local_sheet
@@ -1596,6 +1645,11 @@ impl Session {
                     filter: before,
                 })
             }
+            Op::BookPivots {
+                tables,
+                caches,
+                records,
+            } => Ok(self.apply_book_pivots(tables, caches, records)),
             Op::BookTables(tables) => {
                 for table in tables.iter().chain(self.book.tables.iter()) {
                     self.dirty.sheets.insert(table.sheet);
@@ -1730,6 +1784,7 @@ impl Session {
                     .rename_sheet(sheet, &name)
                     .map_err(|error| error.0)?;
                 self.book.sheets[sheet as usize].name = name.clone();
+                self.rename_pivot_sources(&old, &name);
                 for defined in &mut self.book.names {
                     if let std::borrow::Cow::Owned(next) =
                         cgs_refs::rename_in_formula(&defined.formula, &old, &name)
@@ -3190,6 +3245,21 @@ impl Session {
                 self.resize_table_command(&table, area)
             }
             Command::ConvertToRange { table } => self.convert_to_range_command(&table),
+            Command::RefreshPivot { pivot } => self.refresh_pivot_command(pivot),
+            Command::PivotLayout { pivot, layout } => self.pivot_layout_command(&pivot, layout),
+            Command::PivotOptions { pivot, options } => self.pivot_options_command(&pivot, options),
+            Command::PivotField {
+                pivot,
+                field,
+                change,
+            } => self.pivot_field_command(&pivot, field, change),
+            Command::CreatePivot { sheet, area, to } => {
+                if !area.valid() {
+                    return Err("That's off the sheet.".to_string());
+                }
+                self.create_pivot_command(sheet, area, to)
+            }
+            Command::DeletePivot { pivot } => self.delete_pivot_command(&pivot),
             Command::AddCf { sheet, areas, rule } => self.add_cf_command(sheet, &areas, &rule),
             Command::SetName {
                 old,

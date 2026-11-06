@@ -109,6 +109,8 @@ impl DateGrouping {
 pub struct FieldGroup {
     /// The field whose values are grouped: this one, or another for a second level of dates.
     pub base: u32,
+    /// The file names `base`; a field others group by, with no group of its own, doesn't.
+    pub base_named: bool,
     /// The field one level up, for a date grouped into several parts.
     pub parent: Option<u32>,
     pub range: Option<GroupRange>,
@@ -325,6 +327,8 @@ pub struct PivotField {
     pub multiple_item_selection: bool,
     /// Its labels repeat on every row, from Excel 2010's `fillDownLabels`.
     pub repeat_labels: bool,
+    /// New items show when its filter hides others (`includeNewItemsInFilter`).
+    pub include_new_items: bool,
     /// Items in the field's items but not in the file's are new and need writing.
     pub items_listed: bool,
 }
@@ -349,6 +353,7 @@ impl Default for PivotField {
             num_fmt_id: None,
             multiple_item_selection: false,
             repeat_labels: false,
+            include_new_items: false,
             items_listed: false,
         }
     }

@@ -142,6 +142,7 @@ fn cache_value(element: &Element, date1904: bool) -> Option<CacheValue> {
 }
 
 fn read_group(element: &Element, field: u32, date1904: bool) -> FieldGroup {
+    let base_named = element.attr(b"base").is_some();
     let base = number(element, b"base").unwrap_or(field);
     let parent = number(element, b"par");
     let mut range = None;
@@ -191,6 +192,7 @@ fn read_group(element: &Element, field: u32, date1904: bool) -> FieldGroup {
     }
     FieldGroup {
         base,
+        base_named,
         parent,
         range,
         items,
@@ -318,6 +320,7 @@ fn read_field(element: &Element, repeat_default: bool) -> PivotField {
         subtotal_caption: text(element, b"subtotalCaption"),
         num_fmt_id: number(element, b"numFmtId"),
         multiple_item_selection: flag(element, b"multipleItemSelectionAllowed", false),
+        include_new_items: flag(element, b"includeNewItemsInFilter", false),
         sort: match element.attr(b"sortType") {
             Some(b"ascending") => FieldSort::Ascending,
             Some(b"descending") => FieldSort::Descending,

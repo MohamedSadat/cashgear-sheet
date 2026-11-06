@@ -47,7 +47,9 @@ pub fn arabic() -> Captions {
     };
     c.functions[0] = "مجموع".into();
     c.functions[1] = "عدد".into();
+    c.functions[2] = "متوسط".into();
     c.functions[3] = "الحد الأقصى".into();
+    c.functions[4] = "الحد الأدنى".into();
     c
 }
 

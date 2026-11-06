@@ -139,6 +139,10 @@ pub struct WorkbookEdits {
     pub drawing_sheets: std::collections::BTreeSet<u32>,
     /// Pictures added, by the part they will be saved as.
     pub media: BTreeMap<String, Vec<u8>>,
+    /// Some pivot table or cache was made, removed or changed, so the model's are saved.
+    pub pivots_changed: bool,
+    /// Each changed cache's values, listed or not, by cache index, for its shared items' flags.
+    pub pivot_values: BTreeMap<u32, Vec<Vec<cgs_model::pivot::CacheValue>>>,
 }
 
 impl WorkbookEdits {
@@ -159,6 +163,7 @@ impl WorkbookEdits {
             && self.notes_sheets.is_empty()
             && self.link_sheets.is_empty()
             && self.drawing_sheets.is_empty()
+            && !self.pivots_changed
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.
@@ -1993,6 +1998,24 @@ pub fn save_workbook(
             };
             main_xml =
                 Some(patch_defined_names(&xml, book, !edits.ops.is_empty()).map_err(part_error)?);
+        }
+        if edits.pivots_changed {
+            let outcome = crate::pivot_save::PivotSave {
+                package,
+                book,
+                values: &edits.pivot_values,
+                main: &main,
+                overlay: &mut overlay,
+                changes: &mut changes,
+                report: &mut report,
+                content_types: &mut content_types,
+                main_rels: &mut main_rels,
+                main_xml: &mut main_xml,
+                new_sheets: &structure.new_parts,
+            }
+            .run()?;
+            types_changed |= outcome.types_changed;
+            rels_changed |= outcome.rels_changed;
         }
         if let Some(xml) = main_xml {
             changes.replace.insert(normalize(&main), pack_part(&xml)?);

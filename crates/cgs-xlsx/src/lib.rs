@@ -20,6 +20,8 @@ pub mod package;
 pub mod patch_parts;
 pub mod patch_sheet;
 pub mod pivot;
+pub mod pivot_save;
+pub mod pivot_write;
 pub mod save;
 pub mod scan;
 pub mod sheet;

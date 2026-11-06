@@ -641,6 +641,7 @@ dependencies = [
  "cgs-calc",
  "cgs-model",
  "cgs-numfmt",
+ "cgs-pivot",
  "cgs-refs",
  "cgs-xlsx",
  "rustc-hash 2.1.3",

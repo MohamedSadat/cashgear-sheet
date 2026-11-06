@@ -429,6 +429,73 @@ export function sourceEdits(rows) {
   ];
 }
 
+/** Changes the app makes after its refresh: Excel lays out the saved definitions again. */
+export function pivotChanges() {
+  const sheetOf = (name) => CASES.findIndex((c) => c.name === name) + 1;
+  const ref = (name) => ({ sheet: sheetOf(name), name: `PivotTable${sheetOf(name)}` });
+  const options = (name, options) => ({ kind: 'pivotOptions', pivot: ref(name), options });
+  const field = (name, index, change) => ({
+    kind: 'pivotField',
+    pivot: ref(name),
+    field: index,
+    change,
+  });
+  const layout = (name, spec) => ({ kind: 'pivotLayout', pivot: ref(name), layout: spec });
+  const created = CASES.length + 1;
+  return [
+    options('Two rows', { form: 'tabular' }),
+    options('Outline', { subtotals: 'bottom' }),
+    options('Tabular', { grandTotals: 'off', repeatLabels: true }),
+    options('Rows', { style: 'PivotStyleDark2', rowStripes: true }),
+    options('Two columns', { blankRows: true, form: 'outline' }),
+    options('Rows and columns', { emptyText: '0', errorText: 'n/a' }),
+    layout('Rows', { rows: [1], cols: [0], values: [{ field: 4, summary: 'average' }] }),
+    layout('Values on columns', {
+      rows: [0, 1],
+      cols: [-2],
+      pages: [2],
+      values: [{ field: 4 }, { field: 5, summary: 'count' }],
+    }),
+    layout('Every summary', {
+      rows: [0],
+      cols: [-2],
+      values: [
+        { field: 5, summary: 'sum', showAs: 'percentOfTotal' },
+        { field: 5, summary: 'max', showAs: 'percentOfCol' },
+        { field: 4, summary: 'stdDev' },
+      ],
+    }),
+    field('Rows and columns', 0, { sort: 'descending' }),
+    field('Three rows', 2, { hidden: [0] }),
+    field('Two rows', 0, { expand: [0, false] }),
+    field('Custom subtotals', 0, { subtotals: ['sum', 'average', 'min'] }),
+    field('Report filter', 2, { page: 3 }),
+    field('Sort by value', 0, { sort: 'ascending', sortBy: 0 }),
+    {
+      kind: 'createPivot',
+      sheet: 0,
+      area: { top: 1, left: 1, bottom: 1, right: 1 },
+      to: { kind: 'newSheet' },
+    },
+    layout('__created', { rows: [0], cols: [1], values: [{ field: 4 }] }),
+    {
+      kind: 'createPivot',
+      sheet: 0,
+      area: { top: 1, left: 1, bottom: 49, right: 7 },
+      to: { kind: 'existing', sheet: sheetOf('Rows'), row: 20, col: 6 },
+    },
+    {
+      kind: 'pivotLayout',
+      pivot: { sheet: sheetOf('Rows'), name: `PivotTable${created + 1}` },
+      layout: { rows: [2, 0], values: [{ field: 5, summary: 'count' }, { field: 4 }] },
+    },
+  ].map((command) =>
+    command.pivot?.name === 'PivotTable0'
+      ? { ...command, pivot: { sheet: created, name: `PivotTable${created}` } }
+      : command,
+  );
+}
+
 export function pivotSpec() {
   const rows = salesRows();
   return {
@@ -436,5 +503,6 @@ export function pivotSpec() {
     source: `Data!R1C1:R${rows.length}C${rows[0].length}`,
     cases: CASES,
     edits: sourceEdits(rows),
+    changes: pivotChanges(),
   };
 }

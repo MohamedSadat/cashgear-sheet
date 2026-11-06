@@ -11,6 +11,7 @@ cgs-calc = { path = "../cgs-calc" }
 cgs-model.workspace = true
 cgs-numfmt = { path = "../cgs-numfmt" }
 cgs-refs = { path = "../cgs-refs" }
+cgs-pivot = { path = "../cgs-pivot" }
 cgs-xlsx = { path = "../cgs-xlsx" }
 rustc-hash = "2"
 serde.workspace = true
