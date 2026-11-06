@@ -942,6 +942,18 @@ impl SheetInfo {
                 None => self.filter = None,
             }
         }
+        self.move_annotations(edit);
+        for drawing in &mut self.drawings {
+            drawing.anchor.apply(edit);
+        }
+        self.view.active_cell = moved_cell(self.view.active_cell, edit);
+        self.view.top_left = moved_cell(self.view.top_left, edit);
+    }
+
+    /// Moves what sits on cells rather than in them, as an edit moves the cells: conditional
+    /// formats, notes, links and validation. A shift of some cells uses this alone, as it moves
+    /// the cells themselves.
+    pub fn move_annotations(&mut self, edit: &AxisEdit) {
         // Conditional formats follow their cells, and what's written anew isn't the file's any more.
         let name = self.name.clone();
         self.cf.retain_mut(|block| {
@@ -1054,11 +1066,6 @@ impl SheetInfo {
             }
             true
         });
-        for drawing in &mut self.drawings {
-            drawing.anchor.apply(edit);
-        }
-        self.view.active_cell = moved_cell(self.view.active_cell, edit);
-        self.view.top_left = moved_cell(self.view.top_left, edit);
     }
 
     /// The merge a cell belongs to, if any.

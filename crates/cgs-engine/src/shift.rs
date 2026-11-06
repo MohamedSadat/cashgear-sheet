@@ -525,9 +525,15 @@ impl Session {
                     // A calculated column's formula follows the edit, as its cells do.
                     for extra in &mut table.column_info {
                         if let Some(text) = &extra.calculated {
-                            if let std::borrow::Cow::Owned(next) =
-                                cgs_refs::edit_formula(text, &name, &name, &edit)
-                            {
+                            let mut next = cgs_refs::edit_formula(text, &name, &name, &edit);
+                            for (owner, lost) in &lost_columns {
+                                if let std::borrow::Cow::Owned(gone) =
+                                    cgs_refs::delete_table_columns(&next, owner, lost)
+                                {
+                                    next = std::borrow::Cow::Owned(gone);
+                                }
+                            }
+                            if let std::borrow::Cow::Owned(next) = next {
                                 extra.calculated = Some(next);
                             }
                         }
@@ -535,6 +541,38 @@ impl Session {
                 }
             }
             list.push(Op::BookTables(book_tables));
+        }
+        // Conditional formats, notes, links and validation move with the cells too.
+        let info = &self.book.sheets[sheet as usize];
+        let mut moved = cgs_model::SheetInfo::new(info.name.clone(), info.state, info.kind, None);
+        moved.cf = info.cf.clone();
+        moved.notes = info.notes.clone();
+        moved.links = info.links.clone();
+        moved.validations = info.validations.clone();
+        moved.move_annotations(&edit);
+        if moved.cf != info.cf {
+            list.push(Op::SheetCf {
+                sheet,
+                blocks: moved.cf,
+            });
+        }
+        if moved.notes != info.notes {
+            list.push(Op::SheetNotes {
+                sheet,
+                notes: moved.notes,
+            });
+        }
+        if moved.links != info.links {
+            list.push(Op::SheetLinks {
+                sheet,
+                links: moved.links,
+            });
+        }
+        if moved.validations != info.validations {
+            list.push(Op::SheetDv {
+                sheet,
+                list: moved.validations,
+            });
         }
         // Merged areas in the way move along.
         let info = &self.book.sheets[sheet as usize];

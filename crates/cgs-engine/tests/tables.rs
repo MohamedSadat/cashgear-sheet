@@ -591,3 +591,42 @@ fn a_column_deleted_from_a_table_goes_from_its_part_and_its_formulas() {
         "{part}"
     );
 }
+
+#[test]
+fn notes_move_with_shifted_cells_and_go_with_deleted_ones() {
+    let mut engine = sales();
+    run(
+        &mut engine,
+        r#"{"kind":"setNote","sheet":0,"row":3,"col":8,"text":"gone"}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"setNote","sheet":0,"row":4,"col":9,"text":"moves"}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"shiftCells","sheet":0,"area":{"top":3,"left":8,"bottom":3,"right":8},"down":false,"delete":true}"#,
+    );
+    let note = |engine: &Engine, row: u32, col: u32| -> serde_json::Value {
+        serde_json::from_str(
+            &engine
+                .query(&format!(
+                    r#"{{"kind":"noteAt","sheet":0,"row":{row},"col":{col}}}"#
+                ))
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(note(&engine, 4, 8)["text"], "moves");
+    assert_eq!(note(&engine, 3, 8)["text"], serde_json::Value::Null);
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut part = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("xl/comments1.xml").unwrap(), &mut part)
+        .unwrap();
+    assert!(
+        part.contains(r#"<comment ref="H4""#) && !part.contains("gone"),
+        "{part}"
+    );
+}
