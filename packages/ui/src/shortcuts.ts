@@ -48,7 +48,10 @@ export type GridAction =
   | 'formatTime'
   | 'borderOutline'
   | 'borderNone'
-  | 'contextMenu';
+  | 'contextMenu'
+  | 'hyperlink'
+  | 'note'
+  | 'filter';
 
 export interface ShortcutKey {
   key: string;
@@ -78,7 +81,7 @@ export function actionFor(event: ShortcutKey): GridAction | null {
   // With Ctrl, a key means what it means on a Latin layout, so that Ctrl+B works in Arabic too.
   const key = latinKey(event, Boolean(ctrl));
   if (key === 'ContextMenu' || (key === 'F10' && shift && !ctrl && !alt)) return 'contextMenu';
-  if (key === 'F2' && !ctrl && !alt) return shift ? null : 'edit';
+  if (key === 'F2' && !ctrl && !alt) return shift ? 'note' : 'edit';
   if (key === 'F9') {
     if (ctrl && alt) return 'calculateAll';
     if (shift) return 'calculateSheet';
@@ -123,6 +126,8 @@ export function actionFor(event: ShortcutKey): GridAction | null {
       case '_':
       case '-':
         return 'borderNone';
+      case 'l':
+        return 'filter';
       case '(':
       case '9':
         return 'unhideRows';
@@ -153,6 +158,8 @@ export function actionFor(event: ShortcutKey): GridAction | null {
         return 'replace';
       case 'g':
         return 'goTo';
+      case 'k':
+        return 'hyperlink';
       case '9':
         return 'hideRows';
       case '0':

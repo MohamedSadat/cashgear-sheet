@@ -1303,6 +1303,15 @@ export function AppShell({ platform, theme }: AppShellProps) {
       case 'goTo':
         goToBox();
         break;
+      case 'hyperlink':
+        dataTools.actions.hyperlink();
+        break;
+      case 'note':
+        dataTools.actions.editNote();
+        break;
+      case 'filter':
+        dataTools.actions.toggleFilter();
+        break;
       case 'hideRows':
         sheetFormat.setHidden('row', true);
         break;

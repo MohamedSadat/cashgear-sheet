@@ -17,6 +17,12 @@ describe('actionFor', () => {
     expect(actionFor({ key: 'Escape' })).toBe('cancel');
   });
 
+  it('knows the data tools’ keys', () => {
+    expect(actionFor({ key: 'k', ctrlKey: true })).toBe('hyperlink');
+    expect(actionFor({ key: 'F2', shiftKey: true })).toBe('note');
+    expect(actionFor({ key: 'L', ctrlKey: true, shiftKey: true })).toBe('filter');
+  });
+
   it('knows the calculation keys', () => {
     expect(actionFor({ key: 'F9' })).toBe('calculate');
     expect(actionFor({ key: 'F9', shiftKey: true })).toBe('calculateSheet');
