@@ -324,6 +324,18 @@ pub enum Command {
     ConvertToRange {
         table: String,
     },
+    /// Sorts an area by up to 64 keys, top to bottom or with `byColumns` left to right.
+    Sort {
+        sheet: u32,
+        area: Area,
+        keys: Vec<crate::sort::SortKeySpec>,
+        #[serde(default)]
+        header: bool,
+        #[serde(default)]
+        case_sensitive: bool,
+        #[serde(default)]
+        by_columns: bool,
+    },
     Undo,
     Redo,
 }
@@ -686,7 +698,7 @@ impl Session {
     }
 
     /// Whether `area` holds part of a `{=...}` array, without all of it.
-    fn cuts_an_array(&self, sheet: u32, area: Area) -> bool {
+    pub(crate) fn cuts_an_array(&self, sheet: u32, area: Area) -> bool {
         self.calc.spill_areas().iter().any(|spill| {
             if spill.sheet != sheet {
                 return false;
@@ -2746,6 +2758,19 @@ impl Session {
                 self.resize_table_command(&table, area)
             }
             Command::ConvertToRange { table } => self.convert_to_range_command(&table),
+            Command::Sort {
+                sheet,
+                area,
+                keys,
+                header,
+                case_sensitive,
+                by_columns,
+            } => {
+                if !area.valid() {
+                    return Err("That's off the sheet.".to_string());
+                }
+                self.sort_command(sheet, area, &keys, header, case_sensitive, by_columns)
+            }
             Command::ShiftCells {
                 sheet,
                 area,
