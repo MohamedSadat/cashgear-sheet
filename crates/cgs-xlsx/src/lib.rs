@@ -9,6 +9,7 @@
 
 pub mod blank;
 pub mod cf;
+pub mod chart;
 pub mod dv;
 pub mod dxf;
 pub mod filter;
@@ -343,12 +344,52 @@ impl Loader {
             return;
         };
         let rels = workbook::read_relationships(&self.package, &part);
-        if let Some((_, target)) = rels.get(rel) {
-            if let Some(xml) = self.package.read(target) {
-                info.drawings = workbook::read_drawing(&xml);
+        let Some((_, target)) = rels.get(rel) else {
+            return;
+        };
+        let Some(xml) = self.package.read(target) else {
+            return;
+        };
+        info.drawing_part = Some(target.clone());
+        let found = workbook::read_drawing_parts(&xml);
+        let drawing_rels = workbook::read_relationships(&self.package, target);
+        let mut drawings = Vec::with_capacity(found.len());
+        for read in found {
+            let mut drawing = read.drawing;
+            if let Some((kind, chart_part)) =
+                read.chart_rel.as_ref().and_then(|id| drawing_rels.get(id))
+            {
+                drawing.chart = Some(chart_index(book, &self.package, chart_part, kind));
             }
+            if let Some((_, media)) = read.image_rel.as_ref().and_then(|id| drawing_rels.get(id)) {
+                drawing.image = Some(media.clone());
+            }
+            drawings.push(drawing);
         }
+        book.sheets[sheet as usize].drawings = drawings;
     }
+}
+
+/// A chart part's index in `book.charts`, reading it the first time it is seen.
+fn chart_index(book: &mut Book, package: &Package, part: &str, kind: &str) -> u32 {
+    if let Some(at) = book
+        .charts
+        .iter()
+        .position(|chart| chart.part.as_deref() == Some(part))
+    {
+        return at as u32;
+    }
+    let extended = kind.ends_with("/chartEx");
+    let body = match package.read(part) {
+        Some(xml) => chart::read_chart(&xml, extended),
+        None => cgs_model::ChartBody::Unreadable,
+    };
+    book.charts.push(cgs_model::ChartPart {
+        part: Some(part.to_string()),
+        body,
+        changed: false,
+    });
+    (book.charts.len() - 1) as u32
 }
 
 #[cfg(test)]

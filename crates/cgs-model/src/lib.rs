@@ -2,6 +2,7 @@
 //! drawings and which style each cell uses. No I/O.
 
 pub mod cf;
+pub mod chart;
 pub mod color;
 pub mod dv;
 pub mod dxf;
@@ -12,6 +13,7 @@ pub mod style;
 pub mod table;
 
 pub use cf::{CfBlock, CfKind, CfOperator, CfRule, CfValueKind, Cfvo, DataBar, IconSet};
+pub use chart::{Chart, ChartBody, ChartPart};
 pub use color::{Color, ColorKind, ColorSpace, DarkColors, Rgb, ThemePalette};
 pub use dv::{DvKind, DvOp, DvStyle, Validation};
 pub use dxf::{Dxf, DxfBorder, DxfFill, DxfFont, TableElement, TableStyleDef, TableStyleElement};
@@ -83,6 +85,8 @@ pub struct Book {
     pub file_sheets: Vec<u32>,
     /// Shared strings with more than one look, by their index in the file.
     pub rich_strings: std::collections::HashMap<u32, Vec<RichRun>>,
+    /// Chart parts, which drawings point at by index.
+    pub charts: Vec<ChartPart>,
 }
 
 impl Book {

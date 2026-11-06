@@ -376,8 +376,31 @@ impl Marker {
     }
 }
 
-/// Reads the anchors of a drawing part, each with what it holds, for the placeholders.
+/// An anchor of a drawing part, with the relationships of what it shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawingRead {
+    pub drawing: Drawing,
+    /// `c:chart r:id` or `cx:chart r:id`.
+    pub chart_rel: Option<String>,
+    /// `a:blip r:embed`.
+    pub image_rel: Option<String>,
+}
+
+/// Reads the anchors of a drawing part, each with what it holds.
 pub fn read_drawing(xml: &[u8]) -> Vec<Drawing> {
+    read_drawing_parts(xml)
+        .into_iter()
+        .map(|read| read.drawing)
+        .collect()
+}
+
+/// Reads the anchors of a drawing part, each with what it holds and where that is.
+pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
+    let mut chart_rel: Option<String> = None;
+    let mut image_rel: Option<String> = None;
+    let mut id = 0u32;
+    let mut description = String::new();
+    let mut anchors = 0u32;
     let mut reader = Reader::from_reader(xml);
     let mut buf = Vec::new();
     let mut out = Vec::new();
@@ -434,12 +457,20 @@ pub fn read_drawing(xml: &[u8]) -> Vec<Drawing> {
                             },
                         };
                         if let Some(kind) = kind.take() {
-                            out.push(Drawing {
-                                kind,
-                                name: std::mem::take(&mut name),
-                                anchor,
+                            let mut drawing = Drawing::new(kind, std::mem::take(&mut name), anchor);
+                            drawing.id = id;
+                            drawing.description = std::mem::take(&mut description);
+                            drawing.source = Some(anchors);
+                            out.push(DrawingRead {
+                                drawing,
+                                chart_rel: chart_rel.take(),
+                                image_rel: image_rel.take(),
                             });
                         }
+                        anchors += 1;
+                        id = 0;
+                        chart_rel = None;
+                        image_rel = None;
                         anchor_kind = 0;
                         depth = 0;
                     }
@@ -507,9 +538,20 @@ pub fn read_drawing(xml: &[u8]) -> Vec<Drawing> {
             }
             b"cNvPr" if name.is_empty() && kind.is_some() => {
                 name = attr(element, b"name").unwrap_or_default();
+                id = attr(element, b"id")
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0);
+                description = attr(element, b"descr").unwrap_or_default();
+            }
+            b"chart" if kind == Some(DrawingKind::Other) && depth == 1 => {
+                kind = Some(DrawingKind::Chart);
+                chart_rel = attr(element, b"id");
             }
             b"chart" if kind == Some(DrawingKind::Other) => kind = Some(DrawingKind::Chart),
             b"chartex" => kind = Some(DrawingKind::Chart),
+            b"blip" if kind == Some(DrawingKind::Picture) && depth == 1 && image_rel.is_none() => {
+                image_rel = attr(element, b"embed");
+            }
             _ => {}
         }
         buf.clear();

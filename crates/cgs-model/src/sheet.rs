@@ -477,6 +477,32 @@ pub struct Drawing {
     pub kind: DrawingKind,
     pub name: String,
     pub anchor: Anchor,
+    /// `cNvPr id`, unique in its drawing part.
+    pub id: u32,
+    /// The chart it shows, as an index into `Book::charts`.
+    pub chart: Option<u32>,
+    /// The picture it shows, as a media part's name such as `xl/media/image1.png`.
+    pub image: Option<String>,
+    /// Its anchor's place among the drawing part's anchors, as the file has them. `None` once
+    /// added by the app.
+    pub source: Option<u32>,
+    /// The alternative text.
+    pub description: String,
+}
+
+impl Drawing {
+    pub fn new(kind: DrawingKind, name: String, anchor: Anchor) -> Self {
+        Self {
+            kind,
+            name,
+            anchor,
+            id: 0,
+            chart: None,
+            image: None,
+            source: None,
+            description: String::new(),
+        }
+    }
 }
 
 /// A sheet's view when it was saved.
@@ -577,6 +603,8 @@ pub struct SheetInfo {
     /// Which merges touch each tile, by the tile's top-left cell.
     merge_index: HashMap<(u32, u32), Vec<u32>>,
     pub drawings: Vec<Drawing>,
+    /// The drawing part its drawings are in, if it has one.
+    pub drawing_part: Option<String>,
     /// The cells that hold anything, styled blanks included: (rows, columns).
     pub used: (u32, u32),
     /// All of its cells are in the formula engine.
