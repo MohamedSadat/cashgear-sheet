@@ -16,6 +16,7 @@ import type {
 import type { GridController, GridSelection } from '../grid/controller';
 import { toArea } from '../sheet-editing';
 import { ChartTypeDialog, FormatPane, MoveChartDialog, SelectDataDialog } from './ChartDialogs';
+import { ChartSheet } from './ChartSheet';
 import { DrawingLayer, type DrawingPlace } from './DrawingLayer';
 import { elementLabel, type EngineElement } from './chartProps';
 
@@ -107,6 +108,7 @@ export function useChartTools(host: ChartToolsHost) {
   const [dialog, setDialog] = useState<ChartDialog | null>(null);
   const [formatOpen, setFormatOpen] = useState(false);
   const selectedRef = useRef(selected);
+  const lastSheet = useRef(-1);
   selectedRef.current = selected;
 
   const drawing = selected === null ? null : (drawings.find((d) => d.index === selected) ?? null);
@@ -412,11 +414,34 @@ export function useChartTools(host: ChartToolsHost) {
     menuItems,
     /** The sheet's drawings, which the shell reads with its layout. */
     setDrawings: useCallback((list: DrawingBox[]) => {
+      const sheet = hostRef.current.sheet();
+      const moved = lastSheet.current !== sheet;
+      lastSheet.current = sheet;
       setDrawings(list);
       setSelected((index) =>
-        index !== null && list.some((d) => d.index === index) ? index : null,
+        !moved && index !== null && list.some((d) => d.index === index) ? index : null,
       );
+      if (moved) setElement(null);
     }, []),
+    /** A chart sheet's chart, filling the tab, chosen for Chart Design and Format. */
+    chartSheet: (sheet: number) =>
+      engine ? (
+        <ChartSheet
+          engine={engine}
+          sheet={sheet}
+          version={version}
+          screen={host.screen}
+          element={element}
+          onReady={(list) => {
+            lastSheet.current = sheet;
+            setDrawings(list);
+            const first = list[0];
+            setSelected(first ? first.index : null);
+          }}
+          onView={onView}
+          onElement={(chosen) => setElement(chosen)}
+        />
+      ) : null,
     /** Something changed: charts read their cells again. */
     refresh: useCallback(() => setVersion((n) => n + 1), []),
     /** A click in the grid leaves the drawing. */

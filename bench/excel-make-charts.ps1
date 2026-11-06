@@ -65,6 +65,12 @@ try {
     }
     $index++
   }
+  # A chart sheet, after the data sheet.
+  $chartSheet = $book.Charts.Add([Type]::Missing, $sheet)
+  $chartSheet.ChartType = 51
+  $chartSheet.SetSourceData($sheet.Range('A1:D7'))
+  $chartSheet.Name = 'Sales chart'
+  $sheet.Activate()
   $book.SaveAs($Out, 51)
   [System.IO.Directory]::CreateDirectory($Pictures) | Out-Null
   $index = 0
@@ -73,6 +79,7 @@ try {
     [void]$object.Chart.Export($path, 'PNG')
     $index++
   }
+  [void]$chartSheet.Export((Join-Path $Pictures 'chart-sheet-excel.png'), 'PNG')
   $book.Close($false)
 } finally {
   $excel.Quit()

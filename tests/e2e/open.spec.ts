@@ -263,7 +263,7 @@ test.describe('a sheet', () => {
     await waitForGrid(page);
   });
 
-  test('shows placeholders for charts and images', async ({ page }) => {
+  test('draws its chart and its picture over the grid', async ({ page }) => {
     const drawings = await page.evaluate(() =>
       window.cgsTest
         .grid()!
@@ -271,6 +271,10 @@ test.describe('a sheet', () => {
         .drawings.map((box: { name: string }) => box.name),
     );
     expect(drawings).toEqual(['Sales chart', 'Logo']);
+    await expect(
+      page.locator('[data-testid="chart"][data-name="Sales chart"] svg').first(),
+    ).toBeVisible();
+    await expect(page.locator('[data-testid="picture"][data-name="Logo"] img')).toBeVisible();
     await expectGolden(page, 'formatting-light');
   });
 });

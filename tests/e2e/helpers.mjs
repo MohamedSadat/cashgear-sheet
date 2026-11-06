@@ -36,6 +36,21 @@ export async function waitForGrid(page, theme) {
     theme,
     { timeout: 60000 },
   );
+  // Charts and pictures over the grid have drawn, where there are any.
+  await page.waitForFunction(
+    () => {
+      const layer = document.querySelector('[data-testid="drawing-layer"]');
+      if (!layer) return true;
+      const images = [...layer.querySelectorAll('img')];
+      return (
+        layer.dataset.ready === 'true' &&
+        images.every((image) => image.complete && image.naturalWidth > 0) &&
+        !layer.querySelector('.cgs-drawing-placeholder:empty')
+      );
+    },
+    null,
+    { timeout: 60000 },
+  );
   // The picture goes up on the next frame.
   await page.evaluate(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),

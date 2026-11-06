@@ -35,6 +35,7 @@ import {
   type BookSummary,
   type CalcStatus,
   type CellFormat,
+  type ChartView,
   type Command,
   type DrawingBox,
   type EngineClient,
@@ -944,6 +945,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
         ) => Promise<void>;
         command: (command: Command) => Promise<Applied>;
         drawings: () => Promise<DrawingBox[]>;
+        chart: (index: number) => Promise<ChartView | null>;
         settled: () => Promise<unknown>;
         hasChanges: () => Promise<boolean>;
         writeTo: (target: SaveTarget) => Promise<void>;
@@ -972,6 +974,12 @@ export function AppShell({ platform, theme }: AppShellProps) {
       },
       command: runCommand,
       drawings: async () => (await clientRef.current?.drawings(sheetRef.current)) ?? [],
+      chart: async (index) =>
+        (await clientRef.current?.chart(sheetRef.current, index, {
+          dark: false,
+          background: 0xffffff,
+          text: 0,
+        })) ?? null,
       settled: () => commands.current.catch(() => undefined),
       hasChanges: () => clientRef.current?.hasChanges() ?? Promise.resolve(false),
       writeTo,
@@ -1753,11 +1761,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
             Reading this sheet… {percent}%
           </div>
         )}
-        {shown && shown.kind !== 'worksheet' && (
+        {shown && shown.kind === 'chart' && chartTools.chartSheet(sheet)}
+        {shown && shown.kind !== 'worksheet' && shown.kind !== 'chart' && (
           <div className="cgs-sheet-note" data-testid="sheet-placeholder">
-            {shown.kind === 'chart'
-              ? 'This is a chart sheet. Charts show in a later version.'
-              : 'This kind of sheet can’t be shown.'}
+            This kind of sheet can’t be shown.
           </div>
         )}
       </main>

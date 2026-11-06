@@ -34,6 +34,20 @@ interface Window {
       content: { number?: number; text?: string; formula?: string },
     ): Promise<void>;
     command(command: unknown): Promise<unknown>;
+    drawings(): Promise<
+      {
+        index: number;
+        name: string;
+        kind: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }[]
+    >;
+    chart(
+      index: number,
+    ): Promise<{ groups: { kind: string }[]; title: { text: string } | null } | null>;
     settled(): Promise<unknown>;
     hasChanges(): Promise<boolean>;
     writeTo(target: unknown): Promise<void>;

@@ -90,6 +90,19 @@ commands.push({
   width: 360,
   height: 300,
 });
+// The chart sheet's chart too.
+commands.push({
+  kind: 'editChart',
+  sheet: 1,
+  index: 0,
+  edit: { kind: 'title', text: 'Chart sheet' },
+});
+commands.push({
+  kind: 'editChart',
+  sheet: 1,
+  index: 0,
+  edit: { kind: 'type', chart: 'lineMarkers' },
+});
 results.edits = commands.length;
 const commandFile = join(folder, 'edits.json');
 writeFileSync(commandFile, JSON.stringify(commands));
@@ -210,6 +223,16 @@ try {
       await page.waitForTimeout(500);
       await host.screenshot({ path: join(folder, `chart-${index}-app-${scheme}.png`) });
     }
+    // The chart sheet, filling its tab.
+    await page.getByTestId('sheet-tab-1').click();
+    const sheetChart = page
+      .locator('[data-testid="chart-sheet"] [data-testid="chart"] svg')
+      .first();
+    await sheetChart.waitFor({ state: 'visible', timeout: 30000 });
+    await page.waitForTimeout(500);
+    await page
+      .locator('[data-testid="chart-sheet"]')
+      .screenshot({ path: join(folder, `chart-sheet-app-${scheme}.png`) });
     console.log('The app drew the charts in', scheme);
     await page.close();
   }
@@ -222,11 +245,12 @@ const rows = NAMES.map(
   (name, index) =>
     `<tr><th>${name}</th><td><img src="chart-${index}-excel.png"></td><td><img src="chart-${index}-app-light.png"></td><td class="dark"><img src="chart-${index}-app-dark.png"></td></tr>`,
 ).join('\n');
+const sheetRow = `<tr><th>Chart sheet</th><td><img src="chart-sheet-excel.png"></td><td><img src="chart-sheet-app-light.png"></td><td class="dark"><img src="chart-sheet-app-dark.png"></td></tr>`;
 writeFileSync(
   join(folder, 'review.html'),
   `<!doctype html><meta charset="utf-8"><title>Charts against Excel 2016</title>
 <style>body{font:14px system-ui;margin:16px}table{border-collapse:collapse}th{text-align:left;padding:8px;vertical-align:top;width:140px}td{padding:8px}td.dark{background:#1e1e1e}img{display:block;max-width:480px}</style>
-<h1>Charts: Excel 2016 beside the app</h1><table><tr><th></th><th>Excel 2016</th><th>App, light</th><th>App, dark</th></tr>${rows}</table>`,
+<h1>Charts: Excel 2016 beside the app</h1><table><tr><th></th><th>Excel 2016</th><th>App, light</th><th>App, dark</th></tr>${rows}${sheetRow}</table>`,
 );
 writeFileSync(join(folder, 'results.json'), JSON.stringify(results, null, 1) + '\n');
 console.log('Review page:', join(folder, 'review.html'));

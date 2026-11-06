@@ -152,7 +152,7 @@ interface ContentProps {
 }
 
 /** What one drawing shows: a chart, a picture, or a placeholder naming it. */
-const DrawingContent = memo(function DrawingContent({
+export const DrawingContent = memo(function DrawingContent({
   engine,
   box,
   view,
@@ -161,6 +161,8 @@ const DrawingContent = memo(function DrawingContent({
   onElement,
 }: ContentProps) {
   const picture = usePictureUrl(engine, box.kind === 'picture' ? box.image : undefined);
+  // EMF and WMF from older files don't show in a browser; they keep their place and their name.
+  const [broken, setBroken] = useState(false);
   const props = useMemo(
     () => (view && view.kind === 'classic' ? chartProps(view, box.width, box.height) : null),
     [view, box.width, box.height],
@@ -176,15 +178,18 @@ const DrawingContent = memo(function DrawingContent({
     [view, onElement],
   );
   if (box.kind === 'picture') {
-    return picture ? (
+    return picture && !broken ? (
       <img
         className="cgs-drawing-picture"
         src={picture}
         alt={box.description ?? box.name}
         draggable={false}
+        onError={() => setBroken(true)}
       />
     ) : (
-      <div className="cgs-drawing-placeholder">{box.name}</div>
+      <div className="cgs-drawing-placeholder" data-testid="picture-placeholder">
+        {box.name}
+      </div>
     );
   }
   if (!view) return <div className="cgs-drawing-placeholder" />;
@@ -222,11 +227,16 @@ export function DrawingLayer(props: DrawingLayerProps) {
   const hosts = useRef(new Map<string, HTMLDivElement>());
   const lastFrames = useRef<DrawingFrame[]>([]);
   const outline = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const viewsRef = useRef(views);
+  viewsRef.current = views;
   const drag = useRef<Drag | null>(null);
   const [dragPlace, setDragPlace] = useState<{ index: number; place: DrawingPlace } | null>(null);
 
   const shown = useMemo(() => drawings.filter(drawnByLayer), [drawings]);
   const byIndex = useMemo(() => new Map(shown.map((box) => [box.index, box])), [shown]);
+  const shownRef = useRef(byIndex);
+  shownRef.current = byIndex;
 
   // Charts read their cells again whenever something changed.
   useEffect(() => {
@@ -295,6 +305,16 @@ export function DrawingLayer(props: DrawingLayerProps) {
         return next;
       });
     }
+    // For tests: ready once every drawing in view has its host, and every chart its view.
+    if (root.current) {
+      const ready =
+        wanted.length === 0 &&
+        frames.every((frame) => {
+          const box = shownRef.current.get(frame.index);
+          return box?.kind !== 'chart' || viewsRef.current.has(frame.index);
+        });
+      root.current.dataset.ready = String(ready);
+    }
     // The drag outline follows the drawing's frame in the scrolling pane.
     const box = outline.current;
     const active = drag.current;
@@ -315,7 +335,7 @@ export function DrawingLayer(props: DrawingLayerProps) {
   // Hosts just made get their places from the last frame.
   useLayoutEffect(() => {
     place(lastFrames.current);
-  }, [mounted, place, dragPlace]);
+  }, [mounted, place, dragPlace, views]);
 
   // The selected drawing takes the keyboard.
   useEffect(() => {
@@ -436,7 +456,7 @@ export function DrawingLayer(props: DrawingLayerProps) {
   };
 
   return (
-    <div className="cgs-drawings" data-testid="drawing-layer">
+    <div className="cgs-drawings" data-testid="drawing-layer" data-ready="false" ref={root}>
       {PANES.map((pane) => (
         <div
           key={pane}

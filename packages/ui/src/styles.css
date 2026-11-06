@@ -692,3 +692,17 @@ body {
   width: 40px;
   height: 40px;
 }
+
+.cgs-chart-sheet {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--cg-surface-subtle);
+}
+
+.cgs-chart-sheet-frame {
+  position: relative;
+  box-shadow: var(--cg-shadow-sm, 0 1px 3px rgb(0 0 0 / 20%));
+}
