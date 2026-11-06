@@ -2,12 +2,14 @@
 //! drawings and which style each cell uses. No I/O.
 
 pub mod color;
+pub mod dxf;
 pub mod filter;
 pub mod sheet;
 pub mod style;
 pub mod table;
 
 pub use color::{Color, ColorKind, ColorSpace, DarkColors, Rgb, ThemePalette};
+pub use dxf::{Dxf, DxfBorder, DxfFill, DxfFont, TableElement, TableStyleDef, TableStyleElement};
 pub use filter::{
     AutoFilter, DateGroup, FilterColumn, FilterCriteria, FilterOp, SortBy, SortKey, SortState,
 };

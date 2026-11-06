@@ -8,6 +8,7 @@
 //! entry as the bytes it is, so what this app can't edit survives.
 
 pub mod blank;
+pub mod dxf;
 pub mod filter;
 pub mod package;
 pub mod patch_parts;

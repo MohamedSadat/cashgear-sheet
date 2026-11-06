@@ -32,7 +32,7 @@ pub(crate) fn parse_color(element: &BytesStart<'_>) -> Color {
     Color { kind, tint }
 }
 
-fn line_style(text: &str) -> LineStyle {
+pub(crate) fn line_style(text: &str) -> LineStyle {
     match text {
         "hair" => LineStyle::Hair,
         "dotted" => LineStyle::Dotted,
@@ -51,7 +51,7 @@ fn line_style(text: &str) -> LineStyle {
     }
 }
 
-fn pattern(text: &str) -> Pattern {
+pub(crate) fn pattern(text: &str) -> Pattern {
     match text {
         "solid" => Pattern::Solid,
         _ => cgs_model::Hatch::from_name(text).map_or(Pattern::None, Pattern::Hatch),
@@ -266,6 +266,10 @@ pub fn read_styles(xml: &[u8]) -> StyleTable {
     if !indexed.is_empty() {
         table.colors.indexed = indexed;
     }
+    let formats = crate::dxf::read_dxf_tables(xml);
+    table.dxfs = formats.dxfs;
+    table.table_styles = formats.table_styles;
+    table.default_table_style = formats.default_table_style;
     table
 }
 

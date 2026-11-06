@@ -42,6 +42,180 @@ pub struct TileCache {
     screen: Option<Screen>,
     fills: HashMap<u32, Option<Rgb>>,
     formats: HashMap<u32, NumFmt>,
+    derived: Derived,
+}
+
+/// Where cell formats made here start, past any a file can hold.
+const DERIVED: u32 = 1 << 30;
+/// How many made formats are kept before starting again.
+const DERIVED_LIMIT: usize = 50_000;
+
+/// Cell formats with a table style's or a conditional format's changes laid in, made once for each
+/// format and change. Their indexes start at `DERIVED`, and so do their fonts', fills' and borders'.
+#[derive(Debug, Default)]
+pub(crate) struct Derived {
+    xfs: Vec<Xf>,
+    fonts: Vec<cgs_model::Font>,
+    fills: Vec<Fill>,
+    borders: Vec<cgs_model::Border>,
+    by_key: HashMap<(u32, bool, String), u32>,
+}
+
+/// Whether a font colour is the one text gets anyway, which a table style may replace.
+fn plain_color(color: cgs_model::Color, styles: &StyleTable) -> bool {
+    color.kind == cgs_model::ColorKind::Auto
+        || styles.fonts.first().is_some_and(|font| font.color == color)
+}
+
+impl Derived {
+    /// `base` with `dxf` laid under it (what the cell doesn't say, a table style does) or over it
+    /// (a conditional format wins).
+    fn derive(&mut self, styles: &StyleTable, base: u32, dxf: &cgs_model::Dxf, over: bool) -> u32 {
+        let key = (base, over, format!("{dxf:?}"));
+        if let Some(&index) = self.by_key.get(&key) {
+            return index;
+        }
+        let xf = *styles.xf(base);
+        let mut font = styles.font(&xf).clone();
+        let mut fill = *styles.fill(&xf);
+        let mut border = *styles.border(&xf);
+        let d = &dxf.font;
+        if over {
+            font.bold = d.bold.unwrap_or(font.bold);
+            font.italic = d.italic.unwrap_or(font.italic);
+            font.strike = d.strike.unwrap_or(font.strike);
+            font.underline = d.underline.unwrap_or(font.underline);
+            font.color = d.color.unwrap_or(font.color);
+        } else {
+            font.bold = font.bold || d.bold == Some(true);
+            font.italic = font.italic || d.italic == Some(true);
+            font.strike = font.strike || d.strike == Some(true);
+            if font.underline == Underline::None {
+                font.underline = d.underline.unwrap_or(Underline::None);
+            }
+            if let Some(color) = d.color.filter(|_| plain_color(font.color, styles)) {
+                font.color = color;
+            }
+        }
+        if let Some(dxf_fill) = dxf.fill {
+            if over || fill.pattern == Pattern::None {
+                fill = match dxf_fill.pattern {
+                    Pattern::Hatch(_) => Fill {
+                        pattern: dxf_fill.pattern,
+                        fg: dxf_fill.pattern_color,
+                        bg: dxf_fill.color,
+                    },
+                    Pattern::None => Fill::default(),
+                    Pattern::Solid => Fill {
+                        pattern: Pattern::Solid,
+                        fg: dxf_fill.color,
+                        bg: cgs_model::Color::AUTO,
+                    },
+                };
+            }
+        }
+        let side = |mine: &mut cgs_model::Line, theirs: Option<cgs_model::Line>| {
+            if let Some(line) = theirs {
+                if over || mine.style == LineStyle::None {
+                    *mine = line;
+                }
+            }
+        };
+        side(&mut border.left, dxf.border.left);
+        side(&mut border.right, dxf.border.right);
+        side(&mut border.top, dxf.border.top);
+        side(&mut border.bottom, dxf.border.bottom);
+        let at = self.xfs.len() as u32;
+        self.fonts.push(font);
+        self.fills.push(fill);
+        self.borders.push(border);
+        self.xfs.push(Xf {
+            font: DERIVED + at,
+            fill: DERIVED + at,
+            border: DERIVED + at,
+            ..xf
+        });
+        self.by_key.insert(key, DERIVED + at);
+        DERIVED + at
+    }
+}
+
+/// The workbook's formats, with the ones made here alongside.
+struct View<'a> {
+    base: &'a StyleTable,
+    derived: &'a Derived,
+    colors: &'a ColorSpace,
+    num_fmts: &'a HashMap<u32, String>,
+}
+
+impl View<'_> {
+    fn xf(&self, index: u32) -> &Xf {
+        match index.checked_sub(DERIVED) {
+            Some(at) => &self.derived.xfs[at as usize],
+            None => self.base.xf(index),
+        }
+    }
+
+    fn font(&self, xf: &Xf) -> &cgs_model::Font {
+        match xf.font.checked_sub(DERIVED) {
+            Some(at) => &self.derived.fonts[at as usize],
+            None => self.base.font(xf),
+        }
+    }
+
+    fn fill(&self, xf: &Xf) -> &Fill {
+        match xf.fill.checked_sub(DERIVED) {
+            Some(at) => &self.derived.fills[at as usize],
+            None => self.base.fill(xf),
+        }
+    }
+
+    fn border(&self, xf: &Xf) -> &cgs_model::Border {
+        match xf.border.checked_sub(DERIVED) {
+            Some(at) => &self.derived.borders[at as usize],
+            None => self.base.border(xf),
+        }
+    }
+}
+
+/// Which cells of an area take a made format, from the tables that cross it.
+fn table_looks(
+    book: &Book,
+    info: &SheetInfo,
+    sheet: u32,
+    area: (u32, u32, u32, u32),
+    derived: &mut Derived,
+) -> HashMap<(u32, u32), u32> {
+    let mut out = HashMap::new();
+    let (top, left, bottom, right) = area;
+    for table in book.tables.iter().filter(|table| table.sheet == sheet) {
+        let t = table.range;
+        if t.top > bottom || t.bottom < top || t.left > right || t.right < left {
+            continue;
+        }
+        let Some(style) = table
+            .style
+            .name
+            .as_deref()
+            .and_then(|name| crate::table_style::find(&book.styles, name))
+        else {
+            continue;
+        };
+        for row in t.top.max(top)..=t.bottom.min(bottom) {
+            for col in t.left.max(left)..=t.right.min(right) {
+                let look = crate::table_style::exact_look(
+                    crate::table_style::cell_look(table, style, row, col),
+                    &book.styles.colors.theme,
+                );
+                if look.is_empty() {
+                    continue;
+                }
+                let base = info.style_at(row, col);
+                out.insert((row, col), derived.derive(&book.styles, base, &look, false));
+            }
+        }
+    }
+    out
 }
 
 fn rgba(rgb: Rgb) -> u32 {
@@ -131,11 +305,11 @@ fn truncate(text: &mut String) {
 
 fn format_for<'a>(
     formats: &'a mut HashMap<u32, NumFmt>,
-    styles: &StyleTable,
+    num_fmts: &HashMap<u32, String>,
     id: u32,
 ) -> &'a NumFmt {
     formats.entry(id).or_insert_with(|| {
-        if let Some(code) = styles.num_fmts.get(&id) {
+        if let Some(code) = num_fmts.get(&id) {
             NumFmt::parse(code)
         } else {
             NumFmt::builtin(id).unwrap_or_else(NumFmt::general)
@@ -271,7 +445,7 @@ struct StyleKey {
 }
 
 struct Styles<'a> {
-    table: &'a StyleTable,
+    table: &'a View<'a>,
     screen: Screen,
     by_key: HashMap<StyleKey, u16>,
     by_name: HashMap<(String, StyleRecord), u16>,
@@ -570,6 +744,32 @@ pub fn build_tile(
         );
     }
 
+    // Tables' styles, laid under the cells' own formats.
+    if cache.derived.xfs.len() > DERIVED_LIMIT {
+        cache.derived = Derived::default();
+        cache.fills.retain(|&index, _| index < DERIVED);
+    }
+    let mut derived = std::mem::take(&mut cache.derived);
+    let looks = table_looks(
+        input.book,
+        info,
+        sheet,
+        (top, window_left, (bottom + 1).min(MAX_ROWS), window_right),
+        &mut derived,
+    );
+    let view = View {
+        base: table,
+        derived: &derived,
+        colors: &table.colors,
+        num_fmts: &table.num_fmts,
+    };
+    let table = &view;
+    let style_at = |row: u32, col: u32| -> u32 {
+        looks
+            .get(&(row, col))
+            .copied()
+            .unwrap_or_else(|| info.style_at(row, col))
+    };
     let mut styles = Styles {
         table,
         screen,
@@ -585,7 +785,7 @@ pub fn build_tile(
         *cache
             .fills
             .entry(xf_index)
-            .or_insert_with(|| fill_color(table.fill(xf), &table.colors, &screen))
+            .or_insert_with(|| fill_color(table.fill(xf), table.colors, &screen))
     };
     let shown_color = |base: Option<Rgb>, fill: Option<Rgb>| -> u32 {
         match (base, screen.dark, fill) {
@@ -616,7 +816,7 @@ pub fn build_tile(
             }
         }
         let base = match shown {
-            Some(color) => Some(format_color(color, &table.colors)),
+            Some(color) => Some(format_color(color, table.colors)),
             None => table
                 .colors
                 .resolve(table.font(xf).color, screen.dark_colors()),
@@ -687,14 +887,14 @@ pub fn build_tile(
         for col in left..=right {
             let merge = merge_at(row, col);
             let xf_index = match merge {
-                Some(area) => info.style_at(area.top, area.left),
-                None => info.style_at(row, col),
+                Some(area) => style_at(area.top, area.left),
+                None => style_at(row, col),
             };
             let xf = table.xf(xf_index);
             let fill = fill_of(cache, xf_index, xf);
             text.clear();
             let own_xf_index = if merge.is_some() {
-                info.style_at(row, col)
+                style_at(row, col)
             } else {
                 xf_index
             };
@@ -716,7 +916,7 @@ pub fn build_tile(
                     flags |= CELL_NO_BOTTOM_GRID;
                 }
             } else if let Some(value) = window.get(row, col) {
-                let format = format_for(&mut cache.formats, table, xf.num_fmt);
+                let format = format_for(&mut cache.formats, table.num_fmts, xf.num_fmt);
                 let shown = show_value(
                     value,
                     format,
@@ -744,7 +944,7 @@ pub fn build_tile(
                 None
             } else {
                 let next = if col < MAX_COLS {
-                    table.border(table.xf(info.style_at(row, col + 1))).left
+                    table.border(table.xf(style_at(row, col + 1))).left
                 } else {
                     cgs_model::Line::default()
                 };
@@ -754,7 +954,7 @@ pub fn build_tile(
                 None
             } else {
                 let next = if row < MAX_ROWS {
-                    table.border(table.xf(info.style_at(row + 1, col))).top
+                    table.border(table.xf(style_at(row + 1, col))).top
                 } else {
                     cgs_model::Line::default()
                 };
@@ -818,11 +1018,11 @@ pub fn build_tile(
             }
         };
         let Some(value) = value else { continue };
-        let xf_index = info.style_at(area.top, area.left);
+        let xf_index = style_at(area.top, area.left);
         let xf = table.xf(xf_index);
         let fill = fill_of(cache, xf_index, xf);
         text.clear();
-        let format = format_for(&mut cache.formats, table, xf.num_fmt);
+        let format = format_for(&mut cache.formats, table.num_fmts, xf.num_fmt);
         let shown = show_value(
             &value,
             format,
@@ -886,14 +1086,14 @@ pub fn build_tile(
         if !matches!(value, CalcValue::Text(_)) {
             return;
         }
-        let xf_index = info.style_at(row, col);
+        let xf_index = style_at(row, col);
         let xf = table.xf(xf_index);
         let alignment = xf.alignment;
         if alignment.wrap || alignment.rotation != 0 || alignment.shrink {
             return;
         }
         text.clear();
-        let format = format_for(&mut cache.formats, table, xf.num_fmt);
+        let format = format_for(&mut cache.formats, table.num_fmts, xf.num_fmt);
         let shown = show_value(value, format, input.options, alignment.reading_order, text);
         if text.is_empty() || shown.fill_at != 0 {
             return;
@@ -987,7 +1187,9 @@ pub fn build_tile(
             }
         }
     }
-    writer.finish()
+    let tile = writer.finish();
+    cache.derived = derived;
+    tile
 }
 
 /// What one cell shows, for the formula bar and for tests against Excel.
@@ -1016,7 +1218,7 @@ pub fn display_text(
     let mut out = String::new();
     if let Some(value) = window.get(row, col) {
         let xf = table.xf(info.style_at(row, col));
-        let format = format_for(&mut cache.formats, table, xf.num_fmt);
+        let format = format_for(&mut cache.formats, &table.num_fmts, xf.num_fmt);
         show_plain(
             value,
             format,
@@ -1083,7 +1285,7 @@ pub fn edit_text(
         return out;
     };
     let xf = table.xf(info.style_at(row, col));
-    let format = format_for(&mut cache.formats, table, xf.num_fmt);
+    let format = format_for(&mut cache.formats, &table.num_fmts, xf.num_fmt);
     match value {
         CalcValue::Empty => {}
         CalcValue::Number(number) => {

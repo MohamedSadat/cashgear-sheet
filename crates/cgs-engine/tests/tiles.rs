@@ -573,3 +573,53 @@ fn opening_a_bad_file_leaves_no_workbook() {
     assert!(engine.book().is_none());
     assert_eq!(engine.book_json(), "null");
 }
+
+/// Medium 2, Excel's default: a blue heading in white bold, and pale blue on every other row.
+#[test]
+fn a_tables_style_draws_under_its_cells() {
+    let mut engine = open(
+        r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c><c r="B1" t="inlineStr"><is><t>Cost</t></is></c></row>
+        <row r="2"><c r="A2"><v>1</v></c><c r="B2" s="1"><v>2</v></c></row>
+        <row r="3"><c r="A3"><v>3</v></c><c r="B3"><v>4</v></c></row>"#,
+        "",
+    );
+    engine
+        .apply_json(
+            r#"{"kind":"createTable","sheet":0,"area":{"top":1,"left":1,"bottom":3,"right":2}}"#,
+        )
+        .unwrap();
+    let tile = Tile::new(&mut engine, 0, 0, 0, LIGHT);
+    let heading = tile.cell(0, 0);
+    assert_eq!(heading.fill, 0x4472C4FF);
+    assert_eq!(heading.color, 0xFFFFFFFF);
+    assert_eq!(tile.cell(1, 0).fill, 0xD9E1F2FF);
+    assert_eq!(tile.cell(2, 0).fill, 0);
+    // A cell's own fill stays.
+    assert_eq!(tile.cell(1, 1).fill, 0xFFFF00FF);
+}
+
+/// Excel keeps a table's look as formats of the cells' own once it's turned back into cells.
+#[test]
+fn a_table_turned_into_cells_keeps_its_look() {
+    let mut engine = open(
+        r#"<row r="1"><c r="A1" t="inlineStr"><is><t>Item</t></is></c></row>
+        <row r="2"><c r="A2"><v>1</v></c></row>
+        <row r="3"><c r="A3"><v>3</v></c></row>"#,
+        "",
+    );
+    engine
+        .apply_json(
+            r#"{"kind":"createTable","sheet":0,"area":{"top":1,"left":1,"bottom":3,"right":1}}"#,
+        )
+        .unwrap();
+    engine
+        .apply_json(r#"{"kind":"convertToRange","table":"Table1"}"#)
+        .unwrap();
+    let tile = Tile::new(&mut engine, 0, 0, 0, LIGHT);
+    assert_eq!(tile.cell(0, 0).fill, 0x4472C4FF);
+    assert_eq!(tile.cell(0, 0).color, 0xFFFFFFFF);
+    assert_eq!(tile.cell(2, 0).fill, 0);
+    let format: serde_json::Value =
+        serde_json::from_str(&engine.cell_format_json(0, 1, 1)).unwrap();
+    assert_eq!(format["bold"], true, "{format}");
+}

@@ -1309,10 +1309,139 @@ impl Session {
         None
     }
 
-    /// The direct formats that keep a table's look once it is cells again. None until table styles
-    /// are drawn.
-    fn table_look_formats(&self, _name: &str) -> Result<Option<Op>, String> {
-        Ok(None)
+    /// The direct formats that keep a table's look once it is cells again: each cell takes what
+    /// its style gave it and its own format doesn't say, as Excel's Convert to Range does.
+    fn table_look_formats(&self, name: &str) -> Result<Option<Op>, String> {
+        use crate::format::{BorderChange, ColorSpec, FillSpec, FormatChange, LineSpec};
+        let table = self.book_table(name)?;
+        let Some(style) = table
+            .style
+            .name
+            .as_deref()
+            .and_then(|style| crate::table_style::find(&self.book.styles, style))
+        else {
+            return Ok(None);
+        };
+        let styles = &self.book.styles;
+        let info = &self.book.sheets[table.sheet as usize];
+        let spec = |color: cgs_model::Color| match color.kind {
+            cgs_model::ColorKind::Theme(theme) => ColorSpec::Theme {
+                theme,
+                tint: f64::from(color.tint),
+            },
+            cgs_model::ColorKind::Rgb(rgb) => ColorSpec::Rgb {
+                rgb: format!("{rgb:06X}"),
+            },
+            _ => ColorSpec::Auto,
+        };
+        let line = |line: Option<cgs_model::Line>, mine: cgs_model::Line| {
+            let line = line.filter(|line| line.style != cgs_model::LineStyle::None)?;
+            if mine.style != cgs_model::LineStyle::None {
+                return None;
+            }
+            Some(LineSpec {
+                style: crate::format::line_style_name(line.style).to_string(),
+                color: Some(spec(line.color)),
+            })
+        };
+        // Cells by what they need, in stretches along each row.
+        let mut groups: Vec<(FormatChange, Vec<Area>)> = Vec::new();
+        let t = table.range;
+        for row in t.top..=t.bottom {
+            let mut run: Option<(FormatChange, u32, u32)> = None;
+            let flush = |run: &mut Option<(FormatChange, u32, u32)>,
+                         groups: &mut Vec<(FormatChange, Vec<Area>)>| {
+                if let Some((change, from, to)) = run.take() {
+                    if change == FormatChange::default() {
+                        return;
+                    }
+                    let area = Area {
+                        top: row,
+                        left: from,
+                        bottom: row,
+                        right: to,
+                    };
+                    match groups.iter_mut().find(|(known, _)| *known == change) {
+                        Some((_, areas)) => areas.push(area),
+                        None => groups.push((change, vec![area])),
+                    }
+                }
+            };
+            for col in t.left..=t.right {
+                let look = crate::table_style::cell_look(&table, style, row, col);
+                let xf = styles.xf(info.style_at(row, col));
+                let font = styles.font(xf);
+                let fill = styles.fill(xf);
+                let border = styles.border(xf);
+                let mut change = FormatChange::default();
+                if look.font.bold == Some(true) && !font.bold {
+                    change.bold = Some(true);
+                }
+                if look.font.italic == Some(true) && !font.italic {
+                    change.italic = Some(true);
+                }
+                let plain = font.color.kind == cgs_model::ColorKind::Auto
+                    || styles
+                        .fonts
+                        .first()
+                        .is_some_and(|first| first.color == font.color);
+                if let Some(color) = look.font.color.filter(|_| plain) {
+                    if color != font.color {
+                        change.font_color = Some(spec(color));
+                    }
+                }
+                if let Some(look_fill) = look
+                    .fill
+                    .filter(|_| fill.pattern == cgs_model::Pattern::None)
+                {
+                    change.fill = Some(FillSpec {
+                        pattern: "solid".to_string(),
+                        color: Some(spec(look_fill.color)),
+                        pattern_color: None,
+                    });
+                }
+                let lines = BorderChange {
+                    top: line(look.border.top, border.top),
+                    bottom: line(look.border.bottom, border.bottom),
+                    left: line(look.border.left, border.left),
+                    right: line(look.border.right, border.right),
+                    ..BorderChange::default()
+                };
+                if lines != BorderChange::default() {
+                    change.border = Some(lines);
+                }
+                match run.as_mut() {
+                    Some((same, _, to)) if *same == change => *to = col,
+                    _ => {
+                        flush(&mut run, &mut groups);
+                        run = Some((change, col, col));
+                    }
+                }
+            }
+            flush(&mut run, &mut groups);
+        }
+        if groups.is_empty() {
+            return Ok(None);
+        }
+        let list = groups
+            .into_iter()
+            .map(|(mut change, areas)| {
+                // A stretch's own sides apply to every cell in it.
+                if let Some(border) = change.border.as_mut() {
+                    border.inside_vertical = border.left.clone().or_else(|| border.right.clone());
+                    if border.left != border.right {
+                        border.inside_vertical = None;
+                    }
+                }
+                Op::Format {
+                    sheet: table.sheet,
+                    areas,
+                    change: Box::new(change),
+                    active: None,
+                }
+            })
+            .collect();
+        Ok(Some(Op::Many(list)))
     }
 }
 

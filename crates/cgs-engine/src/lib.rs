@@ -13,6 +13,7 @@ pub mod input;
 mod json;
 pub mod query;
 mod shift;
+pub mod table_style;
 pub mod tables;
 pub mod tile;
 pub mod view_block;

@@ -286,6 +286,12 @@ pub struct StyleTable {
     /// Format codes the file defines, by id. Lower ids are built in.
     pub num_fmts: HashMap<u32, String>,
     pub colors: ColorSpace,
+    /// Differential formats, by index, for conditional formats and table styles.
+    pub dxfs: Vec<crate::Dxf>,
+    /// The file's own table styles.
+    pub table_styles: Vec<crate::TableStyleDef>,
+    /// The style the file gives new tables, if it names one.
+    pub default_table_style: Option<String>,
 }
 
 impl Default for StyleTable {
@@ -297,6 +303,9 @@ impl Default for StyleTable {
             xfs: vec![Xf::default()],
             num_fmts: HashMap::new(),
             colors: ColorSpace::default(),
+            dxfs: Vec::new(),
+            table_styles: Vec::new(),
+            default_table_style: None,
         }
     }
 }
