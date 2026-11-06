@@ -629,6 +629,155 @@ Object.assign(MOVES, {
   ],
 });
 
+// Phase 7: charts made from cells of their own, edited the ways Chart Design and Format edit them,
+// moved, sized and deleted, pictures added, and the fixtures' own charts edited.
+const sales = (top, left) => {
+  const list = [];
+  ['Month', 'Sales', 'Costs'].forEach((name, at) => list.push(input(0, top, left + at, name)));
+  ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'].forEach((month, at) => {
+    list.push(input(0, top + 1 + at, left, month));
+    list.push(input(0, top + 1 + at, left + 1, String(120 + at * 17)));
+    list.push(input(0, top + 1 + at, left + 2, String(80 + at * 9)));
+  });
+  return list;
+};
+const chartArea = cells(80, 20, 86, 22);
+const chartAt = (chart, x = 1900, y = 1600) => ({
+  kind: 'insertChart',
+  sheet: 0,
+  area: chartArea,
+  chart,
+  x,
+  y,
+});
+const chartEdit = (edit) => ({ kind: 'editChart', sheet: 0, index: 'last', edit });
+// A 2x2 PNG, written where savecheck can read it.
+const png = join(scratch, 'dot.png');
+writeFileSync(
+  png,
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8DwnwEIGBkZGBgYAAAoBAMBr2kkTgAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+);
+const CHART_TYPES = [
+  'columnClustered',
+  'columnStacked',
+  'columnPercent',
+  'barClustered',
+  'barStacked',
+  'line',
+  'lineMarkersStacked',
+  'linePercent',
+  'pie',
+  'doughnut',
+  'area',
+  'areaStacked',
+  'areaPercent',
+  'scatter',
+  'scatterSmoothMarkers',
+  'scatterLines',
+  'comboColumnLine',
+  'comboColumnLineSecondary',
+  'comboAreaColumn',
+];
+Object.assign(MOVES, {
+  'a column chart made': [...sales(80, 20), chartAt('columnClustered')],
+  'one chart of each type made': [
+    ...sales(80, 20),
+    ...CHART_TYPES.map((chart, at) =>
+      chartAt(chart, 1900 + (at % 4) * 500, 1600 + Math.floor(at / 4) * 300),
+    ),
+  ],
+  'a chart’s elements added and taken off': [
+    ...sales(80, 20),
+    chartAt('columnClustered'),
+    chartEdit({ kind: 'title', text: 'Sales & costs <2026>' }),
+    chartEdit({ kind: 'legend', position: 'right' }),
+    chartEdit({ kind: 'dataLabels', show: true, position: 'outsideEnd' }),
+    chartEdit({ kind: 'quickLayout', layout: 9 }),
+    chartEdit({ kind: 'legend' }),
+    chartEdit({ kind: 'title' }),
+  ],
+  'a chart’s look changed': [
+    ...sales(80, 20),
+    chartAt('lineMarkers'),
+    chartEdit({ kind: 'style', style: 6 }),
+    chartEdit({ kind: 'colors', palette: 7 }),
+    chartEdit({
+      kind: 'fill',
+      element: { kind: 'chartArea' },
+      color: { theme: 'accent1', lumMod: 20000, lumOff: 80000 },
+    }),
+    chartEdit({
+      kind: 'outline',
+      element: { kind: 'plotArea' },
+      color: { rgb: '#FF0000' },
+      width: 1.5,
+      dash: 'dash',
+    }),
+    chartEdit({
+      kind: 'font',
+      element: { kind: 'legend' },
+      size: 12,
+      bold: true,
+      color: { rgb: '#123456' },
+    }),
+    chartEdit({ kind: 'fill', element: { kind: 'series', index: 1 }, color: { theme: 'accent6' } }),
+  ],
+  'a chart’s axes scaled and formatted': [
+    ...sales(80, 20),
+    chartAt('columnClustered'),
+    chartEdit({ kind: 'axisScale', id: 'value', min: 50 }),
+    chartEdit({ kind: 'gapWidth', group: 0, gap: 50, overlap: 20 }),
+    chartEdit({ kind: 'quickLayout', layout: 5 }),
+  ],
+  'a chart’s type and data changed': [
+    ...sales(80, 20),
+    chartAt('columnClustered'),
+    chartEdit({ kind: 'type', chart: 'pie' }),
+    chartEdit({ kind: 'type', chart: 'scatterLines' }),
+    chartEdit({ kind: 'type', chart: 'barStacked' }),
+    chartEdit({ kind: 'switchRowCol' }),
+    chartEdit({ kind: 'switchRowCol' }),
+    chartEdit({
+      kind: 'series',
+      list: [
+        { name: '"Typed name"', categories: '$T$81:$T$86', values: '$U$81:$U$86' },
+        { name: '$V$80', values: '$V$81:$V$86' },
+      ],
+    }),
+    chartEdit({ kind: 'seriesType', index: 1, chart: 'lineMarkers', secondary: true }),
+  ],
+  'charts moved, sized and deleted': [
+    ...sales(80, 20),
+    chartAt('columnClustered'),
+    chartAt('pie', 2500, 1600),
+    { kind: 'setDrawingBox', sheet: 0, index: 'last', x: 2600, y: 1900, width: 300, height: 400 },
+    chartAt('area', 3100, 1600),
+    { kind: 'deleteDrawings', sheet: 0, indexes: ['last'] },
+  ],
+  'a picture inserted, moved and sized': [
+    {
+      kind: 'insertPicture',
+      sheet: 0,
+      mediaFile: png,
+      x: 1900,
+      y: 1600,
+      width: 48,
+      height: 48,
+      name: 'dot.png',
+    },
+    { kind: 'setDrawingBox', sheet: 0, index: 'last', x: 1950, y: 1700, width: 96, height: 96 },
+  ],
+  'a chart over rows inserted and deleted': [
+    ...sales(80, 20),
+    chartAt('lineMarkers'),
+    rows(0, 79, 3),
+    rows(0, 70, 2, true),
+  ],
+});
+
 const MOVED = {
   'moving-parts.xlsx': 'xlsx',
   'prefixed.xlsx': 'xlsx',

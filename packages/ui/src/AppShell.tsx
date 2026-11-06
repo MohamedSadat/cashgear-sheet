@@ -943,6 +943,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
           content: { number?: number; text?: string; formula?: string },
         ) => Promise<void>;
         command: (command: Command) => Promise<Applied>;
+        drawings: () => Promise<DrawingBox[]>;
         settled: () => Promise<unknown>;
         hasChanges: () => Promise<boolean>;
         writeTo: (target: SaveTarget) => Promise<void>;
@@ -970,6 +971,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
         await runCommand({ kind: 'input', sheet, row, col, text });
       },
       command: runCommand,
+      drawings: async () => (await clientRef.current?.drawings(sheetRef.current)) ?? [],
       settled: () => commands.current.catch(() => undefined),
       hasChanges: () => clientRef.current?.hasChanges() ?? Promise.resolve(false),
       writeTo,

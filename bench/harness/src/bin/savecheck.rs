@@ -536,8 +536,9 @@ fn run_edit(args: &[String]) -> Result<String, String> {
         engine.edit_cells(&edits)?;
     }
     for command in args.iter().filter_map(|arg| arg.strip_prefix("--command=")) {
+        let command = with_media(&mut engine, command)?;
         // One it refuses changes nothing, as it would for someone at the keyboard.
-        if let Err(problem) = engine.apply_json(command) {
+        if let Err(problem) = engine.apply_json(&command) {
             eprintln!("refused: {problem}");
         }
     }
@@ -550,7 +551,8 @@ fn run_edit(args: &[String]) -> Result<String, String> {
         let list: Vec<serde_json::Value> =
             serde_json::from_str(&text).map_err(|error| error.to_string())?;
         for command in list {
-            if let Err(problem) = engine.apply_json(&command.to_string()) {
+            let command = with_media(&mut engine, &command.to_string())?;
+            if let Err(problem) = engine.apply_json(&command) {
                 return Err(format!("{command}: {problem}"));
             }
             while engine.calc_step(60_000, &[])? {}
@@ -766,4 +768,74 @@ fn main() {
         );
     }
     println!("{} files checked", lines.len());
+}
+
+/// A command naming a picture file in `mediaFile` gets that picture's bytes into the engine first,
+/// and the part it will be saved as in `part`, as Insert Pictures does.
+fn with_media(engine: &mut Engine, command: &str) -> Result<String, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(command).map_err(|error| error.to_string())?;
+    // `"index": "last"` is the sheet's newest drawing, whatever the file had before.
+    if value.get("index").and_then(|v| v.as_str()) == Some("last") {
+        let sheet = value.get("sheet").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let count = engine
+            .book()
+            .and_then(|book| book.sheets.get(sheet))
+            .map_or(0, |info| info.drawings.len());
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "index".to_string(),
+                serde_json::json!(count.saturating_sub(1)),
+            );
+        }
+    }
+    let sheet = value.get("sheet").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let last = engine
+        .book()
+        .and_then(|book| book.sheets.get(sheet))
+        .map_or(0, |info| info.drawings.len().saturating_sub(1));
+    if let Some(list) = value.get_mut("indexes").and_then(|v| v.as_array_mut()) {
+        for entry in list.iter_mut() {
+            if entry.as_str() == Some("last") {
+                *entry = serde_json::json!(last);
+            }
+        }
+    }
+    // `"id": "value"` in a chart edit is the chart's first value axis.
+    if value.pointer("/edit/id").and_then(|v| v.as_str()) == Some("value") {
+        let index = value.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let id = engine
+            .book()
+            .and_then(|book| {
+                let chart = book.sheets.get(sheet)?.drawings.get(index)?.chart?;
+                match &book.charts.get(chart as usize)?.body {
+                    cgs_model::ChartBody::Classic(chart) => chart
+                        .axes
+                        .iter()
+                        .find(|axis| axis.kind == cgs_model::chart::AxisKind::Value)
+                        .map(|axis| axis.id),
+                    _ => None,
+                }
+            })
+            .unwrap_or(0);
+        if let Some(edit) = value.get_mut("edit").and_then(|v| v.as_object_mut()) {
+            edit.insert("id".to_string(), serde_json::json!(id));
+        }
+    }
+    let Some(path) = value
+        .get("mediaFile")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return Ok(value.to_string());
+    };
+    let bytes = fs::read(&path).map_err(|error| format!("{path}: {error}"))?;
+    let part = engine
+        .add_media(bytes)
+        .ok_or_else(|| format!("{path} isn't a picture"))?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("mediaFile");
+        object.insert("part".to_string(), serde_json::Value::String(part));
+    }
+    Ok(value.to_string())
 }
