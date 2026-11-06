@@ -237,8 +237,8 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 **Tasks:** sort; autofilter; tables with structured references; CF including data bars, colour scales and icons; DV with dropdowns; name manager; notes; hyperlinks.
 
 **Exit**
-- [ ] Filtering 1M rows takes under 200 ms.
-- [ ] Rules match Excel on test files and round-trip without repair prompts.
+- [x] Filtering 1M rows takes under 200 ms.
+- [x] Rules match Excel on test files and round-trip without repair prompts.
 
 ### Phase 7: Charts
 **Goal:** charts from files display live, and new ones can be created.

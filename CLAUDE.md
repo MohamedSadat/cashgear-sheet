@@ -92,6 +92,15 @@ Found in Phase 4:
 - Paste needs the browser's own `paste` event, so the grid must not `preventDefault` Ctrl+V on keydown.
 - The first edit's `protectSource` is asynchronous, so commands run through one queue in `AppShell`. Never call `engine.command` around it.
 
+Found in Phase 6:
+
+- Excel's AutoCorrect table settings (`AutoExpandListRange`, `AutoFillFormulasInLists`) are saved with Excel and outlive the COM session, so a script that changes them must put them back.
+- Excel's `ApplyFilter` works a dynamic average out again rather than reading the file's `val`, and an error in the column makes the average 0.
+- `Validation.Value` treats a list typed into the rule as case-sensitive and a list read from cells as not. Typing takes either in any case.
+- `DisplayFormat` shows conditional fills, fonts and colour scales, but not data bars or icons.
+- Whole-number doubles have zero low bits, so `FxHashMap` on their bits collides badly. Spread them first, or use a direct-mapped table.
+- Bench scripts must build the harness tools they run. `editfuzz` once ran a build hours old.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

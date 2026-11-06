@@ -12,7 +12,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 3: Preserving save | Done 2026-11-05 | `phase-3` |
 | Phase 4: Editing, formulas, undo | Done 2026-11-05: 3 of 4 exit criteria met, and you accepted 99.35% on the fourth | `phase-4` |
 | Phase 5: Ribbon and formatting | Done 2026-11-05, with your sign-off on the visual review | `v0.1.0-mvp` |
-| Phase 6: Data tools | Not started | |
+| Phase 6: Data tools | Done 2026-11-06 | `phase-6` |
 | Phase 7: Charts | Not started | |
 | Phase 8: Pivot tables | Not started | |
 | Phase 9: Scale and release | Not started | |
@@ -341,3 +341,52 @@ The app looks and works like Excel's Home tab for daily work. Measured on 2026-1
 - There is no circular-reference warning that names the cells.
 - Excel 2016 can't check dynamic arrays or newer functions, as before.
 - Outside this phase: the Azure Static Web Apps workflow you added fails, because it looks for an app in `./apps` and finds none to build. The repo's own CI is separate.
+
+## Phase 6: Data tools
+
+Sort, filters, tables, conditional formatting, data validation, names, notes, hyperlinks and cell styles work as Excel 2016 does them, from the ribbon and the grid. Measured on 2026-11-06 on the reference machine, in Chrome 156, with Excel 2016 (16.0) and Formualizer pinned at fork commit `4dd2e77a`.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Filtering 1M rows takes under 200 ms | Pass: 151 ms | `bench/measure-filter.mjs`: a value-list filter on column H of `rows-1m.xlsx` (1,048,576 rows), from the command to the next frame with the filtered view, in Chrome against the release build. Runs of 201, 151, 126, 139 and 151 ms; the median is 151. It was 432 ms before two fixes: row sizes now go to the page as runs, so a filter that hides most rows no longer sends a million records, and each value is matched through a small table in front of the hash map. Natively the same filter takes 94 ms |
+| Rules match Excel on test files and round-trip without repair prompts | Pass | `bench/run-excel-rules.mjs` builds 43 cases through the engine and has Excel judge each saved file over COM: conditional formats by `DisplayFormat` (10 cases: cell values, text, blanks and errors, dates, top and bottom, averages, duplicates, formulas and colour scales), validation by `Validation.Value` (8 cases), filters after Excel's own `ApplyFilter` (16 cases), and sorts against Excel's own `Range.Sort` of the unsorted copy (9 cases). 43 of 43 agree, 1,572 of 1,572 comparisons. Saving: `bench/run-excel-matrix.mjs` now makes 90 edits on each of 8 fixtures, 29 of them new: tables, sorts, filters, conditional formats, validation, names, notes, links, cell styles and Remove Duplicates. 720 of 720 saved files open in Excel with no repair, and all 12 broken controls are still refused. Your 5 private files: 5 of 5 clean, and 5,107 of 5,107 cells match |
+
+**What else was checked**
+
+- Editing against Excel: `bench/run-edit-fuzz.mjs`, now with Excel's table AutoCorrect settings on as they are by default, 250 episodes on each of 2 seeds. Seed 1: 1,120 steps match and 0 diverge, over 123,614 cell comparisons. Seed 2: 1,100 match and 0 diverge, over 120,290. All 414 saved files open clean and match what Excel makes of the same edits. Phase 5's 3 table differences are gone.
+- Browsers: 190 of 190 tests in Chrome and Edge in CI, 8 more than in Phase 5. The new `tests/e2e/data.spec.ts` covers a filter button and its menu, sorting from the Data tab, Format as Table with the Table Design tab, and validation's message.
+- Unit tests: 163 in Vitest and 521 in Rust, among them the engine's tests for tables, sorting, filters, conditional formats, validation, names, notes, links, cell styles and Remove Duplicates.
+- WASM gzip: 3.50 MB, against the 5 MB budget.
+- Licences, the save check and the Open XML validator are clean in CI.
+
+**Track U**
+
+Nothing new was needed in `CashGear.React.UI`: the galleries use `CgGallery`, and the dialogs `CgWindow`, `CgTabs`, `CgComboBox`, `CgCheckBox`, `CgColorPicker` and `CgGrid`. The pin stays at `65500a73`.
+
+**Found and fixed on the way**
+
+- A list typed into a validation rule is case-sensitive when Excel circles invalid cells, but one read from cells isn't, and typing takes either in any case.
+- An error anywhere in a column makes Excel's above or below average 0, for filters. Excel works the average out again when it applies the filter, and writes it into the file, as we now do.
+- A cell deleted sideways in a table took the table's column from the sheet but not from the table's part, which Excel repaired. The part is now rewritten, its calculated column formulas too.
+- A defined name typed as `$A$1` was saved with no sheet, which Excel repaired. A bare reference is now the active sheet's.
+- With AutoExpand on, a fill beside a table grows it over every column it writes, a formula typed under a table leaves it alone, and a formula typed beside its headings becomes a heading of its value.
+- Deleting or inserting some cells moved the cells and merges but left notes, links, conditional formats and validation where they were. They now move with the cells, and go with deleted ones.
+- After a table lost a column, saving renamed the heading that moved into its place, because it judged headings by the table's old part, and Excel refused the file. A table's calculated column could also keep reading a column that had gone.
+- The edit fuzz ran an old build of its tool, since it never built it, and turned Excel's AutoCorrect table settings off without putting them back. It now builds the tool, runs with Excel's defaults, and restores whatever it found.
+
+**Known gaps**
+
+- Extended (x14) conditional formats and validation from newer Excel are drawn, listed and kept, but not edited, as decided. After rows or columns move, their kept XML doesn't move with them.
+- `DisplayFormat` can't show data bars or icons, so those were checked by eye and by the engine's own tests, not against Excel.
+- Cell Styles give cells a style's look but leave them linked to Normal, so Excel's gallery highlights Normal. The file's own named styles aren't listed, and New and Modify Cell Style wait.
+- Custom table styles from a file are drawn and can be applied, but not created or changed.
+- Notes are edited in a small dialog, not in a box beside the cell, and can't be shown permanently (Show/Hide, Show All). The author is `Author` until there's a user name setting. A sheet with threaded comments keeps its notes as they are.
+- A link opens with `window.open`, which the desktop shell may block; there's no Remove Hyperlink in the context menu yet.
+- The filter menu's Sort by Color and Filter by Color are greyed out, and so are icon filters. A Custom AutoFilter doesn't start from the column's current custom filter.
+- Validation formulas typed in the dialog are checked by the engine when they run, not as they're typed. "Apply these changes to all other cells with the same settings" isn't there.
+- Dates typed into the validation and filter dialogs are read as en-US, and the 1904 date system isn't handled there.
+- A formula typed into a table heading becomes 0, as Excel makes it, rather than its value.
+- On this PC, Excel's "Include new rows and columns in table" and "Fill formulas in tables to create calculated columns" are off, most likely left so by earlier fuzz runs. Excel's default is on. The fuzz now puts back what it finds, so they stay off until you turn them on in Excel Options > Proofing > AutoCorrect Options > AutoFormat As You Type.
+- Outside this phase: the Azure Static Web Apps workflow still fails, as before.
