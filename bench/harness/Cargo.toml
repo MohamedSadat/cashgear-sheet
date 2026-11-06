@@ -15,6 +15,7 @@ cgs-calc = { path = "../../crates/cgs-calc" }
 cgs-engine = { path = "../../crates/cgs-engine" }
 cgs-model = { path = "../../crates/cgs-model" }
 cgs-numfmt = { path = "../../crates/cgs-numfmt" }
+cgs-pivot = { path = "../../crates/cgs-pivot" }
 cgs-refs = { path = "../../crates/cgs-refs" }
 cgs-xlsx = { path = "../../crates/cgs-xlsx" }
 quick-xml = "0.39"

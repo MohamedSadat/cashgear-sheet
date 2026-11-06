@@ -19,6 +19,7 @@ pub mod notes;
 pub mod package;
 pub mod patch_parts;
 pub mod patch_sheet;
+pub mod pivot;
 pub mod save;
 pub mod scan;
 pub mod sheet;

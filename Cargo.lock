@@ -600,6 +600,7 @@ dependencies = [
  "cgs-engine",
  "cgs-model",
  "cgs-numfmt",
+ "cgs-pivot",
  "cgs-refs",
  "cgs-xlsx",
  "quick-xml 0.39.4",
@@ -670,6 +671,9 @@ version = "0.0.0"
 [[package]]
 name = "cgs-pivot"
 version = "0.0.0"
+dependencies = [
+ "cgs-model",
+]
 
 [[package]]
 name = "cgs-refs"

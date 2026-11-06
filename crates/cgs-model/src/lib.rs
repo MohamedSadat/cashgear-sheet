@@ -8,6 +8,7 @@ pub mod dv;
 pub mod dxf;
 pub mod filter;
 pub mod notes;
+pub mod pivot;
 pub mod sheet;
 pub mod style;
 pub mod table;
@@ -87,6 +88,9 @@ pub struct Book {
     pub rich_strings: std::collections::HashMap<u32, Vec<RichRun>>,
     /// Chart parts, which drawings point at by index.
     pub charts: Vec<ChartPart>,
+    /// Pivot caches, which pivot tables point at by index.
+    pub pivot_caches: Vec<pivot::PivotCache>,
+    pub pivot_tables: Vec<pivot::PivotTable>,
 }
 
 impl Book {

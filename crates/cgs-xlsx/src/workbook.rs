@@ -186,6 +186,7 @@ pub fn read_workbook(package: &Package) -> Result<Book, ReadError> {
         }
     }
     read_tables(package, &mut book);
+    crate::pivot::read_pivots(package, &part, &mut book);
     crate::read_chart_sheets(package, &mut book);
     Ok(book)
 }
