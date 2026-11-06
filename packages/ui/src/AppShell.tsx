@@ -36,6 +36,7 @@ import {
   type CalcStatus,
   type CellFormat,
   type Command,
+  type DrawingBox,
   type EngineClient,
   type FormatLists,
   type FoundCell,
@@ -68,6 +69,8 @@ import {
 } from './platform';
 import { buildRibbonTabs, themeColors, type FormatTab, type RibbonActions } from './ribbon';
 import { useDataTools } from './data/useDataTools';
+import { useChartTools } from './charts/useChartTools';
+import { chartInsertGroups, chartTabs } from './charts/ribbon-charts';
 import { saveReportLines, saveSummary, workbookExtension } from './save-report';
 import { fromArea, SheetEditing, toArea, type EditingHost } from './sheet-editing';
 import { bordersFromPicker, SheetFormat } from './sheet-format';
@@ -173,7 +176,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const [resizeHint, setResizeHint] = useState<ResizeHint | null>(null);
   const formatRef = useRef<CellFormat | null>(null);
   formatRef.current = format;
-  const contextMenu = useRef<CgContextMenuActions<GridRegion | 'tab'> | null>(null);
+  const contextMenu = useRef<CgContextMenuActions<GridRegion | 'tab' | 'drawing'> | null>(null);
   const fileRef = useRef<OpenedFile | null>(null);
   /** Commands run in order, as the first has to make the source safe before any of them. */
   const commands = useRef<Promise<unknown>>(Promise.resolve());
@@ -187,6 +190,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
   // The data tools' refresh and message, which come later than what calls them.
   const dataRefreshRef = useRef<() => void>(() => undefined);
   const dataNoticeRef = useRef<(message: string | null) => void>(() => undefined);
+  // The chart tools come later than the code that tells them about sheets and changes.
+  const chartDrawingsRef = useRef<((drawings: DrawingBox[]) => void) | null>(null);
+  const chartRefreshRef = useRef<(() => void) | null>(null);
+  const chartDeselectRef = useRef<(() => void) | null>(null);
   const loadedRef = useRef<ReadonlySet<number>>(new Set());
   /** The source has been copied, or there's nowhere to copy it, so edits can go ahead. */
   const protectedRef = useRef(false);
@@ -278,6 +285,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     if (sheetRef.current !== index) return;
     shownSheet.current = index;
     controller.current?.showSheet(index, layout, drawings);
+    chartDrawingsRef.current?.(drawings);
     setFlags({
       frozen: layout.frozenRows > 0 || layout.frozenCols > 0,
       showGrid: layout.showGrid,
@@ -747,6 +755,34 @@ export function AppShell({ platform, theme }: AppShellProps) {
       cancel: () => editing.cancel(),
     }),
   });
+  const chartScreen = useMemo(
+    () => ({
+      dark: palette.dark,
+      background: parseInt(palette.background.slice(1), 16) || 0xffffff,
+      text: parseInt(palette.text.slice(1), 16) || 0,
+    }),
+    [palette],
+  );
+  const chartTools = useChartTools({
+    engine: () => clientRef.current,
+    grid: () => controller.current,
+    sheet: () => sheetRef.current,
+    selection: () => selectionRef.current,
+    hasBook: Boolean(book),
+    worksheets:
+      book?.sheets
+        .map((entry, index) => ({ index, name: entry.name, entry }))
+        .filter(({ entry }) => entry.kind === 'worksheet' && !entry.deleted)
+        .map(({ index, name }) => ({ index, name })) ?? [],
+    run: runCommand,
+    notice: setNotice,
+    screen: chartScreen,
+    themeColors: themeColors(lists),
+    menu: (x, y) => void contextMenu.current?.showAt(x, y, 'drawing'),
+  });
+  chartDrawingsRef.current = chartTools.setDrawings;
+  chartRefreshRef.current = chartTools.refresh;
+  chartDeselectRef.current = chartTools.deselect;
   dataRefreshRef.current = dataTools.refresh;
   dataNoticeRef.current = dataTools.notice;
   if (!sheetFormatRef.current) {
@@ -767,6 +803,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
     if (!client || !engineReady) return;
     const onChanges = (changes: WorkbookChanges) => {
       controller.current?.invalidate(changes.sheets, changes.tiles);
+      // A chart can read any sheet, so any change may be one it shows.
+      chartRefreshRef.current?.();
       if (changes.layouts.includes(sheetRef.current) || changes.sheets.includes(sheetRef.current)) {
         void showSheet(client, sheetRef.current).catch(report);
       }
@@ -967,7 +1005,15 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const events = useMemo<GridEvents>(
     () => ({
       onSelection: (selection: GridSelection) => {
+        const before = selectionRef.current;
         selectionRef.current = selection;
+        // A sheet shown again says its selection again; only a real move leaves a chosen chart.
+        const moved =
+          !before ||
+          before.row !== selection.row ||
+          before.col !== selection.col ||
+          JSON.stringify(before.range) !== JSON.stringify(selection.range);
+        if (moved) chartDeselectRef.current?.();
         refreshCell();
       },
       onZoom: setZoom,
@@ -999,7 +1045,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
       onContextMenu: (x, y, region) => void contextMenu.current?.showAt(x, y, region),
       onCellButton: dataTools.onCellButton,
       onHover: dataTools.onHover,
-      onCellClick: dataTools.onCellClick,
+      onCellClick: (row: number, col: number) => {
+        chartDeselectRef.current?.();
+        dataTools.onCellClick(row, col);
+      },
     }),
     [
       dataTools.onCellButton,
@@ -1229,7 +1278,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     ],
   );
 
-  const ribbonTabs = useMemo(
+  const builtTabs = useMemo(
     () =>
       buildRibbonTabs(
         {
@@ -1272,6 +1321,20 @@ export function AppShell({ platform, theme }: AppShellProps) {
       showFormulaBar,
       undoLabels,
     ],
+  );
+  const ribbonTabs = useMemo(
+    () => [
+      ...builtTabs.map((tab) =>
+        tab.key === 'insert'
+          ? {
+              ...tab,
+              groups: [...tab.groups, ...chartInsertGroups(chartTools.state, chartTools.actions)],
+            }
+          : tab,
+      ),
+      ...chartTabs(chartTools.state, chartTools.actions),
+    ],
+    [builtTabs, chartTools.state, chartTools.actions],
   );
 
   formatActionRef.current = (action) => {
@@ -1365,9 +1428,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
     }
   };
 
-  const contextItems = useMemo<ReadonlyArray<CgContextMenuItem<GridRegion | 'tab'>>>(() => {
-    type Item = CgContextMenuItem<GridRegion | 'tab'>;
-    const only = (regions: (GridRegion | 'tab')[]) => regions;
+  const contextItems = useMemo<
+    ReadonlyArray<CgContextMenuItem<GridRegion | 'tab' | 'drawing'>>
+  >(() => {
+    type Item = CgContextMenuItem<GridRegion | 'tab' | 'drawing'>;
+    const only = (regions: (GridRegion | 'tab' | 'drawing')[]) => regions;
     void only;
     const items: Item[] = [
       {
@@ -1461,7 +1526,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     return items;
   }, [clearContents, editing, format?.merged, mergeCells, openShift, openSize, sheetFormat]);
 
-  const tabItems = useMemo<ReadonlyArray<CgContextMenuItem<GridRegion | 'tab'>>>(
+  const tabItems = useMemo<ReadonlyArray<CgContextMenuItem<GridRegion | 'tab' | 'drawing'>>>(
     () => [
       { key: 'tab-insert', text: 'Insert Sheet', command: () => insertSheet(false) },
       {
@@ -1654,6 +1719,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
             onController={handController}
           />
         )}
+        {chartTools.layer}
         <CellEditor
           ref={editorRef}
           session={editing.session}
@@ -1835,7 +1901,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
           },
         ]}
       />
-      <CgContextMenu<GridRegion | 'tab'>
+      <CgContextMenu<GridRegion | 'tab' | 'drawing'>
         actionsRef={contextMenu}
         items={contextItems}
         ariaLabel="Context menu"
@@ -1843,6 +1909,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
         customizeMenu={({ invocation }) => {
           const region = invocation.context;
           if (region === 'tab') return tabItems;
+          if (region === 'drawing')
+            return chartTools.menuItems as ReadonlyArray<
+              CgContextMenuItem<GridRegion | 'tab' | 'drawing'>
+            >;
           const hidden =
             region === 'rowHeader'
               ? ['col-width', 'hide-cols', 'unhide-cols']
@@ -1889,6 +1959,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
         />
       )}
       {dataTools.overlays}
+      {chartTools.overlays}
       {dialog?.kind === 'find' && (
         <FindDialog
           open

@@ -91,6 +91,32 @@ export interface GridEvents {
   onHover?: (cell: { row: number; col: number } | null, clientX: number, clientY: number) => void;
 }
 
+/**
+ * Where a chart or picture shows in one pane, in CSS pixels from the canvas's top left. The
+ * drawing layer puts the real thing there, clipped to the pane.
+ */
+export interface DrawingFrame {
+  /** The drawing's index on its sheet. */
+  index: number;
+  /** 0 is the scrolling pane; the frozen ones follow. */
+  pane: number;
+  clip: { x: number; y: number; width: number; height: number };
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** The sheet's zoom as a factor. */
+  zoom: number;
+}
+
+/** Drawings the layer above the grid shows, rather than the canvas. */
+export function drawnByLayer(box: DrawingBox) {
+  return (
+    (box.kind === 'chart' && box.chart !== undefined) ||
+    (box.kind === 'picture' && Boolean(box.image))
+  );
+}
+
 /** A button the grid draws in a cell: a filter's in its heading, or a list's beside its cell. */
 export interface CellButton {
   kind: 'filter' | 'list';
@@ -166,6 +192,8 @@ export class GridController {
   private sheet = -1;
   private layout: SheetLayout | null = null;
   private drawings: DrawingBox[] = [];
+  private drawingListener: ((sheet: number, frames: DrawingFrame[]) => void) | null = null;
+  private frames: DrawingFrame[] = [];
   private merges: Uint32Array = new Uint32Array();
   private rows = new Axis(MAX_ROWS, defaultRowHeightFallback);
   private cols = new Axis(MAX_COLS, defaultColWidthFallback);
@@ -825,6 +853,7 @@ export class GridController {
     const wanted: TileAddress[] = [];
     const visible: TileAddress[] = [];
     const sheet = Math.max(this.sheet, 0);
+    this.frames = [];
     for (const pane of panes) {
       if (pane.width <= 0 || pane.height <= 0) continue;
       const range: CellRange = {
@@ -853,7 +882,7 @@ export class GridController {
           context.drawImage(bitmap, x, y, width, height);
         }
       }
-      this.drawDrawings(pane);
+      this.drawDrawings(pane, panes.indexOf(pane));
       this.drawSelectionIn(pane);
       this.drawButtons(pane);
       context.restore();
@@ -878,6 +907,7 @@ export class GridController {
     }
     cache.want(wanted);
 
+    this.drawingListener?.(this.sheet, this.frames);
     this.drawHeaders();
     this.drawPaneLines();
     if (this.resizing) {
@@ -926,10 +956,11 @@ export class GridController {
     }
   }
 
-  private drawDrawings(pane: Pane) {
+  private drawDrawings(pane: Pane, paneIndex: number) {
     if (!this.drawings.length) return;
     const pixel = Math.max(1, Math.round(this.dpr));
     const fontPx = Math.round(HEADER_FONT_PX * this.scale);
+    const { dpr } = this;
     for (const box of this.drawings) {
       const x = box.x * this.scale - pane.sheetX + pane.x;
       const y = box.y * this.scale - pane.sheetY + pane.y;
@@ -937,8 +968,59 @@ export class GridController {
       const height = box.height * this.scale;
       if (x > pane.x + pane.width || y > pane.y + pane.height) continue;
       if (x + width < pane.x || y + height < pane.y) continue;
+      if (this.drawingListener && drawnByLayer(box)) {
+        this.frames.push({
+          index: box.index,
+          pane: paneIndex,
+          clip: {
+            x: pane.x / dpr,
+            y: pane.y / dpr,
+            width: pane.width / dpr,
+            height: pane.height / dpr,
+          },
+          x: x / dpr,
+          y: y / dpr,
+          width: width / dpr,
+          height: height / dpr,
+          zoom: this.zoom / 100,
+        });
+        continue;
+      }
       drawPlaceholder(this.context, this.colors, box, x, y, width, height, pixel, fontPx);
     }
+  }
+
+  /**
+   * Hands each frame's drawing places to the layer above the grid, which then shows charts and
+   * pictures itself. `null` gives them back to the canvas's placeholders.
+   */
+  setDrawingListener(listener: ((sheet: number, frames: DrawingFrame[]) => void) | null) {
+    this.drawingListener = listener;
+    this.schedule();
+  }
+
+  /** Scrolls as a wheel over the canvas would, for a wheel over a chart or picture. */
+  wheel(event: WheelEvent) {
+    this.onWheel(event);
+  }
+
+  /** The middle of the scrolling pane, in sheet pixels at 100%, where Excel puts a new chart. */
+  viewCenter(): { x: number; y: number } {
+    const pane = this.panes()[0]!;
+    return {
+      x: (pane.sheetX + pane.width / 2) / this.scale,
+      y: (pane.sheetY + pane.height / 2) / this.scale,
+    };
+  }
+
+  /** A cell's top-left corner in sheet pixels at 100%. 0-based. */
+  cellOrigin(row: number, col: number): { x: number; y: number } {
+    return { x: this.cols.offset(col) / this.scale, y: this.rows.offset(row) / this.scale };
+  }
+
+  /** The canvas, for placing things over it. */
+  get element() {
+    return this.canvas;
   }
 
   /** Where a cell is on the page, in client pixels, if it shows in the scrolling pane. 0-based. */

@@ -466,3 +466,229 @@ body {
 .cgs-find-list button:hover {
   background: var(--cg-hover);
 }
+
+/* Charts and pictures over the grid. Each pane clips its own; the controller places them. */
+.cgs-drawings {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.cgs-drawing-pane {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.cgs-drawing {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  transform-origin: 0 0;
+  pointer-events: auto;
+  outline: none;
+  user-select: none;
+}
+
+.cgs-drawing-selected {
+  cursor: move;
+}
+
+.cgs-drawing-picture {
+  display: block;
+  width: 100%;
+  height: 100%;
+  -webkit-user-drag: none;
+}
+
+.cgs-drawing-placeholder {
+  display: flex;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border: 1px solid var(--cg-border);
+  background: var(--cg-surface);
+  color: var(--cg-text-secondary);
+  font: 12px var(--cg-font-family);
+  text-align: center;
+}
+
+.cgs-drawing-frame {
+  position: absolute;
+  inset: 0;
+  outline: calc(1px / var(--cgs-zoom, 1)) solid #8a8a8a;
+  pointer-events: none;
+}
+
+.cgs-drawing-handle {
+  position: absolute;
+  box-sizing: border-box;
+  width: calc(9px / var(--cgs-zoom, 1));
+  height: calc(9px / var(--cgs-zoom, 1));
+  border: calc(1px / var(--cgs-zoom, 1)) solid #6f6f6f;
+  background: #fff;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+}
+
+.cgs-drawing-handle-nw {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.cgs-drawing-handle-n {
+  left: 50%;
+  top: 0;
+  cursor: ns-resize;
+}
+.cgs-drawing-handle-ne {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+.cgs-drawing-handle-e {
+  left: 100%;
+  top: 50%;
+  cursor: ew-resize;
+}
+.cgs-drawing-handle-se {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+.cgs-drawing-handle-s {
+  left: 50%;
+  top: 100%;
+  cursor: ns-resize;
+}
+.cgs-drawing-handle-sw {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+.cgs-drawing-handle-w {
+  left: 0;
+  top: 50%;
+  cursor: ew-resize;
+}
+
+.cgs-drawing-outline {
+  position: absolute;
+  box-sizing: border-box;
+  border: calc(1px / var(--cgs-zoom, 1)) dashed var(--cg-text);
+  pointer-events: none;
+}
+
+/* Insert Chart and Change Chart Type. */
+.cgs-chart-type {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: var(--cg-space-3);
+  min-height: 260px;
+}
+
+.cgs-chart-families {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-inline-end: var(--cg-border-style);
+  padding-inline-end: var(--cg-space-2);
+}
+
+.cgs-chart-family,
+.cgs-chart-kind {
+  display: flex;
+  align-items: center;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-1) var(--cg-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--cg-radius-sm, 4px);
+  background: none;
+  color: var(--cg-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.cgs-chart-family[aria-selected='true'],
+.cgs-chart-kind[aria-checked='true'] {
+  border-color: var(--cg-accent);
+  background: color-mix(in srgb, var(--cg-accent) 14%, transparent);
+}
+
+.cgs-chart-kind-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--cg-space-2);
+}
+
+.cgs-chart-kind {
+  flex-direction: column;
+  justify-content: center;
+  min-height: 84px;
+  text-align: center;
+}
+
+.cgs-chart-combo,
+.cgs-chart-series {
+  width: 100%;
+  margin-block-start: var(--cg-space-3);
+  border-collapse: collapse;
+}
+
+.cgs-chart-combo th,
+.cgs-chart-series th {
+  font-weight: 600;
+  text-align: start;
+}
+
+.cgs-chart-series input {
+  box-sizing: border-box;
+  width: 100%;
+  font: inherit;
+}
+
+/* The format pane, beside the grid. */
+.cgs-format-pane {
+  position: fixed;
+  z-index: 20;
+  inset-block: 150px 28px;
+  inset-inline-end: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-3);
+  box-sizing: border-box;
+  width: 280px;
+  padding: var(--cg-space-3);
+  overflow: auto;
+  border-inline-start: var(--cg-border-style);
+  background: var(--cg-surface);
+  color: var(--cg-text);
+  box-shadow: var(--cg-shadow-md, 0 2px 8px rgb(0 0 0 / 16%));
+}
+
+.cgs-format-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cg-space-2);
+}
+
+.cgs-format-pane h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.cgs-format-pane h3 {
+  margin: 0 0 var(--cg-space-1);
+  font-size: 0.875rem;
+}
+
+.cgs-chart-kind svg {
+  width: 40px;
+  height: 40px;
+}

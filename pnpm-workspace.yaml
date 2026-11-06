@@ -5,4 +5,4 @@ onlyBuiltDependencies:
   - esbuild
 # The CG component library is a git dependency: pnpm builds its dist/ on install.
 allowBuilds:
-  '@cashgear/ui@https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/65500a73baea9d2675e01f1d7ea77054676a0393': true
+  '@cashgear/ui@https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/814fa18764c145268fa8715639f7e5ac1a249026': true
