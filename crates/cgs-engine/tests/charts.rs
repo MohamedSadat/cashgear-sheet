@@ -285,3 +285,60 @@ fn a_picture_goes_in_and_comes_back() {
     assert_eq!(drawing.description, "dot.png");
     assert_eq!(reopened.media("xl/media/image1.png"), png);
 }
+
+/// A data sheet and a chart sheet whose chart reads it.
+fn chart_sheet_book() -> Vec<u8> {
+    use std::io::Write;
+    const RELS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    let parts: Vec<(String, String)> = vec![
+        ("[Content_Types].xml".into(), r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/chartsheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.chartsheet+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/></Types>"#.into()),
+        ("_rels/.rels".into(), format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#)),
+        ("xl/workbook.xml".into(), format!(r#"<workbook xmlns="{MAIN}" xmlns:r="{RELS}"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Chart1" sheetId="2" r:id="rId2"/></sheets></workbook>"#)),
+        ("xl/_rels/workbook.xml.rels".into(), format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="{RELS}/chartsheet" Target="chartsheets/sheet1.xml"/></Relationships>"#)),
+        ("xl/worksheets/sheet1.xml".into(), format!(r#"<worksheet xmlns="{MAIN}"><sheetData><row r="1"><c r="A1"><v>5</v></c></row><row r="2"><c r="A2"><v>7</v></c></row></sheetData></worksheet>"#)),
+        ("xl/chartsheets/sheet1.xml".into(), format!(r#"<chartsheet xmlns="{MAIN}" xmlns:r="{RELS}"><sheetPr/><sheetViews><sheetView workbookViewId="0"/></sheetViews><drawing r:id="rId1"/></chartsheet>"#)),
+        ("xl/chartsheets/_rels/sheet1.xml.rels".into(), format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELS}/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#)),
+        ("xl/drawings/drawing1.xml".into(), format!(r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:absoluteAnchor><xdr:pos x="0" y="0"/><xdr:ext cx="8661400" cy="6286500"/><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="{RELS}" r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:absoluteAnchor></xdr:wsDr>"#)),
+        ("xl/drawings/_rels/drawing1.xml.rels".into(), format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{RELS}/chart" Target="../charts/chart1.xml"/></Relationships>"#)),
+        ("xl/charts/chart1.xml".into(), r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:val><c:numRef><c:f>Data!$A$1:$A$2</c:f></c:numRef></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart><c:catAx><c:axId val="1"/><c:scaling/><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling/><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#.into()),
+    ];
+    let mut out = Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut out);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, text) in &parts {
+            writer.start_file(name.as_str(), options).unwrap();
+            writer.write_all(text.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    out.into_inner()
+}
+
+#[test]
+fn a_chart_sheet_shows_its_chart_and_saves_an_edit() {
+    let mut engine = opened(chart_sheet_book());
+    let book = engine.book().unwrap();
+    let sheet = &book.sheets[1];
+    assert_eq!(sheet.drawings.len(), 1);
+    assert_eq!(sheet.drawings[0].chart, Some(0));
+    assert!(sheet.part.is_none());
+    let view: serde_json::Value = serde_json::from_str(&engine.chart_json(1, 0, SCREEN)).unwrap();
+    assert_eq!(view["series"][0]["values"], serde_json::json!([5.0, 7.0]));
+    json(
+        &mut engine,
+        r#"{"kind":"editChart","sheet":1,"index":0,"edit":{"kind":"title","text":"On its own sheet"}}"#,
+    );
+    let out = saved(&mut engine);
+    let files = parts(&out);
+    assert!(text(&files, "xl/charts/chart1.xml").contains("On its own sheet"));
+    // The chart sheet's own parts are as they were.
+    assert_eq!(
+        text(&files, "xl/drawings/drawing1.xml"),
+        text(&parts(&chart_sheet_book()), "xl/drawings/drawing1.xml")
+    );
+    let again = opened(out);
+    assert_eq!(again.book().unwrap().sheets[1].drawings.len(), 1);
+}

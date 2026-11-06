@@ -186,6 +186,7 @@ pub fn read_workbook(package: &Package) -> Result<Book, ReadError> {
         }
     }
     read_tables(package, &mut book);
+    crate::read_chart_sheets(package, &mut book);
     Ok(book)
 }
 
@@ -204,7 +205,11 @@ fn sheet_entry(
         Some((rel, target)) if rel.ends_with("/worksheet") => {
             (SheetKind::Worksheet, Some(target.clone()))
         }
-        Some((rel, _)) if rel.ends_with("/chartsheet") => (SheetKind::Chart, None),
+        Some((rel, target)) if rel.ends_with("/chartsheet") => {
+            let mut info = SheetInfo::new(name, state, SheetKind::Chart, None);
+            info.chart_sheet = Some(target.clone());
+            return info;
+        }
         _ => (SheetKind::Other, None),
     };
     SheetInfo::new(name, state, kind, part)

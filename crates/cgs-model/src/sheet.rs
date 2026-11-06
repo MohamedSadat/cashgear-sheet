@@ -605,6 +605,8 @@ pub struct SheetInfo {
     pub drawings: Vec<Drawing>,
     /// The drawing part its drawings are in, if it has one.
     pub drawing_part: Option<String>,
+    /// A chart sheet's own part. `part` stays empty, as it names worksheets only.
+    pub chart_sheet: Option<String>,
     /// The cells that hold anything, styled blanks included: (rows, columns).
     pub used: (u32, u32),
     /// All of its cells are in the formula engine.

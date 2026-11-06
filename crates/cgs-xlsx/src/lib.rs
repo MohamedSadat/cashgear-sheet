@@ -349,26 +349,52 @@ impl Loader {
         let Some((_, target)) = rels.get(rel) else {
             return;
         };
-        let Some(xml) = self.package.read(target) else {
-            return;
-        };
         info.drawing_part = Some(target.clone());
-        let found = workbook::read_drawing_parts(&xml);
-        let drawing_rels = workbook::read_relationships(&self.package, target);
-        let mut drawings = Vec::with_capacity(found.len());
-        for read in found {
-            let mut drawing = read.drawing;
-            if let Some((kind, chart_part)) =
-                read.chart_rel.as_ref().and_then(|id| drawing_rels.get(id))
-            {
-                drawing.chart = Some(chart_index(book, &self.package, chart_part, kind));
-            }
-            if let Some((_, media)) = read.image_rel.as_ref().and_then(|id| drawing_rels.get(id)) {
-                drawing.image = Some(media.clone());
-            }
-            drawings.push(drawing);
-        }
+        let target = target.clone();
+        let drawings = drawings_of(book, &self.package, &target);
         book.sheets[sheet as usize].drawings = drawings;
+    }
+}
+
+/// The drawings of a drawing part, each with the chart or picture it shows.
+fn drawings_of(book: &mut Book, package: &Package, target: &str) -> Vec<cgs_model::Drawing> {
+    let Some(xml) = package.read(target) else {
+        return Vec::new();
+    };
+    let found = workbook::read_drawing_parts(&xml);
+    let drawing_rels = workbook::read_relationships(package, target);
+    let mut drawings = Vec::with_capacity(found.len());
+    for read in found {
+        let mut drawing = read.drawing;
+        if let Some((kind, chart_part)) =
+            read.chart_rel.as_ref().and_then(|id| drawing_rels.get(id))
+        {
+            drawing.chart = Some(chart_index(book, package, chart_part, kind));
+        }
+        if let Some((_, media)) = read.image_rel.as_ref().and_then(|id| drawing_rels.get(id)) {
+            drawing.image = Some(media.clone());
+        }
+        drawings.push(drawing);
+    }
+    drawings
+}
+
+/// Chart sheets' charts, which have no cells to wait for.
+pub(crate) fn read_chart_sheets(package: &Package, book: &mut Book) {
+    for sheet in 0..book.sheets.len() {
+        let Some(part) = book.sheets[sheet].chart_sheet.clone() else {
+            continue;
+        };
+        let rels = workbook::read_relationships(package, &part);
+        let Some((_, target)) = rels.values().find(|(kind, _)| kind.ends_with("/drawing")) else {
+            continue;
+        };
+        let target = target.clone();
+        let drawings = drawings_of(book, package, &target);
+        let info = &mut book.sheets[sheet];
+        info.drawing_part = Some(target);
+        info.drawings = drawings;
+        info.loaded = true;
     }
 }
 
