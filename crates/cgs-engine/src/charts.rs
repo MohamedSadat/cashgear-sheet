@@ -752,6 +752,10 @@ pub struct SeriesView {
     /// Its index in the file, for selecting and editing it.
     pub index: u32,
     pub explosion: f64,
+    /// What Select Data shows: the name's cell or text, and the cells it reads.
+    pub name_ref: Option<String>,
+    pub categories_ref: Option<String>,
+    pub values_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1168,7 +1172,13 @@ impl Builder<'_> {
                     let format = self.axis_format(axis, first_category_format.as_deref());
                     category_axis = Some(self.value_axis(axis, scale, &format, base, base_size));
                 } else {
-                    category_axis = Some(self.category_axis(axis, base, base_size));
+                    let mut view = self.category_axis(axis, base, base_size);
+                    // Categories sit between tick marks unless the value axis crosses on them.
+                    view.between = chart
+                        .axis(axis.cross_axis)
+                        .and_then(|value| value.between)
+                        .unwrap_or(true);
+                    category_axis = Some(view);
                 }
             }
             for id in value_ids {
@@ -1483,6 +1493,20 @@ impl Builder<'_> {
             labels,
             index: series.index,
             explosion: f64::from(series.explosion.unwrap_or(0)),
+            name_ref: series.name.as_ref().map(|name| match name {
+                ChartText::Cell { formula, .. } => format!("={formula}"),
+                ChartText::Rich(text) => format!("\"{}\"", text.replace('"', "\"\"")),
+            }),
+            categories_ref: series
+                .categories
+                .as_ref()
+                .and_then(|source| source.formula.as_ref())
+                .map(|formula| format!("={formula}")),
+            values_ref: series
+                .values
+                .as_ref()
+                .and_then(|source| source.formula.as_ref())
+                .map(|formula| format!("={formula}")),
         }
     }
 

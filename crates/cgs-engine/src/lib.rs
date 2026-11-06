@@ -700,8 +700,8 @@ fn media_extension(bytes: &[u8]) -> Option<&'static str> {
     } else if bytes.starts_with(b"BM") {
         Some("bmp")
     } else {
-        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_ascii_lowercase();
-        (head.contains("<svg")).then_some("svg")
+        // Excel 2016 shows no SVG without a picture beside it, so the UI turns one into a PNG.
+        None
     }
 }
 

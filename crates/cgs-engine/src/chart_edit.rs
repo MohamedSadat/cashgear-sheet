@@ -103,11 +103,12 @@ impl ChartType {
             Area => area(Grouping::Standard),
             AreaStacked | ComboAreaColumn => area(Grouping::Stacked),
             AreaPercent => area(Grouping::PercentStacked),
-            Scatter => scatter(ScatterStyle::LineMarker),
+            // Markers alone; Excel writes this as `lineMarker` with no line, which reads the same.
+            Scatter => scatter(ScatterStyle::Marker),
             ScatterSmoothMarkers => scatter(ScatterStyle::SmoothMarker),
-            ScatterSmooth => scatter(ScatterStyle::SmoothMarker),
+            ScatterSmooth => scatter(ScatterStyle::Smooth),
             ScatterLinesMarkers => scatter(ScatterStyle::LineMarker),
-            ScatterLines => scatter(ScatterStyle::LineMarker),
+            ScatterLines => scatter(ScatterStyle::Line),
         }
     }
 
@@ -267,7 +268,7 @@ pub enum ChartEdit {
     Series {
         list: Vec<SeriesSpec>,
     },
-    /// Chart Styles: Excel 2007's 48.
+    /// Chart Styles: eight looks, as the first eight of Excel 2016's gallery give a chart.
     Style {
         style: u8,
     },
@@ -417,14 +418,23 @@ fn series_look(kind: &GroupKind, index: usize, series: &mut Series) {
                     }
                 }),
             };
-            series.marker = Some(Marker {
-                symbol: MarkerSymbol::Circle,
-                size: Some(5),
-                shape: ShapeLook {
-                    fill: Some(ChartFill::Solid(color.clone())),
-                    line: Some(thin(color)),
+            series.marker = Some(
+                if matches!(style, ScatterStyle::Line | ScatterStyle::Smooth) {
+                    Marker {
+                        symbol: MarkerSymbol::None,
+                        ..Marker::default()
+                    }
+                } else {
+                    Marker {
+                        symbol: MarkerSymbol::Circle,
+                        size: Some(5),
+                        shape: ShapeLook {
+                            fill: Some(ChartFill::Solid(color.clone())),
+                            line: Some(thin(color)),
+                        },
+                    }
                 },
-            });
+            );
             series.smooth = Some(matches!(
                 style,
                 ScatterStyle::Smooth | ScatterStyle::SmoothMarker
@@ -546,7 +556,11 @@ fn axes_for(groups: &mut [ChartGroup], old: &[ChartAxis], seed: u32) -> Vec<Char
         }
     );
     let scatter = matches!(first.kind, GroupKind::Scatter { .. });
-    let between = matches!(first.kind, GroupKind::Bar { .. });
+    // Excel 2016 puts categories between tick marks for bars and lines, and on them for areas.
+    let between = !matches!(
+        first.kind,
+        GroupKind::Area { .. } | GroupKind::Scatter { .. }
+    );
     let keep = |axis: ChartAxis| -> ChartAxis {
         // An axis the chart had keeps its titles, scale and look.
         match old.iter().find(|o| o.id == axis.id && o.kind == axis.kind) {
@@ -1394,12 +1408,7 @@ pub fn apply_edit(
                 }
             }
         }
-        ChartEdit::Style { style } => {
-            if !(1..=48).contains(style) {
-                return Err("Chart styles go from 1 to 48.".to_string());
-            }
-            chart.style = *style;
-        }
+        ChartEdit::Style { style } => chart_style(chart, *style)?,
         ChartEdit::Colors { palette } => recolor(chart, *palette)?,
         ChartEdit::QuickLayout { layout } => quick_layout(chart, *layout)?,
         ChartEdit::Fill {
@@ -1674,6 +1683,112 @@ fn recolor(chart: &mut Chart, palette: u8) -> Result<(), String> {
             number += 1;
         }
     }
+    Ok(())
+}
+
+/// Chart Styles: the looks of the gallery's first eight, written into the chart's own elements.
+fn chart_style(chart: &mut Chart, style: u8) -> Result<(), String> {
+    if !(1..=8).contains(&style) {
+        return Err("Chart styles go from 1 to 8.".to_string());
+    }
+    let dark = matches!(style, 6 | 8);
+    let text = if dark {
+        DmlColor::scheme("bg1")
+    } else {
+        grey(65_000, 35_000)
+    };
+    let grid = match style {
+        5 => DmlColor::scheme("bg1"),
+        6 => grey(75_000, 25_000).with(ColorModKind::Alpha, 50_000),
+        8 => grey(85_000, 15_000),
+        _ => grey(15_000, 85_000),
+    };
+    chart.shape = ShapeLook {
+        fill: Some(ChartFill::Solid(match style {
+            6 => grey(65_000, 35_000),
+            7 => DmlColor::scheme("accent1")
+                .with(ColorModKind::LumMod, 20_000)
+                .with(ColorModKind::LumOff, 80_000),
+            8 => DmlColor::scheme("tx1"),
+            _ => DmlColor::scheme("bg1"),
+        })),
+        line: Some(if style == 4 {
+            no_line()
+        } else {
+            thin(grey(15_000, 85_000))
+        }),
+    };
+    chart.plot_shape = ShapeLook {
+        fill: Some(if style == 5 {
+            ChartFill::Solid(DmlColor::scheme("bg1").with(ColorModKind::LumMod, 95_000))
+        } else {
+            ChartFill::None
+        }),
+        line: Some(no_line()),
+    };
+    let recolor = |look: &mut TextLook| look.color = Some(text.clone());
+    if let Some(title) = chart.title.as_mut() {
+        recolor(&mut title.look);
+        title.look.bold = Some(style == 3);
+    }
+    if let Some(legend) = chart.legend.as_mut() {
+        recolor(&mut legend.look);
+    }
+    let labels_on = matches!(style, 2 | 4);
+    for axis in &mut chart.axes {
+        recolor(&mut axis.look);
+        if let Some(title) = axis.title.as_mut() {
+            recolor(&mut title.look);
+        }
+        if axis.kind == AxisKind::Value {
+            axis.major_gridlines = (!matches!(style, 2 | 3)).then(|| Gridlines {
+                shape: ShapeLook {
+                    fill: None,
+                    line: Some(ChartLine {
+                        dash: (style == 7).then_some(Dash::SysDash),
+                        ..thin(grid.clone())
+                    }),
+                },
+            });
+            // Style 2 labels the bars instead of the axis.
+            axis.deleted = style == 2 && !axis.deleted && axis.position != AxisPosition::Right
+                || (axis.deleted && axis.position == AxisPosition::Right);
+        }
+    }
+    for group in &mut chart.groups {
+        if let GroupKind::Bar {
+            gap_width,
+            grouping,
+            ..
+        } = &mut group.kind
+        {
+            *gap_width = match style {
+                3 => 50,
+                _ if grouping.stacked() => 150,
+                _ => 219,
+            };
+        }
+        for series in &mut group.series {
+            series.labels = labels_on.then(|| DataLabels {
+                value: true,
+                position: if style == 4 {
+                    LabelPosition::InsideEnd
+                } else {
+                    LabelPosition::Auto
+                },
+                look: TextLook {
+                    color: Some(if style == 4 {
+                        DmlColor::scheme("bg1")
+                    } else {
+                        text.clone()
+                    }),
+                    ..text_look(900)
+                },
+                ..DataLabels::default()
+            });
+        }
+    }
+    chart.style = 2;
     Ok(())
 }
 
@@ -2137,6 +2252,46 @@ impl Session {
         let mut drawings = info.drawings.clone();
         drawings.push(drawing);
         self.drawings_op(sheet, drawings, "picture")
+    }
+
+    /// Move Chart: the drawing goes to another worksheet, at the same place.
+    pub(crate) fn move_drawing_to(
+        &mut self,
+        sheet: u32,
+        index: u32,
+        to: u32,
+    ) -> Result<Applied, String> {
+        if sheet == to {
+            return Ok(Applied::default());
+        }
+        let target = self.sheet_for_edit(to)?;
+        if target.deleted || target.kind != cgs_model::SheetKind::Worksheet {
+            return Err("A chart can only move to a worksheet.".to_string());
+        }
+        let mut target_drawings = target.drawings.clone();
+        let next_id = target_drawings.iter().map(|d| d.id).max().unwrap_or(1) + 1;
+        let mut from = self.sheet_for_edit(sheet)?.drawings.clone();
+        if index as usize >= from.len() {
+            return Err("That chart isn't on the sheet any more.".to_string());
+        }
+        let mut drawing = from.remove(index as usize);
+        drawing.source = None;
+        drawing.id = next_id;
+        target_drawings.push(drawing);
+        self.perform(
+            "move chart",
+            Op::Many(vec![
+                Op::SheetDrawings {
+                    sheet,
+                    drawings: from,
+                },
+                Op::SheetDrawings {
+                    sheet: to,
+                    drawings: target_drawings,
+                },
+            ]),
+            None,
+        )
     }
 
     /// A Chart Design or Format change to a chart on a sheet.

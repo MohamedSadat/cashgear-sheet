@@ -488,6 +488,11 @@ impl Engine {
         self.0.media(part)
     }
 
+    /// Takes a picture's bytes for an `insertPicture` command, and names its part.
+    pub fn add_media(&mut self, bytes: Vec<u8>) -> Option<String> {
+        self.0.add_media(bytes)
+    }
+
     /// The encoded `ViewBlock` tile whose top-left cell is (`first_row`, `first_col`),
     /// counted from 0. Colours are `0xRRGGBB`.
     pub fn view_block(

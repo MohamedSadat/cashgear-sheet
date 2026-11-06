@@ -192,6 +192,31 @@ export type Command =
       right?: boolean;
     }
   | { kind: 'setNote'; sheet: number; row: number; col: number; text?: string; author?: string }
+  /** A drawing moved or sized, in CSS pixels at 100%. */
+  | {
+      kind: 'setDrawingBox';
+      sheet: number;
+      index: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }
+  | { kind: 'deleteDrawings'; sheet: number; indexes: number[] }
+  | { kind: 'insertChart'; sheet: number; area: CellArea; chart: ChartType; x: number; y: number }
+  | {
+      kind: 'insertPicture';
+      sheet: number;
+      /** From `addMedia`. */
+      part: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      name?: string;
+    }
+  | { kind: 'editChart'; sheet: number; index: number; edit: ChartEdit }
+  | { kind: 'moveDrawing'; sheet: number; index: number; to: number }
   | { kind: 'setLink'; sheet: number; area: CellArea; link?: LinkSpec }
   | { kind: 'setValidation'; sheet: number; areas: CellArea[]; rule?: ValidationRule }
   | { kind: 'circleInvalid'; sheet: number; on: boolean }
@@ -735,6 +760,111 @@ export interface DrawingBox {
   description?: string;
 }
 
+/** What Insert's chart buttons and Change Chart Type make. */
+export type ChartType =
+  | 'columnClustered'
+  | 'columnStacked'
+  | 'columnPercent'
+  | 'barClustered'
+  | 'barStacked'
+  | 'barPercent'
+  | 'line'
+  | 'lineStacked'
+  | 'linePercent'
+  | 'lineMarkers'
+  | 'lineMarkersStacked'
+  | 'lineMarkersPercent'
+  | 'pie'
+  | 'doughnut'
+  | 'area'
+  | 'areaStacked'
+  | 'areaPercent'
+  | 'scatter'
+  | 'scatterSmoothMarkers'
+  | 'scatterSmooth'
+  | 'scatterLinesMarkers'
+  | 'scatterLines'
+  | 'comboColumnLine'
+  | 'comboColumnLineSecondary'
+  | 'comboAreaColumn';
+
+/** A part of a chart, as the Format tab names it to the engine. */
+export type ChartElementRef =
+  | { kind: 'chartArea' }
+  | { kind: 'plotArea' }
+  | { kind: 'title' }
+  | { kind: 'legend' }
+  | { kind: 'axis'; id: number }
+  | { kind: 'axisTitle'; id: number }
+  | { kind: 'gridlines'; id: number }
+  | { kind: 'series'; index: number }
+  | { kind: 'point'; index: number; point: number }
+  | { kind: 'dataLabels'; index: number };
+
+/** A colour for a chart: `#rrggbb`, or a theme colour by name with a luminance change. */
+export interface ChartColor {
+  rgb?: string;
+  /** `bg1`, `tx1`, `bg2`, `tx2`, `accent1` to `accent6`. */
+  theme?: string;
+  lumMod?: number;
+  lumOff?: number;
+}
+
+/** A change from the Chart Design or Format tab. See `ChartEdit` in `crates/cgs-engine`. */
+export type ChartEdit =
+  | { kind: 'type'; chart: ChartType }
+  | { kind: 'seriesType'; index: number; chart: ChartType; secondary?: boolean }
+  | { kind: 'title'; text?: string }
+  | { kind: 'axisTitle'; id: number; text?: string }
+  | { kind: 'legend'; position?: 'right' | 'left' | 'top' | 'bottom' | 'topRight' }
+  | {
+      kind: 'dataLabels';
+      index?: number;
+      show: boolean;
+      position?: string;
+      value?: boolean;
+      category?: boolean;
+      series?: boolean;
+      percent?: boolean;
+    }
+  | { kind: 'gridlines'; id: number; major: boolean; minor: boolean }
+  | { kind: 'axisVisible'; id: number; visible: boolean }
+  | {
+      kind: 'axisScale';
+      id: number;
+      min?: number;
+      max?: number;
+      major?: number;
+      minor?: number;
+      reversed?: boolean;
+      format?: string;
+    }
+  | { kind: 'switchRowCol' }
+  | { kind: 'range'; sheet: number; area: CellArea }
+  | { kind: 'series'; list: { name?: string; categories?: string; values: string }[] }
+  | { kind: 'style'; style: number }
+  | { kind: 'colors'; palette: number }
+  | { kind: 'quickLayout'; layout: number }
+  | { kind: 'fill'; element: ChartElementRef; color?: ChartColor; none?: boolean }
+  | {
+      kind: 'outline';
+      element: ChartElementRef;
+      color?: ChartColor;
+      none?: boolean;
+      /** Points. */
+      width?: number;
+      dash?: string;
+    }
+  | {
+      kind: 'font';
+      element: ChartElementRef;
+      size?: number;
+      bold?: boolean;
+      italic?: boolean;
+      color?: ChartColor;
+    }
+  | { kind: 'gapWidth'; group: number; gap: number; overlap?: number };
+
 /** The screen a chart is drawn for: dark mode swaps its text and background colours. */
 export interface ChartScreen {
   dark: boolean;
@@ -797,6 +927,10 @@ export interface ChartSeriesView {
   labels: { texts: string[]; position: string; look: ChartTextView } | null;
   index: number;
   explosion: number;
+  /** What Select Data shows, each with `=`: the name's cell or quoted text, and the cells read. */
+  nameRef: string | null;
+  categoriesRef: string | null;
+  valuesRef: string | null;
 }
 
 export interface ChartGroupView {
@@ -959,6 +1093,8 @@ export interface EngineApi {
   chart(sheet: number, drawing: number, screen: ChartScreen): Promise<ChartView | null>;
   /** A part's bytes, such as a picture's. */
   media(part: string): Promise<Uint8Array>;
+  /** Takes a picture's bytes for `insertPicture`, naming its part; null if it isn't one. */
+  addMedia(bytes: Uint8Array): Promise<string | null>;
   /** `row` and `col` are 1-based. */
   cellText(sheet: number, row: number, col: number): Promise<CellText>;
   /** The size of WASM's memory, for the speed checks. */

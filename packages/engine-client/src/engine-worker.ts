@@ -814,6 +814,9 @@ const api: EngineApi = {
     );
     return JSON.parse(json) as ChartView | null;
   },
+  async addMedia(bytes) {
+    return (await ensureEngine()).add_media(bytes) ?? null;
+  },
   async media(part) {
     const bytes = (await ensureEngine()).media(part);
     return transfer(bytes, [bytes.buffer as ArrayBuffer]);

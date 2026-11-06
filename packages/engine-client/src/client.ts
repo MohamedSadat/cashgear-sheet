@@ -99,6 +99,7 @@ export interface EngineClient {
   drawings(sheet: number): Promise<DrawingBox[]>;
   chart(sheet: number, drawing: number, screen: ChartScreen): Promise<ChartView | null>;
   media(part: string): Promise<Uint8Array>;
+  addMedia(bytes: Uint8Array): Promise<string | null>;
   /** `row` and `col` are 1-based. */
   cellText(sheet: number, row: number, col: number): Promise<CellText>;
   memoryBytes(): Promise<number>;
@@ -249,6 +250,7 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     drawings: (sheet) => engine.drawings(sheet),
     chart: (sheet, drawing, screen) => engine.chart(sheet, drawing, screen),
     media: (part) => engine.media(part),
+    addMedia: (bytes) => engine.addMedia(transfer(bytes, [bytes.buffer as ArrayBuffer])),
     cellText: (sheet, row, col) => engine.cellText(sheet, row, col),
     memoryBytes: () => engine.memoryBytes(),
     async drawTile(request) {

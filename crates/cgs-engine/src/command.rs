@@ -483,6 +483,12 @@ pub enum Command {
         index: u32,
         edit: crate::chart_edit::ChartEdit,
     },
+    /// Move Chart, to another worksheet.
+    MoveDrawing {
+        sheet: u32,
+        index: u32,
+        to: u32,
+    },
     Undo,
     Redo,
 }
@@ -3226,6 +3232,7 @@ impl Session {
                 name,
             } => self.insert_picture(sheet, &part, (x, y, width, height), &name),
             Command::EditChart { sheet, index, edit } => self.edit_chart(sheet, index, &edit),
+            Command::MoveDrawing { sheet, index, to } => self.move_drawing_to(sheet, index, to),
             Command::SetNote {
                 sheet,
                 row,
