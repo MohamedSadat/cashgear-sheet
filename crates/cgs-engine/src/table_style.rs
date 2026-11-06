@@ -108,6 +108,12 @@ fn line(value: &Value) -> Option<Line> {
 }
 
 fn element(kind: TableElement, value: &Value) -> TableStyleElement {
+    let (dxf, size) = element_look(value);
+    TableStyleElement { kind, dxf, size }
+}
+
+/// One element's format and stripe size, as `table-styles.json` and `pivot-styles.json` hold it.
+pub(crate) fn element_look(value: &Value) -> (Dxf, u32) {
     let mut dxf = Dxf::default();
     let font = &value["font"];
     dxf.font.bold = font["bold"].as_bool();
@@ -127,11 +133,7 @@ fn element(kind: TableElement, value: &Value) -> TableStyleElement {
     dxf.border.bottom = line(&border["bottom"]);
     dxf.border.vertical = line(&border["vertical"]);
     dxf.border.horizontal = line(&border["horizontal"]);
-    TableStyleElement {
-        kind,
-        dxf,
-        size: value["stripeSize"].as_u64().unwrap_or(1).max(1) as u32,
-    }
+    (dxf, value["stripeSize"].as_u64().unwrap_or(1).max(1) as u32)
 }
 
 /// Excel's 60 built-in table styles, read once.

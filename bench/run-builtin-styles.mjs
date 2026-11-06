@@ -1,4 +1,4 @@
-// Writes Excel's built-in table styles and cell styles to crates/cgs-model/data, from Excel 2016 over
+// Writes Excel's built-in table, pivot and cell styles to crates/cgs-model/data, from Excel 2016 over
 // COM. Built-in styles are only named in a file, never defined there, so this is the only source.
 //
 // Table styles come from COM, as a new workbook reports them. Excel's own copy of each one (`Duplicate`)
@@ -43,6 +43,26 @@ const ELEMENT_TYPES = [
   'lastTotalCell',
 ];
 const STRIPES = new Set([5, 6, 7, 8]);
+
+/** XlTableStyleElementType 13 to 27, the pivot styles' own, after the table ones. */
+const PIVOT_TYPES = [
+  ...ELEMENT_TYPES,
+  'firstSubtotalColumn',
+  'secondSubtotalColumn',
+  'thirdSubtotalColumn',
+  'firstSubtotalRow',
+  'secondSubtotalRow',
+  'thirdSubtotalRow',
+  'blankRow',
+  'firstColumnSubheading',
+  'secondColumnSubheading',
+  'thirdColumnSubheading',
+  'firstRowSubheading',
+  'secondRowSubheading',
+  'thirdRowSubheading',
+  'pageFieldLabels',
+  'pageFieldValues',
+];
 
 /** cellStyle@builtinId to its English name. 1 and 2 are the outline levels, named per level. */
 const BUILTIN_NAMES = {
@@ -360,7 +380,9 @@ function runExcel(scratch) {
   return { dump, styles };
 }
 
-function tableStyles(dump, styles, problems) {
+function tableStyles(dump, styles, problems, pivot = false) {
+  const TYPES = pivot ? PIVOT_TYPES : ELEMENT_TYPES;
+  const probeName = pivot ? 'cgs pivot probe' : 'cgs probe';
   const dxfs = elements(section(styles, 'dxfs'), 'dxf').map(([, inner]) => inner);
   const saved = new Map(
     elements(section(styles, 'tableStyles'), 'tableStyle').map(([attrs, inner]) => [
@@ -370,17 +392,15 @@ function tableStyles(dump, styles, problems) {
   );
 
   // The probe's element N is filled with RGB(N + 1, 0, 0), which says which type Excel saved it as.
-  for (const element of saved.get('cgs probe') ?? []) {
+  for (const element of saved.get(probeName) ?? []) {
     const fill = colourOf(dxfs[element.dxfId], 'bgColor');
     const comType = parseInt(fill.rgb.slice(2, 4), 16) - 1;
-    if (ELEMENT_TYPES[comType] !== element.type) {
-      problems.push(
-        `element type ${comType} saved as ${element.type}, not ${ELEMENT_TYPES[comType]}`,
-      );
+    if (TYPES[comType] !== element.type) {
+      problems.push(`element type ${comType} saved as ${element.type}, not ${TYPES[comType]}`);
     }
   }
-  if ((saved.get('cgs probe') ?? []).length !== ELEMENT_TYPES.length) {
-    problems.push('the probe table style lost elements');
+  if ((saved.get(probeName) ?? []).length !== TYPES.length) {
+    problems.push(`the ${probeName} style lost elements`);
   }
   for (const name of saved.keys()) {
     if (!name.startsWith('cgs '))
@@ -388,10 +408,10 @@ function tableStyles(dump, styles, problems) {
   }
 
   const out = [];
-  for (const style of dump.tableStyles) {
+  for (const style of pivot ? dump.pivotStyles : dump.tableStyles) {
     const elementsOut = {};
     for (const raw of [...style.elements].sort((a, b) => a.type - b.type)) {
-      elementsOut[ELEMENT_TYPES[raw.type]] = comElement(raw);
+      elementsOut[TYPES[raw.type]] = comElement(raw);
     }
     const copy = saved.get('cgs copy ' + style.name);
     if (!copy) problems.push(`no saved copy of ${style.name}`);
@@ -408,12 +428,16 @@ function tableStyles(dump, styles, problems) {
         problems.push(`${style.name} ${type}: missing from the saved copy`);
       }
     }
-    out.push({
-      name: style.name,
-      showAsAvailableTableStyle: style.showAsAvailableTableStyle,
-      showAsAvailablePivotTableStyle: style.showAsAvailablePivotTableStyle,
-      elements: elementsOut,
-    });
+    out.push(
+      pivot
+        ? { name: style.name, elements: elementsOut }
+        : {
+            name: style.name,
+            showAsAvailableTableStyle: style.showAsAvailableTableStyle,
+            showAsAvailablePivotTableStyle: style.showAsAvailablePivotTableStyle,
+            elements: elementsOut,
+          },
+    );
   }
   return out;
 }
@@ -582,6 +606,8 @@ try {
   const { dump, styles } = runExcel(scratch);
   const problems = [];
   const tables = tableStyles(dump, styles, problems);
+  const pivots = tableStyles(dump, styles, problems, true);
+  if (pivots.length !== 85 && pivots.length !== 84) problems.push(`${pivots.length} pivot styles`);
   const cells = cellStyles(dump, styles, problems);
   const savedDefault = attributes(styles.match(/<tableStyles\b[^>]*>/)?.[0] ?? '');
   if (savedDefault.defaultTableStyle !== dump.defaultTableStyle)
@@ -601,9 +627,14 @@ try {
         styles: tables,
       }),
       await write('cell-styles.json', { source, styles: cells }),
+      await write('pivot-styles.json', {
+        source,
+        defaultPivotStyle: dump.defaultPivotTableStyle,
+        styles: pivots,
+      }),
     ];
     console.log(
-      `${tables.length} table styles and ${cells.length} cell styles agree with Excel's own file`,
+      `${tables.length} table styles, ${pivots.length} pivot styles and ${cells.length} cell styles agree with Excel's own file`,
     );
     console.log(written.join('\n'));
   }

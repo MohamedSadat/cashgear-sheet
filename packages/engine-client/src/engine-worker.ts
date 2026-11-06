@@ -12,6 +12,8 @@ import type {
   Command,
   ChartView,
   DrawingBox,
+  PivotBox,
+  PivotInfo,
   EngineApi,
   EngineTilePort,
   FileSource,
@@ -803,6 +805,13 @@ const api: EngineApi = {
   },
   async drawings(sheet) {
     return JSON.parse((await ensureEngine()).drawings_json(sheet)) as DrawingBox[];
+  },
+  async pivots(sheet) {
+    return JSON.parse((await ensureEngine()).pivot_list(sheet)) as PivotBox[];
+  },
+  async pivotInfo(sheet, row, col) {
+    const json = (await ensureEngine()).pivot_info(sheet, row, col);
+    return json ? (JSON.parse(json) as PivotInfo) : null;
   },
   async chart(sheet, drawing, screen) {
     const json = (await ensureEngine()).chart_json(

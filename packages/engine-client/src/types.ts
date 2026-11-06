@@ -81,6 +81,181 @@ export interface CellArea {
   right: number;
 }
 
+/** Names a pivot table. */
+export interface PivotRef {
+  sheet: number;
+  name: string;
+}
+
+export type PivotSummary =
+  | 'sum'
+  | 'count'
+  | 'average'
+  | 'max'
+  | 'min'
+  | 'product'
+  | 'countNums'
+  | 'stdDev'
+  | 'stdDevp'
+  | 'var'
+  | 'varp';
+
+export type PivotShowAs =
+  | 'normal'
+  | 'difference'
+  | 'percent'
+  | 'percentDiff'
+  | 'runTotal'
+  | 'percentOfRow'
+  | 'percentOfCol'
+  | 'percentOfTotal'
+  | 'index'
+  | 'percentOfParentRow'
+  | 'percentOfParentCol'
+  | 'percentOfParent'
+  | 'percentOfRunningTotal'
+  | 'rankAscending'
+  | 'rankDescending';
+
+/** A value field, as the field list sends it and `pivotInfo` reports it. */
+export interface PivotValueSpec {
+  field: number;
+  summary?: PivotSummary;
+  showAs?: PivotShowAs;
+  baseField?: number;
+  /** An item index, or 'previous' or 'next'. */
+  baseItem?: number | 'previous' | 'next';
+  name?: string;
+  numberFormat?: string;
+}
+
+/** Where each field goes. -2 is the Σ Values field. */
+export interface PivotLayoutSpec {
+  rows: number[];
+  cols: number[];
+  pages: number[];
+  values: PivotValueSpec[];
+}
+
+export interface PivotOptionSpec {
+  form?: 'compact' | 'outline' | 'tabular';
+  subtotals?: 'none' | 'top' | 'bottom';
+  grandTotals?: 'off' | 'both' | 'rows' | 'cols';
+  blankRows?: boolean;
+  repeatLabels?: boolean;
+  style?: string;
+  rowHeaders?: boolean;
+  colHeaders?: boolean;
+  rowStripes?: boolean;
+  colStripes?: boolean;
+  name?: string;
+  emptyText?: string;
+  errorText?: string | null;
+  headers?: boolean;
+}
+
+export interface PivotFieldChange {
+  hidden?: number[];
+  page?: number | null;
+  multiple?: boolean;
+  sort?: 'manual' | 'ascending' | 'descending';
+  sortBy?: number | null;
+  expand?: [number, boolean];
+  expandAll?: boolean;
+  subtotals?: string[];
+  caption?: string;
+  showAll?: boolean;
+  blankRow?: boolean;
+}
+
+export interface PivotItemInfo {
+  index: number;
+  label: string;
+  hidden: boolean;
+  expanded: boolean;
+}
+
+export interface PivotFieldInfo {
+  index: number;
+  name: string;
+  caption: string;
+  axis: 'row' | 'col' | 'page' | 'values' | null;
+  numeric: boolean;
+  items: PivotItemInfo[];
+  sort: 'manual' | 'ascending' | 'descending';
+  sortBy: number | null;
+  subtotals: string[];
+  showAll: boolean;
+  blankRow: boolean;
+  multiple: boolean;
+  grouped: boolean;
+}
+
+/** What a cell of a pivot table is. */
+export type PivotCellInfo =
+  | {
+      role: 'item';
+      axis: 'row' | 'col';
+      field: number;
+      item: number;
+      subtotal: boolean;
+      hasChildren: boolean;
+    }
+  | { role: 'value'; value: number }
+  | { role: 'data'; value: number }
+  | { role: 'page'; field: number }
+  | { role: 'grand' | 'header' | 'other' };
+
+/** The pivot table at a cell, for the field list, the ribbon and the context menu. */
+export interface PivotInfo {
+  name: string;
+  sheet: number;
+  area: CellArea;
+  /** Why it can't be changed here, if it can't. */
+  readOnly: string | null;
+  /** Why it can't be refreshed here, if it can't. */
+  noRefresh: string | null;
+  fields: PivotFieldInfo[];
+  rows: number[];
+  cols: number[];
+  pages: { field: number; item: number | null }[];
+  values: (Required<
+    Pick<PivotValueSpec, 'field' | 'name' | 'summary' | 'showAs' | 'baseField' | 'baseItem'>
+  > & {
+    numberFormat: string | null;
+  })[];
+  options: {
+    form: 'compact' | 'outline' | 'tabular';
+    subtotals: 'none' | 'top' | 'bottom';
+    rowGrand: boolean;
+    colGrand: boolean;
+    blankRows: boolean;
+    repeatLabels: boolean;
+    emptyText: string | null;
+    errorText: string | null;
+    headers: boolean;
+    style: {
+      name: string | null;
+      rowHeaders: boolean;
+      colHeaders: boolean;
+      rowStripes: boolean;
+      colStripes: boolean;
+    };
+  };
+  cell: PivotCellInfo;
+  /** Filter buttons on its captions, 1-based, and the fields each one filters. */
+  buttons: { row: number; col: number; fields: number[] }[];
+}
+
+/** A pivot table on a sheet, and the cells it covers. 1-based. */
+export interface PivotBox {
+  name: string;
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+}
+
 export type Command =
   | {
       kind: 'input';
@@ -217,6 +392,17 @@ export type Command =
     }
   | { kind: 'editChart'; sheet: number; index: number; edit: ChartEdit }
   | { kind: 'moveDrawing'; sheet: number; index: number; to: number }
+  | { kind: 'refreshPivot'; pivot?: PivotRef }
+  | { kind: 'pivotLayout'; pivot: PivotRef; layout: PivotLayoutSpec }
+  | { kind: 'pivotOptions'; pivot: PivotRef; options: PivotOptionSpec }
+  | { kind: 'pivotField'; pivot: PivotRef; field: number; change: PivotFieldChange }
+  | {
+      kind: 'createPivot';
+      sheet: number;
+      area: CellArea;
+      to: { kind: 'newSheet' } | { kind: 'existing'; sheet: number; row: number; col: number };
+    }
+  | { kind: 'deletePivot'; pivot: PivotRef }
   | { kind: 'setLink'; sheet: number; area: CellArea; link?: LinkSpec }
   | { kind: 'setValidation'; sheet: number; areas: CellArea[]; rule?: ValidationRule }
   | { kind: 'circleInvalid'; sheet: number; on: boolean }
@@ -1089,6 +1275,10 @@ export interface EngineApi {
   /** The numbers `decodeLayout` reads. */
   layout(sheet: number): Promise<Uint32Array>;
   drawings(sheet: number): Promise<DrawingBox[]>;
+  /** The pivot tables on a sheet. */
+  pivots(sheet: number): Promise<PivotBox[]>;
+  /** The pivot table at a cell, 1-based, or null. */
+  pivotInfo(sheet: number, row: number, col: number): Promise<PivotInfo | null>;
   /** What a chart drawing shows, for this screen. Colours are `0xRRGGBB`. */
   chart(sheet: number, drawing: number, screen: ChartScreen): Promise<ChartView | null>;
   /** A part's bytes, such as a picture's. */

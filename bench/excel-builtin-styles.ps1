@@ -65,7 +65,7 @@ function Borders($borders, [int[]]$indices) {
 }
 
 $excel = New-Object -ComObject Excel.Application
-$result = [ordered]@{ version = $null; defaultTableStyle = $null; defaultPivotTableStyle = $null; tableStyles = @(); cellStyles = @(); saved = $null }
+$result = [ordered]@{ version = $null; defaultTableStyle = $null; defaultPivotTableStyle = $null; tableStyles = @(); pivotStyles = @(); cellStyles = @(); saved = $null }
 try {
   $excel.Visible = $false
   $excel.DisplayAlerts = $false
@@ -98,6 +98,27 @@ try {
       }
     }
     $result.tableStyles += $entry
+  }
+
+  # Pivot styles use elements 0 to 27: the table ones, then subtotals, subheadings, blank rows and
+  # report filters.
+  $pivotStyles = @()
+  foreach ($style in $book.TableStyles) {
+    if (-not $style.BuiltIn -or $style.Name -notlike 'PivotStyle*') { continue }
+    $pivotStyles += $style
+    $entry = [ordered]@{ name = $style.Name; elements = @() }
+    foreach ($type in 0..27) {
+      $element = $style.TableStyleElements.Item($type)
+      if (-not $element.HasFormat) { continue }
+      $entry.elements += [ordered]@{
+        type = $type
+        stripeSize = Value $element 'StripeSize'
+        font = Font $element.Font
+        interior = Interior $element.Interior
+        borders = Borders $element.Borders @(7, 8, 9, 10, 11, 12)
+      }
+    }
+    $result.pivotStyles += $entry
   }
 
   $sheet = $book.Worksheets.Item(1)
@@ -140,9 +161,16 @@ try {
   $table = $sheet.ListObjects.Add(1, $sheet.Range('C1:D2'), $null, 1)
   $table.TableStyle = $result.defaultTableStyle
   foreach ($style in $tableStyles) { [void]$style.Duplicate('cgs copy ' + $style.Name) }
+  foreach ($style in $pivotStyles) { [void]$style.Duplicate('cgs copy ' + $style.Name) }
   $probe = $book.TableStyles.Add('cgs probe')
   foreach ($type in 0..12) {
     $probe.TableStyleElements.Item($type).Interior.Color = $type + 1
+  }
+  $pivotProbe = $book.TableStyles.Add('cgs pivot probe')
+  $pivotProbe.ShowAsAvailablePivotTableStyle = $true
+  $pivotProbe.ShowAsAvailableTableStyle = $false
+  foreach ($type in 0..27) {
+    $pivotProbe.TableStyleElements.Item($type).Interior.Color = $type + 1
   }
   $path = Join-Path $Scratch 'styles.xlsx'
   $book.SaveAs($path, 51)

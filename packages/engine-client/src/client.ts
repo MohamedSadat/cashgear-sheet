@@ -11,6 +11,8 @@ import type {
   ChartScreen,
   ChartView,
   DrawingBox,
+  PivotBox,
+  PivotInfo,
   EngineApi,
   EngineInfo,
   FileSource,
@@ -97,6 +99,10 @@ export interface EngineClient {
   prioritize(sheet: number): Promise<void>;
   layout(sheet: number): Promise<SheetLayout>;
   drawings(sheet: number): Promise<DrawingBox[]>;
+  /** The pivot tables on a sheet. */
+  pivots(sheet: number): Promise<PivotBox[]>;
+  /** The pivot table at a cell, 1-based, or null. */
+  pivotInfo(sheet: number, row: number, col: number): Promise<PivotInfo | null>;
   chart(sheet: number, drawing: number, screen: ChartScreen): Promise<ChartView | null>;
   media(part: string): Promise<Uint8Array>;
   addMedia(bytes: Uint8Array): Promise<string | null>;
@@ -248,6 +254,8 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
       return decodeLayout(await engine.layout(sheet));
     },
     drawings: (sheet) => engine.drawings(sheet),
+    pivots: (sheet) => engine.pivots(sheet),
+    pivotInfo: (sheet, row, col) => engine.pivotInfo(sheet, row, col),
     chart: (sheet, drawing, screen) => engine.chart(sheet, drawing, screen),
     media: (part) => engine.media(part),
     addMedia: (bytes) => engine.addMedia(transfer(bytes, [bytes.buffer as ArrayBuffer])),

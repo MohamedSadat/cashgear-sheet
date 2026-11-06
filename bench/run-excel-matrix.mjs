@@ -778,6 +778,94 @@ Object.assign(MOVES, {
   ],
 });
 
+// Phase 8: pivot tables made from cells of their own, laid out the ways the field list, the
+// PivotTable Analyze and Design tabs and a field's menu do it, refreshed after their source
+// changes, deleted, and moved with the rows around them.
+const pivotData = (top, left) => {
+  const list = [];
+  ['Region', 'Product', 'Sales', 'Units'].forEach((name, at) =>
+    list.push(input(0, top, left + at, name)),
+  );
+  const regions = ['North', 'South', 'East'];
+  const products = ['Apple', 'Pear', 'Plum'];
+  for (let at = 0; at < 9; at++) {
+    list.push(input(0, top + 1 + at, left, regions[at % 3]));
+    list.push(input(0, top + 1 + at, left + 1, products[Math.floor(at / 3)]));
+    list.push(input(0, top + 1 + at, left + 2, String(100 + at * 13)));
+    list.push(input(0, top + 1 + at, left + 3, String(1 + (at % 4))));
+  }
+  return list;
+};
+const pivotRef = { sheet: 0, name: 'PivotTable1' };
+const pivotMade = [
+  ...pivotData(100, 20),
+  {
+    kind: 'createPivot',
+    sheet: 0,
+    area: cells(100, 20, 109, 23),
+    to: { kind: 'existing', sheet: 0, row: 100, col: 27 },
+  },
+];
+const pivotLayout = (layout) => ({ kind: 'pivotLayout', pivot: pivotRef, layout });
+Object.assign(MOVES, {
+  'a pivot made and laid out': [
+    ...pivotMade,
+    pivotLayout({ rows: [0], cols: [], pages: [], values: [{ field: 2 }] }),
+  ],
+  'an empty pivot made on a new sheet': [
+    ...pivotData(100, 20),
+    {
+      kind: 'createPivot',
+      sheet: 0,
+      area: cells(100, 20, 109, 23),
+      to: { kind: 'newSheet' },
+    },
+  ],
+  'a pivot rearranged every way': [
+    ...pivotMade,
+    pivotLayout({
+      rows: [0, 1],
+      cols: [-2],
+      pages: [3],
+      values: [{ field: 2 }, { field: 3, summary: 'average', showAs: 'percentOfTotal' }],
+    }),
+    { kind: 'pivotOptions', pivot: pivotRef, options: { form: 'tabular', subtotals: 'bottom' } },
+    { kind: 'pivotOptions', pivot: pivotRef, options: { grandTotals: 'rows', repeatLabels: true } },
+    {
+      kind: 'pivotOptions',
+      pivot: pivotRef,
+      options: { style: 'PivotStyleMedium9', rowStripes: true },
+    },
+    { kind: 'pivotField', pivot: pivotRef, field: 0, change: { sort: 'descending' } },
+    { kind: 'pivotField', pivot: pivotRef, field: 1, change: { hidden: [1] } },
+    { kind: 'pivotField', pivot: pivotRef, field: 0, change: { subtotals: ['sum', 'max'] } },
+    { kind: 'pivotField', pivot: pivotRef, field: 3, change: { page: 2 } },
+    pivotLayout({ rows: [1], cols: [0], pages: [], values: [{ field: 2, summary: 'count' }] }),
+    { kind: 'pivotOptions', pivot: pivotRef, options: { form: 'outline', blankRows: true } },
+    { kind: 'pivotField', pivot: pivotRef, field: 1, change: { expand: [0, false] } },
+    { kind: 'pivotOptions', pivot: pivotRef, options: { emptyText: '-', errorText: 'n/a' } },
+  ],
+  'a pivot refreshed after its source changed': [
+    ...pivotMade,
+    pivotLayout({ rows: [0], cols: [1], pages: [], values: [{ field: 2 }] }),
+    input(0, 101, 20, 'West'),
+    input(0, 102, 22, '9999'),
+    input(0, 103, 21, ''),
+    { kind: 'refreshPivot' },
+  ],
+  'a pivot deleted': [
+    ...pivotMade,
+    pivotLayout({ rows: [0], cols: [], pages: [], values: [{ field: 2 }] }),
+    { kind: 'deletePivot', pivot: pivotRef },
+  ],
+  'rows put in above a pivot': [
+    ...pivotMade,
+    pivotLayout({ rows: [1], cols: [0], pages: [], values: [{ field: 3 }] }),
+    rows(0, 50, 3),
+    { kind: 'refreshPivot' },
+  ],
+});
+
 const MOVED = {
   'moving-parts.xlsx': 'xlsx',
   'prefixed.xlsx': 'xlsx',
@@ -907,6 +995,13 @@ try {
         opens: opens(refresh.saved).opened,
         excel: feature(refresh.saved, 'pivot'),
         readOnlyOpen: feature(refresh.saved, 'pivotReadOnly'),
+      };
+      // The app's own refresh after the same edit: Excel opens it and gets the same numbers.
+      const inApp = save(source, 'xlsx', edited, [], [{ kind: 'refreshPivot' }]);
+      results.features.pivotRefreshedInApp = {
+        changedParts: inApp.report.changedParts,
+        opens: opens(inApp.saved).opened,
+        excel: feature(inApp.saved, 'pivot'),
       };
       // And with no cell edits at all, only the flag.
       const flagOnly = save(source, 'xlsx', [], ['--refresh-pivots']);

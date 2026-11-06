@@ -2071,6 +2071,64 @@ fn cell_json(table: &PivotTable, row: u32, col: u32) -> serde_json::Value {
     serde_json::json!({ "role": "header" })
 }
 
+/// The filter buttons on a pivot table's captions, 1-based, with the fields each one filters.
+fn buttons_json(table: &PivotTable) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let area = pivot_area(table);
+    for (i, page) in table.page_fields.iter().enumerate() {
+        out.push(serde_json::json!({ "row": area.top + i as u32, "col": area.left + 1, "fields": [page.field] }));
+    }
+    if !table.options.show_headers {
+        return out;
+    }
+    let l = &table.location;
+    let r = l.range;
+    let rows: Vec<i32> = table
+        .row_fields
+        .iter()
+        .copied()
+        .filter(|&f| f != VALUES_FIELD)
+        .collect();
+    let cols: Vec<i32> = table
+        .col_fields
+        .iter()
+        .copied()
+        .filter(|&f| f != VALUES_FIELD)
+        .collect();
+    let caption_row = r.top + l.first_data_row.max(1) - 1;
+    if !rows.is_empty() {
+        if table.options.compact {
+            out.push(serde_json::json!({ "row": caption_row, "col": r.left, "fields": rows }));
+        } else {
+            let columns = row_columns(table);
+            for (level, &f) in table.row_fields.iter().enumerate() {
+                if f == VALUES_FIELD || (level > 0 && columns[level] == columns[level - 1]) {
+                    continue;
+                }
+                out.push(serde_json::json!({ "row": caption_row, "col": r.left + columns[level], "fields": [f] }));
+            }
+        }
+    }
+    if !cols.is_empty() {
+        let row = r.top + l.first_data_row - table.col_fields.len() as u32 - 1;
+        let compact = cols
+            .iter()
+            .all(|&f| table.fields[f as usize].compact && table.fields[f as usize].outline);
+        if compact {
+            out.push(
+                serde_json::json!({ "row": row, "col": r.left + l.first_data_col, "fields": cols }),
+            );
+        } else {
+            for (j, &f) in table.col_fields.iter().enumerate() {
+                if f != VALUES_FIELD {
+                    out.push(serde_json::json!({ "row": row, "col": r.left + l.first_data_col + j as u32, "fields": [f] }));
+                }
+            }
+        }
+    }
+    out
+}
+
 impl crate::Engine {
     /// The words a pivot table uses that the file doesn't hold, in the UI's language.
     pub fn set_pivot_captions(&mut self, captions: Captions) {
@@ -2211,6 +2269,7 @@ impl crate::Engine {
                 },
             },
             "cell": cell_json(&table, row, col),
+            "buttons": buttons_json(&table),
         });
         Some(info.to_string())
     }
@@ -2236,5 +2295,74 @@ impl crate::Engine {
             &mut block,
         );
         block.0.pop().map_or(CalcValue::Empty, |(_, v)| v)
+    }
+}
+
+impl crate::Engine {
+    /// What each cell of a sheet's pivot tables takes from its pivot style, as JSON, for checks:
+    /// fill, font colour and weight, and each side's line, with colours as `RRGGBB`.
+    pub fn pivot_look_json(&self, sheet: u32) -> String {
+        let Some(session) = self.session.as_ref() else {
+            return "[]".to_string();
+        };
+        let book = &session.book;
+        let colors = &book.styles.colors;
+        let rgb = |color: Option<cgs_model::Color>| -> serde_json::Value {
+            color
+                .and_then(|color| colors.resolve(color, None))
+                .map_or(serde_json::Value::Null, |rgb| {
+                    serde_json::json!(format!("{rgb:06X}"))
+                })
+        };
+        let line = |line: Option<cgs_model::Line>| -> serde_json::Value {
+            match line {
+                Some(l) if l.style != cgs_model::LineStyle::None => {
+                    serde_json::json!({ "style": format!("{:?}", l.style), "color": rgb(Some(l.color)) })
+                }
+                _ => serde_json::Value::Null,
+            }
+        };
+        let mut out = Vec::new();
+        for table in book.pivot_tables.iter().filter(|t| t.sheet == sheet) {
+            let style = table
+                .style
+                .name
+                .as_deref()
+                .and_then(crate::pivot_style::find);
+            let area = pivot_area(table);
+            let mut cells = Vec::new();
+            for row in area.top..=area.bottom {
+                for col in area.left..=area.right {
+                    let look = style.map(|style| {
+                        crate::table_style::exact_look(
+                            crate::pivot_style::cell_look(table, style, row, col),
+                            &book.styles.colors.theme,
+                        )
+                    });
+                    let look = look.unwrap_or_default();
+                    cells.push(serde_json::json!({
+                        "row": row,
+                        "col": col,
+                        "fill": rgb(look.fill.filter(|f| f.pattern != cgs_model::Pattern::None).map(|f| f.color)),
+                        "color": rgb(look.font.color),
+                        "bold": look.font.bold.unwrap_or(false),
+                        "top": line(look.border.top),
+                        "bottom": line(look.border.bottom),
+                        "left": line(look.border.left),
+                        "right": line(look.border.right),
+                    }));
+                }
+            }
+            out.push(serde_json::json!({
+                "name": table.name,
+                "style": table.style.name,
+                "top": area.top,
+                "left": area.left,
+                "bottom": area.bottom,
+                "right": area.right,
+                "cells": cells,
+            }));
+        }
+        serde_json::Value::Array(out).to_string()
     }
 }

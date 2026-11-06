@@ -215,6 +215,38 @@ fn table_looks(
             }
         }
     }
+    // Pivot tables' styles, the same way.
+    for table in book
+        .pivot_tables
+        .iter()
+        .filter(|table| table.sheet == sheet)
+    {
+        let t = crate::pivot_style::area(table);
+        if t.top > bottom || t.bottom < top || t.left > right || t.right < left {
+            continue;
+        }
+        let Some(style) = table
+            .style
+            .name
+            .as_deref()
+            .and_then(crate::pivot_style::find)
+        else {
+            continue;
+        };
+        for row in t.top.max(top)..=t.bottom.min(bottom) {
+            for col in t.left.max(left)..=t.right.min(right) {
+                let look = crate::table_style::exact_look(
+                    crate::pivot_style::cell_look(table, style, row, col),
+                    &book.styles.colors.theme,
+                );
+                if look.is_empty() {
+                    continue;
+                }
+                let base = info.style_at(row, col);
+                out.insert((row, col), derived.derive(&book.styles, base, &look, false));
+            }
+        }
+    }
     out
 }
 

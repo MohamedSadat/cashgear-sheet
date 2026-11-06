@@ -6,6 +6,34 @@ param(
   [Parameter(Mandatory)][string]$Out
 )
 $ErrorActionPreference = 'Stop'
+# Excel turns calls away while it is busy, such as refreshing pivot tables a file asks it to refresh
+# when it opens. This filter has COM try a turned-away call again instead of failing.
+if (-not ('CgsMessageFilter' -as [type])) {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+[ComImport, Guid("00000016-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface ICgsOleMessageFilter {
+  [PreserveSig] int HandleInComingCall(int callType, IntPtr caller, int tickCount, IntPtr interfaceInfo);
+  [PreserveSig] int RetryRejectedCall(IntPtr callee, int tickCount, int rejectType);
+  [PreserveSig] int MessagePending(IntPtr callee, int tickCount, int pendingType);
+}
+public class CgsMessageFilter : ICgsOleMessageFilter {
+  [DllImport("Ole32.dll")]
+  static extern int CoRegisterMessageFilter(ICgsOleMessageFilter filter, out ICgsOleMessageFilter old);
+  public static void Register() { ICgsOleMessageFilter old; CoRegisterMessageFilter(new CgsMessageFilter(), out old); }
+  public static void Revoke() { ICgsOleMessageFilter old; CoRegisterMessageFilter(null, out old); }
+  int ICgsOleMessageFilter.HandleInComingCall(int callType, IntPtr caller, int tickCount, IntPtr interfaceInfo) { return 0; }
+  // Busy: try again in 200 ms, for up to two minutes.
+  int ICgsOleMessageFilter.RetryRejectedCall(IntPtr callee, int tickCount, int rejectType) {
+    if (rejectType == 2 && tickCount < 120000) { return 200; }
+    return -1;
+  }
+  int ICgsOleMessageFilter.MessagePending(IntPtr callee, int tickCount, int pendingType) { return 2; }
+}
+"@
+}
+[CgsMessageFilter]::Register()
 $logs = Join-Path $env:TEMP '*.xml'
 function Get-RepairLogs {
   # Excel writes a log named error<digits>.xml or error<digits>_<digits>.xml when it repairs.

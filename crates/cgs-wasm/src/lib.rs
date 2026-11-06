@@ -462,6 +462,16 @@ impl Engine {
         self.0.drawings_json(sheet)
     }
 
+    /// The pivot tables on a sheet, as JSON: see `PivotBox` in `packages/engine-client`.
+    pub fn pivot_list(&self, sheet: u32) -> String {
+        self.0.pivot_list(sheet)
+    }
+
+    /// The pivot table at a cell, as JSON: see `PivotInfo` in `packages/engine-client`.
+    pub fn pivot_info(&mut self, sheet: u32, row: u32, col: u32) -> Option<String> {
+        self.0.pivot_info(sheet, row, col)
+    }
+
     /// What a chart drawing shows, as JSON: see `ChartView` in `packages/engine-client`.
     /// Colours are `0xRRGGBB`.
     pub fn chart_json(
