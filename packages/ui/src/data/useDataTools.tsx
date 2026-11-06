@@ -52,6 +52,8 @@ export interface DataToolsHost {
   /** Shows a sheet and selects an area on it. 1-based. */
   goTo: (sheet: number, area: CellArea) => Promise<void>;
   editor: () => RefusedEditor;
+  /** Other buttons the grid shows beside the data tools' own, such as pivot tables'. */
+  extraButtons?: () => CellButton[];
 }
 
 type DataDialog =
@@ -131,7 +133,8 @@ export function useDataTools(host: DataToolsHost) {
 
   const placeButtons = useCallback(() => {
     const list = listButton.current ? [listButton.current] : [];
-    hostRef.current.grid()?.setButtons([...filterButtons.current, ...list]);
+    const extra = hostRef.current.extraButtons?.() ?? [];
+    hostRef.current.grid()?.setButtons([...filterButtons.current, ...list, ...extra]);
   }, []);
 
   // The galleries, once a workbook is open: its theme decides the table styles' colours.
@@ -872,5 +875,6 @@ export function useDataTools(host: DataToolsHost) {
     onCellButton,
     onHover,
     onCellClick,
+    placeButtons,
   };
 }

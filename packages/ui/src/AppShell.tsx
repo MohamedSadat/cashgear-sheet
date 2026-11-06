@@ -51,6 +51,8 @@ import { FindDialog } from './FindDialog';
 import { FormatCellsDialog } from './FormatCellsDialog';
 import { FormulaBar } from './FormulaBar';
 import {
+  type CellButton,
+  type ClientBox,
   type GridController,
   type GridEvents,
   type GridRegion,
@@ -72,6 +74,8 @@ import { buildRibbonTabs, themeColors, type FormatTab, type RibbonActions } from
 import { useDataTools } from './data/useDataTools';
 import { useChartTools } from './charts/useChartTools';
 import { chartInsertGroups, chartTabs } from './charts/ribbon-charts';
+import { usePivotTools } from './pivots/usePivotTools';
+import { pivotInsertItem, pivotTabs } from './pivots/ribbon-pivots';
 import { saveReportLines, saveSummary, workbookExtension } from './save-report';
 import { fromArea, SheetEditing, toArea, type EditingHost } from './sheet-editing';
 import { bordersFromPicker, SheetFormat } from './sheet-format';
@@ -190,6 +194,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const selectionRef = useRef<GridSelection | null>(null);
   // The data tools' refresh and message, which come later than what calls them.
   const dataRefreshRef = useRef<() => void>(() => undefined);
+  const pivotRefreshRef = useRef<() => void>(() => undefined);
+  const pivotButtonsRef = useRef<() => CellButton[]>(() => []);
   const dataNoticeRef = useRef<(message: string | null) => void>(() => undefined);
   // The chart tools come later than the code that tells them about sheets and changes.
   const chartDrawingsRef = useRef<((drawings: DrawingBox[]) => void) | null>(null);
@@ -518,6 +524,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     if (!engine || !selection) return;
     const token = ++cellToken.current;
     dataRefreshRef.current();
+    pivotRefreshRef.current();
     setCell((previous) => ({ ...previous, name: selection.name }));
     engine
       .cellText(sheetRef.current, selection.row + 1, selection.col + 1)
@@ -755,7 +762,33 @@ export function AppShell({ platform, theme }: AppShellProps) {
       snapshot: () => editing.session.snapshot(),
       cancel: () => editing.cancel(),
     }),
+    extraButtons: () => pivotButtonsRef.current(),
   });
+  const pivotTools = usePivotTools({
+    engine: () => clientRef.current,
+    grid: () => controller.current,
+    sheet: () => sheetRef.current,
+    selection: () => selectionRef.current,
+    hasBook: Boolean(book),
+    sheetNames: book?.sheets.map((entry) => entry.name) ?? [],
+    run: runCommand,
+    notice: setNotice,
+    goTo: async (index, row, col) => {
+      let target = index;
+      if (target < 0) {
+        // A sheet the command just added: the last one.
+        const summary = await clientRef.current?.bookSummary();
+        if (summary) applySummary(summary);
+        target = (summary?.sheets.length ?? 1) - 1;
+      }
+      await goToSheet(target);
+      controller.current?.selectArea(fromArea({ top: row, left: col, bottom: row, right: col }));
+    },
+    placeButtons: () => dataTools.placeButtons(),
+    fitColumns: (index, first, last) => throughRef.current?.fitColumns(index, first, last),
+  });
+  pivotRefreshRef.current = pivotTools.refresh;
+  pivotButtonsRef.current = pivotTools.buttons;
   const chartScreen = useMemo(
     () => ({
       dark: palette.dark,
@@ -806,6 +839,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
       controller.current?.invalidate(changes.sheets, changes.tiles);
       // A chart can read any sheet, so any change may be one it shows.
       chartRefreshRef.current?.();
+      pivotRefreshRef.current();
       if (changes.layouts.includes(sheetRef.current) || changes.sheets.includes(sheetRef.current)) {
         void showSheet(client, sheetRef.current).catch(report);
       }
@@ -1053,7 +1087,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
       },
       onResizeHint: setResizeHint,
       onContextMenu: (x, y, region) => void contextMenu.current?.showAt(x, y, region),
-      onCellButton: dataTools.onCellButton,
+      onCellButton: (button: CellButton, box: ClientBox) =>
+        button.kind === 'pivot'
+          ? pivotTools.onCellButton(button, box)
+          : dataTools.onCellButton(button, box),
       onHover: dataTools.onHover,
       onCellClick: (row: number, col: number) => {
         chartDeselectRef.current?.();
@@ -1062,6 +1099,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
     }),
     [
       dataTools.onCellButton,
+      pivotTools.onCellButton,
       dataTools.onCellClick,
       dataTools.onHover,
       editing,
@@ -1338,13 +1376,27 @@ export function AppShell({ platform, theme }: AppShellProps) {
         tab.key === 'insert'
           ? {
               ...tab,
-              groups: [...tab.groups, ...chartInsertGroups(chartTools.state, chartTools.actions)],
+              groups: [
+                ...tab.groups.map((group) =>
+                  group.key === 'tables'
+                    ? {
+                        ...group,
+                        items: [
+                          pivotInsertItem(pivotTools.state, pivotTools.actions),
+                          ...group.items,
+                        ],
+                      }
+                    : group,
+                ),
+                ...chartInsertGroups(chartTools.state, chartTools.actions),
+              ],
             }
           : tab,
       ),
+      ...pivotTabs(pivotTools.state, pivotTools.actions),
       ...chartTabs(chartTools.state, chartTools.actions),
     ],
-    [builtTabs, chartTools.state, chartTools.actions],
+    [builtTabs, chartTools.state, chartTools.actions, pivotTools.state, pivotTools.actions],
   );
 
   formatActionRef.current = (action) => {
@@ -1719,7 +1771,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
           onLeave={() => controller.current?.focus()}
         />
       )}
-      <main className="cgs-grid">
+      <main className={pivotTools.pane ? 'cgs-grid cgs-grid-with-pane' : 'cgs-grid'}>
         {client && (
           <SheetCanvas
             client={client}
@@ -1730,6 +1782,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
           />
         )}
         {chartTools.layer}
+        {pivotTools.pane}
         <CellEditor
           ref={editorRef}
           session={editing.session}
@@ -1922,6 +1975,14 @@ export function AppShell({ platform, theme }: AppShellProps) {
             return chartTools.menuItems as ReadonlyArray<
               CgContextMenuItem<GridRegion | 'tab' | 'drawing'>
             >;
+          // In a pivot table, its own menu, after Copy and Format Cells as Excel puts them.
+          if (region === 'cells' && pivotTools.menuItems.length)
+            return [
+              ...contextItems.filter((item) => item.key === 'copy' || item.key === 'format-cells'),
+              ...(pivotTools.menuItems as ReadonlyArray<
+                CgContextMenuItem<GridRegion | 'tab' | 'drawing'>
+              >),
+            ];
           const hidden =
             region === 'rowHeader'
               ? ['col-width', 'hide-cols', 'unhide-cols']
@@ -1968,6 +2029,7 @@ export function AppShell({ platform, theme }: AppShellProps) {
         />
       )}
       {dataTools.overlays}
+      {pivotTools.overlays}
       {chartTools.overlays}
       {dialog?.kind === 'find' && (
         <FindDialog

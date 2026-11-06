@@ -706,3 +706,76 @@ body {
   position: relative;
   box-shadow: var(--cg-shadow-sm, 0 1px 3px rgb(0 0 0 / 20%));
 }
+
+/* The PivotTable Fields pane, docked at the grid's end edge, as Excel docks it. */
+.cgs-grid-with-pane {
+  padding-inline-end: 300px;
+}
+
+.cgs-pivot-pane {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  z-index: 3;
+  width: 300px;
+  overflow: auto;
+  border-inline-start: var(--cg-border-style);
+  background: var(--cg-surface);
+  color: var(--cg-text);
+}
+
+.cgs-pivot-pane-close {
+  position: absolute;
+  inset-block-start: var(--cg-space-1);
+  inset-inline-end: var(--cg-space-1);
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  color: var(--cg-text-secondary);
+  font-size: var(--cg-font-size-sm);
+  cursor: pointer;
+}
+
+.cgs-pivot-pane-close:hover {
+  color: var(--cg-text);
+  background: var(--cg-hover);
+}
+
+/* A pivot field's filter: sort, search and the item list. */
+.cgs-pivot-filter {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  width: 250px;
+  padding: var(--cg-space-2);
+  border: var(--cg-border-style);
+  border-radius: var(--cg-radius-sm);
+  background: var(--cg-surface-raised);
+  color: var(--cg-text);
+  font-size: var(--cg-font-size-sm);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+}
+
+.cgs-pivot-filter .cgs-menu-button {
+  border: 0;
+  padding: var(--cg-space-1) var(--cg-space-2);
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.cgs-pivot-filter .cgs-menu-button:hover {
+  background: var(--cg-hover);
+}
+
+.cgs-pivot-filter-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--cg-space-1);
+  border: var(--cg-border-style);
+}

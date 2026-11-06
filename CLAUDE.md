@@ -101,6 +101,14 @@ Found in Phase 6:
 - Whole-number doubles have zero low bits, so `FxHashMap` on their bits collides badly. Spread them first, or use a direct-mapped table.
 - Bench scripts must build the harness tools they run. `editfuzz` once ran a build hours old.
 
+Found in Phase 8:
+
+- Excel refreshes a file that asks for `refreshOnLoad` just after `Workbooks.Open` returns, and turns COM calls away meanwhile (`RPC_E_CALL_REJECTED`). The bench's Excel scripts register a message filter that retries; copy it into any new one.
+- A pivot table's items must point inside its cache's items, group items too, or `Workbooks.Open` refuses the file. `bench/run-pivot-check.mjs` has Excel open and refresh everything the app saves.
+- Excel on this PC writes pivot captions in Arabic ("Row Labels", "Grand Total", "(blank)"), but date group months stay "Jan". `pivotcheck::arabic()` holds the words; the app's are English.
+- With "For empty cells show" set, Excel saves 0 in those cells and shows the caption.
+- On refresh, new items go last in a field sorted by hand, hidden if the field's filter hides others, and in display order in a sorted field. Ties in a sort by value keep the order they had.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

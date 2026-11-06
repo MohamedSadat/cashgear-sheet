@@ -119,7 +119,7 @@ export function drawnByLayer(box: DrawingBox) {
 
 /** A button the grid draws in a cell: a filter's in its heading, or a list's beside its cell. */
 export interface CellButton {
-  kind: 'filter' | 'list';
+  kind: 'filter' | 'list' | 'pivot';
   /** 0-based. */
   row: number;
   col: number;

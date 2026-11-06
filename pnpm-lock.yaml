@@ -243,8 +243,8 @@ importers:
   packages/ui:
     dependencies:
       '@cashgear/ui':
-        specifier: github:MohamedSadat/CashGear.React.UI#814fa18764c145268fa8715639f7e5ac1a249026
-        version: https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/814fa18764c145268fa8715639f7e5ac1a249026(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: github:MohamedSadat/CashGear.React.UI#bcd95bc221320e7d510ed0a1a9adcfdff9157f67
+        version: https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/bcd95bc221320e7d510ed0a1a9adcfdff9157f67(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@cgs/engine-client':
         specifier: workspace:*
         version: link:../engine-client
@@ -267,8 +267,8 @@ packages:
   '@cacheable/utils@2.5.0':
     resolution: {integrity: sha512-buipgOVDkkPXNR5+xBpDw7Zk2n1EvU7qBJCNUcL7rhQ//kfpOXPAvQ511Os0vpLYJ1pZnvudNytkQt2hst3wqA==}
 
-  '@cashgear/ui@https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/814fa18764c145268fa8715639f7e5ac1a249026':
-    resolution: {gitHosted: true, integrity: sha512-LsT78ZKV8Fvuiq+KDofJC9RyMeuE9i4I/X25+ft4lrgS2qGmtURa4rsFcgflUrcxJhph5CffjrIpq/TO1Bw5ew==, tarball: https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/814fa18764c145268fa8715639f7e5ac1a249026}
+  '@cashgear/ui@https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/bcd95bc221320e7d510ed0a1a9adcfdff9157f67':
+    resolution: {gitHosted: true, integrity: sha512-WojvGXj6bxtMhlAcyR8M1HUFPV/PelNbQZHmIZ7aBBNGbBHWRSyozQG3iZNRkYE38VDpk19pxG12Mm2QbqbvjA==, tarball: https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/bcd95bc221320e7d510ed0a1a9adcfdff9157f67}
     version: 0.1.0
     engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
     peerDependencies:
@@ -1237,7 +1237,7 @@ snapshots:
       hashery: 1.5.1
       keyv: 5.6.0
 
-  '@cashgear/ui@https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/814fa18764c145268fa8715639f7e5ac1a249026(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@cashgear/ui@https://codeload.github.com/MohamedSadat/CashGear.React.UI/tar.gz/bcd95bc221320e7d510ed0a1a9adcfdff9157f67(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
