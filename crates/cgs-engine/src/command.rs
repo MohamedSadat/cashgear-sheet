@@ -362,6 +362,23 @@ pub enum Command {
         #[serde(default)]
         right: bool,
     },
+    /// A note on a cell, or none to delete it.
+    SetNote {
+        sheet: u32,
+        row: u32,
+        col: u32,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        author: Option<String>,
+    },
+    /// A hyperlink on cells, or none to remove links from them.
+    SetLink {
+        sheet: u32,
+        area: Area,
+        #[serde(default)]
+        link: Option<crate::notes::LinkSpec>,
+    },
     /// A validation rule on these cells, or none to take rules off them.
     SetValidation {
         sheet: u32,
@@ -449,6 +466,16 @@ pub(crate) enum Op {
     BookTables(Vec<Table>),
     /// The workbook's defined names, as the model holds them.
     BookNames(Vec<DefinedName>),
+    /// A sheet's notes.
+    SheetNotes {
+        sheet: u32,
+        notes: std::collections::BTreeMap<(u32, u32), cgs_model::Note>,
+    },
+    /// A sheet's hyperlinks.
+    SheetLinks {
+        sheet: u32,
+        links: Vec<cgs_model::Hyperlink>,
+    },
     /// A sheet's data validation.
     SheetDv {
         sheet: u32,
@@ -548,6 +575,10 @@ impl Op {
             Self::SheetFilter { .. } => 512,
             Self::SheetCf { blocks, .. } => 256 + blocks.len() * 512,
             Self::SheetDv { list, .. } => 256 + list.len() * 512,
+            Self::SheetNotes { notes, .. } => {
+                256 + notes.values().map(|n| n.text.len() + 64).sum::<usize>()
+            }
+            Self::SheetLinks { links, .. } => 256 + links.len() * 256,
             Self::BookNames(names) => names.len() * 128,
             Self::Merges { merges, .. } => merges.len() * 16,
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
@@ -1317,6 +1348,26 @@ impl Session {
                 Ok(Op::Tables(before))
             }
             Op::BookNames(names) => self.apply_names(names),
+            Op::SheetNotes { sheet, notes } => {
+                let info = &mut self.book.sheets[sheet as usize];
+                let before = std::mem::replace(&mut info.notes, notes);
+                self.edits.notes_sheets.insert(sheet);
+                self.dirty.sheets.insert(sheet);
+                Ok(Op::SheetNotes {
+                    sheet,
+                    notes: before,
+                })
+            }
+            Op::SheetLinks { sheet, links } => {
+                let info = &mut self.book.sheets[sheet as usize];
+                let before = std::mem::replace(&mut info.links, links);
+                self.edits.link_sheets.insert(sheet);
+                self.dirty.sheets.insert(sheet);
+                Ok(Op::SheetLinks {
+                    sheet,
+                    links: before,
+                })
+            }
             Op::SheetDv { sheet, list } => {
                 let info = &mut self.book.sheets[sheet as usize];
                 let before = std::mem::replace(&mut info.validations, list);
@@ -2929,6 +2980,16 @@ impl Session {
                 bottom,
                 right,
             } => self.names_from_selection(sheet, area, (top, left, bottom, right)),
+            Command::SetNote {
+                sheet,
+                row,
+                col,
+                text,
+                author,
+            } => self.set_note_command(sheet, row, col, text, author),
+            Command::SetLink { sheet, area, link } => {
+                self.set_link_command(sheet, area, link.as_ref())
+            }
             Command::SetValidation { sheet, areas, rule } => {
                 self.set_validation_command(sheet, &areas, rule.as_ref())
             }

@@ -223,8 +223,17 @@ pub fn remove_relationship_ids(xml: &[u8], ids: &[String]) -> Vec<u8> {
     crate::scan::splice(xml, &changes)
 }
 
-/// Adds a relationship and says which id it got.
+/// Adds a relationship to something outside the package, such as a web address.
+pub fn add_external_relationship(xml: &[u8], kind: &str, target: &str) -> (Vec<u8>, String) {
+    add_relationship_of(xml, kind, target, true)
+}
+
+/// Adds a relationship and says its id.
 pub fn add_relationship_with_id(xml: &[u8], kind: &str, target: &str) -> (Vec<u8>, String) {
+    add_relationship_of(xml, kind, target, false)
+}
+
+fn add_relationship_of(xml: &[u8], kind: &str, target: &str, external: bool) -> (Vec<u8>, String) {
     let list = tokens(xml);
     let name = root_prefix(xml, &list);
     let mut used = Vec::new();
@@ -243,8 +252,13 @@ pub fn add_relationship_with_id(xml: &[u8], kind: &str, target: &str) -> (Vec<u8
         }
         number += 1;
     };
+    let mode = if external {
+        " TargetMode=\"External\""
+    } else {
+        ""
+    };
     let text = format!(
-        "<{name}Relationship Id=\"{id}\" Type=\"{}\" Target=\"{}\"/>",
+        "<{name}Relationship Id=\"{id}\" Type=\"{}\" Target=\"{}\"{mode}/>",
         escape_attr(kind),
         escape_attr(target)
     );

@@ -13,9 +13,10 @@ use quick_xml::Reader;
 
 use crate::package::{ByteSource, Package, PartStream};
 use crate::patch_parts::{
-    add_override, add_relationship, add_relationship_with_id, append_strings, count_strings,
-    new_strings_part, read_table_part, remove_overrides, remove_relationship_ids,
-    remove_relationships, set_full_calc_on_load, set_refresh_on_load, set_table_columns, StylesXml,
+    add_external_relationship, add_override, add_relationship, add_relationship_with_id,
+    append_strings, count_strings, new_strings_part, read_table_part, remove_overrides,
+    remove_relationship_ids, remove_relationships, set_full_calc_on_load, set_refresh_on_load,
+    set_table_columns, StylesXml,
 };
 use crate::patch_sheet::{
     patch_into, patch_sheet, ArrayKind, CellChange, CellPatch, NewElement, SheetExtras, StringTable,
@@ -130,6 +131,10 @@ pub struct WorkbookEdits {
     pub dv_sheets: std::collections::BTreeSet<u32>,
     /// The workbook's defined names changed, apart from what moving rows does to them.
     pub names_changed: bool,
+    /// Sheets whose notes changed.
+    pub notes_sheets: std::collections::BTreeSet<u32>,
+    /// Sheets whose hyperlinks changed.
+    pub link_sheets: std::collections::BTreeSet<u32>,
 }
 
 impl WorkbookEdits {
@@ -147,6 +152,8 @@ impl WorkbookEdits {
             && self.cf_sheets.is_empty()
             && self.dv_sheets.is_empty()
             && !self.names_changed
+            && self.notes_sheets.is_empty()
+            && self.link_sheets.is_empty()
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.
@@ -530,6 +537,195 @@ fn save_tables(
             xml,
             replace: true,
         });
+    }
+    Ok(save)
+}
+
+#[derive(Default)]
+struct NotesSave {
+    /// New parts, with their content types.
+    added: Vec<(String, &'static str)>,
+    removed: Vec<String>,
+}
+
+fn legacy_drawing(id: &str) -> NewElement {
+    NewElement {
+        name: "legacyDrawing".to_string(),
+        xml: format!("<legacyDrawing xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:id=\"{}\"/>", escape_attr(id)),
+        replace: true,
+    }
+}
+
+/// A new part's name, `stem` and the first number free.
+fn fresh_part(taken: &mut HashSet<String>, stem: &str, ext: &str) -> String {
+    let mut number = 1;
+    loop {
+        let name = format!("{stem}{number}.{ext}");
+        if taken.insert(normalize(&name)) {
+            break name;
+        }
+        number += 1;
+    }
+}
+
+/// Notes and hyperlinks as the model has them: each changed sheet's comments part and VML drawing
+/// made, replaced or taken out, its hyperlinks' relationships made again, and its `legacyDrawing`
+/// and `hyperlinks` to match. A VML drawing's other shapes, such as form controls, stay.
+fn save_notes(
+    package: &Package,
+    book: &Book,
+    edits: &mut WorkbookEdits,
+    overlay: &mut BTreeMap<String, Vec<u8>>,
+    changes: &mut ZipChanges,
+    report: &mut SaveReport,
+) -> Result<NotesSave, SaveError> {
+    let mut save = NotesSave::default();
+    let mut taken: HashSet<String> = package
+        .parts()
+        .iter()
+        .map(|part| normalize(&part.name))
+        .collect();
+    let sheets: std::collections::BTreeSet<u32> = edits
+        .notes_sheets
+        .iter()
+        .chain(edits.link_sheets.iter())
+        .copied()
+        .collect();
+    for sheet in sheets {
+        let Some(info) = book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+            continue;
+        };
+        let Some(part) = info.part.as_ref() else {
+            continue;
+        };
+        let rels_name = rels_path(part);
+        let rels_had = overlay
+            .get(&rels_name)
+            .cloned()
+            .or_else(|| package.read(&rels_name));
+        let mut rels = rels_had.clone().unwrap_or_else(|| {
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"></Relationships>".to_vec()
+        });
+        let list = crate::workbook::relationships_in(&rels, part);
+        let mut elements = Vec::new();
+        if edits.notes_sheets.contains(&sheet) {
+            let find = |end: &str| {
+                list.iter()
+                    .find(|(_, (kind, _))| kind.ends_with(end))
+                    .map(|(id, (_, target))| (id.clone(), target.clone()))
+            };
+            let comments = find("/comments");
+            let vml = find("/vmlDrawing");
+            let mut gone = Vec::new();
+            let mut drop_part = |target: &str, overlay: &mut BTreeMap<String, Vec<u8>>| {
+                changes.remove.push(normalize(target));
+                report.removed_parts.push(target.to_string());
+                save.removed.push(target.to_string());
+                overlay.remove(target);
+            };
+            if info.notes.is_empty() {
+                if let Some((id, target)) = &comments {
+                    drop_part(target, overlay);
+                    gone.push(id.clone());
+                }
+            }
+            let existing = vml.as_ref().and_then(|(_, target)| {
+                overlay
+                    .get(target)
+                    .cloned()
+                    .or_else(|| package.read(target))
+            });
+            let drawing = crate::notes::vml_xml(&info.notes, existing.as_deref());
+            let has_shapes = drawing.contains("<v:shape ") || drawing.contains("<v:shape>");
+            match (&vml, has_shapes) {
+                (Some((id, target)), false) => {
+                    drop_part(target, overlay);
+                    gone.push(id.clone());
+                    elements.push(NewElement {
+                        name: "legacyDrawing".to_string(),
+                        xml: String::new(),
+                        replace: true,
+                    });
+                }
+                (Some((id, target)), true) => {
+                    overlay.insert(target.clone(), drawing.into_bytes());
+                    elements.push(legacy_drawing(id));
+                }
+                (None, true) => {
+                    let name = fresh_part(&mut taken, "xl/drawings/vmlDrawing", "vml");
+                    changes
+                        .add
+                        .push((name.clone(), pack(drawing.as_bytes()).map_err(zip_error)?));
+                    report.added_parts.push(name.clone());
+                    save.added.push((name.clone(), crate::notes::VML_TYPE));
+                    let (updated, id) = add_relationship_with_id(
+                        &rels,
+                        crate::notes::VML_REL,
+                        &relative_target(part, &name),
+                    );
+                    rels = updated;
+                    elements.push(legacy_drawing(&id));
+                }
+                (None, false) => {}
+            }
+            if !info.notes.is_empty() {
+                let xml = crate::notes::comments_xml(&info.notes).into_bytes();
+                match &comments {
+                    Some((_, target)) => {
+                        overlay.insert(target.clone(), xml);
+                    }
+                    None => {
+                        let name = fresh_part(&mut taken, "xl/comments", "xml");
+                        changes
+                            .add
+                            .push((name.clone(), pack(&xml).map_err(zip_error)?));
+                        report.added_parts.push(name.clone());
+                        save.added.push((name.clone(), crate::notes::COMMENTS_TYPE));
+                        let (updated, _) = add_relationship_with_id(
+                            &rels,
+                            crate::notes::COMMENTS_REL,
+                            &relative_target(part, &name),
+                        );
+                        rels = updated;
+                    }
+                }
+            }
+            if !gone.is_empty() {
+                rels = remove_relationship_ids(&rels, &gone);
+            }
+        }
+        if edits.link_sheets.contains(&sheet) {
+            rels = remove_relationships(&rels, "/hyperlink");
+            let mut links = Vec::new();
+            for link in &info.links {
+                let id = match &link.target {
+                    Some(target) => {
+                        let (updated, id) =
+                            add_external_relationship(&rels, crate::notes::LINK_REL, target);
+                        rels = updated;
+                        Some(id)
+                    }
+                    None => None,
+                };
+                links.push((link.clone(), id));
+            }
+            elements.push(NewElement {
+                name: "hyperlinks".to_string(),
+                xml: crate::notes::hyperlinks_xml(&links),
+                replace: true,
+            });
+        }
+        if rels_had.as_deref() != Some(&rels[..]) {
+            if rels_had.is_some() {
+                overlay.insert(rels_name, rels);
+            } else {
+                changes
+                    .add
+                    .push((rels_name.clone(), pack(&rels).map_err(zip_error)?));
+                report.added_parts.push(rels_name);
+            }
+        }
+        edits.elements.entry(sheet).or_default().extend(elements);
     }
     Ok(save)
 }
@@ -1322,6 +1518,18 @@ pub fn save_workbook(
         } else {
             TableSave::default()
         };
+        let notes_save = if edits.notes_sheets.is_empty() && edits.link_sheets.is_empty() {
+            NotesSave::default()
+        } else {
+            save_notes(
+                package,
+                book,
+                &mut edits,
+                &mut overlay,
+                &mut changes,
+                &mut report,
+            )?
+        };
 
         // Formulas that spill need Excel's mark for a dynamic array, once for the workbook.
         let wants_dynamic = edits
@@ -1617,6 +1825,14 @@ pub fn save_workbook(
         }
         if !table_save.removed.is_empty() {
             content_types = remove_overrides(&content_types, &table_save.removed);
+            types_changed = true;
+        }
+        for (name, kind) in &notes_save.added {
+            content_types = add_override(&content_types, name, kind);
+            types_changed = true;
+        }
+        if !notes_save.removed.is_empty() {
+            content_types = remove_overrides(&content_types, &notes_save.removed);
             types_changed = true;
         }
         table_parts_after = table_save.parts;

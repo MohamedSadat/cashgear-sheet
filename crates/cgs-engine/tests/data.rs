@@ -539,3 +539,106 @@ fn names_are_defined_renamed_into_formulas_deleted_and_saved() {
     engine.save(&mut bytes).unwrap();
     assert!(!part(&bytes, "xl/workbook.xml").contains("Qty"));
 }
+
+fn reopened(bytes: Vec<u8>) -> Engine {
+    let mut again = Engine::new();
+    again.open(Rc::new(bytes)).unwrap();
+    while again.load_step(1000.0).unwrap().phase == LoadPhase::Reading {}
+    again
+}
+
+fn ask(engine: &Engine, question: &str) -> serde_json::Value {
+    serde_json::from_str(&engine.query(question).unwrap()).unwrap()
+}
+
+#[test]
+fn notes_save_with_their_drawing_and_come_back_and_go() {
+    let mut engine = opened();
+    run(
+        &mut engine,
+        r#"{"kind":"setNote","sheet":0,"row":2,"col":3,"text":"Check this","author":"Pat"}"#,
+    );
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let comments = part(&bytes, "xl/comments1.xml");
+    assert!(comments.contains("<author>Pat</author>"), "{comments}");
+    assert!(
+        comments.contains(r#"<comment ref="C2" authorId="0">"#),
+        "{comments}"
+    );
+    assert!(part(&bytes, "xl/drawings/vmlDrawing1.vml").contains("<x:Row>1</x:Row>"));
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+    assert!(sheet.contains("<legacyDrawing "), "{sheet}");
+    let rels = part(&bytes, "xl/worksheets/_rels/sheet1.xml.rels");
+    assert!(
+        rels.contains("../comments1.xml") && rels.contains("vmlDrawing1.vml"),
+        "{rels}"
+    );
+    assert!(part(&bytes, "[Content_Types].xml").contains("/xl/comments1.xml"));
+
+    let mut again = reopened(bytes);
+    let note = ask(&again, r#"{"kind":"noteAt","sheet":0,"row":2,"col":3}"#);
+    assert_eq!(note["author"], "Pat");
+    assert_eq!(note["text"], "Check this");
+    run(
+        &mut again,
+        r#"{"kind":"setNote","sheet":0,"row":2,"col":3}"#,
+    );
+    let mut bytes = Vec::new();
+    again.save(&mut bytes).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    assert!(zip.by_name("xl/comments1.xml").is_err());
+    assert!(zip.by_name("xl/drawings/vmlDrawing1.vml").is_err());
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+    assert!(!sheet.contains("legacyDrawing"), "{sheet}");
+    assert!(!part(&bytes, "[Content_Types].xml").contains("comments1"));
+}
+
+#[test]
+fn links_save_external_targets_as_relationships_and_places_as_locations() {
+    let mut engine = opened();
+    run(
+        &mut engine,
+        r#"{"kind":"setLink","sheet":0,"area":{"top":1,"left":1,"bottom":1,"right":1},"link":{"address":"example.com","tooltip":"Go"}}"#,
+    );
+    assert_eq!(text(&engine, 1, 1), "http://example.com");
+    run(
+        &mut engine,
+        r#"{"kind":"setLink","sheet":0,"area":{"top":2,"left":1,"bottom":2,"right":1},"link":{"location":"Sheet1!C5","text":"Jump"}}"#,
+    );
+    assert_eq!(text(&engine, 2, 1), "Jump");
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
+    assert!(
+        sheet.contains(r#"<hyperlink ref="A1" r:id="rId"#),
+        "{sheet}"
+    );
+    assert!(
+        sheet.contains(r#"<hyperlink ref="A2" location="Sheet1!C5"/>"#),
+        "{sheet}"
+    );
+    let rels = part(&bytes, "xl/worksheets/_rels/sheet1.xml.rels");
+    assert!(
+        rels.contains(r#"Target="http://example.com" TargetMode="External""#),
+        "{rels}"
+    );
+
+    let mut again = reopened(bytes);
+    let link = ask(&again, r#"{"kind":"linkAt","sheet":0,"row":1,"col":1}"#);
+    assert_eq!(link["address"], "http://example.com");
+    assert_eq!(link["tooltip"], "Go");
+    run(
+        &mut again,
+        r#"{"kind":"setLink","sheet":0,"area":{"top":1,"left":1,"bottom":2,"right":1}}"#,
+    );
+    assert_eq!(
+        ask(&again, r#"{"kind":"linkAt","sheet":0,"row":2,"col":1}"#),
+        serde_json::Value::Null
+    );
+    run(&mut again, r#"{"kind":"undo"}"#);
+    assert_eq!(
+        ask(&again, r#"{"kind":"linkAt","sheet":0,"row":2,"col":1}"#)["location"],
+        "Sheet1!C5"
+    );
+}

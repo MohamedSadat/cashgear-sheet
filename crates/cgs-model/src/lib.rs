@@ -6,6 +6,7 @@ pub mod color;
 pub mod dv;
 pub mod dxf;
 pub mod filter;
+pub mod notes;
 pub mod sheet;
 pub mod style;
 pub mod table;
@@ -17,6 +18,7 @@ pub use dxf::{Dxf, DxfBorder, DxfFill, DxfFont, TableElement, TableStyleDef, Tab
 pub use filter::{
     AutoFilter, DateGroup, FilterColumn, FilterCriteria, FilterOp, SortBy, SortKey, SortState,
 };
+pub use notes::{Hyperlink, Note};
 pub use sheet::{
     Anchor, AnchorPoint, ColAxis, ColumnRuns, Drawing, DrawingKind, Freeze, LineInfo, RowAxis,
     SheetInfo, SheetKind, SheetShape, SheetState, SheetView, NO_CELL,

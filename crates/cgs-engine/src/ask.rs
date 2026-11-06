@@ -34,6 +34,12 @@ enum Question {
     InvalidCells { sheet: u32 },
     /// The names the Name Manager lists.
     Names,
+    /// A cell's note.
+    NoteAt { sheet: u32, row: u32, col: u32 },
+    /// A cell's hyperlink.
+    LinkAt { sheet: u32, row: u32, col: u32 },
+    /// A sheet's notes, in order.
+    Notes { sheet: u32 },
 }
 
 fn area_json(top: u32, left: u32, bottom: u32, right: u32) -> Value {
@@ -156,6 +162,9 @@ impl Session {
             Question::CfRules { sheet } => self.cf_rules(sheet),
             Question::ValidationAt { sheet, row, col } => self.validation_json(sheet, row, col),
             Question::Names => self.names_json(),
+            Question::NoteAt { sheet, row, col } => self.note_json(sheet, row, col),
+            Question::LinkAt { sheet, row, col } => self.link_json(sheet, row, col),
+            Question::Notes { sheet } => self.notes_list(sheet),
             Question::InvalidCells { sheet } => Value::Array(
                 self.invalid_cells(sheet)
                     .into_iter()

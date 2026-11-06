@@ -543,6 +543,8 @@ pub struct SheetShape {
     filter: Option<crate::AutoFilter>,
     cf: Vec<crate::CfBlock>,
     validations: Vec<crate::Validation>,
+    notes: std::collections::BTreeMap<(u32, u32), crate::Note>,
+    links: Vec<crate::Hyperlink>,
 }
 
 impl SheetShape {
@@ -592,6 +594,11 @@ pub struct SheetInfo {
     pub cf: Vec<crate::CfBlock>,
     /// Data validation, the sheet's own and its extension's.
     pub validations: Vec<crate::Validation>,
+    /// Notes by their cells.
+    pub notes: std::collections::BTreeMap<(u32, u32), crate::Note>,
+    /// Cells with threaded comments from newer Excel, which are shown and kept but not edited.
+    pub threaded: Vec<(u32, u32)>,
+    pub links: Vec<crate::Hyperlink>,
     /// The XML of `conditionalFormatting`, `dataValidations`, `hyperlinks` and `extLst`, as the file
     /// has them, for what reads them once the sheet is in.
     pub captured: Vec<(String, Vec<u8>)>,
@@ -624,6 +631,9 @@ impl SheetInfo {
         self.filter = None;
         self.cf.clear();
         self.validations.clear();
+        self.notes.clear();
+        self.threaded.clear();
+        self.links.clear();
         self.captured.clear();
     }
 
@@ -775,6 +785,8 @@ impl SheetInfo {
             filter: self.filter.clone(),
             cf: self.cf.clone(),
             validations: self.validations.clone(),
+            notes: self.notes.clone(),
+            links: self.links.clone(),
         }
     }
 
@@ -790,6 +802,8 @@ impl SheetInfo {
         self.filter = shape.filter;
         self.cf = shape.cf;
         self.validations = shape.validations;
+        self.notes = shape.notes;
+        self.links = shape.links;
         self.index_merges();
     }
 
@@ -918,6 +932,46 @@ impl SheetInfo {
                 }
             }
             true
+        });
+        // Notes and links follow their cells, and go with them.
+        let moved = |(row, col): (u32, u32)| -> Option<(u32, u32)> {
+            Some(match edit.axis {
+                Axis::Row => (edit.point(row)?, col),
+                Axis::Col => (row, edit.point(col)?),
+            })
+        };
+        let in_band = |(row, col): (u32, u32)| match edit.axis {
+            Axis::Row => edit.covers((col, col)),
+            Axis::Col => edit.covers((row, row)),
+        };
+        self.notes = std::mem::take(&mut self.notes)
+            .into_iter()
+            .filter_map(|(at, note)| {
+                if in_band(at) {
+                    moved(at).map(|at| (at, note))
+                } else {
+                    Some((at, note))
+                }
+            })
+            .collect();
+        self.threaded = std::mem::take(&mut self.threaded)
+            .into_iter()
+            .filter_map(|at| if in_band(at) { moved(at) } else { Some(at) })
+            .collect();
+        self.links.retain_mut(|link| {
+            let a = link.area;
+            match edit_rect((a.top, a.left, a.bottom, a.right), edit) {
+                Some((top, left, bottom, right)) => {
+                    link.area = Rect {
+                        top,
+                        left,
+                        bottom,
+                        right,
+                    };
+                    true
+                }
+                None => false,
+            }
         });
         // Validation follows its cells too.
         self.validations.retain_mut(|validation| {

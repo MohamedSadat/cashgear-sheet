@@ -1278,6 +1278,24 @@ pub fn build_tile(
     for (row, col, mark) in cf_marks {
         writer.mark(row, col, mark);
     }
+    // Notes' red corners, and threaded comments' purple ones.
+    let notes = info
+        .notes
+        .range((top, left)..=(bottom, right))
+        .map(|(&at, _)| (at, MARK_NOTE));
+    let threaded = info.threaded.iter().map(|&at| (at, MARK_THREAD));
+    for ((row, col), kind) in notes.chain(threaded) {
+        if row >= top && row <= bottom && col >= left && col <= right {
+            writer.mark(
+                row - top,
+                col - left,
+                MarkRecord {
+                    kind,
+                    ..MarkRecord::default()
+                },
+            );
+        }
+    }
     for &(row, col) in input.invalid.iter().flatten() {
         if row >= top && row <= bottom && col >= left && col <= right {
             writer.mark(

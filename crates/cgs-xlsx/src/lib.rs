@@ -12,6 +12,7 @@ pub mod cf;
 pub mod dv;
 pub mod dxf;
 pub mod filter;
+pub mod notes;
 pub mod package;
 pub mod patch_parts;
 pub mod patch_sheet;
@@ -283,6 +284,7 @@ impl Loader {
                         if let Some(rel) = done.drawing_rel.as_deref() {
                             self.read_drawings(book, sheet, rel);
                         }
+                        self.read_notes(book, sheet);
                     }
                     if !keep_going() {
                         return Ok(false);
@@ -316,6 +318,23 @@ impl Loader {
             }
         }
         self.paused.pop()
+    }
+
+    /// A sheet's notes, threaded comments' cells and hyperlinks.
+    fn read_notes(&self, book: &mut Book, sheet: u32) {
+        let info = &mut book.sheets[sheet as usize];
+        let Some(part) = info.part.clone() else {
+            return;
+        };
+        let (notes, threaded) = notes::read_sheet_notes(&self.package, &part);
+        info.notes = notes;
+        info.threaded = threaded;
+        let links = info
+            .captured
+            .iter()
+            .find(|(name, _)| name == "hyperlinks")
+            .map(|(_, xml)| notes::read_links(xml, &self.package, &part));
+        info.links = links.unwrap_or_default();
     }
 
     fn read_drawings(&self, book: &mut Book, sheet: u32, rel: &str) {
