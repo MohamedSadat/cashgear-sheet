@@ -528,13 +528,15 @@ fn axis_ids(seed: u32) -> (u32, u32, u32, u32) {
 /// The axes a set of groups needs, keeping ids the chart already has.
 fn axes_for(groups: &mut [ChartGroup], old: &[ChartAxis], seed: u32) -> Vec<ChartAxis> {
     let (a, b, c, d) = axis_ids(seed);
+    // The chart's first pair of axes keep their ids; a scatter chart's x axis is a value axis.
     let old_cat = old
         .iter()
         .find(|axis| matches!(axis.kind, AxisKind::Category | AxisKind::Date))
+        .or_else(|| old.first())
         .map(|axis| axis.id);
     let old_val = old
         .iter()
-        .find(|axis| axis.kind == AxisKind::Value)
+        .find(|axis| axis.kind == AxisKind::Value && Some(axis.id) != old_cat)
         .map(|axis| axis.id);
     let cat = old_cat.unwrap_or(a);
     let val = old_val.unwrap_or(b);
@@ -2338,6 +2340,28 @@ impl Session {
                 let fresh = self.series_for(*data_sheet, *area, scatter, None)?;
                 replace_series(&mut chart, fresh);
             }
+            ChartEdit::Series { list } => {
+                // References typed without a sheet are the chart's own sheet's, as in Excel; a
+                // chart part must name the sheet.
+                let home = self.book.sheets[sheet as usize].name.clone();
+                let qualify = |text: &str| {
+                    let text = text.trim().trim_start_matches('=');
+                    if text.starts_with('"') {
+                        text.to_string()
+                    } else {
+                        cgs_refs::qualify_refs(text, &home).into_owned()
+                    }
+                };
+                let list = list
+                    .iter()
+                    .map(|spec| SeriesSpec {
+                        name: spec.name.as_deref().map(qualify),
+                        categories: spec.categories.as_deref().map(qualify),
+                        values: qualify(&spec.values),
+                    })
+                    .collect();
+                apply_edit(&mut chart, &ChartEdit::Series { list }, &self.book, seed)?
+            }
             other => apply_edit(&mut chart, other, &self.book, seed)?,
         }
         let part = ChartPart {
@@ -2497,6 +2521,48 @@ mod tests {
         };
         assert_eq!(back.groups, combo.groups);
         assert_eq!(back.axes, combo.axes);
+    }
+
+    #[test]
+    fn axis_ids_stay_apart_through_every_type() {
+        let area = Area {
+            top: 1,
+            left: 1,
+            bottom: 4,
+            right: 3,
+        };
+        let plan = Plan {
+            by_columns: true,
+            header_row: true,
+            header_col: true,
+        };
+        let mut chart = new_chart(
+            ChartType::ColumnClustered,
+            series_from("Sheet1", area, plan, false),
+            1,
+        );
+        let book = cgs_model::Book::default();
+        for chart_type in [
+            ChartType::Pie,
+            ChartType::ScatterLines,
+            ChartType::BarStacked,
+            ChartType::Scatter,
+            ChartType::ComboColumnLineSecondary,
+            ChartType::Doughnut,
+            ChartType::AreaPercent,
+        ] {
+            apply_edit(&mut chart, &ChartEdit::Type { chart: chart_type }, &book, 1).unwrap();
+            let mut ids: Vec<u32> = chart.axes.iter().map(|axis| axis.id).collect();
+            let count = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), count, "{chart_type:?}: {:?}", chart.axes);
+            for group in &chart.groups {
+                for id in &group.axes {
+                    assert!(chart.axis(*id).is_some(), "{chart_type:?}: group axis {id}");
+                }
+            }
+        }
     }
 
     #[test]
