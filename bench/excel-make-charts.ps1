@@ -66,10 +66,12 @@ try {
     $index++
   }
   # A chart sheet, after the data sheet.
-  $chartSheet = $book.Charts.Add([Type]::Missing, $sheet)
+  $chartSheet = $book.Charts.Add()
   $chartSheet.ChartType = 51
   $chartSheet.SetSourceData($sheet.Range('A1:D7'))
   $chartSheet.Name = 'Sales chart'
+  # Charts.Add puts it first; the data sheet goes back in front of it.
+  $sheet.Move($chartSheet)
   $sheet.Activate()
   $book.SaveAs($Out, 51)
   [System.IO.Directory]::CreateDirectory($Pictures) | Out-Null
