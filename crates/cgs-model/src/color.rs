@@ -102,7 +102,7 @@ impl ColorSpace {
     }
 }
 
-fn to_hls(rgb: Rgb) -> (f64, f64, f64) {
+pub fn to_hls(rgb: Rgb) -> (f64, f64, f64) {
     let r = f64::from((rgb >> 16) & 0xFF) / 255.0;
     let g = f64::from((rgb >> 8) & 0xFF) / 255.0;
     let b = f64::from(rgb & 0xFF) / 255.0;

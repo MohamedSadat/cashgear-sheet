@@ -462,6 +462,32 @@ impl Engine {
         self.0.drawings_json(sheet)
     }
 
+    /// What a chart drawing shows, as JSON: see `ChartView` in `packages/engine-client`.
+    /// Colours are `0xRRGGBB`.
+    pub fn chart_json(
+        &self,
+        sheet: u32,
+        drawing: u32,
+        dark: bool,
+        background: u32,
+        text: u32,
+    ) -> String {
+        self.0.chart_json(
+            sheet,
+            drawing,
+            Screen {
+                dark,
+                background,
+                text,
+            },
+        )
+    }
+
+    /// A part's bytes, such as a picture's.
+    pub fn media(&self, part: &str) -> Vec<u8> {
+        self.0.media(part)
+    }
+
     /// The encoded `ViewBlock` tile whose top-left cell is (`first_row`, `first_col`),
     /// counted from 0. Colours are `0xRRGGBB`.
     pub fn view_block(

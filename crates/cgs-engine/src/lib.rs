@@ -6,6 +6,8 @@ mod ask;
 pub mod cell_styles;
 pub mod cf;
 pub mod cf_edit;
+pub mod chart_edit;
+pub mod charts;
 pub mod clip;
 pub mod command;
 pub mod duplicates;
@@ -536,12 +538,110 @@ impl Engine {
             out.push_str("\",\"name\":");
             json::push_string(&mut out, &drawing.name);
             out.push_str(&format!(
-                ",\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                ",\"index\":{index},\"x\":{},\"y\":{},\"width\":{},\"height\":{}",
                 drawing.x, drawing.y, drawing.width, drawing.height
             ));
+            let model = self
+                .book()
+                .and_then(|book| book.sheets.get(sheet as usize))
+                .and_then(|info| info.drawings.get(index));
+            if let Some(model) = model {
+                if let Some(chart) = model.chart {
+                    out.push_str(&format!(",\"chart\":{chart}"));
+                }
+                if let Some(image) = &model.image {
+                    out.push_str(",\"image\":");
+                    json::push_string(&mut out, image);
+                }
+                if !model.description.is_empty() {
+                    out.push_str(",\"description\":");
+                    json::push_string(&mut out, &model.description);
+                }
+            }
+            out.push('}');
         }
         out.push(']');
         out
+    }
+
+    /// What a sheet's drawing shows, if it is a chart: its series' values read from the cells
+    /// now, and its colours for this screen. JSON, or `null`.
+    pub fn chart_json(&self, sheet: u32, drawing: u32, screen: Screen) -> String {
+        let options = Options {
+            locale: &self.locale,
+            date1904: self.session.as_ref().is_some_and(|s| s.book.date1904),
+        };
+        let Some(session) = self.session.as_ref() else {
+            return "null".to_string();
+        };
+        let book = &session.book;
+        let Some(info) = book.sheets.get(sheet as usize) else {
+            return "null".to_string();
+        };
+        let Some(found) = info.drawings.get(drawing as usize) else {
+            return "null".to_string();
+        };
+        let Some(part) = found
+            .chart
+            .and_then(|chart| book.charts.get(chart as usize))
+        else {
+            return "null".to_string();
+        };
+        let (_, _, width, height) = drawing_box(info, found.anchor);
+        let view = match &part.body {
+            cgs_model::ChartBody::Classic(chart) => charts::Builder {
+                reader: charts::Reader {
+                    book,
+                    calc: &session.calc,
+                    options: &options,
+                },
+                painter: charts::Painter {
+                    theme: &book.styles.colors.theme,
+                    screen: Some(screen),
+                },
+                width: width as f64,
+                height: height as f64,
+            }
+            .build(chart),
+            other => charts::placeholder_view(other),
+        };
+        serde_json::to_string(&view).unwrap_or_else(|_| "null".to_string())
+    }
+
+    /// Takes a picture's bytes for `Command::InsertPicture`, and names the part they will be
+    /// saved as. `None` if they aren't a picture the app can show.
+    pub fn add_media(&mut self, bytes: Vec<u8>) -> Option<String> {
+        let extension = media_extension(&bytes)?;
+        let session = self.session.as_mut()?;
+        let taken: std::collections::HashSet<String> = session
+            .package
+            .parts()
+            .iter()
+            .map(|part| part.name.to_ascii_lowercase())
+            .chain(
+                session
+                    .edits
+                    .media
+                    .keys()
+                    .map(|name| name.to_ascii_lowercase()),
+            )
+            .collect();
+        let name = (1..)
+            .map(|n| format!("xl/media/image{n}.{extension}"))
+            .find(|name| !taken.contains(name))?;
+        session.edits.media.insert(name.clone(), bytes);
+        Some(name)
+    }
+
+    /// A part's bytes, such as a picture's: from the file, or added since.
+    pub fn media(&self, part: &str) -> Vec<u8> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+        if let Some(bytes) = session.edits.media.get(part) {
+            return bytes.clone();
+        }
+        session.package.read(part).unwrap_or_default()
     }
 
     /// What a cell shows.
@@ -586,6 +686,22 @@ impl Engine {
             invalid: None,
         };
         tile::edit_text(&input, &mut session.cache, sheet, row, col)
+    }
+}
+
+/// A picture's file extension, from its first bytes.
+fn media_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.starts_with(b"BM") {
+        Some("bmp")
+    } else {
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]).to_ascii_lowercase();
+        (head.contains("<svg")).then_some("svg")
     }
 }
 

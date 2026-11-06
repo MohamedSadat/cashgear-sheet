@@ -595,6 +595,11 @@ impl Engine {
                 })?;
         }
         session.absorb_results();
+        let options = cgs_numfmt::Options {
+            locale: &self.locale,
+            date1904: session.book.date1904,
+        };
+        session.refresh_chart_caches(&options);
         let edits = session.edits_for_save();
         let plan = save_workbook(&session.package, &session.book, &edits, out)?;
         let report = plan.report.clone();
@@ -641,6 +646,24 @@ impl Engine {
         }
         for table in &mut session.book.tables {
             table.edited = false;
+        }
+        // Charts and drawings are now where the saved file has them.
+        for (index, part) in &plan.drawings.chart_parts {
+            if let Some(chart) = session.book.charts.get_mut(*index as usize) {
+                chart.part = Some(part.clone());
+            }
+        }
+        for chart in &mut session.book.charts {
+            chart.changed = false;
+        }
+        for (sheet, part) in &plan.drawings.drawing_parts {
+            session.book.sheets[*sheet as usize].drawing_part = Some(part.clone());
+        }
+        for (sheet, sources) in &plan.drawings.sources {
+            let info = &mut session.book.sheets[*sheet as usize];
+            for (drawing, source) in info.drawings.iter_mut().zip(sources) {
+                drawing.source = Some(*source);
+            }
         }
         if !plan.file_sheets.is_empty() {
             session.book.file_sheets = plan.file_sheets.clone();

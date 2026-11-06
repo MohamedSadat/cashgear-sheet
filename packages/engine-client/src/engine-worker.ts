@@ -10,6 +10,7 @@ import type {
   CalcStatus,
   CellArea,
   Command,
+  ChartView,
   DrawingBox,
   EngineApi,
   EngineTilePort,
@@ -802,6 +803,20 @@ const api: EngineApi = {
   },
   async drawings(sheet) {
     return JSON.parse((await ensureEngine()).drawings_json(sheet)) as DrawingBox[];
+  },
+  async chart(sheet, drawing, screen) {
+    const json = (await ensureEngine()).chart_json(
+      sheet,
+      drawing,
+      screen.dark,
+      screen.background,
+      screen.text,
+    );
+    return JSON.parse(json) as ChartView | null;
+  },
+  async media(part) {
+    const bytes = (await ensureEngine()).media(part);
+    return transfer(bytes, [bytes.buffer as ArrayBuffer]);
   },
   async cellText(sheet, row, col) {
     const wasm = await ensureEngine();

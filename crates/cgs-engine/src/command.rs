@@ -446,6 +446,43 @@ pub enum Command {
         #[serde(default)]
         table: Option<String>,
     },
+    /// A drawing moved or sized, in CSS pixels at 100%.
+    SetDrawingBox {
+        sheet: u32,
+        index: u32,
+        x: i64,
+        y: i64,
+        width: i64,
+        height: i64,
+    },
+    DeleteDrawings {
+        sheet: u32,
+        indexes: Vec<u32>,
+    },
+    /// A chart of these cells, at a place in CSS pixels at 100%.
+    InsertChart {
+        sheet: u32,
+        area: Area,
+        chart: crate::chart_edit::ChartType,
+        x: i64,
+        y: i64,
+    },
+    /// A picture whose bytes `add_media` took, at its place and size in CSS pixels at 100%.
+    InsertPicture {
+        sheet: u32,
+        part: String,
+        x: i64,
+        y: i64,
+        width: i64,
+        height: i64,
+        #[serde(default)]
+        name: String,
+    },
+    EditChart {
+        sheet: u32,
+        index: u32,
+        edit: crate::chart_edit::ChartEdit,
+    },
     Undo,
     Redo,
 }
@@ -489,6 +526,18 @@ pub(crate) enum Op {
     SheetLinks {
         sheet: u32,
         links: Vec<cgs_model::Hyperlink>,
+    },
+    /// A sheet's drawings: their places, and which are there.
+    SheetDrawings {
+        sheet: u32,
+        drawings: Vec<cgs_model::Drawing>,
+    },
+    /// Every chart part's model, as a change to rows, columns or sheets left them.
+    BookCharts(Vec<cgs_model::ChartPart>),
+    /// A chart part's model. At the end of the list, `Some` adds one and `None` takes it off.
+    ChartPart {
+        index: u32,
+        part: Option<Box<cgs_model::ChartPart>>,
     },
     /// A sheet's data validation.
     SheetDv {
@@ -598,6 +647,20 @@ impl Op {
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
             Self::Styles(before) => before.bytes(),
             Self::Lines { rows, cols, .. } => 64 + rows.len() * 24 + cols.len() * 32,
+            Self::SheetDrawings { drawings, .. } => 64 + drawings.len() * 160,
+            Self::BookCharts(charts) => 64 + charts.len() * 2048,
+            Self::ChartPart { part, .. } => {
+                512 + part.as_ref().map_or(0, |part| match &part.body {
+                    cgs_model::ChartBody::Classic(chart) => chart
+                        .series()
+                        .map(|s| {
+                            64 + s.values.as_ref().map_or(0, |v| v.cache.len() * 24)
+                                + s.categories.as_ref().map_or(0, |v| v.cache.len() * 24)
+                        })
+                        .sum::<usize>(),
+                    _ => 0,
+                })
+            }
             Self::Rich { cells, .. } => 32 + cells.len() * 16,
             Self::ShiftLog { .. } => 64,
             Self::NamesTo { names, before } => (names.len() + before.len()) * 128,
@@ -1065,9 +1128,72 @@ impl Session {
         *patches = moved;
     }
 
+    /// The charts as they are, before an op that may rewrite what their series read.
+    fn charts_snapshot(&self, op: &Op) -> Option<Vec<cgs_model::ChartPart>> {
+        fn rewrites(op: &Op) -> bool {
+            match op {
+                Op::Axis { .. }
+                | Op::RemoveSheet { .. }
+                | Op::Rename { .. }
+                | Op::ShiftLog { .. } => true,
+                Op::Many(list) => list.iter().any(rewrites),
+                _ => false,
+            }
+        }
+        (!self.book.charts.is_empty() && rewrites(op)).then(|| self.book.charts.clone())
+    }
+
+    fn with_charts(&self, inverse: Op, before: Option<Vec<cgs_model::ChartPart>>) -> Op {
+        match before {
+            Some(before) if before != self.book.charts => {
+                Op::Many(vec![inverse, Op::BookCharts(before)])
+            }
+            _ => inverse,
+        }
+    }
+
+    /// A chart part changed: the sheets showing it redraw, and save writes it.
+    pub(crate) fn mark_chart(&mut self, index: u32) {
+        if let Some(part) = self.book.charts.get_mut(index as usize) {
+            part.changed = true;
+        }
+        for (sheet, info) in self.book.sheets.iter().enumerate() {
+            if info.drawings.iter().any(|d| d.chart == Some(index)) {
+                self.dirty.layouts.insert(sheet as u32);
+                self.edits.drawing_sheets.insert(sheet as u32);
+            }
+        }
+    }
+
+    /// Rewrites what every chart's series read, and marks the charts it changed.
+    pub(crate) fn rewrite_chart_formulas(&mut self, change: &dyn Fn(&str) -> Option<String>) {
+        let mut changed = Vec::new();
+        for (index, part) in self.book.charts.iter_mut().enumerate() {
+            let cgs_model::ChartBody::Classic(chart) = &mut part.body else {
+                continue;
+            };
+            if crate::chart_edit::rewrite_formulas(chart, change) {
+                changed.push(index as u32);
+            }
+        }
+        for index in changed {
+            self.mark_chart(index);
+        }
+    }
+
     /// Everything but the engine, which `calc.structural` has already moved.
     fn move_model(&mut self, sheet: u32, edit: &AxisEdit) {
         let name = self.book.sheets[sheet as usize].name.clone();
+        {
+            let name = name.clone();
+            let edit = *edit;
+            self.rewrite_chart_formulas(&move |text| match cgs_refs::edit_formula(
+                text, "", &name, &edit,
+            ) {
+                std::borrow::Cow::Owned(next) => Some(next),
+                std::borrow::Cow::Borrowed(_) => None,
+            });
+        }
         self.book.sheets[sheet as usize].apply_axis(edit);
         self.move_patches(sheet, edit);
         for defined in &mut self.book.names {
@@ -1372,6 +1498,58 @@ impl Session {
                     notes: before,
                 })
             }
+            Op::SheetDrawings { sheet, drawings } => {
+                let info = &mut self.book.sheets[sheet as usize];
+                let before = std::mem::replace(&mut info.drawings, drawings);
+                self.edits.drawing_sheets.insert(sheet);
+                self.dirty.layouts.insert(sheet);
+                Ok(Op::SheetDrawings {
+                    sheet,
+                    drawings: before,
+                })
+            }
+            Op::BookCharts(charts) => {
+                let before = std::mem::replace(&mut self.book.charts, charts);
+                let changed: Vec<u32> = before
+                    .iter()
+                    .zip(&self.book.charts)
+                    .enumerate()
+                    .filter(|(_, (old, new))| old != new)
+                    .map(|(index, _)| index as u32)
+                    .collect();
+                for index in changed {
+                    self.mark_chart(index);
+                }
+                Ok(Op::BookCharts(before))
+            }
+            Op::ChartPart { index, part } => {
+                let at = index as usize;
+                let before = match part {
+                    Some(part) if at == self.book.charts.len() => {
+                        self.book.charts.push(*part);
+                        None
+                    }
+                    Some(part) => {
+                        let slot = self
+                            .book
+                            .charts
+                            .get_mut(at)
+                            .ok_or_else(|| "That chart can't be found.".to_string())?;
+                        Some(Box::new(std::mem::replace(slot, *part)))
+                    }
+                    None => {
+                        if at + 1 != self.book.charts.len() {
+                            return Err("That chart can't be taken off.".to_string());
+                        }
+                        self.book.charts.pop().map(Box::new)
+                    }
+                };
+                self.mark_chart(index);
+                Ok(Op::ChartPart {
+                    index,
+                    part: before,
+                })
+            }
             Op::SheetLinks { sheet, links } => {
                 let info = &mut self.book.sheets[sheet as usize];
                 let before = std::mem::replace(&mut info.links, links);
@@ -1459,6 +1637,15 @@ impl Session {
                     .unwrap_or(0) as u32;
                 let undo = self.calc.delete_sheet(sheet).map_err(|error| error.0)?;
                 let name = self.book.sheets[sheet as usize].name.clone();
+                {
+                    let name = name.clone();
+                    self.rewrite_chart_formulas(
+                        &move |text| match cgs_refs::delete_sheet_in_formula(text, &name) {
+                            std::borrow::Cow::Owned(next) => Some(next),
+                            std::borrow::Cow::Borrowed(_) => None,
+                        },
+                    );
+                }
                 let mut order = self.book.tab_order();
                 order.retain(|&other| other != sheet);
                 self.book.order = order;
@@ -1543,6 +1730,15 @@ impl Session {
                     {
                         defined.formula = next;
                     }
+                }
+                {
+                    let (old, name) = (old.clone(), name.clone());
+                    self.rewrite_chart_formulas(&move |text| match cgs_refs::rename_in_formula(
+                        text, &old, &name,
+                    ) {
+                        std::borrow::Cow::Owned(next) => Some(next),
+                        std::borrow::Cow::Borrowed(_) => None,
+                    });
                 }
                 self.edits.ops.push(BookOp::Rename {
                     sheet,
@@ -1819,7 +2015,9 @@ impl Session {
         let before = self.history.state;
         let log_before = self.edits.ops.len();
         self.touched_rows.clear();
+        let charts_before = self.charts_snapshot(&op);
         let inverse = self.apply_op(op)?;
+        let inverse = self.with_charts(inverse, charts_before);
         self.sync_book_tables();
         // Rows that hold something new may want another height, which goes back with the step.
         let inverse = match self.refit_touched() {
@@ -1845,7 +2043,9 @@ impl Session {
         self.absorb_results();
         let before = self.history.state;
         let log_before = self.edits.ops.len();
+        let charts_before = self.charts_snapshot(&op);
         let inverse = self.apply_op(op)?;
+        let inverse = self.with_charts(inverse, charts_before);
         self.sync_book_tables();
         self.touched_rows = rows;
         let inverse = match self.refit_touched() {
@@ -3000,6 +3200,32 @@ impl Session {
                 bottom,
                 right,
             } => self.names_from_selection(sheet, area, (top, left, bottom, right)),
+            Command::SetDrawingBox {
+                sheet,
+                index,
+                x,
+                y,
+                width,
+                height,
+            } => self.set_drawing_box(sheet, index, (x, y, width, height)),
+            Command::DeleteDrawings { sheet, indexes } => self.delete_drawings(sheet, &indexes),
+            Command::InsertChart {
+                sheet,
+                area,
+                chart,
+                x,
+                y,
+            } => self.insert_chart(sheet, area, chart, (x, y)),
+            Command::InsertPicture {
+                sheet,
+                part,
+                x,
+                y,
+                width,
+                height,
+                name,
+            } => self.insert_picture(sheet, &part, (x, y, width, height), &name),
+            Command::EditChart { sheet, index, edit } => self.edit_chart(sheet, index, &edit),
             Command::SetNote {
                 sheet,
                 row,

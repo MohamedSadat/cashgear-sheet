@@ -721,11 +721,125 @@ export type LoadEvent =
 export interface DrawingBox {
   kind: 'chart' | 'picture' | 'shape' | 'group' | 'other';
   name: string;
+  /** Its place in the sheet's drawings, which commands name it by. */
+  index: number;
   /** In CSS pixels at 100%. */
   x: number;
   y: number;
   width: number;
   height: number;
+  /** The chart part it shows, if it is a chart. */
+  chart?: number;
+  /** The picture's part, such as `xl/media/image1.png`. */
+  image?: string;
+  description?: string;
+}
+
+/** The screen a chart is drawn for: dark mode swaps its text and background colours. */
+export interface ChartScreen {
+  dark: boolean;
+  /** `0xRRGGBB`. */
+  background: number;
+  text: number;
+}
+
+export interface ChartLineView {
+  color: string;
+  /** CSS pixels. */
+  width: number;
+  dash: 'solid' | 'dot' | 'dash' | 'dashDot';
+}
+
+export interface ChartTextView {
+  text: string;
+  /** CSS pixels. */
+  size: number;
+  color: string;
+  bold: boolean;
+  italic: boolean;
+  /** Degrees. */
+  rotation: number;
+}
+
+export interface ChartAxisView {
+  id: number;
+  visible: boolean;
+  position: 'left' | 'right' | 'top' | 'bottom';
+  reversed: boolean;
+  title: ChartTextView | null;
+  labels: ChartTextView | null;
+  line: ChartLineView | null;
+  gridlines: ChartLineView | null;
+  minorGridlines: ChartLineView | null;
+  majorTick: 'none' | 'in' | 'out' | 'cross';
+  minorTick: 'none' | 'in' | 'out' | 'cross';
+  min: number | null;
+  max: number | null;
+  unit: number | null;
+  ticks: { value: number; text: string }[];
+  between: boolean;
+  labelSkip: number;
+  crossesAt: number | null;
+  crosses: 'autoZero' | 'min' | 'max' | 'at';
+}
+
+export interface ChartSeriesView {
+  name: string;
+  group: number;
+  values: (number | null)[];
+  x: (number | null)[] | null;
+  fill: string | null;
+  line: ChartLineView | null;
+  marker: { symbol: string; size: number; fill: string | null; line: ChartLineView | null } | null;
+  smooth: boolean;
+  pointFills: (string | null)[];
+  pointLines: (ChartLineView | null)[];
+  labels: { texts: string[]; position: string; look: ChartTextView } | null;
+  index: number;
+  explosion: number;
+}
+
+export interface ChartGroupView {
+  kind: 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter';
+  fileKind: string;
+  horizontal: boolean;
+  stacking: 'none' | 'stacked' | 'percent';
+  gapWidth: number;
+  overlap: number;
+  hole: number;
+  firstSlice: number;
+  varyColors: boolean;
+  axis: 0 | 1;
+}
+
+/** What a chart draws, worked out by the engine: see `crates/cgs-engine/src/charts.rs`. */
+export interface ChartView {
+  kind: 'classic' | 'extended' | 'unreadable';
+  extended: string | null;
+  editable: boolean;
+  font: string;
+  background: string | null;
+  border: ChartLineView | null;
+  rounded: boolean;
+  plotBackground: string | null;
+  plotBorder: ChartLineView | null;
+  plotLayout: [number, number, number, number] | null;
+  title: ChartTextView | null;
+  legend: {
+    position: 'right' | 'left' | 'top' | 'bottom' | 'topRight';
+    overlay: boolean;
+    look: ChartTextView;
+    hidden: number[];
+    fill: string | null;
+    border: ChartLineView | null;
+  } | null;
+  categories: string[];
+  categoryAxis: ChartAxisView | null;
+  valueAxes: ChartAxisView[];
+  groups: ChartGroupView[];
+  series: ChartSeriesView[];
+  approximate: boolean;
+  blanks: 'gap' | 'zero' | 'span';
 }
 
 /** Regional conventions, from `Intl`. See `crates/cgs-numfmt/src/locale.rs`. */
@@ -841,6 +955,10 @@ export interface EngineApi {
   /** The numbers `decodeLayout` reads. */
   layout(sheet: number): Promise<Uint32Array>;
   drawings(sheet: number): Promise<DrawingBox[]>;
+  /** What a chart drawing shows, for this screen. Colours are `0xRRGGBB`. */
+  chart(sheet: number, drawing: number, screen: ChartScreen): Promise<ChartView | null>;
+  /** A part's bytes, such as a picture's. */
+  media(part: string): Promise<Uint8Array>;
   /** `row` and `col` are 1-based. */
   cellText(sheet: number, row: number, col: number): Promise<CellText>;
   /** The size of WASM's memory, for the speed checks. */
