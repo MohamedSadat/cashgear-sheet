@@ -128,6 +128,8 @@ pub struct WorkbookEdits {
     pub cf_sheets: std::collections::BTreeSet<u32>,
     /// Sheets whose data validation changed.
     pub dv_sheets: std::collections::BTreeSet<u32>,
+    /// The workbook's defined names changed, apart from what moving rows does to them.
+    pub names_changed: bool,
 }
 
 impl WorkbookEdits {
@@ -144,6 +146,7 @@ impl WorkbookEdits {
             && self.filters.is_empty()
             && self.cf_sheets.is_empty()
             && self.dv_sheets.is_empty()
+            && !self.names_changed
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.
@@ -856,6 +859,116 @@ fn rewrite_workbook_part(
     let mut out = Vec::with_capacity(xml.len());
     write_tree(&nodes, &mut out);
     Ok((out, gone_ids))
+}
+
+/// `definedNames` brought into step with the model's names: changed ones get their new text, gone
+/// ones go and new ones are added, and the rest stay as they were with whatever else they say.
+fn patch_defined_names(xml: &[u8], book: &Book, reordered: bool) -> io::Result<Vec<u8>> {
+    let order = if reordered {
+        book.tab_order()
+    } else {
+        book.sheets_in_file()
+    };
+    let local_id = |sheet: u32| {
+        order
+            .iter()
+            .position(|&other| other == sheet)
+            .map(|at| at as u32)
+    };
+    let mut nodes = parse_tree(xml)?;
+    for node in &mut nodes {
+        let Node::Element(root) = node else { continue };
+        if root.local() != b"workbook" {
+            continue;
+        }
+        let prefix = crate::scan::prefix(&root.tag);
+        let mut handled: Vec<usize> = Vec::new();
+        let at = root
+            .children
+            .iter()
+            .position(|child| matches!(child, Node::Element(e) if e.local() == b"definedNames"));
+        let mut list = match at {
+            Some(at) => match root.children.remove(at) {
+                Node::Element(element) => element,
+                Node::Text(_) => unreachable!(),
+            },
+            None => Element {
+                tag: format!("<{prefix}definedNames>").into_bytes(),
+                empty: false,
+                children: Vec::new(),
+                end: format!("</{prefix}definedNames>").into_bytes(),
+            },
+        };
+        list.children.retain_mut(|child| {
+            let Node::Element(element) = child else {
+                return true;
+            };
+            let name = element.attr_text(b"name").unwrap_or_default();
+            let sheet = element
+                .attr(b"localSheetId")
+                .and_then(crate::xml::parse_u32)
+                .and_then(|id| order.get(id as usize).copied());
+            let found = book
+                .names
+                .iter()
+                .position(|n| n.name.eq_ignore_ascii_case(&name) && n.local_sheet == sheet);
+            match found {
+                Some(index) => {
+                    handled.push(index);
+                    let wanted = &book.names[index].formula;
+                    if element.text() != *wanted {
+                        element.set_text(wanted);
+                    }
+                    if book.names[index].name != name {
+                        let escaped = escape_attr(&book.names[index].name);
+                        element.set_attr("name", Some(&escaped));
+                    }
+                    true
+                }
+                None => false,
+            }
+        });
+        for (index, name) in book.names.iter().enumerate() {
+            if handled.contains(&index) {
+                continue;
+            }
+            let local = name
+                .local_sheet
+                .and_then(local_id)
+                .map(|id| format!(" localSheetId=\"{id}\""))
+                .unwrap_or_default();
+            let mut text = Vec::new();
+            crate::scan::escape_text(&name.formula, &mut text);
+            let tag = format!(
+                "<{prefix}definedName name=\"{}\"{local}>",
+                escape_attr(&name.name)
+            );
+            list.children.push(Node::Element(Element {
+                tag: tag.into_bytes(),
+                empty: false,
+                children: vec![Node::Text(text)],
+                end: format!("</{prefix}definedName>").into_bytes(),
+            }));
+        }
+        if list.elements().count() == 0 {
+            continue;
+        }
+        if list.empty {
+            list.empty = false;
+        }
+        // After sheets and the external references, before calcPr.
+        let place = root
+            .children
+            .iter()
+            .position(|child| {
+                matches!(child, Node::Element(e) if matches!(e.local(), b"calcPr" | b"oleSize" | b"customWorkbookViews" | b"pivotCaches" | b"smartTagPr" | b"smartTagTypes" | b"webPublishing" | b"fileRecoveryPr" | b"webPublishObjects" | b"extLst"))
+            })
+            .unwrap_or(root.children.len());
+        root.children.insert(place, Node::Element(list));
+    }
+    let mut out = Vec::with_capacity(xml.len() + 64);
+    write_tree(&nodes, &mut out);
+    Ok(out)
 }
 
 const RELATIONSHIP_NAMESPACE: &str =
@@ -1606,6 +1719,16 @@ pub fn save_workbook(
             };
             main_xml = Some(set_full_calc_on_load(&xml));
             report.recalculates_on_open = true;
+        }
+        if edits.names_changed {
+            let xml = match main_xml.take() {
+                Some(xml) => xml,
+                None => package
+                    .read(&main)
+                    .ok_or_else(|| SaveError::Damaged("no workbook part".to_string()))?,
+            };
+            main_xml =
+                Some(patch_defined_names(&xml, book, !edits.ops.is_empty()).map_err(part_error)?);
         }
         if let Some(xml) = main_xml {
             changes.replace.insert(normalize(&main), pack_part(&xml)?);

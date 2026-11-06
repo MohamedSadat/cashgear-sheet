@@ -339,6 +339,29 @@ pub enum Command {
         #[serde(default)]
         by_columns: bool,
     },
+    /// Defines a name, or changes `old`.
+    SetName {
+        #[serde(default)]
+        old: Option<crate::names::NameRef>,
+        name: String,
+        formula: String,
+        #[serde(default)]
+        sheet: Option<u32>,
+    },
+    DeleteName(crate::names::NameRef),
+    /// Names from a selection's labels.
+    NamesFromSelection {
+        sheet: u32,
+        area: Area,
+        #[serde(default)]
+        top: bool,
+        #[serde(default)]
+        left: bool,
+        #[serde(default)]
+        bottom: bool,
+        #[serde(default)]
+        right: bool,
+    },
     /// A validation rule on these cells, or none to take rules off them.
     SetValidation {
         sheet: u32,
@@ -424,6 +447,8 @@ pub(crate) enum Op {
     Tables(Vec<TableInfo>),
     /// The model's tables, which hold how each looks.
     BookTables(Vec<Table>),
+    /// The workbook's defined names, as the model holds them.
+    BookNames(Vec<DefinedName>),
     /// A sheet's data validation.
     SheetDv {
         sheet: u32,
@@ -523,6 +548,7 @@ impl Op {
             Self::SheetFilter { .. } => 512,
             Self::SheetCf { blocks, .. } => 256 + blocks.len() * 512,
             Self::SheetDv { list, .. } => 256 + list.len() * 512,
+            Self::BookNames(names) => names.len() * 128,
             Self::Merges { merges, .. } => merges.len() * 16,
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
             Self::Styles(before) => before.bytes(),
@@ -1290,6 +1316,7 @@ impl Session {
                 }
                 Ok(Op::Tables(before))
             }
+            Op::BookNames(names) => self.apply_names(names),
             Op::SheetDv { sheet, list } => {
                 let info = &mut self.book.sheets[sheet as usize];
                 let before = std::mem::replace(&mut info.validations, list);
@@ -2887,6 +2914,21 @@ impl Session {
             }
             Command::ConvertToRange { table } => self.convert_to_range_command(&table),
             Command::AddCf { sheet, areas, rule } => self.add_cf_command(sheet, &areas, &rule),
+            Command::SetName {
+                old,
+                name,
+                formula,
+                sheet,
+            } => self.set_name_command(old, &name, &formula, sheet),
+            Command::DeleteName(which) => self.delete_name_command(&which),
+            Command::NamesFromSelection {
+                sheet,
+                area,
+                top,
+                left,
+                bottom,
+                right,
+            } => self.names_from_selection(sheet, area, (top, left, bottom, right)),
             Command::SetValidation { sheet, areas, rule } => {
                 self.set_validation_command(sheet, &areas, rule.as_ref())
             }

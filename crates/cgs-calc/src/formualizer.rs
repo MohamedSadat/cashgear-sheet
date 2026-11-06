@@ -1724,6 +1724,54 @@ impl CalcEngine for FormualizerEngine {
         Ok(())
     }
 
+    fn replace_names(&mut self, names: &[NameInfo]) -> Result<()> {
+        self.adopt()?;
+        self.slice.reset();
+        self.idle = false;
+        let gone: Vec<NameInfo> = self
+            .names
+            .iter()
+            .filter(|old| {
+                !names.iter().any(|name| {
+                    name.name.eq_ignore_ascii_case(&old.name) && name.local_sheet == old.local_sheet
+                })
+            })
+            .cloned()
+            .collect();
+        for name in gone {
+            let scope = match name.local_sheet {
+                Some(index) => {
+                    let sheet = self.sheet_name(index)?.to_string();
+                    match self.engine().sheet_id(&sheet) {
+                        Some(id) => NameScope::Sheet(id),
+                        None => continue,
+                    }
+                }
+                None => NameScope::Workbook,
+            };
+            let _ = self.engine().delete_name(&name.name, scope);
+        }
+        // New ones join the list first, so that setting them finds an entry to keep in step.
+        for name in names {
+            if !self.names.iter().any(|old| {
+                old.name.eq_ignore_ascii_case(&name.name) && old.local_sheet == name.local_sheet
+            }) {
+                self.names.push(name.clone());
+            }
+        }
+        for name in names {
+            self.set_name(name)?;
+        }
+        self.names = names.to_vec();
+        self.many_names = names
+            .iter()
+            .filter(|name| name.formula.contains(':'))
+            .map(|name| name.name.to_ascii_lowercase())
+            .collect();
+        self.moving_names = MovingNames::new(names);
+        Ok(())
+    }
+
     fn tables(&self) -> &[crate::TableInfo] {
         &self.tables
     }

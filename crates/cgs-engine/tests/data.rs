@@ -497,3 +497,45 @@ fn validation_refuses_what_it_should_and_lists_what_it_offers() {
         .apply_json(r#"{"kind":"input","sheet":0,"row":5,"col":1,"text":"0"}"#)
         .is_err());
 }
+
+#[test]
+fn names_are_defined_renamed_into_formulas_deleted_and_saved() {
+    let mut engine = opened();
+    typed(&mut engine, 1, 1, "4");
+    run(
+        &mut engine,
+        r#"{"kind":"setName","name":"Rate","formula":"=Sheet1!$A$1"}"#,
+    );
+    typed(&mut engine, 2, 1, "=Rate*2");
+    assert_eq!(text(&engine, 2, 1), "8");
+    run(
+        &mut engine,
+        r#"{"kind":"setName","old":{"name":"Rate"},"name":"Tax","formula":"=Sheet1!$A$1"}"#,
+    );
+    assert_eq!(
+        engine.formula_text(0, 2, 1).unwrap().replace(' ', ""),
+        "Tax*2"
+    );
+    assert!(engine
+        .apply_json(r#"{"kind":"setName","name":"A1","formula":"=1"}"#)
+        .is_err());
+    typed(&mut engine, 4, 1, "Qty");
+    typed(&mut engine, 5, 1, "3");
+    typed(&mut engine, 6, 1, "5");
+    run(
+        &mut engine,
+        r#"{"kind":"namesFromSelection","sheet":0,"area":{"top":4,"left":1,"bottom":6,"right":1},"top":true}"#,
+    );
+    let names: serde_json::Value =
+        serde_json::from_str(&engine.query(r#"{"kind":"names"}"#).unwrap()).unwrap();
+    assert_eq!(names[1]["name"], "Qty");
+    assert_eq!(names[1]["formula"], "=Sheet1!$A$5:$A$6");
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let book = part(&bytes, "xl/workbook.xml");
+    assert!(book.contains(r#"<definedName name="Tax">Sheet1!$A$1</definedName><definedName name="Qty">Sheet1!$A$5:$A$6</definedName>"#), "{book}");
+    run(&mut engine, r#"{"kind":"deleteName","name":"Qty"}"#);
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    assert!(!part(&bytes, "xl/workbook.xml").contains("Qty"));
+}

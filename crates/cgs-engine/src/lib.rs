@@ -15,6 +15,7 @@ pub mod find;
 pub mod format;
 pub mod input;
 mod json;
+pub mod names;
 pub mod query;
 mod shift;
 pub mod sort;

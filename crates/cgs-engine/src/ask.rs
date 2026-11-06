@@ -32,6 +32,8 @@ enum Question {
     ValidationAt { sheet: u32, row: u32, col: u32 },
     /// Cells their rules don't allow, at most 255.
     InvalidCells { sheet: u32 },
+    /// The names the Name Manager lists.
+    Names,
 }
 
 fn area_json(top: u32, left: u32, bottom: u32, right: u32) -> Value {
@@ -153,6 +155,7 @@ impl Session {
             }
             Question::CfRules { sheet } => self.cf_rules(sheet),
             Question::ValidationAt { sheet, row, col } => self.validation_json(sheet, row, col),
+            Question::Names => self.names_json(),
             Question::InvalidCells { sheet } => Value::Array(
                 self.invalid_cells(sheet)
                     .into_iter()

@@ -368,6 +368,8 @@ pub trait CalcEngine {
     fn names(&self) -> Vec<NameInfo>;
     /// Puts defined names back as they were.
     fn restore_names(&mut self, names: &[NameInfo]) -> Result<()>;
+    /// Puts this list of names in place of all of them: new ones are defined, and gone ones go.
+    fn replace_names(&mut self, names: &[NameInfo]) -> Result<()>;
     /// Puts tables back as they were, making any that have gone.
     fn restore_tables(&mut self, tables: &[TableInfo]) -> Result<()>;
     /// Tables as they stand now.
