@@ -360,3 +360,24 @@ The visual review against Excel: three generated workbooks drawn by Excel 2016 a
 | Hyperlink text | A new link writes its address into an empty cell, or the text you typed, in the Hyperlink style's look (theme hyperlink colour, single underline). A bare `name@host` becomes `mailto:` and a bare host `http://` |
 | Cell Styles | Excel 2016's 47 built-in styles, read over COM into `crates/cgs-model/data/cell-styles.json`. Applying one gives the cells the parts the style includes (number, font, fill, borders on every cell), and Normal clears formatting. The cells stay linked to Normal, so Excel shows the same look with Normal highlighted in its gallery. The file's own named styles aren't listed yet |
 | Remove Duplicates | Compares what the chosen columns show, ignoring case, as Microsoft documents it. Kept rows move up inside the selection only, and the rows freed at the bottom are cleared, contents and formats |
+
+## 2026-11-06: Phase 7
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Chart types editable in v1 | Column, Bar, Line, Pie/Doughnut, Area and Scatter, each with its clustered, stacked and 100% variants, plus Combo (column and line, with an optional secondary axis). Radar, bubble, stock, surface and 3-D charts from files are drawn as their nearest 2-D chart or a placeholder, and kept intact |
+| Renderer | Extend `CgChart` in `CashGear.React.UI` (Track U): scatter, axis-scale overrides and Excel-style layout hints (plot area, gap width, overlap, label positions). Excel's axis-scaling and colour rules are worked out in Rust, and `CgChart` only draws |
+| Newer `cx:` charts | Labelled placeholders with their type, moved and resized with the sheet, saved byte for byte |
+| Chart editing UI | Excel's Chart Design tab (Add Chart Element, Quick Layout, Change Colors, styles gallery, Switch Row/Column, Select Data, Change Chart Type, Move Chart) and Format tab (fill and outline of the selected element), with a small format pane for axis bounds, units and number format, series fill and line, and gap width. A click selects a chart element |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| "Match Excel on review" | Excel 2016 draws each chart with `Chart.Export` over COM, and the app draws the same chart in Chrome, light and dark. A side-by-side page lists the differences for your sign-off, as in Phase 5. The five types: clustered column, bar, line with markers, pie and scatter, with combination charts reviewed beside them |
+| Pictures | PNG, JPEG, GIF, BMP and SVG are drawn, can be moved, resized and deleted, and Insert › Pictures adds one from a file. EMF and WMF stay placeholders |
+| Chart sheets | Drawn to fit their tab, and edited like an embedded chart |
+| Dark mode | A chart's background, text, axes and gridlines swap `dk1`/`lt1` and automatic colours for display only, as cells do. Series colours stay as stored. The saved file never changes |
+| Private workbooks | None of your 5 files holds a chart or a picture, so charts are checked on generated fixtures and the public test files (748 charts in 628 files, and 12 `cx:` charts) |
