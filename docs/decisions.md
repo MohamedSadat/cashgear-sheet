@@ -401,3 +401,23 @@ The visual review against Excel: three generated workbooks drawn by Excel 2016 a
 **Signed off by you, 2026-11-06**
 
 The chart review against Excel: nine charts and a chart sheet drawn by Excel 2016 and by the app, in light and dark, with the differences listed on the review page. You signed it off as it stands, so `phase-7` is tagged. The listed differences stay as known gaps.
+
+## 2026-11-06: Phase 8
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Aggregates in v1 | All 11 of Excel's summary functions (Sum, Count, Average, Max, Min, Product, Count Numbers, StdDev, StdDevp, Var, Varp), plus Show Values As: % of grand total, % of column, % of row, % of parent, difference from, % difference from, running total and index |
+| Create in v1, or refresh only first | Create in v1: Insert › PivotTable from a range or table, onto a new or existing sheet, with Excel's PivotTable Analyze and Design tabs (refresh, layout forms, subtotals, grand totals, blank rows, the pivot style gallery) |
+| Field list | A new Excel-style `CgPivotFieldList` pane in `CashGear.React.UI` (Track U): a field checklist with search, Filters, Columns, Rows and Values areas with drag and drop, and value field settings. Exported from the library, then the pin is bumped here |
+| What refresh can't compute | Calculated fields and items, OLAP, external and consolidation sources keep their stored output, show read-only and save byte for byte. When their source changes, the save sets `refreshOnLoad` so Excel redoes them. Date and number grouping are computed |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| "Refresh matches Excel" | Two checks. The public files: a refresh from each pivot's own cache records must give the output cells Excel saved; these files never open in Excel. New files Excel 2016 builds over COM, covering every aggregate, the three layouts, filters, sorts and grouping: the source changes, both sides refresh, and the cells are compared |
+| When pivots refresh | As in Excel: Refresh, Refresh All (Ctrl+Alt+F5), and on open when the file asks for it. Editing the source doesn't refresh |
+| Looks | Excel's built-in pivot styles, drawn from Excel's definitions as table styles were in Phase 6 |
+| Private workbooks | None of your 5 files holds a pivot, so pivots are checked on generated fixtures and the public test files (294 pivots in 157 files) |
