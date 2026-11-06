@@ -134,7 +134,18 @@ pub struct SheetLoader {
     text_bytes: u64,
     hidden: Vec<u32>,
     pub drawing_rel: Option<String>,
+    /// An element being kept whole: its name, how deep inside it this is, and its XML so far.
+    capture: Option<(Vec<u8>, u32, quick_xml::Writer<Vec<u8>>)>,
 }
+
+/// Worksheet elements kept whole as they're read, for what reads them as a whole.
+const CAPTURED: &[&[u8]] = &[
+    b"autoFilter",
+    b"conditionalFormatting",
+    b"dataValidations",
+    b"hyperlinks",
+    b"extLst",
+];
 
 fn entry<'a>(
     row: u32,
@@ -249,6 +260,7 @@ impl SheetLoader {
             text_bytes: 0,
             hidden: Vec::new(),
             drawing_rel: None,
+            capture: None,
         }
     }
 
@@ -319,6 +331,42 @@ impl SheetLoader {
             // A worksheet damaged part way keeps what it read, as Excel's repair does.
             let event = self.reader.read_event_into(buf).unwrap_or(Event::Eof);
             let mut restart = None;
+            // Inside an element kept whole, everything goes into its XML.
+            if let Some((_, depth, writer)) = self.capture.as_mut() {
+                let _ = writer.write_event(event.borrow());
+                match &event {
+                    Event::Start(_) => *depth += 1,
+                    Event::End(_) => {
+                        *depth -= 1;
+                        if *depth == 0 {
+                            let (name, _, writer) = self.capture.take().expect("capturing");
+                            keep_captured(name, writer.into_inner(), info);
+                        }
+                    }
+                    Event::Eof => {
+                        self.capture = None;
+                        self.finish(context, info)?;
+                        return Ok(Step::Done);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if !self.in_sheet_data {
+                if let Event::Start(element) | Event::Empty(element) = &event {
+                    let local = element.local_name().as_ref().to_vec();
+                    if CAPTURED.contains(&local.as_slice()) {
+                        let mut writer = quick_xml::Writer::new(Vec::new());
+                        let _ = writer.write_event(event.borrow());
+                        if matches!(event, Event::Start(_)) {
+                            self.capture = Some((local, 1, writer));
+                        } else {
+                            keep_captured(local, writer.into_inner(), info);
+                        }
+                        continue;
+                    }
+                }
+            }
             match event {
                 Event::Eof => {
                     self.finish(context, info)?;
@@ -817,6 +865,19 @@ impl SheetLoader {
             self.begin_cells(context, info)?;
         }
         self.flush(context)?;
+        // Conditional formats, now that all of their elements are in.
+        let classic: Vec<&[u8]> = info
+            .captured
+            .iter()
+            .filter(|(name, _)| name == "conditionalFormatting")
+            .map(|(_, xml)| xml.as_slice())
+            .collect();
+        let ext = info
+            .captured
+            .iter()
+            .find(|(name, _)| name == "extLst")
+            .map(|(_, xml)| xml.as_slice());
+        info.cf = crate::cf::read_cf(&classic, ext);
         for (row, col, index) in std::mem::take(&mut self.orphans) {
             if let Some((master, master_row, master_col)) = self.shared.get(&index) {
                 self.scratch.clear();
@@ -927,6 +988,18 @@ fn read_head_element(name: &[u8], element: &BytesStart<'_>, info: &mut SheetInfo
         }
         _ => {}
     }
+}
+
+/// What a kept element is for: an autofilter is read now, and the rest wait for their readers.
+fn keep_captured(name: Vec<u8>, xml: Vec<u8>, info: &mut SheetInfo) {
+    if name == b"autoFilter" {
+        if info.filter.is_none() {
+            info.filter = crate::filter::read_auto_filter(&xml);
+        }
+        return;
+    }
+    info.captured
+        .push((String::from_utf8_lossy(&name).into_owned(), xml));
 }
 
 fn read_tail_element(

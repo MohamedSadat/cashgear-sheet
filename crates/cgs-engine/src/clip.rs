@@ -831,6 +831,7 @@ impl Session {
                     book: &self.book,
                     calc: &self.calc,
                     options: &options,
+                    today: self.today,
                 };
                 cells.push(crate::tile::display_text(
                     &input,

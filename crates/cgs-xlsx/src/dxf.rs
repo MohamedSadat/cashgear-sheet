@@ -233,6 +233,102 @@ pub fn read_dxf_tables(xml: &[u8]) -> DxfTables {
     out
 }
 
+fn color_xml(name: &str, color: &Color) -> String {
+    match color.kind {
+        cgs_model::ColorKind::Rgb(rgb) => format!("<{name} rgb=\"FF{rgb:06X}\"/>"),
+        cgs_model::ColorKind::Theme(theme) if color.tint != 0.0 => {
+            let tint = (f64::from(color.tint) * 32767.0).trunc() / 32767.0;
+            format!("<{name} theme=\"{theme}\" tint=\"{tint}\"/>")
+        }
+        cgs_model::ColorKind::Theme(theme) => format!("<{name} theme=\"{theme}\"/>"),
+        cgs_model::ColorKind::Indexed(index) => format!("<{name} indexed=\"{index}\"/>"),
+        cgs_model::ColorKind::Auto => format!("<{name} auto=\"1\"/>"),
+    }
+}
+
+/// A differential format's insides, as Excel writes them: font, number format, fill, border.
+pub fn dxf_xml(dxf: &Dxf) -> String {
+    let mut out = String::new();
+    let font = &dxf.font;
+    let mut inner = String::new();
+    let flag = |name: &str, value: Option<bool>, inner: &mut String| {
+        if let Some(on) = value {
+            inner.push_str(&if on {
+                format!("<{name}/>")
+            } else {
+                format!("<{name} val=\"0\"/>")
+            });
+        }
+    };
+    flag("b", font.bold, &mut inner);
+    flag("i", font.italic, &mut inner);
+    flag("strike", font.strike, &mut inner);
+    if let Some(underline) = font.underline {
+        let value = match underline {
+            Underline::None => "none",
+            Underline::Single => "single",
+            Underline::Double => "double",
+            Underline::SingleAccounting => "singleAccounting",
+            Underline::DoubleAccounting => "doubleAccounting",
+        };
+        inner.push_str(&format!("<u val=\"{value}\"/>"));
+    }
+    if let Some(color) = &font.color {
+        inner.push_str(&color_xml("color", color));
+    }
+    if !inner.is_empty() {
+        out.push_str(&format!("<font>{inner}</font>"));
+    }
+    if let Some(code) = &dxf.num_fmt {
+        let id = 164;
+        out.push_str(&format!(
+            "<numFmt numFmtId=\"{id}\" formatCode=\"{}\"/>",
+            crate::scan::escape_attr(code)
+        ));
+    }
+    if let Some(fill) = &dxf.fill {
+        match fill.pattern {
+            Pattern::Solid => out.push_str(&format!(
+                "<fill><patternFill>{}</patternFill></fill>",
+                color_xml("bgColor", &fill.color)
+            )),
+            Pattern::None => out.push_str("<fill><patternFill patternType=\"none\"/></fill>"),
+            Pattern::Hatch(hatch) => out.push_str(&format!(
+                "<fill><patternFill patternType=\"{}\">{}{}</patternFill></fill>",
+                hatch.name(),
+                color_xml("fgColor", &fill.pattern_color),
+                color_xml("bgColor", &fill.color)
+            )),
+        }
+    }
+    let border = &dxf.border;
+    let sides = [
+        ("left", border.left),
+        ("right", border.right),
+        ("top", border.top),
+        ("bottom", border.bottom),
+        ("vertical", border.vertical),
+        ("horizontal", border.horizontal),
+    ];
+    if sides.iter().any(|(_, line)| line.is_some()) {
+        out.push_str("<border>");
+        for (name, line) in sides {
+            let Some(line) = line else { continue };
+            let style = crate::styles::line_style_name(line.style);
+            if style == "none" {
+                out.push_str(&format!("<{name}/>"));
+            } else {
+                out.push_str(&format!(
+                    "<{name} style=\"{style}\">{}</{name}>",
+                    color_xml("color", &line.color)
+                ));
+            }
+        }
+        out.push_str("</border>");
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +363,20 @@ mod tests {
         assert_eq!(mine.elements[1].kind, TableElement::FirstRowStripe);
         assert_eq!(mine.elements[1].size, 2);
         assert_eq!(mine.elements[1].dxf.font.bold, Some(true));
+    }
+
+    #[test]
+    fn a_written_format_reads_back_the_same() {
+        let xml = r#"<styleSheet><dxfs count="2"><dxf><font><b/><color rgb="FF9C0006"/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf><dxf><border><top style="thin"><color theme="4"/></top><horizontal style="thin"><color auto="1"/></horizontal></border></dxf></dxfs></styleSheet>"#;
+        let read = read_dxf_tables(xml.as_bytes());
+        let written: Vec<String> = read.dxfs.iter().map(dxf_xml).collect();
+        let again = read_dxf_tables(
+            format!(
+                "<styleSheet><dxfs><dxf>{}</dxf><dxf>{}</dxf></dxfs></styleSheet>",
+                written[0], written[1]
+            )
+            .as_bytes(),
+        );
+        assert_eq!(again.dxfs, read.dxfs);
     }
 }

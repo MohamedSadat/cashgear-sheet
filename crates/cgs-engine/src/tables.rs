@@ -229,46 +229,97 @@ impl Session {
 
     /// The block of filled cells around one, as Ctrl+T picks it from a single cell.
     pub(crate) fn current_region(&self, sheet: u32, row: u32, col: u32) -> Area {
-        let mut area = Area::cell(row, col);
-        let filled = |r: u32, c: u32| {
-            r >= 1
-                && c >= 1
-                && r <= cgs_model::MAX_ROWS
-                && c <= cgs_model::MAX_COLS
-                && !matches!(
-                    self.calc.cell_input(CellRef {
-                        sheet,
-                        row: r,
-                        col: c
-                    }),
-                    CellInput::Clear
-                )
+        let info = &self.book.sheets[sheet as usize];
+        let (last_row, last_col) = (info.used.0.max(1), info.used.1.max(1));
+        // Which rows (or columns, with `by_cols`) of a strip hold anything, read as one block.
+        let marks = |top: u32, left: u32, bottom: u32, right: u32, by_cols: bool| -> Vec<bool> {
+            struct Marks {
+                by_cols: bool,
+                first: u32,
+                seen: Vec<bool>,
+            }
+            impl cgs_calc::CellSink for Marks {
+                fn cell(&mut self, row: u32, col: u32, value: &CalcValue) {
+                    let at = if self.by_cols { col } else { row } - self.first;
+                    if *value != CalcValue::Empty {
+                        if let Some(slot) = self.seen.get_mut(at as usize) {
+                            *slot = true;
+                        }
+                    }
+                }
+            }
+            let (first, last) = if by_cols {
+                (left, right)
+            } else {
+                (top, bottom)
+            };
+            let mut sink = Marks {
+                by_cols,
+                first,
+                seen: vec![false; (last - first + 1) as usize],
+            };
+            self.calc.read_block(
+                cgs_calc::SheetRect {
+                    sheet,
+                    rect: cgs_calc::Rect {
+                        top,
+                        left,
+                        bottom,
+                        right,
+                    },
+                },
+                &mut sink,
+            );
+            sink.seen
         };
-        loop {
-            let mut grew = false;
-            let (top, left, bottom, right) = (area.top, area.left, area.bottom, area.right);
-            let edge_row = |r: u32| (left.saturating_sub(1)..=right + 1).any(|c| filled(r, c));
-            let edge_col = |c: u32| (top.saturating_sub(1)..=bottom + 1).any(|r| filled(r, c));
-            if top > 1 && edge_row(top - 1) {
-                area.top -= 1;
-                grew = true;
+        let mut area = Area::cell(row, col);
+        // Each side grows as far as the cells beside it go, until no side can.
+        for _ in 0..64 {
+            let before = area;
+            let (left, right) = (
+                area.left.saturating_sub(1).max(1),
+                (area.right + 1).min(last_col),
+            );
+            // Down, in growing steps.
+            let mut step = 64;
+            while area.bottom < last_row {
+                let to = (area.bottom + step).min(last_row);
+                let seen = marks(area.bottom + 1, left, to, right, false);
+                let run = seen.iter().take_while(|&&hit| hit).count() as u32;
+                area.bottom += run;
+                if (run as usize) < seen.len() {
+                    break;
+                }
+                step *= 2;
             }
-            if bottom < cgs_model::MAX_ROWS && edge_row(bottom + 1) {
-                area.bottom += 1;
-                grew = true;
+            let mut step = 64;
+            while area.top > 1 {
+                let from = area.top.saturating_sub(step).max(1);
+                let seen = marks(from, left, area.top - 1, right, false);
+                let run = seen.iter().rev().take_while(|&&hit| hit).count() as u32;
+                area.top -= run;
+                if (run as usize) < seen.len() {
+                    break;
+                }
+                step *= 2;
             }
-            if left > 1 && edge_col(left - 1) {
-                area.left -= 1;
-                grew = true;
-            }
-            if right < cgs_model::MAX_COLS && edge_col(right + 1) {
+            let (top, bottom) = (
+                area.top.saturating_sub(1).max(1),
+                (area.bottom + 1).min(last_row),
+            );
+            while area.right < last_col
+                && marks(top, area.right + 1, bottom, area.right + 1, true)[0]
+            {
                 area.right += 1;
-                grew = true;
             }
-            if !grew || area.rows() * area.cols() > 4_000_000 {
-                return area;
+            while area.left > 1 && marks(top, area.left - 1, bottom, area.left - 1, true)[0] {
+                area.left -= 1;
+            }
+            if area == before {
+                break;
             }
         }
+        area
     }
 
     /// Headings for a new table's first row: text, all different, as Excel makes them.

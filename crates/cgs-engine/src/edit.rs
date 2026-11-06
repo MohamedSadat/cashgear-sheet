@@ -407,6 +407,30 @@ impl Session {
                 active_cell: info.view.active_cell,
             });
         }
+        for &sheet in &edits.filters.clone() {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            let xml = info
+                .filter
+                .as_ref()
+                .map(cgs_xlsx::filter::auto_filter_xml)
+                .unwrap_or_default();
+            edits.elements.entry(sheet).or_default().push(NewElement {
+                name: "autoFilter".to_string(),
+                xml,
+                replace: true,
+            });
+            // Whether rows are filtered, from the sheet's filter or any table's on it.
+            let filtering = info
+                .filter
+                .as_ref()
+                .is_some_and(|filter| filter.is_filtering())
+                || self.book.tables.iter().any(|table| {
+                    table.sheet == sheet && table.filter.as_ref().is_some_and(|f| f.is_filtering())
+                });
+            edits.extras.entry(sheet).or_default().filter_mode = Some(filtering);
+        }
         for &sheet in &edits.merges.clone() {
             let Some(info) = self.book.sheets.get(sheet as usize) else {
                 continue;

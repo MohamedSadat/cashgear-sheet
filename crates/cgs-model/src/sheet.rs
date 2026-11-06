@@ -540,6 +540,8 @@ pub struct SheetShape {
     used: (u32, u32),
     styles: Vec<ColumnRuns>,
     rich: HashMap<(u32, u32), u32>,
+    filter: Option<crate::AutoFilter>,
+    cf: Vec<crate::CfBlock>,
 }
 
 impl SheetShape {
@@ -583,6 +585,13 @@ pub struct SheetInfo {
     /// Deleted. It keeps its index, so that sheets can be told apart by index and an undo can bring
     /// it back.
     pub deleted: bool,
+    /// The sheet's own autofilter, apart from any table's.
+    pub filter: Option<crate::AutoFilter>,
+    /// Conditional formats, classic and extended.
+    pub cf: Vec<crate::CfBlock>,
+    /// The XML of `conditionalFormatting`, `dataValidations`, `hyperlinks` and `extLst`, as the file
+    /// has them, for what reads them once the sheet is in.
+    pub captured: Vec<(String, Vec<u8>)>,
     styles: Vec<ColumnRuns>,
 }
 
@@ -609,6 +618,9 @@ impl SheetInfo {
         self.loaded = false;
         self.unfitted_rows.clear();
         self.rich.clear();
+        self.filter = None;
+        self.cf.clear();
+        self.captured.clear();
     }
 
     /// Records a cell's style while loading. Rows mostly arrive in order.
@@ -756,6 +768,8 @@ impl SheetInfo {
             used: self.used,
             styles: self.styles.clone(),
             rich: self.rich.clone(),
+            filter: self.filter.clone(),
+            cf: self.cf.clone(),
         }
     }
 
@@ -768,6 +782,8 @@ impl SheetInfo {
         self.used = shape.used;
         self.styles = shape.styles;
         self.rich = shape.rich;
+        self.filter = shape.filter;
+        self.cf = shape.cf;
         self.index_merges();
     }
 
@@ -835,6 +851,68 @@ impl SheetInfo {
             })
             .collect();
         self.index_merges();
+        if let Some(filter) = self.filter.as_mut() {
+            let r = filter.range;
+            match edit_rect((r.top, r.left, r.bottom, r.right), edit) {
+                Some((top, left, bottom, right)) => {
+                    // Columns going or coming inside the filter move what it says about them.
+                    if edit.axis == Axis::Col && edit.covers((r.top, r.bottom)) {
+                        filter.columns.retain_mut(|column| {
+                            match edit.point(r.left + column.col_id) {
+                                Some(col) if col >= left => {
+                                    column.col_id = col - left;
+                                    true
+                                }
+                                _ => false,
+                            }
+                        });
+                    }
+                    filter.range = Rect {
+                        top,
+                        left,
+                        bottom,
+                        right,
+                    };
+                }
+                None => self.filter = None,
+            }
+        }
+        // Conditional formats follow their cells, and what's written anew isn't the file's any more.
+        let name = self.name.clone();
+        self.cf.retain_mut(|block| {
+            let areas: Vec<Rect> = block
+                .areas
+                .iter()
+                .filter_map(|area| {
+                    let (top, left, bottom, right) =
+                        edit_rect((area.top, area.left, area.bottom, area.right), edit)?;
+                    Some(Rect {
+                        top,
+                        left,
+                        bottom,
+                        right,
+                    })
+                })
+                .collect();
+            if areas.is_empty() {
+                return false;
+            }
+            if areas != block.areas {
+                block.raw = None;
+                block.areas = areas;
+            }
+            for rule in &mut block.rules {
+                for formula in &mut rule.formulas {
+                    if let std::borrow::Cow::Owned(next) =
+                        cgs_refs::edit_formula(formula, &name, &name, edit)
+                    {
+                        *formula = next;
+                        block.raw = None;
+                    }
+                }
+            }
+            true
+        });
         for drawing in &mut self.drawings {
             drawing.anchor.apply(edit);
         }

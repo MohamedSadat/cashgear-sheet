@@ -307,6 +307,10 @@ pub enum CalcProgress {
 
 pub trait CellSink {
     fn cell(&mut self, row: u32, col: u32, value: &CalcValue);
+    /// As `cell`, for a sink that keeps what it's given and can take it rather than copy it.
+    fn take(&mut self, row: u32, col: u32, value: CalcValue) {
+        self.cell(row, col, &value);
+    }
 }
 
 pub trait CalcEngine {

@@ -197,6 +197,12 @@ impl Engine {
         ))
     }
 
+    /// Answers a question about the workbook, given and answered as JSON. See `Question` in
+    /// `crates/cgs-engine/src/ask.rs`.
+    pub fn query(&self, question: &str) -> Result<String, JsError> {
+        self.0.query(question).map_err(|error| JsError::new(&error))
+    }
+
     /// Rows waiting to be measured, as JSON. See `RowFit` in `packages/engine-client`.
     pub fn take_row_fits(&mut self) -> String {
         self.0.take_row_fits()

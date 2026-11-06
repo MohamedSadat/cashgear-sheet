@@ -2,12 +2,35 @@
 // it and describes the layout, so keep the two in step.
 
 const MAGIC = 0x42564743; // "CGVB", little-endian
-const VERSION = 3;
-const HEADER_BYTES = 36;
+const VERSION = 4;
+const HEADER_BYTES = 40;
 const CELL_BYTES = 24;
 const STYLE_BYTES = 40;
 const EXTRA_BYTES = 40;
 const RUN_BYTES = 20;
+const MARK_BYTES = 24;
+
+/** What's drawn on a cell apart from its text: see `MARK_*` in view_block.rs. */
+export const MARK_BAR = 1;
+export const MARK_ICON = 2;
+export const MARK_NOTE = 3;
+export const MARK_INVALID = 4;
+export const MARK_THREAD = 5;
+export const BAR_GRADIENT = 1;
+export const BAR_BORDER = 2;
+export const BAR_AXIS = 4;
+
+export interface TileMark {
+  /** The cell's index: row times columns plus column. */
+  cell: number;
+  kind: number;
+  flags: number;
+  icon: number;
+  start: number;
+  end: number;
+  color: number;
+  second: number;
+}
 
 export const TILE_NOT_READY = 1;
 
@@ -122,6 +145,7 @@ export interface ViewBlock {
   extras: TileExtra[];
   /** Rich text's runs, by where the text starts in the heap. */
   runs: Map<number, TileRun[]>;
+  marks: TileMark[];
   heap: Uint8Array;
 }
 
@@ -143,6 +167,7 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
   const extraCount = view.getUint32(24, true);
   const heapBytes = view.getUint32(28, true);
   const runCount = view.getUint32(32, true);
+  const markCount = view.getUint32(36, true);
   const rowPx = new Uint16Array(buffer, HEADER_BYTES, rows);
   const colPx = new Uint16Array(buffer, HEADER_BYTES + rows * 2, cols);
   let at = HEADER_BYTES + (rows + cols) * 2;
@@ -151,7 +176,8 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
   const stylesAt = at + rows * cols * CELL_BYTES;
   const extrasAt = stylesAt + styleCount * STYLE_BYTES;
   const runsAt = extrasAt + extraCount * EXTRA_BYTES;
-  const heapAt = runsAt + runCount * RUN_BYTES;
+  const marksAt = runsAt + runCount * RUN_BYTES;
+  const heapAt = marksAt + markCount * MARK_BYTES;
   if (heapAt + heapBytes !== buffer.byteLength) throw new Error('A ViewBlock tile is cut short.');
   const heap = new Uint8Array(buffer, heapAt, heapBytes);
 
@@ -195,6 +221,20 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
       fillAt: view.getUint32(start + 36, true),
     });
   }
+  const marks: TileMark[] = [];
+  for (let index = 0; index < markCount; index++) {
+    const start = marksAt + index * MARK_BYTES;
+    marks.push({
+      cell: view.getUint32(start, true),
+      kind: view.getUint8(start + 4),
+      flags: view.getUint8(start + 5),
+      icon: view.getUint16(start + 6, true),
+      start: view.getFloat32(start + 8, true),
+      end: view.getFloat32(start + 12, true),
+      color: view.getUint32(start + 16, true),
+      second: view.getUint32(start + 20, true),
+    });
+  }
   const runs = new Map<number, TileRun[]>();
   for (let index = 0; index < runCount; index++) {
     const start = runsAt + index * RUN_BYTES;
@@ -220,6 +260,7 @@ export function decodeViewBlock(buffer: ArrayBuffer): ViewBlock {
     styles,
     extras,
     runs,
+    marks,
     heap,
   };
 }

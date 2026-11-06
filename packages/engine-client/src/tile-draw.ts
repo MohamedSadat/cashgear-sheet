@@ -1,8 +1,17 @@
 // Draws a tile on any 2D context, so drawing can move threads if it needs to. It runs in
 // the tile worker today. Pure apart from the context: no DOM, no engine.
+import { drawIcon } from './icons';
 import { shortenGeneral, singleLine, wrapLines } from './text-fit';
 import type { TilePalette } from './types';
 import {
+  BAR_AXIS,
+  BAR_BORDER,
+  BAR_GRADIENT,
+  MARK_BAR,
+  MARK_ICON,
+  MARK_INVALID,
+  MARK_NOTE,
+  MARK_THREAD,
   ALIGN_CENTER,
   ALIGN_CENTER_CONTINUOUS,
   ALIGN_DISTRIBUTED,
@@ -76,9 +85,16 @@ const EMPTY_STYLE: TileStyle = {
 
 export type TileContext = Pick<
   OffscreenCanvasRenderingContext2D,
+  | 'arc'
   | 'beginPath'
   | 'clip'
+  | 'closePath'
+  | 'createLinearGradient'
   | 'createPattern'
+  | 'ellipse'
+  | 'fill'
+  | 'globalAlpha'
+  | 'strokeRect'
   | 'direction'
   | 'fillRect'
   | 'fillStyle'
@@ -270,6 +286,81 @@ class Painter {
           if (!(flags & CELL_NO_BOTTOM_GRID))
             context.fillRect(left, top + height - pixel, width, pixel);
         }
+      }
+    }
+  }
+
+  /** Data bars and icons under the text, and notes' corners and invalid cells' rings over it. */
+  drawMarks(over: boolean) {
+    const { context, block, xs, ys } = this;
+    const pixel = Math.max(1, Math.round(this.scale));
+    for (const mark of block.marks) {
+      const row = Math.floor(mark.cell / block.cols);
+      const col = mark.cell % block.cols;
+      const left = xs[col]!;
+      const top = ys[row]!;
+      const width = xs[col + 1]! - left;
+      const height = ys[row + 1]! - top;
+      if (!width || !height) continue;
+      if (!over && mark.kind === MARK_BAR) {
+        const inset = 2 * pixel;
+        const room = width - 2 * inset;
+        const from = left + inset + Math.round(mark.start * room);
+        const to = left + inset + Math.round(mark.end * room);
+        const barTop = top + inset;
+        const barHeight = Math.max(1, height - 2 * inset - pixel);
+        const color = cssColor(mark.color);
+        if (mark.flags & BAR_GRADIENT && to > from) {
+          const gradient = context.createLinearGradient(from, 0, to, 0);
+          gradient.addColorStop(0, color);
+          gradient.addColorStop(1, cssColor((mark.color & 0xffffff00) | 0x18));
+          context.fillStyle = gradient;
+        } else {
+          context.fillStyle = color;
+        }
+        context.fillRect(from, barTop, Math.max(0, to - from), barHeight);
+        if (mark.flags & BAR_BORDER && to > from) {
+          context.strokeStyle = cssColor(mark.second || mark.color);
+          context.lineWidth = pixel;
+          context.strokeRect(
+            from + pixel / 2,
+            barTop + pixel / 2,
+            to - from - pixel,
+            barHeight - pixel,
+          );
+        }
+        if (mark.flags & BAR_AXIS) {
+          const axis = left + inset + Math.round(mark.start * room);
+          context.fillStyle = cssColor(mark.second || 0x000000ff);
+          for (let y = top; y < top + height; y += 3 * pixel)
+            context.fillRect(axis, y, pixel, pixel);
+        }
+      } else if (!over && mark.kind === MARK_ICON) {
+        const size = Math.min(height - 2 * pixel, Math.round(16 * this.scale));
+        drawIcon(context, mark.icon, left + 2 * pixel, top + (height - size) / 2, size);
+      } else if (over && (mark.kind === MARK_NOTE || mark.kind === MARK_THREAD)) {
+        const size = 5 * pixel;
+        context.fillStyle = mark.kind === MARK_NOTE ? '#d00000' : '#7b45b8';
+        context.beginPath();
+        context.moveTo(left + width - size, top);
+        context.lineTo(left + width, top);
+        context.lineTo(left + width, top + size);
+        context.closePath();
+        context.fill();
+      } else if (over && mark.kind === MARK_INVALID) {
+        context.strokeStyle = '#e00000';
+        context.lineWidth = 1.5 * pixel;
+        context.beginPath();
+        context.ellipse(
+          left + width / 2,
+          top + height / 2,
+          width / 2,
+          height / 2 + pixel,
+          0,
+          0,
+          Math.PI * 2,
+        );
+        context.stroke();
       }
     }
   }
@@ -1013,9 +1104,11 @@ export function drawTile(
 ) {
   const painter = new Painter(context, block, palette, scale);
   painter.drawBackground();
+  painter.drawMarks(false);
   painter.drawCellsText();
   painter.drawExtras();
   painter.drawBorders();
+  painter.drawMarks(true);
 }
 
 export { ALIGN_CENTER };

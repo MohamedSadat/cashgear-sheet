@@ -3,8 +3,9 @@
 //! keep the two in step. A tile describes itself completely, colours resolved for one theme,
 //! so that drawing needs nothing else.
 //!
-//! Header (36 bytes): magic `CGVB`, u16 version, u16 rows, u16 columns, u16 flags, u32 first row,
-//! u32 first column, u32 style count, u32 extra count, u32 heap length, u32 run count.
+//! Header (40 bytes): magic `CGVB`, u16 version, u16 rows, u16 columns, u16 flags, u32 first row,
+//! u32 first column, u32 style count, u32 extra count, u32 heap length, u32 run count, u32 mark
+//! count.
 //!
 //! Then u16 row heights and u16 column widths, in CSS pixels at 100% with 0 for hidden, padded
 //! to 4 bytes.
@@ -29,15 +30,73 @@
 //! Then runs of 20 bytes, the looks of rich text: u32 the cell's or extra's text offset, u32 the
 //! run's byte offset from that, u32 its length in bytes, u32 text colour, u16 style, u16 padding.
 //!
+//! Then marks of 24 bytes, what's drawn on a cell apart from its text: u32 the cell's index (row
+//! times columns plus column), u8 kind (`MARK_*`), u8 flags (`BAR_*`), u16 an icon (its set's
+//! number in `ICON_SETS` times 8, plus its place), f32 start and f32 end (a bar's, as shares of the
+//! cell's width; an axis's place in `start` for `BAR_AXIS`), u32 colour, u32 second colour (a bar's
+//! border or axis).
+//!
 //! Then the heap of UTF-8 text.
 
 pub const MAGIC: [u8; 4] = *b"CGVB";
-pub const VERSION: u16 = 3;
-pub const HEADER_BYTES: usize = 36;
+pub const VERSION: u16 = 4;
+pub const HEADER_BYTES: usize = 40;
 pub const CELL_BYTES: usize = 24;
 pub const STYLE_BYTES: usize = 40;
 pub const EXTRA_BYTES: usize = 40;
 pub const RUN_BYTES: usize = 20;
+pub const MARK_BYTES: usize = 24;
+
+/// A conditional format's data bar.
+pub const MARK_BAR: u8 = 1;
+/// A conditional format's icon.
+pub const MARK_ICON: u8 = 2;
+/// A note, as a red triangle in the cell's top right corner.
+pub const MARK_NOTE: u8 = 3;
+/// A cell that breaks its validation, ringed by Circle Invalid Data.
+pub const MARK_INVALID: u8 = 4;
+/// A threaded comment, as a purple corner.
+pub const MARK_THREAD: u8 = 5;
+
+pub const BAR_GRADIENT: u8 = 1;
+pub const BAR_BORDER: u8 = 2;
+pub const BAR_AXIS: u8 = 4;
+
+/// Icon sets, by the number a mark carries. `packages/engine-client/src/tile-draw.ts` draws them.
+pub const ICON_SETS: [&str; 20] = [
+    "3Arrows",
+    "3ArrowsGray",
+    "3Flags",
+    "3TrafficLights1",
+    "3TrafficLights2",
+    "3Signs",
+    "3Symbols",
+    "3Symbols2",
+    "4Arrows",
+    "4ArrowsGray",
+    "4RedToBlack",
+    "4Rating",
+    "4TrafficLights",
+    "5Arrows",
+    "5ArrowsGray",
+    "5Rating",
+    "5Quarters",
+    "3Stars",
+    "3Triangles",
+    "5Boxes",
+];
+
+/// What's drawn on a cell apart from its text.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct MarkRecord {
+    pub kind: u8,
+    pub flags: u8,
+    pub icon: u16,
+    pub start: f32,
+    pub end: f32,
+    pub color: u32,
+    pub second: u32,
+}
 
 /// Alpha 0: the theme supplies this colour.
 pub const AUTOMATIC: u32 = 0;
@@ -131,6 +190,7 @@ pub struct TileWriter {
     styles: Vec<u8>,
     extras: Vec<u8>,
     runs: Vec<u8>,
+    marks: Vec<u8>,
     heap: Vec<u8>,
 }
 
@@ -146,6 +206,7 @@ impl TileWriter {
             styles: Vec::new(),
             extras: Vec::new(),
             runs: Vec::new(),
+            marks: Vec::new(),
             heap: Vec::new(),
         }
     }
@@ -231,6 +292,19 @@ impl TileWriter {
         offset
     }
 
+    /// Adds a mark on a cell, by its row and column in the tile from 0.
+    pub fn mark(&mut self, row: u32, col: u32, record: MarkRecord) {
+        let index = row * self.col_px.len() as u32 + col;
+        self.marks.extend_from_slice(&index.to_le_bytes());
+        self.marks.push(record.kind);
+        self.marks.push(record.flags);
+        self.marks.extend_from_slice(&record.icon.to_le_bytes());
+        self.marks.extend_from_slice(&record.start.to_le_bytes());
+        self.marks.extend_from_slice(&record.end.to_le_bytes());
+        self.marks.extend_from_slice(&record.color.to_le_bytes());
+        self.marks.extend_from_slice(&record.second.to_le_bytes());
+    }
+
     pub fn finish(self) -> ViewBlock {
         let rows = self.row_px.len() as u16;
         let cols = self.col_px.len() as u16;
@@ -244,6 +318,7 @@ impl TileWriter {
                 + self.styles.len()
                 + self.extras.len()
                 + self.runs.len()
+                + self.marks.len()
                 + self.heap.len(),
         );
         bytes.extend_from_slice(&MAGIC);
@@ -257,6 +332,7 @@ impl TileWriter {
         bytes.extend_from_slice(&((self.extras.len() / EXTRA_BYTES) as u32).to_le_bytes());
         bytes.extend_from_slice(&(self.heap.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&((self.runs.len() / RUN_BYTES) as u32).to_le_bytes());
+        bytes.extend_from_slice(&((self.marks.len() / MARK_BYTES) as u32).to_le_bytes());
         for px in self.row_px.iter().chain(&self.col_px) {
             bytes.extend_from_slice(&px.to_le_bytes());
         }
@@ -265,6 +341,7 @@ impl TileWriter {
         bytes.extend_from_slice(&self.styles);
         bytes.extend_from_slice(&self.extras);
         bytes.extend_from_slice(&self.runs);
+        bytes.extend_from_slice(&self.marks);
         bytes.extend_from_slice(&self.heap);
         ViewBlock { bytes }
     }

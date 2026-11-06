@@ -231,6 +231,8 @@ pub struct SheetExtras {
     pub view: Option<ViewPatch>,
     /// A new default row height, in pixels at 100%, as whole columns' fonts can set.
     pub default_row_px: Option<u32>,
+    /// Whether a filter hides rows, for `sheetPr`'s `filterMode`.
+    pub filter_mode: Option<bool>,
 }
 
 impl SheetExtras {
@@ -240,6 +242,7 @@ impl SheetExtras {
             && self.styled.is_none()
             && self.view.is_none()
             && self.default_row_px.is_none()
+            && self.filter_mode.is_none()
     }
 }
 
@@ -380,6 +383,8 @@ struct Patcher<'a> {
     /// New columns or views are still to go out, for a sheet that doesn't have them.
     cols_due: bool,
     view_due: bool,
+    /// `sheetPr` is still to be seen, for a filter's mode.
+    sheet_pr_due: bool,
     strings: &'a mut StringTable,
     elements: Vec<&'a NewElement>,
     /// Elements written in place of the file's, whose later namesakes go.
@@ -1620,6 +1625,14 @@ impl Patcher<'_> {
                         self.write_new_sheet_data(out)?;
                         wrote_data = true;
                     }
+                    // A filtering sheet with no `sheetPr` gets one first.
+                    if self.sheet_pr_due && local != b"sheetPr" {
+                        self.sheet_pr_due = false;
+                        if self.extras.filter_mode == Some(true) {
+                            self.outcome.changed = true;
+                            out.write_all(&self.element_bytes("<sheetPr filterMode=\"1\"/>"))?;
+                        }
+                    }
                     if order.is_some() {
                         self.elements_before(order, out)?;
                         if local != b"cols" && local != b"sheetViews" {
@@ -1696,6 +1709,16 @@ impl Patcher<'_> {
                             out.write_all(&tag)?;
                             if kind == Kind::Start {
                                 self.read_cols(&mut scanner, out)?;
+                            }
+                        }
+                        b"sheetPr" if self.sheet_pr_due => {
+                            self.sheet_pr_due = false;
+                            let wanted = (self.extras.filter_mode == Some(true)).then_some("1");
+                            let edited = edit_tag(&tag, &[("filterMode", wanted)]);
+                            self.outcome.changed = self.outcome.changed || edited != tag;
+                            out.write_all(&edited)?;
+                            if kind == Kind::Start {
+                                depth += 1;
                             }
                         }
                         b"sheetFormatPr" => {
@@ -1895,6 +1918,7 @@ pub fn patch_into<R: Read, W: Write>(
             extras,
             cols_due: !extras.cols.is_empty(),
             view_due: extras.view.is_some(),
+            sheet_pr_due: extras.filter_mode.is_some(),
             strings: &mut *strings,
             elements: elements.iter().collect(),
             replaced: Vec::new(),

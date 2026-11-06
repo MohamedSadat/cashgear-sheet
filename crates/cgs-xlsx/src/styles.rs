@@ -32,6 +32,25 @@ pub(crate) fn parse_color(element: &BytesStart<'_>) -> Color {
     Color { kind, tint }
 }
 
+pub(crate) fn line_style_name(style: LineStyle) -> &'static str {
+    match style {
+        LineStyle::None => "none",
+        LineStyle::Hair => "hair",
+        LineStyle::Dotted => "dotted",
+        LineStyle::Dashed => "dashed",
+        LineStyle::DashDot => "dashDot",
+        LineStyle::DashDotDot => "dashDotDot",
+        LineStyle::Thin => "thin",
+        LineStyle::Medium => "medium",
+        LineStyle::MediumDashed => "mediumDashed",
+        LineStyle::MediumDashDot => "mediumDashDot",
+        LineStyle::MediumDashDotDot => "mediumDashDotDot",
+        LineStyle::SlantDashDot => "slantDashDot",
+        LineStyle::Thick => "thick",
+        LineStyle::Double => "double",
+    }
+}
+
 pub(crate) fn line_style(text: &str) -> LineStyle {
     match text {
         "hair" => LineStyle::Hair,

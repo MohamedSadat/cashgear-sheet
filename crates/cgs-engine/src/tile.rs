@@ -638,6 +638,8 @@ pub struct TileInput<'a> {
     pub book: &'a Book,
     pub calc: &'a FormualizerEngine,
     pub options: &'a Options<'a>,
+    /// Today's date serial, for conditional formats about dates.
+    pub today: f64,
 }
 
 fn row_span(info: &SheetInfo, from: u32, to: u32) -> i32 {
@@ -757,6 +759,87 @@ pub fn build_tile(
         (top, window_left, (bottom + 1).min(MAX_ROWS), window_right),
         &mut derived,
     );
+    // Conditional formats, laid over everything, with their bars and icons.
+    let mut cf_marks: Vec<(u32, u32, MarkRecord)> = Vec::new();
+    let mut hidden_values: std::collections::HashSet<(u32, u32)> = Default::default();
+    let mut looks = looks;
+    if !info.cf.is_empty() {
+        let reader = crate::cf::CfReader::new(
+            input.calc,
+            table,
+            sheet,
+            &info.name,
+            &info.cf,
+            info.used,
+            input.today,
+        );
+        let edge_bottom = (bottom + 1).min(MAX_ROWS);
+        let edge_right = (right + 1).min(MAX_COLS);
+        for row in top..=edge_bottom {
+            for col in left..=edge_right {
+                if !info.cf.iter().any(|block| block.covers(row, col)) {
+                    continue;
+                }
+                let Some(cell) = reader.cell(row, col) else {
+                    continue;
+                };
+                if let Some(dxf) = &cell.dxf {
+                    let base = looks
+                        .get(&(row, col))
+                        .copied()
+                        .unwrap_or_else(|| info.style_at(row, col));
+                    looks.insert((row, col), derived.derive(table, base, dxf, true));
+                }
+                let inside = row <= bottom && col <= right;
+                if inside {
+                    if let Some(bar) = cell.bar {
+                        let flags = (u8::from(bar.gradient) * BAR_GRADIENT)
+                            | (u8::from(bar.border.is_some()) * BAR_BORDER)
+                            | (u8::from(bar.axis.is_some()) * BAR_AXIS);
+                        cf_marks.push((
+                            row - top,
+                            col - left,
+                            MarkRecord {
+                                kind: MARK_BAR,
+                                flags,
+                                icon: 0,
+                                start: bar.start,
+                                end: bar.end,
+                                color: rgba(bar.color),
+                                second: bar
+                                    .border
+                                    .map(rgba)
+                                    .or(bar.axis.map(|_| rgba(0x000000)))
+                                    .unwrap_or(0),
+                            },
+                        ));
+                        if let Some(axis) = bar.axis {
+                            if let Some(last) = cf_marks.last_mut() {
+                                last.2.second = bar.border.map_or(rgba(0x000000), rgba);
+                                let _ = axis;
+                            }
+                        }
+                    }
+                    if let Some((set, place)) = &cell.icon {
+                        let number =
+                            ICON_SETS.iter().position(|name| name == set).unwrap_or(0) as u16;
+                        cf_marks.push((
+                            row - top,
+                            col - left,
+                            MarkRecord {
+                                kind: MARK_ICON,
+                                icon: number * 8 + (*place as u16).min(7),
+                                ..MarkRecord::default()
+                            },
+                        ));
+                    }
+                    if cell.hide_value {
+                        hidden_values.insert((row, col));
+                    }
+                }
+            }
+        }
+    }
     let view = View {
         base: table,
         derived: &derived,
@@ -915,7 +998,10 @@ pub fn build_tile(
                 if row < area.bottom {
                     flags |= CELL_NO_BOTTOM_GRID;
                 }
-            } else if let Some(value) = window.get(row, col) {
+            } else if let Some(value) = window
+                .get(row, col)
+                .filter(|_| !hidden_values.contains(&(row, col)))
+            {
                 let format = format_for(&mut cache.formats, table.num_fmts, xf.num_fmt);
                 let shown = show_value(
                     value,
@@ -1186,6 +1272,9 @@ pub fn build_tile(
                 }
             }
         }
+    }
+    for (row, col, mark) in cf_marks {
+        writer.mark(row, col, mark);
     }
     let tile = writer.finish();
     cache.derived = derived;

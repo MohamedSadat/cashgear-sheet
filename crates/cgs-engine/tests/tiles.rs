@@ -49,6 +49,7 @@ const STYLES: &str = r##"<styleSheet>
     <xf fillId="2"/>
     <xf numFmtId="166"/>
   </cellXfs>
+  <dxfs count="1"><dxf><font><color rgb="FF9C0006"/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf></dxfs>
 </styleSheet>"##;
 
 fn zip_of(parts: &[(&str, String)]) -> Vec<u8> {
@@ -155,8 +156,32 @@ impl Tile {
             + self.extras * EXTRA_BYTES
     }
 
+    fn marks_count(&self) -> usize {
+        u32_at(&self.bytes, 36) as usize
+    }
+
     fn heap(&self) -> usize {
-        self.runs_at() + self.runs * RUN_BYTES
+        self.runs_at() + self.runs * RUN_BYTES + self.marks_count() * MARK_BYTES
+    }
+
+    /// (cell index, kind, flags, icon, start, end) of each mark.
+    fn marks(&self) -> Vec<(u32, u8, u8, u16, f32, f32)> {
+        let first = self.runs_at() + self.runs * RUN_BYTES;
+        (0..self.marks_count())
+            .map(|index| {
+                let at = first + index * MARK_BYTES;
+                let f32_at =
+                    |at: usize| f32::from_le_bytes(self.bytes[at..at + 4].try_into().unwrap());
+                (
+                    u32_at(&self.bytes, at),
+                    self.bytes[at + 4],
+                    self.bytes[at + 5],
+                    u16_at(&self.bytes, at + 6),
+                    f32_at(at + 8),
+                    f32_at(at + 12),
+                )
+            })
+            .collect()
     }
 
     /// (text offset, start, length, colour, style) of a run.
@@ -622,4 +647,40 @@ fn a_table_turned_into_cells_keeps_its_look() {
     let format: serde_json::Value =
         serde_json::from_str(&engine.cell_format_json(0, 1, 1)).unwrap();
     assert_eq!(format["bold"], true, "{format}");
+}
+
+/// A cell rule's format, a data bar and an icon, as a file holds them.
+#[test]
+fn conditional_formats_draw_their_formats_bars_and_icons() {
+    let rows: String = (1..=5)
+        .map(|r| format!(r#"<row r="{r}"><c r="A{r}"><v>{r}</v></c><c r="B{r}"><v>{r}</v></c><c r="C{r}"><v>{r}</v></c></row>"#))
+        .collect();
+    let mut engine = open(
+        &rows,
+        r#"<conditionalFormatting sqref="A1:A5"><cfRule type="cellIs" dxfId="0" priority="1" operator="greaterThan"><formula>3</formula></cfRule></conditionalFormatting><conditionalFormatting sqref="B1:B5"><cfRule type="dataBar" priority="2"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar></cfRule></conditionalFormatting><conditionalFormatting sqref="C1:C5"><cfRule type="iconSet" priority="3"><iconSet iconSet="3Arrows"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="67"/></iconSet></cfRule></conditionalFormatting>"#,
+    );
+    let tile = Tile::new(&mut engine, 0, 0, 0, LIGHT);
+    assert_eq!(tile.cell(3, 0).fill, 0xFFC7CEFF);
+    assert_eq!(tile.cell(3, 0).color, 0x9C0006FF);
+    assert_eq!(tile.cell(2, 0).fill, 0);
+    let marks = tile.marks();
+    let bar = |row: u32| {
+        marks
+            .iter()
+            .find(|m| m.0 == row * 16 + 1 && m.1 == MARK_BAR)
+            .copied()
+    };
+    let (_, _, _, _, start, end) = bar(0).unwrap();
+    assert_eq!((start, (end * 100.0).round()), (0.0, 10.0));
+    assert_eq!((bar(4).unwrap().5 * 100.0).round(), 90.0);
+    let icon = |row: u32| {
+        marks
+            .iter()
+            .find(|m| m.0 == row * 16 + 2 && m.1 == MARK_ICON)
+            .map(|m| m.3)
+    };
+    // Down, sideways, up: 1 is under 33%, 3 is the middle, 5 the top.
+    assert_eq!(icon(0), Some(0));
+    assert_eq!(icon(2), Some(1));
+    assert_eq!(icon(4), Some(2));
 }

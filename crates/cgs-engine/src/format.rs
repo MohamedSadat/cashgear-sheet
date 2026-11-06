@@ -318,6 +318,17 @@ impl Session {
             .get_or_insert_with(|| StylesXml::new(Vec::new()))
     }
 
+    /// Adds a differential format to the workbook, for a filter, a sort or a conditional format.
+    pub(crate) fn add_dxf(&mut self, dxf: cgs_model::Dxf) -> u32 {
+        if let Some(at) = self.book.styles.dxfs.iter().position(|known| *known == dxf) {
+            return at as u32;
+        }
+        let xml = cgs_xlsx::dxf::dxf_xml(&dxf);
+        let index = self.styles_xml().add_dxf(&xml);
+        self.refresh_styles();
+        index
+    }
+
     /// Reads the styles back after adding some.
     pub(crate) fn refresh_styles(&mut self) {
         let Some(styles) = self.edits.styles.as_ref() else {
@@ -1096,8 +1107,26 @@ impl Session {
     ) -> Op {
         let info = &mut self.book.sheets[sheet as usize];
         let mut old_rows = Vec::with_capacity(rows.len());
+        // Rows come in order, so the records are walked alongside.
+        let records = &info.rows.rows;
+        let mut at = 0;
+        let mut sorted = true;
+        let mut last = 0;
         for &(row, _) in &rows {
-            old_rows.push((row, info.rows.info(row).copied().unwrap_or_default()));
+            sorted &= row >= last;
+            last = row;
+            if !sorted {
+                old_rows.push((row, info.rows.info(row).copied().unwrap_or_default()));
+                continue;
+            }
+            while at < records.len() && records[at].0 < row {
+                at += 1;
+            }
+            let line = match records.get(at) {
+                Some(&(found, line)) if found == row => line,
+                _ => LineInfo::default(),
+            };
+            old_rows.push((row, line));
         }
         info.rows.set_many(&rows);
         let mut old_cols = Vec::new();
@@ -1106,8 +1135,16 @@ impl Session {
             info.cols.set(first, last, line);
         }
         if !rows.is_empty() {
+            // Runs of rows first, as a filter can change a million at once.
+            let mut spans: Vec<(u32, u32)> = Vec::new();
+            for &(row, _) in &rows {
+                match spans.last_mut() {
+                    Some((_, end)) if *end + 1 == row => *end = row,
+                    _ => spans.push((row, row)),
+                }
+            }
             let list = self.edits.row_lines.entry(sheet).or_default();
-            list.extend(rows.iter().map(|&(row, _)| (row, row)));
+            list.extend(spans);
             join_spans(list);
         }
         if !cols.is_empty() {
@@ -1308,6 +1345,7 @@ impl Session {
                         book: &self.book,
                         calc: &self.calc,
                         options,
+                        today: self.today,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1365,6 +1403,7 @@ impl Session {
                         book: &self.book,
                         calc: &self.calc,
                         options,
+                        today: self.today,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1387,6 +1426,7 @@ impl Session {
                             book: &self.book,
                             calc: &self.calc,
                             options,
+                            today: self.today,
                         };
                         crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                     };

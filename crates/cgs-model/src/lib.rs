@@ -1,6 +1,7 @@
 //! Everything about a workbook except its cells: styles, dimensions, merges, tables,
 //! drawings and which style each cell uses. No I/O.
 
+pub mod cf;
 pub mod color;
 pub mod dxf;
 pub mod filter;
@@ -8,6 +9,7 @@ pub mod sheet;
 pub mod style;
 pub mod table;
 
+pub use cf::{CfBlock, CfKind, CfOperator, CfRule, CfValueKind, Cfvo, DataBar, IconSet};
 pub use color::{Color, ColorKind, ColorSpace, DarkColors, Rgb, ThemePalette};
 pub use dxf::{Dxf, DxfBorder, DxfFill, DxfFont, TableElement, TableStyleDef, TableStyleElement};
 pub use filter::{

@@ -1091,6 +1091,13 @@ impl StylesXml {
         )
     }
 
+    /// Adds a differential format, whose children are written without a prefix. Returns its index.
+    pub fn add_dxf(&mut self, inner: &str) -> u32 {
+        let name = self.root();
+        let inner = with_prefix(inner.as_bytes(), &name);
+        self.append("dxfs", "dxf", &format!("<{name}dxf>{inner}</{name}dxf>"))
+    }
+
     /// Adds a solid fill of this `RRGGBB` colour. Returns its index.
     pub fn add_solid_fill(&mut self, rgb: &str) -> u32 {
         // Excel keeps the first two fills for itself, whatever they hold.

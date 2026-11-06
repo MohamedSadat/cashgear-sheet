@@ -122,6 +122,8 @@ pub struct WorkbookEdits {
     pub default_rows: std::collections::BTreeSet<u32>,
     /// Some table was made, removed, or changed how it looks, so the model's tables are saved.
     pub tables_changed: bool,
+    /// Sheets whose own autofilter changed.
+    pub filters: std::collections::BTreeSet<u32>,
 }
 
 impl WorkbookEdits {
@@ -135,6 +137,7 @@ impl WorkbookEdits {
             && self.calc_mode.is_none()
             && self.extras.values().all(SheetExtras::is_empty)
             && !self.tables_changed
+            && self.filters.is_empty()
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.

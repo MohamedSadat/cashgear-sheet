@@ -3,10 +3,12 @@
 //! that a saved value covers.
 
 mod ask;
+pub mod cf;
 pub mod clip;
 pub mod command;
 pub mod edit;
 mod fill;
+pub mod filter;
 pub mod find;
 pub mod format;
 pub mod input;
@@ -352,6 +354,7 @@ impl Engine {
                     book: &session.book,
                     calc: &session.calc,
                     options: &options,
+                    today: session.today,
                 };
                 tile::build_tile(
                     &input,
@@ -548,6 +551,7 @@ impl Engine {
             book: &session.book,
             calc: &session.calc,
             options: &options,
+            today: session.today,
         };
         tile::display_text(&input, &mut session.cache, sheet, row, col)
     }
@@ -568,6 +572,7 @@ impl Engine {
             book: &session.book,
             calc: &session.calc,
             options: &options,
+            today: session.today,
         };
         tile::edit_text(&input, &mut session.cache, sheet, row, col)
     }

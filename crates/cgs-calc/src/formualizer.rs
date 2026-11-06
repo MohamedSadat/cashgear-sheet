@@ -88,6 +88,8 @@ pub struct FormualizerEngine {
     /// Formulas with this-row table references as they were given. The engine turns those into
     /// the cells they read, so its own text would lose them.
     this_row: HashMap<CellRef, String>,
+    /// Formulas conditional formats and validation evaluate, parsed once each.
+    parsed: std::cell::RefCell<HashMap<String, Option<std::rc::Rc<ASTNode>>>>,
     /// Staged formulas haven't been adopted or calculated yet.
     fresh: bool,
     /// The next sheet `prepare_step` builds a graph for.
@@ -385,6 +387,7 @@ impl FormualizerEngine {
             cached_spills: Vec::new(),
             linked: HashMap::new(),
             this_row: HashMap::new(),
+            parsed: std::cell::RefCell::new(HashMap::new()),
             fresh: true,
             prepare_next: 0,
             prepared: false,
@@ -1864,24 +1867,22 @@ impl CalcEngine for FormualizerEngine {
         let Ok(name) = self.sheet_name(r.sheet) else {
             return;
         };
-        let rows = self.workbook.engine().get_range_values(
+        self.workbook.engine().for_each_range_value(
             name,
             r.rect.top,
             r.rect.left,
             r.rect.bottom,
             r.rect.right,
-        );
-        for (row_offset, row) in rows.iter().enumerate() {
-            for (col_offset, value) in row.iter().enumerate() {
+            |row_offset, col_offset, value| {
                 if !matches!(value, LiteralValue::Empty) {
-                    out.cell(
+                    out.take(
                         r.rect.top + row_offset as u32,
                         r.rect.left + col_offset as u32,
-                        &from_literal(value),
+                        from_literal(&value),
                     );
                 }
-            }
-        }
+            },
+        );
     }
 
     fn formula_text(&self, at: CellRef) -> Option<String> {
@@ -1899,6 +1900,44 @@ impl CalcEngine for FormualizerEngine {
         self.workbook
             .get_formula(name, at.row, at.col)
             .map(|text| text.trim_start_matches('=').to_string())
+    }
+}
+
+impl FormualizerEngine {
+    /// Works out a formula written for `anchor` as if it stood at `row` and `col`, as conditional
+    /// formats and validation do, without putting it in any cell. A formula that won't parse is
+    /// `#NAME?`.
+    pub fn evaluate_at(
+        &self,
+        sheet: &str,
+        anchor: (u32, u32),
+        row: u32,
+        col: u32,
+        text: &str,
+    ) -> CalcValue {
+        let ast = {
+            let mut parsed = self.parsed.borrow_mut();
+            if parsed.len() > 10_000 {
+                parsed.clear();
+            }
+            parsed
+                .entry(text.to_string())
+                .or_insert_with(|| {
+                    parse(format!("={}", text.trim_start_matches('=')))
+                        .ok()
+                        .map(std::rc::Rc::new)
+                })
+                .clone()
+        };
+        match ast {
+            Some(ast) => from_literal(
+                &self
+                    .workbook
+                    .engine()
+                    .evaluate_formula_at(sheet, anchor, row, col, &ast),
+            ),
+            None => CalcValue::Error("#NAME?".to_string()),
+        }
     }
 }
 

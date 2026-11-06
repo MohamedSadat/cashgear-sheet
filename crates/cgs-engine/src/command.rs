@@ -336,6 +336,30 @@ pub enum Command {
         #[serde(default)]
         by_columns: bool,
     },
+    /// Filter buttons on over the block around a selection, or off, on a sheet or a table.
+    ToggleFilter {
+        sheet: u32,
+        area: Area,
+    },
+    /// What one column keeps, or nothing, and the filter applied again.
+    SetFilter {
+        sheet: u32,
+        #[serde(default)]
+        table: Option<String>,
+        col: u32,
+        #[serde(default)]
+        criteria: Option<crate::filter::FilterSpec>,
+    },
+    ClearFilter {
+        sheet: u32,
+        #[serde(default)]
+        table: Option<String>,
+    },
+    ReapplyFilter {
+        sheet: u32,
+        #[serde(default)]
+        table: Option<String>,
+    },
     Undo,
     Redo,
 }
@@ -359,7 +383,7 @@ pub(crate) enum Op {
     AxisBack {
         sheet: u32,
         edit: AxisEdit,
-        shape: SheetShape,
+        shape: Box<SheetShape>,
         names: Vec<DefinedName>,
         tables: Vec<Table>,
     },
@@ -368,6 +392,11 @@ pub(crate) enum Op {
     Tables(Vec<TableInfo>),
     /// The model's tables, which hold how each looks.
     BookTables(Vec<Table>),
+    /// A sheet's own autofilter.
+    SheetFilter {
+        sheet: u32,
+        filter: Option<cgs_model::AutoFilter>,
+    },
     Merges {
         sheet: u32,
         merges: Vec<Rect>,
@@ -449,6 +478,7 @@ impl Op {
             Self::Names(names) => names.len() * 128,
             Self::Tables(tables) => tables.len() * 256,
             Self::BookTables(tables) => tables.len() * 512,
+            Self::SheetFilter { .. } => 512,
             Self::Merges { merges, .. } => merges.len() * 16,
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
             Self::Styles(before) => before.bytes(),
@@ -1144,7 +1174,7 @@ impl Session {
         let mut list = vec![Op::AxisBack {
             sheet,
             edit: edit.inverse(),
-            shape,
+            shape: Box::new(shape),
             names: names_before,
             tables: tables_before,
         }];
@@ -1195,7 +1225,7 @@ impl Session {
                 shape,
                 names,
                 tables,
-            } => self.apply_axis(sheet, edit, Some((shape, names, tables))),
+            } => self.apply_axis(sheet, edit, Some((*shape, names, tables))),
             Op::Names(names) => {
                 self.calc.restore_names(&names).map_err(|error| error.0)?;
                 // Their positions come back through the inverse of the edit that moved them.
@@ -1215,6 +1245,16 @@ impl Session {
                     }
                 }
                 Ok(Op::Tables(before))
+            }
+            Op::SheetFilter { sheet, filter } => {
+                let info = &mut self.book.sheets[sheet as usize];
+                let before = std::mem::replace(&mut info.filter, filter);
+                self.edits.filters.insert(sheet);
+                self.dirty.sheets.insert(sheet);
+                Ok(Op::SheetFilter {
+                    sheet,
+                    filter: before,
+                })
             }
             Op::BookTables(tables) => {
                 for table in tables.iter().chain(self.book.tables.iter()) {
@@ -2758,6 +2798,22 @@ impl Session {
                 self.resize_table_command(&table, area)
             }
             Command::ConvertToRange { table } => self.convert_to_range_command(&table),
+            Command::ToggleFilter { sheet, area } => {
+                if !area.valid() {
+                    return Err("That's off the sheet.".to_string());
+                }
+                self.toggle_filter_command(sheet, area)
+            }
+            Command::SetFilter {
+                sheet,
+                table,
+                col,
+                criteria,
+            } => self.set_filter_command(sheet, &table, col, criteria, locale),
+            Command::ClearFilter { sheet, table } => self.clear_filter_command(sheet, &table),
+            Command::ReapplyFilter { sheet, table } => {
+                self.reapply_filter_command(sheet, &table, locale)
+            }
             Command::Sort {
                 sheet,
                 area,

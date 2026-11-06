@@ -17,6 +17,15 @@ enum Question {
     GuessTable { sheet: u32, area: Area },
     /// Every table, for the name box and the name manager.
     Tables,
+    /// What a filter's dropdown lists for one column.
+    FilterList {
+        sheet: u32,
+        #[serde(default)]
+        table: Option<String>,
+        col: u32,
+    },
+    /// The filters on a sheet, its own and its tables', for drawing their buttons.
+    Filters { sheet: u32 },
 }
 
 fn area_json(top: u32, left: u32, bottom: u32, right: u32) -> Value {
@@ -53,8 +62,36 @@ fn table_json(table: &Table) -> Value {
     })
 }
 
+fn filter_json(filter: &cgs_model::AutoFilter, table: Option<&str>) -> Value {
+    let r = filter.range;
+    let filtered: Vec<u32> = filter
+        .columns
+        .iter()
+        .filter(|column| column.criteria.is_some())
+        .map(|column| r.left + column.col_id)
+        .collect();
+    let hidden: Vec<u32> = filter
+        .columns
+        .iter()
+        .filter(|column| column.hidden_button)
+        .map(|column| r.left + column.col_id)
+        .collect();
+    let sorted = filter
+        .sort
+        .as_ref()
+        .and_then(|sort| sort.keys.first())
+        .map(|key| json!({ "col": key.area.left, "descending": key.descending }));
+    json!({
+        "table": table,
+        "area": area_json(r.top, r.left, r.bottom, r.right),
+        "filtered": filtered,
+        "hiddenButtons": hidden,
+        "sorted": sorted,
+    })
+}
+
 impl Session {
-    fn answer(&self, question: Question) -> Result<Value, String> {
+    fn answer(&self, question: Question, locale: &cgs_numfmt::Locale) -> Result<Value, String> {
         Ok(match question {
             Question::TableAt { sheet, row, col } => {
                 let Some(info) = self.table_at(sheet, row, col) else {
@@ -80,6 +117,33 @@ impl Session {
                     "area": area_json(area.top, area.left, area.bottom, area.right),
                     "headers": self.guess_headers(sheet, area),
                 })
+            }
+            Question::FilterList { sheet, table, col } => {
+                let options = cgs_numfmt::Options {
+                    locale,
+                    date1904: self.book.date1904,
+                };
+                self.filter_list(sheet, &table, col, &options)?
+            }
+            Question::Filters { sheet } => {
+                let mut list = Vec::new();
+                if let Some(filter) = self
+                    .book
+                    .sheets
+                    .get(sheet as usize)
+                    .and_then(|info| info.filter.as_ref())
+                {
+                    list.push(filter_json(filter, None));
+                }
+                for table in self.book.tables.iter().filter(|table| table.sheet == sheet) {
+                    if let (Some(filter), true) = (
+                        &table.filter,
+                        table.header_rows > 0 && self.calc_has_table(&table.name),
+                    ) {
+                        list.push(filter_json(filter, Some(&table.name)));
+                    }
+                }
+                Value::Array(list)
             }
             Question::Tables => Value::Array(
                 self.book
@@ -113,6 +177,6 @@ impl Engine {
             .session
             .as_ref()
             .ok_or_else(|| "No workbook is open.".to_string())?;
-        Ok(session.answer(question)?.to_string())
+        Ok(session.answer(question, &self.locale)?.to_string())
     }
 }
