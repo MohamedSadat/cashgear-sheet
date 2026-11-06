@@ -243,3 +243,31 @@ fn a_pivot_cannot_spill_over_data() {
     assert!(laid.unwrap_err().contains("already data"));
     assert_eq!(shown(&engine, 0, 5, 6), "in the way");
 }
+
+#[test]
+fn a_number_field_on_an_axis_lists_its_items_in_the_cache() {
+    let mut engine = sales();
+    made(&mut engine);
+    // Sales as a report filter: its items must be in the cache for the table to point at.
+    run(
+        &mut engine,
+        json!({
+            "kind": "pivotLayout",
+            "pivot": pivot(),
+            "layout": { "rows": [0], "pages": [2], "values": [{ "field": 2, "summary": "count" }] },
+        }),
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    let package = cgs_xlsx::package::Package::open(Rc::new(out)).unwrap();
+    let cache = String::from_utf8(
+        package
+            .read("xl/pivotCache/pivotCacheDefinition1.xml")
+            .unwrap(),
+    )
+    .unwrap();
+    let sales = cache.split("<cacheField name=\"Sales\"").nth(1).unwrap();
+    assert!(sales.starts_with(" numFmtId=\"0\"><sharedItems"));
+    assert!(sales.contains("count=\"4\"><n v=\"10\"/>"));
+}

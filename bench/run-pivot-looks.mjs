@@ -94,7 +94,7 @@ for (const name of ['excel-pivots.xlsx', 'app-refreshed-changed.xlsx']) {
           const kind = p.split(' app ')[0];
           result.byKind[kind] = (result.byKind[kind] ?? 0) + 1;
         }
-        if (result.samples.length < 30)
+        if (result.samples.length < 400)
           result.samples.push(
             `${theirsPivot.sheet} ${theirsPivot.style} R${cell.row}C${cell.col}: ${problems.join('; ')}`,
           );
@@ -107,6 +107,6 @@ for (const name of ['excel-pivots.xlsx', 'app-refreshed-changed.xlsx']) {
     `${name}: ${result.matching} of ${result.pivots} pivots look as Excel shows them; ${result.wrong} of ${result.cells} cells differ`,
     result.byKind,
   );
-  for (const line of result.samples.slice(0, 15)) console.log('   ', line);
+  for (const line of result.samples.slice(0, 25)) console.log('   ', line);
 }
 writeFileSync(join(folder, 'looks-summary.json'), JSON.stringify(summary, null, 2));

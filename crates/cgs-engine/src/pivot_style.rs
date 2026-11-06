@@ -228,9 +228,9 @@ fn region(table: &PivotTable, kind: PivotElement, row: u32, col: u32, size: u32)
                 line.kind,
                 ItemType::Data | ItemType::Grand | ItemType::Blank
             );
-            // A parent item's own line, where it shows its subtotal at the top.
-            let is_parent = line.kind == ItemType::Data && depth(&table.row_items, k) < real_rows;
-            ((is_total || is_parent) && level(depth(&table.row_items, k)) == n)
+            // Only a subtotal's own line: a parent item showing its subtotal at the top takes the
+            // row subheading instead.
+            (is_total && level(depth(&table.row_items, k)) == n)
                 .then(|| rect(row, r.left, row, r.right))
         }
         PivotElement::RowSubheading(n) if style.row_headers => {

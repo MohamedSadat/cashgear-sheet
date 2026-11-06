@@ -663,7 +663,30 @@ impl Session {
         let restyle = layout.row_items != self.book.pivot_tables[index].row_items
             || layout.col_items != self.book.pivot_tables[index].col_items
             || layout.location != self.book.pivot_tables[index].location;
-        self.output_op(index, table, layout, before, restyle)
+        // A field on an axis needs its items listed in the cache, for the table's items to point
+        // at; a field only ever summed may not have had them.
+        let cache = table.cache as usize;
+        let records = self.cache_records(cache)?;
+        let mut caches = self.book.pivot_caches.clone();
+        for (f, field) in table.fields.iter().enumerate() {
+            let def = &mut caches[cache].fields[f];
+            if field.axis.is_some() && def.database && !def.listed && def.group.is_none() {
+                def.shared = records
+                    .columns
+                    .get(f)
+                    .map(|c| c.values.clone())
+                    .unwrap_or_default();
+                def.listed = true;
+                caches[cache].changed = true;
+            }
+        }
+        let mut op = self.output_op(index, table, layout, before, restyle)?;
+        if let Op::Many(list) = &mut op {
+            if let Some(Op::BookPivots { caches: in_op, .. }) = list.last_mut() {
+                *in_op = caches;
+            }
+        }
+        Ok(op)
     }
 
     /// Refresh: reads the source again, then lays out every pivot table on the cache.
