@@ -2,7 +2,8 @@
 // through Excel over COM, with Microsoft Print to PDF as its printer, and through the engine;
 // every sheet's row and column breaks and page count must be the same. With `--public`, the
 // public test files that hold page setup go through as well, as locked-down temporary copies
-// (read-only, macros forced off, links not updated), and their page counts are compared.
+// (read-only, macros forced off, links not updated), and their page counts are compared. They go
+// through one Excel session at a time in chunks, and the results are written after each chunk.
 // Usage: node bench/run-page-breaks.mjs [out.json] [--public] [--only=name]
 import { spawnSync } from 'node:child_process';
 import {
@@ -50,6 +51,41 @@ function excels(path, scratch) {
   );
   if (run.status !== 0) throw new Error('Excel: ' + run.stderr.slice(0, 300));
   return JSON.parse(readFileSync(target, 'utf8').replace(/^\uFEFF/, ''));
+}
+
+/** Page counts for several workbooks from one Excel session, keyed by path. */
+function excelCounts(paths, scratch) {
+  const list = join(scratch, 'list.txt');
+  const target = join(scratch, 'counts.jsonl');
+  writeFileSync(list, paths.join('\n'), 'utf8');
+  rmSync(target, { force: true });
+  const run = spawnSync(
+    'powershell',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `& {${script}} -List ${quoted(list)} -Out ${quoted(target)} -CountsOnly`,
+    ],
+    { encoding: 'utf8', timeout: 60000 * paths.length, windowsHide: true },
+  );
+  const found = new Map();
+  let text = '';
+  try {
+    text = readFileSync(target, 'utf8');
+  } catch {
+    // Nothing came back: every book in the chunk is reported as failed below.
+  }
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const entry = JSON.parse(line.replace(/^\uFEFF/, ''));
+    found.set(entry.book, entry);
+  }
+  if (found.size < paths.length && run.status !== 0) {
+    const reason = 'Excel: ' + (run.error?.message ?? run.stderr.slice(0, 300));
+    for (const path of paths) if (!found.has(path)) found.set(path, { book: path, error: reason });
+  }
+  return found;
 }
 
 const same = (a, b) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
@@ -105,6 +141,19 @@ if (built.status !== 0) throw new Error('The pagebreaks tool did not build.');
 
 const scratch = mkdtempSync(join(tmpdir(), 'cgs-page-breaks-'));
 const results = { generated: [], public: [], totals: {} };
+const tally = (list) => {
+  const sheets = list.flatMap((book) => book.sheets ?? []);
+  return {
+    books: list.length,
+    failed: list.filter((book) => book.error).length,
+    sheets: sheets.length,
+    matched: sheets.filter((sheet) => sheet.match).length,
+  };
+};
+function save() {
+  results.totals = { generated: tally(results.generated), public: tally(results.public) };
+  writeFileSync(out, JSON.stringify(results, null, 2));
+}
 try {
   const folder = join(root, 'bench/results/print-books');
   mkdirSync(folder, { recursive: true });
@@ -123,47 +172,48 @@ try {
   }
   if (withPublic) {
     const publicFolder = join(root, 'tests/workbooks/public');
+    const books = [];
     for (const path of walk(publicFolder)) {
       if (statSync(path).size > 40 * 1024 * 1024) continue;
-      let mine;
       try {
-        mine = ours(path);
+        const mine = ours(path);
+        if (mine.some((sheet) => sheet.hasSetup)) books.push({ path, mine });
       } catch {
-        continue;
+        // A file the engine can't read has no pages to compare.
       }
-      if (!mine.some((sheet) => sheet.hasSetup)) continue;
-      // A copy, so nothing Excel does can touch the test set.
-      const copy = join(
-        scratch,
-        'public' + (path.toLowerCase().endsWith('.xlsm') ? '.xlsm' : '.xlsx'),
-      );
-      copyFileSync(path, copy);
-      const name = relative(publicFolder, path);
-      try {
-        const sheets = compare(mine, excels(copy, scratch), true);
+    }
+    console.log(books.length, 'public files hold page setup');
+    const chunk = 25;
+    for (let at = 0; at < books.length; at += chunk) {
+      const part = books.slice(at, at + chunk);
+      // Copies, so nothing Excel does can touch the test set.
+      const copies = part.map(({ path }, index) => {
+        const extension = path.toLowerCase().endsWith('.xlsm') ? '.xlsm' : '.xlsx';
+        const copy = join(scratch, `public-${at + index}${extension}`);
+        copyFileSync(path, copy);
+        return copy;
+      });
+      const counts = excelCounts(copies, scratch);
+      part.forEach(({ path, mine }, index) => {
+        const name = relative(publicFolder, path);
+        const theirs = counts.get(copies[index]);
+        if (!theirs || theirs.error) {
+          const error = theirs?.error ?? 'Excel gave nothing back';
+          results.public.push({ book: name, error });
+          console.log(name, 'failed:', error.slice(0, 200));
+          return;
+        }
+        const sheets = compare(mine, theirs.result, true);
         results.public.push({ book: name, sheets });
         console.log(name, sheets.every((s) => s.match) ? 'pages match' : 'PAGES DIFFER');
-      } catch (error) {
-        results.public.push({ book: name, error: String(error) });
-        console.log(name, 'failed:', String(error).slice(0, 200));
-      } finally {
-        rmSync(copy, { force: true });
-      }
+      });
+      for (const copy of copies) rmSync(copy, { force: true });
+      save();
     }
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
 
-const tally = (list) => {
-  const sheets = list.flatMap((book) => book.sheets ?? []);
-  return {
-    books: list.length,
-    failed: list.filter((book) => book.error).length,
-    sheets: sheets.length,
-    matched: sheets.filter((sheet) => sheet.match).length,
-  };
-};
-results.totals = { generated: tally(results.generated), public: tally(results.public) };
-writeFileSync(out, JSON.stringify(results, null, 2));
+save();
 console.log(JSON.stringify(results.totals));
