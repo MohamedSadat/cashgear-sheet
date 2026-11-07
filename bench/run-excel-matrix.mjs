@@ -933,6 +933,40 @@ try {
     console.log('structural', file, results.structural[file]);
   }
 
+  // Phase 9: large books from bench/generate-speed-books.mjs, after a cell edit and after a row
+  // put in at the top, which moves every row the sheet holds.
+  const speed = join(root, 'tests/workbooks/generated/speed');
+  for (const file of ['formulas-2m.xlsx', 'rows-1m.xlsx']) {
+    if (!wanted('large ' + file)) continue;
+    const source = join(speed, file);
+    if (!readdirSync(speed).includes(file)) {
+      console.log('scale', file, 'not generated: run bench/generate-speed-books.mjs');
+      continue;
+    }
+    results.scale ??= {};
+    const before = opens(source);
+    if (!before.opened || before.repaired) {
+      throw new Error(
+        `${file} does not open cleanly: delete it and run bench/generate-speed-books.mjs again.`,
+      );
+    }
+    for (const [name, sets, commands] of [
+      ['a value', ['0,2,1,n:7'], []],
+      ['a row in at the top', [], [rows(0, 1, 1)]],
+    ]) {
+      const started = Date.now();
+      const { saved } = save(source, 'xlsx', sets, [], commands);
+      const seen = opens(saved);
+      results.scale[`${file}: ${name}`] = {
+        clean: seen.opened && !seen.repaired,
+        savedMB: Number((statSync(saved).size / 1e6).toFixed(1)),
+        seconds: Math.round((Date.now() - started) / 1000),
+      };
+      console.log('scale', file, name, results.scale[`${file}: ${name}`]);
+      rmSync(saved, { force: true });
+    }
+  }
+
   // A quick look with `--only` stops at the edits.
   if (!only) {
     // What a structural edit must leave working: the chart, the pivot and the macros.
@@ -1127,3 +1161,5 @@ const scenarios = Object.values(results.scenarios);
 console.log(
   `${scenarios.filter((entry) => entry.clean).length} of ${scenarios.length} scenarios clean. Generated: ${results.generated.savedOpened} of ${results.generated.files}. Private: ${JSON.stringify(results.private)}`,
 );
+const large = Object.values(results.scale ?? {});
+console.log(`Large books: ${large.filter((entry) => entry.clean).length} of ${large.length} clean`);

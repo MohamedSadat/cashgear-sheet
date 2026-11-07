@@ -9,7 +9,10 @@ import { constants, crc32, createDeflateRaw } from 'node:zlib';
 import { root } from '../scripts/lib.mjs';
 
 const outRoot = join(root, 'tests/workbooks/generated/speed');
-const only = process.argv.find((arg) => arg.startsWith('--only='))?.split('=')[1];
+const only = process.argv
+  .find((arg) => arg.startsWith('--only='))
+  ?.split('=')[1]
+  .split(',');
 
 const HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
 const MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
@@ -203,6 +206,23 @@ async function writeBook(name, sheets) {
   }
   const partial = final + '.partial';
   const zip = new ZipStream(partial);
+  // Excel refuses a package without its content types, though our reader doesn't need them.
+  // Books written before Phase 9 have none, so delete a book to write it again with them.
+  const types = 'application/vnd.openxmlformats-officedocument.spreadsheetml';
+  await zip.entry('[Content_Types].xml', [
+    `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      `<Override PartName="/xl/workbook.xml" ContentType="${types}.sheet.main+xml"/>` +
+      `<Override PartName="/xl/sharedStrings.xml" ContentType="${types}.sharedStrings+xml"/>` +
+      sheets
+        .map(
+          (_, index) =>
+            `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="${types}.worksheet+xml"/>`,
+        )
+        .join('') +
+      '</Types>',
+  ]);
   await zip.entry('_rels/.rels', [
     `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
   ]);
@@ -257,7 +277,17 @@ const books = {
   'rows-1m': () => [valuesSheet(1_048_576)],
   // Typing during a long recalculation.
   'recalc-1m': () => [recalculationSheet(1_000_000)],
+  // Phase 9's ladder towards WASM's 4 GB, for bench/measure-scale.mjs: three formulas to a row.
+  'formulas-1m': () => [formulasSheet(333_334)],
+  'formulas-2m': () => [formulasSheet(666_667)],
+  'formulas-4m': () => Array.from({ length: 2 }, () => formulasSheet(666_667)),
+  'formulas-6m': () => Array.from({ length: 2 }, () => formulasSheet(1_000_000)),
+  'formulas-8m': () => Array.from({ length: 3 }, () => formulasSheet(888_889)),
+  'formulas-10m': () => Array.from({ length: 4 }, () => formulasSheet(833_334)),
+  // Eight values to a row, on full sheets.
+  'values-50m': () => Array.from({ length: 6 }, () => valuesSheet(1_048_576)),
+  'values-100m': () => Array.from({ length: 12 }, () => valuesSheet(1_048_576)),
 };
 for (const [name, sheet] of Object.entries(books)) {
-  if (!only || only === name) await writeBook(name, sheet());
+  if (!only || only.includes(name)) await writeBook(name, sheet());
 }
