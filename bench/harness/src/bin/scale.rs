@@ -37,8 +37,8 @@ unsafe impl GlobalAlloc for Counting {
         let moved = unsafe { System.realloc(pointer, layout, size) };
         if !moved.is_null() {
             if size >= layout.size() {
-                let now = NOW.fetch_add(size - layout.size(), Ordering::Relaxed) + size
-                    - layout.size();
+                let now =
+                    NOW.fetch_add(size - layout.size(), Ordering::Relaxed) + size - layout.size();
                 PEAK.fetch_max(now, Ordering::Relaxed);
             } else {
                 NOW.fetch_sub(layout.size() - size, Ordering::Relaxed);
@@ -54,7 +54,9 @@ static ALLOCATOR: Counting = Counting;
 const MIB: usize = 1024 * 1024;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("Usage: scale <workbook.xlsx>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("Usage: scale <workbook.xlsx>");
     let bytes = std::fs::read(&path).expect("read the workbook");
     let file = bytes.len();
     // The file's bytes are in memory from here on, and not the engine's.
