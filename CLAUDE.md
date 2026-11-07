@@ -61,6 +61,8 @@ pnpm desktop:build && pnpm desktop:smoke
 pnpm deny && pnpm licenses:check && pnpm licenses:selftest
 ```
 
+Releases are in `docs/DEPLOYMENT.md`. A `v*` tag runs `.github/workflows/release.yml`, which runs `pnpm desktop:installer-test` (install, double-click, update and uninstall, on Windows) and drafts the GitHub release.
+
 ## Gotchas
 
 Found in Phase 1, measured in `docs/phase1-report.md`:
@@ -108,6 +110,15 @@ Found in Phase 8:
 - Excel on this PC writes pivot captions in Arabic ("Row Labels", "Grand Total", "(blank)"), but date group months stay "Jan". `pivotcheck::arabic()` holds the words; the app's are English.
 - With "For empty cells show" set, Excel saves 0 in those cells and shows the caption.
 - On refresh, new items go last in a field sorted by hand, hidden if the field's filter hides others, and in display order in a sorted field. Ties in a sort by value keep the order they had.
+
+Found in Phase 9:
+
+- The engine holds about 430 bytes per formula and 14 per value in WASM, so about 10M formulas reach the 4 GB cap (`bench/measure-scale.mjs`). A column of one relative formula costs almost nothing, so a memory test needs distinct formulas or many columns.
+- A trap in any call breaks the module, and wasm-bindgen then fails every later call with "recursive use of an object". Every worker call goes through `guarded()` in `engine-worker.ts`, and a disposed client's calls reject with `ENGINE_STOPPED`, which the shell ignores.
+- Tauri's `fileAssociations` takes a type's default, and its uninstaller writes an empty default into `HKCU\Software\Classes\.<ext>`, which hides Excel's. The file types are registered by `apps/desktop/src-tauri/windows/hooks.nsh` instead.
+- Tauri's registry key for a product is `Software\<publisher>\<product>`, and a silent uninstall keeps the app's data folder.
+- `tauri::generate_context!` needs `serde_json` in the desktop crate once a plugin has settings.
+- This checkout's `.cargo/config.toml` (excluded through `.git/info/exclude`) points Formualizer at `../formualizer-fork`. Keep that folder at the pinned commit, or local builds differ from CI's.
 
 Carried over from CashGear Video, where they were measured:
 

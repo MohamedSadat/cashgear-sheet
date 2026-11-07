@@ -439,3 +439,42 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Field list | Checking a field puts numbers in Values and anything else in Rows, as Excel does. The Σ Values field appears in Columns once there are two value fields. Value fields are named "Sum of Sales" and numbered when two would share a name |
 | Column widths | Fitted to what they hold after each layout, as Excel's "Autofit column widths on update" does. The fit is its own undo step |
 | What can't be laid out here | Calculated fields and items, OLAP and label or value filters: shown as saved, read-only in the field list. External, consolidation and other-workbook sources: rearranged from their records, never refreshed |
+
+## 2026-11-07: Phase 9
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| A native desktop host if benchmarks call for it | No: WASM only in v1. The benchmarks measure the 4 GB ceiling and recalculation time, memory budgets keep the app inside it, and a file past the ceiling gets a clear message. A native host waits until after v1, so one engine and one code path stay |
+| Free, or licensed like CashGear Video | Free, with no licensing code: every feature, no keys and no prompts. Licensing can come in a later version. The repo is public, so licensing would only ever protect official builds |
+| Code signing and updates | As CashGear Video: releases are signed with Azure Artifact Signing once its secrets exist, and with a throwaway self-signed certificate until then. A Tauri updater key pair is made now and its private key stored as a GitHub secret, so 1.0.0 can update itself from GitHub Releases. The installer test runs on this PC per user and is removed afterwards. Windows lets only you change the default `.xlsx` app, so for the double-click check you pick CashGear Sheet once by hand |
+| Web hosting and stores | The Azure Static Web App that already deploys (`proud-desert-008137810`), on `sheet.cashgearerp.com`; you add the DNS record. Installers and `latest.json` go on this repo's GitHub Releases. No stores in v1 |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Platforms for 1.0 | Windows 10 and 11 x64, as Phase 0 set. macOS waits until after v1 |
+| Versions | Semantic versioning, one version across the app, its crates and its packages, and a `CHANGELOG.md` whose section becomes the release's notes. This release is 1.0.0 |
+| Installer | Tauri's NSIS installer, per user with no admin rights, with the third-party notices beside the app |
+| Updates | Tauri's updater plugin with the system's TLS (its default rustls brings `webpki-root-certs`, whose CDLA-Permissive-2.0 the licence gate refuses). It checks `latest.json` on the latest GitHub release 10 s after start and every 6 hours. The status bar then offers the version, and the Update dialog saves the workbook first when it has changes. The updater's public key is in `tauri.conf.json` |
+| The updater's private key | In the repo's secrets, as you agreed, with a copy outside the repo at `%USERPROFILE%\.cashgear\cashgear-sheet-updater` on this PC. Losing both would mean installed copies can never update themselves |
+| Releases | A `v*` tag builds, runs the installer test, builds the signed installer, and drafts the GitHub release once the updater's key exists. Without Azure Artifact Signing it signs with a throwaway certificate and the notes say so. Publishing the draft is yours |
+| File types | `.xlsx`, `.xlsm`, `.xltx`, `.xltm` and `.csv`. The installer registers the app as a handler (a ProgID each, the type's Open with list, and Settings › Default apps), and never takes the default. Uninstalling removes exactly what it added |
+| Tauri's `fileAssociations` | Not used. Its installer takes the type's default, and its uninstaller writes an empty default value into `HKCU\Software\Classes\.xlsx`. On this PC, which has no default chosen for `.xlsx`, that would hide Excel's own `Excel.Sheet.12` from Explorer after an uninstall. NSIS hooks (`apps/desktop/src-tauri/windows/hooks.nsh`) do it instead |
+| A double-click | Each file opens in a window of its own, as every window is already its own process. The app opens the workbook once its engine is ready |
+| The double-click test | The installer test opens an `.xlsx` through `ShellExecuteEx` with the install's ProgID: what Explorer does once the app is the type's default. The default itself is yours to pick, so the real double-click is checked by hand |
+| Web app | A service worker caches the app shell when it installs and serves pages network-first, so a deploy shows on the next load. A manifest makes it installable. Browser tests run with service workers blocked, except `tests/e2e/pwa.spec.ts` |
+| Third-party notices | Written by `pnpm build`: every crate in the WASM engine and the desktop app, every npm package in the bundle, what `@cashgear/ui` vendors (Fluent icons, Leaflet's CSS, pdf.js, the rich text editor's packages) and Carlito. Each text appears once. Shown from File › About CashGear Sheet, shipped beside the installed app, and attached to each release |
+| Memory budgets | The engine has WASM's 4 GiB and its memory never shrinks. Past 3 GiB the status bar says how much is used and asks for a save while there is room. Running out while opening says the workbook is too large; running out later says so, closes the workbook, starts a new engine and offers the journal's edits. Undo keeps its 256 MiB (Phase 4) and drawn tiles their 512 MiB, in-view tiles always kept (Phase 2) |
+| The scale benchmark | `bench/measure-scale.mjs`: generated books of 1M to 15M formulas (three to a row) and 16M to 100M values, opened in Chrome against the release build. For each: first sheet shown, everything read and the graph built, Ctrl+Alt+F9, a first and a second edit with their answers checked, and WASM's memory. `bench/harness/src/bin/scale.rs` runs the same steps natively with a counting allocator, for the host decision |
+
+**Found on the way**
+
+| Item | Finding |
+| --- | --- |
+| A trap in a calculation slice | A slice that ran out of memory only logged it, so the module stayed broken and unmarked, and the next command failed with wasm-bindgen's "recursive use of an object" instead of the message. Every call into the worker now goes through one guard: after a trap nothing reaches the module, every error is put in words, and a slice that traps tells the shell at once |
+| Repeated formulas | A fill of 833,334 copies of one formula costs almost nothing: Formualizer stores a column of the same relative formula once. The memory check had to fill many columns to reach the top |
+| `generate_context!` | Needs `serde_json` in the desktop crate once a plugin has settings, as CashGear Video found |
+| A silent uninstall | Keeps the app's data folder, as Tauri's uninstaller only deletes it when its box is ticked. Recovery data and settings outlive a reinstall. The installer test records it and removes it |

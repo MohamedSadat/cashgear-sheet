@@ -15,7 +15,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 6: Data tools | Done 2026-11-06 | `phase-6` |
 | Phase 7: Charts | Done 2026-11-06, with your sign-off on the chart review | `phase-7` |
 | Phase 8: Pivot tables | Done 2026-11-07 | `phase-8` |
-| Phase 9: Scale and release | Not started | |
+| Phase 9: Scale and release | Done 2026-11-07 | `v1.0.0` |
 
 ## Planning
 
@@ -476,3 +476,74 @@ Pivot tables from files refresh and can be rearranged, and new ones can be made 
 - Captions are English. Grouping is kept and refreshed, but new groups can't be made yet; nor can items be dragged by hand or renamed, and there is no Show Report Filter Pages, Change Data Source, Move PivotTable, Drill Down or GETPIVOTDATA from a click.
 - Fitting columns after a layout is a second undo step.
 - Outside this phase: nothing new.
+
+## Phase 9: Scale and release
+
+Benchmarks settle the native host question, and CashGear Sheet 1.0.0 ships: a free Windows installer that updates itself, and a web app that installs and works offline. Measured on 2026-11-07 on the reference machine, in Chrome 156 and WebView2 156, with Excel 2016 (16.0) and Formualizer pinned at fork commit `4dd2e77a`.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Benchmarks and the host decision are recorded | Pass | `bench/measure-scale.mjs` opens a ladder of generated books in the release build in Chrome, checks the answers of two edits, and reads WASM's memory after each step (table below). WASM holds about 430 bytes per formula and 14 per value. 10,000,008 formulas open and recalculate in 4,042 MiB, just under the 4 GiB cap, and 15,000,000 run out after 8 minutes with "This workbook is too large to open here". 100M values take 1,379 MiB. `bench/harness/src/bin/scale.rs` runs the same steps natively: 3,348 MiB for the 10M book, and the 15M book opens in 4,407 MiB. Recalculation runs at the same speed natively; reading and building the graph take 2.4 times as long in WASM. You chose WASM only for v1 (`decisions.md`), so one engine and one code path stay, and the ceiling is about 10M formulas |
+| An installer test covers install, update and uninstall | Pass | `pnpm desktop:installer-test` builds 1.0.0 and 1.0.1, signed with a throwaway certificate and updater key, as a product of its own. Install: 4.9 s, both programs signed, the notices beside the app, registered for `.xlsx`, `.xlsm`, `.xltx`, `.xltm` and `.csv`. Double-click: an `.xlsx` opened through the shell with the install's ProgID shows `Item 1` in A1 in 4.0 s. Update: the status bar offers 1.0.1 ten seconds after start, the Update dialog installs it in 3.2 s, and the installer starts 1.0.1, still registered. Uninstall: 2.6 s, nothing left but the app's empty data folder, which a silent uninstall keeps by design, and your own registry keys for the five types are exactly as before. The release workflow runs the same test on every tag |
+| The PWA works offline, and double-clicking `.xlsx` opens the desktop app | Pass, with one check left to you | `tests/e2e/pwa.spec.ts`, in Chrome and Edge: the app installs through the browser's own commands with no installability errors, and its service worker caches the 20 files of the app shell (15 MB). The installed app then starts offline, in its own window and cross-origin isolated, where a workbook opens, draws and calculates. Double-click: the installer test above opens an `.xlsx` through the shell, and `pnpm desktop:smoke` starts the release build with a workbook, as Explorer does, and checks it opens once. Windows lets only you pick the default app for `.xlsx`, so a real double-click in Explorer, after choosing CashGear Sheet once in Open with, is yours to do |
+
+**The scale ladder**
+
+Chrome 156, the release build, one book at a time. Ready means everything is read and the graph is built.
+
+| Book | File | First sheet shown | Ready | Ctrl+Alt+F9 | First edit | Next edit | WASM memory |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1M formulas | 9.9 MB | 5.2 s | 10.9 s | 1.8 s | 191 ms | 56 ms | 409 MiB |
+| 2M formulas | 19.7 MB | 8.7 s | 20.1 s | 3.3 s | 236 ms | 46 ms | 808 MiB |
+| 2.58M formulas (Phase 2's 25 MB) | 25.4 MB | 12.0 s | 29.9 s | 4.4 s | 250 ms | 47 ms | 1,045 MiB |
+| 4M formulas | 39.4 MB | 8.3 s | 62.3 s | 8.4 s | 412 ms | 52 ms | 1,525 MiB |
+| 6M formulas | 59.1 MB | 12.7 s | 112 s | 11.8 s | 522 ms | 49 ms | 2,447 MiB |
+| 8M formulas | 78.8 MB | 10.3 s | 171 s | 16.9 s | 641 ms | 49 ms | 2,827 MiB |
+| 10M formulas | 98.5 MB | 10.1 s | 264 s | 22.5 s | 712 ms | 46 ms | 4,042 MiB |
+| 15M formulas | 147.7 MB | 14.1 s | Ran out of memory at 496 s | | | | 4 GiB |
+| 16M values (Phase 2's 100 MB) | 101.3 MB | 8.7 s | 16.7 s | 12 ms | 724 ms | 45 ms | 231 MiB |
+| 50M values | 318.8 MB | 11.1 s | 68.4 s | 11 ms | 2.1 s | 51 ms | 697 MiB |
+| 100M values | 637.6 MB | 8.5 s | 120 s | 4 ms | 3.9 s | 45 ms | 1,379 MiB |
+
+Every formula book's second edit gave the right answers in its row. The first edit includes copying the source for the working copy, which is why it grows with the file.
+
+**Memory budgets**
+
+| What | Budget | Evidence |
+| --- | --- | --- |
+| The engine | WASM's 4 GiB. Past 3 GiB the status bar says how much is used and asks for a save | `bench/measure-memory-budget.mjs` on the 10M book: open at 3,507 MiB, the status bar says "This workbook uses 3.4 of the 4 GB the engine can have: save your work before adding much more" |
+| Running out mid-edit | The workbook closes, a new engine starts and offers the journal's edits, and nothing waits on the old one | The same check fills columns of formulas until the engine runs out. The status bar says "The engine ran out of memory: a workbook here can use up to 4 GB. A new engine is starting, and your edits since the last save can be recovered." The recovery dialog offers the 3 edits, and a new workbook then opens and calculates |
+| Running out while opening | "This workbook is too large to open here", and the next file opens | The 15M book above, and Phase 2's check |
+| Undo | 256 MiB of pre-images (Phase 4) | Unchanged |
+| Drawn tiles | 512 MiB, least recently used first, tiles in view always kept | Unchanged since Phase 2 |
+
+**What else was checked**
+
+- Saving still opens clean in Excel: `bench/run-excel-matrix.mjs`, 105 edits on each of 8 fixtures. 840 of 840 saved files open with no repair, all 12 broken controls are refused, and 22 of 22 scenarios and 19 of 19 generated books are clean. New this phase, large books: the 2M-formula book and the 1,048,576-row book, after a value and after a row put in at the top, which moves every row. 4 of 4 open clean in Excel (20.5 to 54.4 MB saved). Your 5 private files: 5 of 5 clean, and 5,107 of 5,107 cells match.
+- Editing against Excel: `bench/run-edit-fuzz.mjs`, 250 episodes on each of 2 seeds. Seed 1: 1,120 steps match and 0 diverge, over 123,614 cell comparisons. Seed 2: 1,100 match and 0 diverge, over 120,290. All 414 saved files open clean and match what Excel makes of the same edits.
+- Rules: `bench/run-excel-rules.mjs`, 43 of 43 cases, 1,572 of 1,572 comparisons.
+- Pivots: `bench/run-pivot-check.mjs` passes everything: 40 of 40 from Excel's records in both its files, the app's refresh 40 of 40 against Excel's, and Excel's refresh of the app's files 40 of 40 and 42 of 42.
+- Browsers: 214 tests in Chrome and Edge, among them the new `tests/e2e/pwa.spec.ts` (installing, offline, and About's notices).
+- The desktop: `pnpm desktop:smoke` passes, with a new step that starts the app with a workbook as Explorer does.
+- Third-party notices: 333 crates, 5 npm packages, 4 libraries vendored in `@cashgear/ui` (Fluent icons, Leaflet, pdf.js and the rich text editor's packages) and Carlito, with 204 distinct licence texts (789 KB). Shown from File › About CashGear Sheet, shipped as `licences/THIRD-PARTY-NOTICES.txt` beside the installed app, and attached to the release.
+- Licences: `pnpm deny`, `pnpm licenses:check` (154 packages) and the GPL self-test pass. The updater uses the system's TLS, as its default brings a licence the gate refuses.
+- Unit tests: 175 in Vitest and 555 in Rust. Clippy is clean natively and for WASM.
+- WASM gzip: 3.93 MB, against the 5 MB budget. The installer is 5.6 MB.
+
+**Found and fixed on the way**
+
+- A calculation slice that ran out of memory only logged it, so the engine stayed broken and the next command failed with wasm-bindgen's "recursive use of an object". The memory check found it. Every call into the engine worker now goes through one guard, a slice that traps tells the shell at once, and calls on a replaced engine are released instead of waiting for ever.
+- Running out of memory after a workbook had opened still said it was too large to open, and left the engine broken. It now says what happened, starts a new engine and offers recovery.
+- Tauri's own file associations would have taken `.xlsx` from Excel on install, and on uninstall left an empty default behind that hides Excel's. NSIS hooks register the types instead, and leave the default to you.
+- The speed books had no `[Content_Types].xml`, which our reader doesn't need and Excel does. The generator writes it now.
+
+**Known gaps**
+
+- The real double-click in Explorer needs CashGear Sheet picked once as the `.xlsx` app, which only you can do. The installer test covers the shell's path to the app through the install's ProgID.
+- Code signing uses a throwaway certificate until Azure Artifact Signing is set up, so SmartScreen warns. The release is drafted on GitHub, and publishing it is yours.
+- `sheet.cashgearerp.com` needs its DNS record and the custom domain added in Azure (`docs/DEPLOYMENT.md`). Until then the app deploys to `proud-desert-008137810.4.azurestaticapps.net`.
+- About 10M formulas is the ceiling. Reading a book that big takes over 4 minutes, and one past the ceiling takes 8 minutes to say so, as nothing predicts it before reading.
+- Saving still holds the engine worker for the whole save (Phase 3's gap), so tiles wait meanwhile on large books.
+- The installed web app doesn't take `.xlsx` files from the system (no `file_handlers` yet). macOS, Safari and Firefox weren't run.

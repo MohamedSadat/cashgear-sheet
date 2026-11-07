@@ -273,9 +273,9 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 **Tasks:** large-workbook benchmarks against the 4 GB WASM limit and recalculation time; native host if needed; memory budgets; installer and updater; PWA service worker; `.xlsx` file association; third-party notices.
 
 **Exit**
-- [ ] Benchmarks and the host decision are recorded.
-- [ ] Installer test covers install, update and uninstall.
-- [ ] PWA works offline, and double-clicking `.xlsx` opens the desktop app.
+- [x] Benchmarks and the host decision are recorded: WASM only in v1, about 10M formulas. See `PROGRESS.md`.
+- [x] Installer test covers install, update and uninstall.
+- [x] PWA works offline, and double-clicking `.xlsx` opens the desktop app once it is chosen as the type's app.
 
 ## After v1
 Print and PDF export; RTL sheets; `.xls`, `.xlsb` and `.ods` import; collaboration only if that changes. Macros are preserved on save but never run.
