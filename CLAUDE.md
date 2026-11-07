@@ -14,7 +14,7 @@ CashGear Sheet is an Excel-like spreadsheet for the browser and desktop, built o
 - For a small choice, pick the sensible default and log it. For anything expensive to reverse, stop and ask.
 - End of phase:
   1. Record the evidence for each exit criterion in `docs/PROGRESS.md`.
-  2. Commit and push, then tag `phase-N` once remote CI is green. Phase 5 is `v0.1.0-mvp` and Phase 9 is `v1.0.0`.
+  2. Commit and push, then tag `phase-N` once remote CI is green. Phase 5 is `v0.1.0-mvp` and Phase 9 is `v1.0.0`. From Phase 10 on, each phase is also a minor release: a `CHANGELOG.md` section, one version bump across the app, crates and packages, and the tag `v1.(N-9).0` (Phase 10 is `v1.1.0`). Publishing the drafted release is the user's.
   3. Report what was done, each exit criterion's result and any known gaps.
   4. Show the next phase as a start-session card: `start_session` with `initiation: "own_initiative"`, `context: "fresh"` and `use_worktree: false`, so it works on `main` in this checkout. Then stop.
 - Never commit secrets, signing keys or test workbooks. Workbooks come from `scripts/fetch-test-workbooks`, and private ones stay out of git.

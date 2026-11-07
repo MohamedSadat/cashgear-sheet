@@ -487,3 +487,24 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 
 - **Signing:** the installer is signed by the run's throwaway certificate (`CN=CashGear Test Signing`), which Windows doesn't trust, so SmartScreen warns. The release notes say so.
 - **Updates:** `releases/latest/download/latest.json` now answers with 1.0.0, so installed copies will see later versions once their releases are published.
+
+## 2026-11-07: Planning after v1
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Feature phases after `v1.0.0` | Print and PDF export, RTL sheets, and Excel parity polish. `.xls`, `.xlsb` and `.ods` import wasn't chosen |
+| Upkeep phases | Large books: saving in slices, early refusal past the ceiling, faster reading and PWA `file_handlers`. Platforms and signing, engine upkeep and a native desktop host weren't chosen |
+| Order | Features first: Phase 10 Print and PDF export, Phase 11 RTL sheets, Phase 12 Large books, Phase 13 Excel parity polish |
+| Releases | A minor release per phase: each phase tags `phase-N` and `v1.(N-9).0`, so Phase 10 is `v1.1.0`, and the release workflow drafts its installer |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| What wasn't chosen | Kept under "Later" in `PLAN.md`: legacy formats, macOS, Firefox and Safari, engine upkeep and the 99.5% target, a native host, and collaboration only if that changes |
+| Code signing | No phase: the release workflow already signs with Azure Artifact Signing once its secrets exist, and with a throwaway certificate until then |
+| Each release | Its `CHANGELOG.md` section and one version across the app, crates and packages, as for 1.0.0. Publishing the drafted release stays yours |
+| Exit thresholds | Proposals, as before, confirmed in each phase's questions: 100 ms p99 reads during a save, a refusal within 30 s, and the 10M book ready in under 175 s |
+| Phase 13's scope | A list of candidates from Phases 5 to 8's known gaps, ranked and cut by you when the phase starts |

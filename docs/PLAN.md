@@ -1,4 +1,4 @@
-> Approved on 2026-11-01. This file is the plan; progress lives in `PROGRESS.md` and decisions in `decisions.md`.
+> Approved on 2026-11-01, with Phases 10 to 13 added on 2026-11-07 after `v1.0.0`. This file is the plan; progress lives in `PROGRESS.md` and decisions in `decisions.md`.
 
 # CashGear Sheet: Implementation Plan
 
@@ -16,7 +16,7 @@ It follows the pattern of CashGear Video (`cashgear-moviepro`) in layout, WASM b
 | Saving xlsx | Unsupported content stays byte-for-byte | Charts, pivots and macros still show in Excel after our save |
 | Formula engine | Formualizer behind a trait, on our fork at an exact commit | Phase 1 measured it against IronCalc. See `phase1-report.md` |
 | v1 scope | Editing, formulas, formatting, multiple sheets, sort, filter, tables, conditional formatting, data validation, charts, pivots | Print and PDF come after v1 |
-| Arabic | Arabic and mixed text display correctly; grid stays left to right | Direction stays in one place, so RTL sheets can come later |
+| Arabic | Arabic and mixed text display correctly; grid stays left to right in v1 | Direction stays in one place, so RTL sheets come in Phase 11 |
 | Theme | Light and dark mode everywhere, following the system with a manual switch | Uses `data-cg-theme` from `@cashgear/ui`; the grid follows it too |
 | Collaboration | None; static PWA with no server | Files stay on the device |
 | UI library | `@cashgear/ui`, commit-pinned git dependency as in CashGear Video | Missing generic components are built in `CashGear.React.UI` (Track U) |
@@ -24,6 +24,7 @@ It follows the pattern of CashGear Video (`cashgear-moviepro`) in layout, WASM b
 | File format | `.xlsx` is the save format; no private format | Crash-recovery data is kept separately |
 | Licences | No GPL, AGPL or LGPL in anything shipped | `cargo deny` and an npm licence check fail CI |
 | Name | CashGear Sheet, crate prefix `cgs-` | Matches the sibling apps |
+| After v1 | Print and PDF, RTL sheets, large books, then Excel parity polish (Phases 10 to 13), each a minor release | Chosen on 2026-11-07. What wasn't chosen is under "Later" |
 
 Default targets until Phase 0 confirms them: Windows 10/11 x64 first, macOS second; Chrome and Edge first, Safari and Firefox best-effort. Grid limits match Excel: 1,048,576 rows by 16,384 columns. All numeric exit thresholds below are proposals, confirmed in each phase's questions.
 
@@ -38,7 +39,7 @@ Default targets until Phase 0 confirms them: Windows 10/11 x64 first, macOS seco
 
 **End of every phase**
 1. Record evidence for each exit criterion in `docs/PROGRESS.md`.
-2. Commit, then tag `phase-N`.
+2. Commit, then tag `phase-N`. From Phase 10 on, each phase is also a minor release: its `CHANGELOG.md` section, the version bumped across the app, crates and packages, and the tag `v1.(N-9).0` (Phase 10 is `v1.1.0`), which drafts the release. Publishing it stays yours.
 3. Report done, exit results and known gaps, then show the next phase as a start-session card that opens in a new session. Then stop.
 
 **Git:**
@@ -277,14 +278,99 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 - [x] Installer test covers install, update and uninstall.
 - [x] PWA works offline, and double-clicking `.xlsx` opens the desktop app once it is chosen as the type's app.
 
-## After v1
-Print and PDF export; RTL sheets; `.xls`, `.xlsb` and `.ods` import; collaboration only if that changes. Macros are preserved on save but never run.
+### Phase 10: Print and PDF export (tag `v1.1.0`)
+**Goal:** a sheet prints and exports to PDF with Excel's page setup, and its pages break where Excel breaks them.
+
+**Questions:** Write PDF in Rust from a recording of the grid's own drawing (recommended), or print through the browser's dialog? Page Break Preview and Page Layout view in this phase, or Normal view only? Which font is embedded when the file's font isn't installed (Carlito for Calibri, as on screen)? Headers and footers with pictures, or text and fields only?
+
+**Tasks**
+1. Read and write page setup through span patching: `pageSetup`, `pageMargins`, `printOptions`, `headerFooter`, `rowBreaks` and `colBreaks`, and the `_xlnm.Print_Area` and `_xlnm.Print_Titles` names. `cgs-refs` moves them with structural edits.
+2. Pagination in Rust: Excel's rule for where pages break, with scaling and fit to pages, print titles, manual breaks, hidden rows and columns, gridlines and headings, centring and page order.
+3. A Page Layout ribbon tab (margins, orientation, size, print area, breaks, print titles, scale to fit, sheet options) and Excel's Page Setup dialog (Page, Margins, Header/Footer, Sheet).
+4. PDF: pages drawn by the same `draw.ts` code into a recording 2D context and written as vector PDF with font subsets, so text is searchable and Arabic is shaped as on screen. Charts and pictures go in too. Pages always use the file's own colours, never dark mode's. The writer passes the licence gates.
+5. File › Print: a preview of the pages, the system's print dialog on desktop and the browser's on web, and Export › PDF for the sheet, the selection or the workbook.
+
+**Exit**
+- [ ] Page breaks match Excel's `HPageBreaks` and `VPageBreaks` over COM on generated books covering every page setup option, and page counts match on the public files that hold page setup.
+- [ ] PDFs are reviewed side by side with Excel's `ExportAsFixedFormat`, and you sign off. `qpdf --check` (test only) finds nothing, and text extracts in reading order, Arabic included.
+- [ ] Page setup made here round-trips through Excel, and the matrix has no repair prompts.
+
+### Phase 11: RTL sheets (tag `v1.2.0`)
+**Goal:** right-to-left sheets look and work as in Excel, and save as such.
+
+**Questions:** Translate the app's own UI into Arabic in this phase, with the shell mirrored when it is Arabic, or later? New sheets left to right with a default direction setting, as Excel does (recommended), or following the UI language? Charts and pictures placed from the right, as Excel places them?
+
+**Tasks**
+1. The direction flag, kept in one place since Phase 2, through geometry, tile drawing, headers, frozen and split panes, scrollbars and the selection.
+2. Input mirrored: arrow keys, Tab, Enter, Home, End and Ctrl+arrows, the fill handle, dragging selections and sizes, the cell editor's direction, and where menus open.
+3. Drawings, notes and filter buttons placed from the right, as Excel places them, with their anchors saved unchanged.
+4. Sheet Right-to-Left on the Page Layout tab, where Excel 2016 has it, and a default direction setting. `sheetView rightToLeft` written through span patching.
+5. General alignment and text overflow in right-to-left sheets as Excel does them, and Phase 10's pages and PDFs mirrored.
+
+**Exit**
+- [ ] Right-to-left sheets drawn by Excel's `CopyPicture` and by the app, in light and dark, are reviewed side by side, and you sign off.
+- [ ] Keyboard and mouse e2e tests pass on mirrored sheets, and every left-to-right golden is unchanged.
+- [ ] `rightToLeft` round-trips through Excel, page breaks of right-to-left sheets match Excel's, and the matrix, rules check and fuzz stay clean.
+
+### Phase 12: Large books (tag `v1.3.0`)
+**Goal:** saving no longer holds the engine, books past the ceiling are refused in seconds, big books read faster, and the installed web app opens files from the system. These are Phase 9's known gaps.
+
+**Questions:** Save in slices between reads in the engine worker (recommended), or from a copy-on-write snapshot? Edits made during a save: queued behind it (recommended), or refused with a message? Refuse early only when the estimate is clearly past the ceiling (recommended), or also warn near it?
+
+**Tasks**
+1. Save in slices: the writer yields between rows and parts, tiles and reads are served between slices, edits wait in the command queue, and the status bar shows progress. The check before every swap stays.
+2. Early refusal: estimate formulas and values from part sizes and a sample of each sheet's `<f>` and shared ranges before reading, against the measured 430 bytes per formula and 14 per value, and refuse a book past the ceiling at once with the existing message.
+3. Faster reading: profile the 10M book's 264 s in WASM, where reading and building the graph take 2.4 times as long as natively, and fix what dominates. Formualizer changes go on the fork.
+4. PWA `file_handlers` and `launchQueue` for the five file types, so the installed web app opens a file from Open with.
+5. Phase 9's scale ladder and memory checks run again.
+
+**Exit**
+- [ ] During a save of the 25 MB formula book, tiles and cell reads are served within 100 ms at p99, edits made meanwhile land after it with the right answers, and the saved file opens clean in Excel.
+- [ ] The 15M-formula book is refused within 30 s, and every book on the ladder still opens.
+- [ ] The 10M-formula book is ready in under 175 s, a third less than Phase 9's 264 s.
+- [ ] The installed web app opens an `.xlsx` from Open with, in Chrome and Edge.
+
+### Phase 13: Excel parity polish (tag `v1.4.0`)
+**Goal:** the daily-use gaps that v1 left are closed.
+
+**Questions:** Which of the candidates below, and in what order? Sheet protection with Excel's password hash, or structure only? Which keys for key tips, given browsers take Alt+F and Alt+E?
+
+**Candidates,** from Phases 5 to 8's known gaps:
+- Sheet and workbook protection, with Format Cells' Protection tab.
+- Hiding and showing sheets; zoom saved per sheet.
+- Key tips.
+- Editing rich text runs in the cell, superscript and subscript drawn, and rich cells keeping their runs when pasted or moved.
+- Green error triangles and Error Checking; a circular reference warning that names the cells.
+- Notes edited in a box beside the cell, Show/Hide and Show All; Remove Hyperlink; a user name setting for authors.
+- Sort and filter by colour and by icon.
+- New and Modify Cell Style, and the file's own named styles in the gallery.
+- Pivot grouping made here, Drill Down, Show Report Filter Pages and GETPIVOTDATA from a click.
+- Chart trendlines and a Picture Format tab.
+
+**Tasks:** the chosen candidates, each with Excel 2016's behaviour measured over COM first, as in Phases 5 to 8.
+
+**Exit**
+- [ ] Each chosen candidate has an e2e test in Chrome and Edge, and an Excel COM check wherever COM can judge it.
+- [ ] The matrix opens every saved file with no repair, the rules check passes, and the fuzz has 0 diverged.
+
+## Later
+Not chosen on 2026-11-07, and kept for a later plan:
+- `.xls`, `.xlsb` and `.ods` import.
+- Platforms: macOS, and Firefox and Safari in CI. Azure Artifact Signing needs no phase: the release workflow uses it once its secrets exist.
+- Engine upkeep: rebasing the Formualizer fork onto current upstream, upstream PRs, `FORECAST.ETS`, and the 99.5% accuracy target.
+- A native desktop host to pass the ~10M-formula WASM ceiling.
+- Collaboration, only if that changes.
+
+Macros are preserved on save but never run.
 
 ## Top risks, by the earliest phase that exposes them
 - **Phase 1:** settled for yielding during calculation. Still open: wrong formula values (98.22% on real documents), spilled arrays after structural edits, memory use (936 MiB at 1,000,000 formulas), and a fast-changing upstream that the fork must follow.
 - **Phase 2:** font metric drift when Calibri isn't installed.
 - **Phase 3:** Excel repair prompts; whether `refreshOnLoad` is enough for pivots.
 - **Phase 4:** stale references in retained parts after structural edits.
+- **Phase 10:** Excel's page breaks depend on the printer driver and font metrics, so matching them may need the reference machine's default printer fixed. Embedding fonts and shaping Arabic in PDF without a licence the gates refuse.
+- **Phase 11:** every pointer and keyboard path assumes left to right, and the canvas's `direction` state already caused one Phase 2 bug.
+- **Phase 12:** a save in slices must never write cells that an edit changed partway through it.
 
 Phase 1 measured the engine facts above on 2026-11-02.
 

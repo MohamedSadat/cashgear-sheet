@@ -16,6 +16,11 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 7: Charts | Done 2026-11-06, with your sign-off on the chart review | `phase-7` |
 | Phase 8: Pivot tables | Done 2026-11-07 | `phase-8` |
 | Phase 9: Scale and release | Done 2026-11-07 | `v1.0.0` |
+| Planning after v1 | Done 2026-11-07: Phases 10 to 13 added to `PLAN.md` | |
+| Phase 10: Print and PDF export | Not started | `v1.1.0` |
+| Phase 11: RTL sheets | Not started | `v1.2.0` |
+| Phase 12: Large books | Not started | `v1.3.0` |
+| Phase 13: Excel parity polish | Not started | `v1.4.0` |
 
 ## Planning
 
