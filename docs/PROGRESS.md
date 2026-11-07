@@ -17,7 +17,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 8: Pivot tables | Done 2026-11-07 | `phase-8` |
 | Phase 9: Scale and release | Done 2026-11-07 | `v1.0.0` |
 | Planning after v1 | Done 2026-11-07: Phases 10 to 13 added to `PLAN.md` | |
-| Phase 10: Print and PDF export | Not started | `v1.1.0` |
+| Phase 10: Print and PDF export | Done 2026-11-08, with your sign-off on the PDF review and about 91% of public page counts accepted | `v1.1.0` |
 | Phase 11: RTL sheets | Not started | `v1.2.0` |
 | Phase 12: Large books | Not started | `v1.3.0` |
 | Phase 13: Excel parity polish | Not started | `v1.4.0` |
@@ -553,3 +553,49 @@ Every formula book's second edit gave the right answers in its row. The first ed
 - About 10M formulas is the ceiling. Reading a book that big takes over 4 minutes, and one past the ceiling takes 8 minutes to say so, as nothing predicts it before reading.
 - Saving still holds the engine worker for the whole save (Phase 3's gap), so tiles wait meanwhile on large books.
 - The installed web app doesn't take `.xlsx` files from the system (no `file_handlers` yet). macOS, Safari and Firefox weren't run.
+
+## Phase 10: Print and PDF export
+
+Sheets print and export to PDF with Excel's page setup, and their pages break where Excel 2016 breaks them. Measured on 2026-11-07 on the reference machine, in Chrome 156, with Excel 2016 (Office Professional Plus, Click-to-Run 16.0.19127.20860, x86) printing to Microsoft Print to PDF, and Formualizer pinned at fork commit `4dd2e77a`.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Page breaks match Excel's over COM on generated books covering every page setup option, and page counts match on the public files that hold page setup | Pass on generated books. Public files 91.3%, where you accepted 91.4% on 2026-11-07 | `bench/run-page-breaks.mjs` builds 36 books from `bench/print-books.mjs`: Letter, A4, Legal and A3 in both orientations; 50%, 75% and 130%; Fit To one page, one wide, one tall, 2 by 3 and over manual breaks; wide, narrow and odd margins; title rows and columns; manual breaks; hidden and resized lines; a row taller than a page; headings, gridlines and centring; over-then-down order; one and two print areas and a print area of whole rows; a range starting late; a formatted far cell; a 16-point and an Arial 10 normal font; a default column width; and everything at once. Excel reads its breaks with `GET.DOCUMENT(64)` and `(65)`, as `HPageBreaks` and `VPageBreaks` leave some out. 36 of 36 books have Excel's row breaks, column breaks and page count. **Public files:** 1,154 public books hold page setup; Excel opens 1,114 of them and the app reads them all. 1,721 of their 1,886 sheets (91.3%) have Excel's page count. The figure you accepted, 91.4%, came from a replay of the app against Excel's earlier counts. Excel's own count changed between its two runs on 10 sheets (LOGNORM from 4 to 6 pages, tdf137091 from 14 to 20), which accounts for the two sheets between them. The rest are listed under known gaps |
+| PDFs are reviewed side by side with Excel's `ExportAsFixedFormat`, and you sign off. `qpdf --check` finds nothing, and text extracts in reading order, Arabic included | Pass: you signed off on 2026-11-07 | `bench/run-pdf-review.mjs` has Excel export 8 workbooks (the print, formatting, Arabic and pivot fixtures and 4 generated books) and the app export the same through File › Export as PDF, then draws both with pdf.js into one page, [published for review](https://claude.ai/artifact/WsDmJf9vUVffLYF6XZKsUA). All 8 have Excel's page count (4, 3, 2, 2, 12, 12, 12 and 14 pages), and qpdf 12.4.2 finds nothing in any of the app's PDFs. pdf.js reads the Arabic page's text back in reading order, every Arabic letter right. The review found five things, fixed before sign-off: gridlines and headings now print black as in Excel, `&D` prints the year in full, the dots under a final yeh were cut off by the cell, a cell starting with a number drew right to left, and Excel crashed opening the print fixture, whose header picture lacked its shape formulas |
+| Page setup made here round-trips through Excel, and the matrix has no repair prompts | Pass | `bench/run-page-setup-roundtrip.mjs` makes six books in the app: landscape A4 fitted a page wide; scale, page order and first page number; margins and centring; sheet options; headers and footers with every field, fonts and different first, odd and even pages; and print areas, titles and breaks. Excel opens each with no repair, reads every setting as the app wrote it, and saves it again, and the app reads Excel's copy back the same: 6 of 6. `bench/run-excel-matrix.mjs`, with the print fixture added: 112 edits on each of 9 fixtures, among them page setup, print areas, titles and breaks. 1,008 of 1,008 saved files open in Excel with no repair, all 12 broken controls are refused, and 22 of 22 scenarios, 20 of 20 generated books and 4 of 4 large books are clean. |
+
+**What else was checked**
+
+- Fixtures: `bench/run-excel-text.mjs` on the 9 fixtures, the new print fixture included: all open, and 1,896 of 1,896 cells match Excel's text.
+- Saving: page setup is saved by editing the file's own `pageSetup`, `pageMargins`, `printOptions`, `headerFooter`, `rowBreaks`, `colBreaks` and `sheetPr`, so attributes the app doesn't know, such as the printer settings' `r:id`, stay, and a sheet nobody changed keeps them byte for byte (`crates/cgs-engine/tests/print.rs`).
+- Browsers: 226 of 226 end-to-end tests pass, 113 each in Chrome and Edge. The new `tests/e2e/print.spec.ts` sets a page up from the Page Layout tab and the Page Setup dialog, previews it in File › Print, exports a PDF and reads its text back, prints through the browser, and checks Normal view's dashed break lines against Excel's breaks.
+- Unit tests: 177 in Vitest and 597 in Rust, among them pagination against Excel's measured breaks, page setup reading and writing with undo, header and footer codes, the PDF writer's shaping, subsets and marks, and the page limit.
+- WASM gzip: 4.10 MB, against the 5 MB budget. The bundled PDF fonts (7.8 MB) load only when a PDF first needs them.
+- Licences: pdf-writer, subsetter, rustybuzz, unicode-bidi and miniz_oxide are MIT or Apache-2.0. Carlito, Caladea, Liberation and Noto Sans Arabic are OFL-1.1, shipped unmodified with their licences and listed in the third-party notices. qpdf is a test tool and never ships.
+- CI: green on `main` (build and test on Windows, and the licence gates), and the tags were pushed after it.
+
+**Found and fixed on the way**
+
+- Excel lays pages out in its printer's dots, not in points: rows print about 3% shorter and columns 8% wider than on screen, by factors that follow the workbook's normal font. Measured over COM for 24 fonts and sizes (`Units` in `crates/cgs-engine/src/print.rs`).
+- Excel prints from A1, keeps manual breaks along a side Fit To leaves automatic, and takes the default row height from the normal font. A cell in the normal font made its row taller than the default, and rows of fonts under 12 points were a pixel taller than Excel's.
+- What prints runs on through empty cells that text overflows into and covers one-cell and absolute pictures, but leaves out drawings that are hidden or set not to print. A page setup scale of 0 prints at 100%.
+- A sheet styled to its last cell read 17 billion cells and laid out 38 million pages, which froze the engine. Values are now read only as far as they go, and pages past 10,000 are counted but not laid out.
+- Noto Sans Arabic draws dots as marks that many letters share. A PDF needs a code for each glyph and its text, and marks drawn as outlines, or copying gives the wrong letters.
+
+**Track U**
+
+None this phase. The Page Layout tab uses the library's existing icons; print icons are a Track U job for a later phase.
+
+**Known gaps**
+
+- Public page counts: 165 of 1,886 sheets differ: Excel prints more pages on 91 and fewer on 74. The causes are: pivot tables Excel refreshes on open, which change their size before it counts; rows Excel makes taller to fit wrapped or larger text it measures itself; text overflow estimated from Calibri's widths; Excel skipping some blank pages and not others; and fonts whose factors weren't measured. 40 books Excel refuses to open, so they aren't compared. Excel's count isn't steady on some books, changing between runs on 10 sheets.
+- From the review: Excel moves the table below a header picture taller than the top margin, and the app doesn't. Excel prints the gray125 pattern as solid grey and its thin borders slightly heavier. Arabic text overflowing left from a right-aligned cell starts a few pixels further right in the app.
+- Overflowing text is measured with Calibri's widths scaled to the cell's font, so a long text in another font can reach a column more or less than in Excel. Text overflowing from a 255-character-wide column prints further in Excel than the text reaches.
+- Column factors for normal fonts that weren't measured follow Calibri 11's.
+- Comments don't print, at the end of the sheet or as displayed. The setting is kept and saved.
+- Page Break Preview and Page Layout view aren't in this phase. Normal view shows the breaks as dashed lines.
+- Chart sheets print as one landscape Letter page each, with Excel's normal margins. Their own page setup isn't read.
+- Headers and footers keep pictures already in a file, but pictures can't be added or changed here, as decided.
+- In a browser, installed fonts reach a PDF only once Local Font Access is granted. Otherwise Calibri, Cambria, Arial, Times New Roman and Courier New are drawn as their bundled twins with the same widths.
