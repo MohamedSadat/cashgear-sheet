@@ -797,6 +797,80 @@ export function structuresBook() {
   ]);
 }
 
+/** A small picture for a header: orange and blue stripes, 16 by 8 pixels. */
+const STRIPES_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAICAIAAAB/FOjAAAAAJklEQVR4nGP4sEBELuoEBBHDZiBJ9YcFIlANxNvDQJJqkIZh4AcA9vWsgaYP76gAAAAASUVORK5CYII=',
+  'base64',
+);
+
+/**
+ * Page setup of every kind for printing: a report in landscape on A4 with narrow margins, centred,
+ * printing gridlines and headings, a title row, a manual break, and a header with fields and a
+ * picture; and a wide sheet fitted to one page across.
+ */
+export function printBook() {
+  const report = [];
+  report.push(
+    '<row r="1">' +
+      ['Region', 'Item', 'Qty', 'Price', 'Total', 'Notes']
+        .map((text, at) => `<c r="${column(at + 1)}1" t="inlineStr"><is><t>${text}</t></is></c>`)
+        .join('') +
+      '</row>',
+  );
+  for (let r = 2; r <= 80; r++) {
+    report.push(
+      `<row r="${r}"><c r="A${r}" t="inlineStr"><is><t>${['North', 'South', 'East', 'West'][r % 4]}</t></is></c>` +
+        `<c r="B${r}" t="inlineStr"><is><t>Item ${r}</t></is></c><c r="C${r}"><v>${(r * 7) % 31}</v></c>` +
+        `<c r="D${r}"><v>${(r % 9) + 0.5}</v></c><c r="E${r}"><f>C${r}*D${r}</f><v>${((r * 7) % 31) * ((r % 9) + 0.5)}</v></c>` +
+        `<c r="F${r}" t="inlineStr"><is><t>${r % 5 ? 'ok' : 'check the count'}</t></is></c></row>`,
+    );
+  }
+  const wide = [];
+  for (let r = 1; r <= 60; r++) {
+    const cells = [];
+    for (let c = 1; c <= 20; c++) cells.push(`<c r="${column(c)}${r}"><v>${r * c}</v></c>`);
+    wide.push(`<row r="${r}">${cells.join('')}</row>`);
+  }
+  const reportXml =
+    `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}"><sheetPr><pageSetUpPr fitToPage="0"/></sheetPr><dimension ref="A1:F80"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="2" max="2" width="14" customWidth="1"/><col min="6" max="6" width="22" customWidth="1"/></cols><sheetData>${report.join('')}</sheetData>` +
+    `<printOptions horizontalCentered="1" headings="1" gridLines="1"/><pageMargins left="0.25" right="0.25" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="landscape"/>` +
+    `<headerFooter><oddHeader>&amp;L&amp;"Arial,Bold"&amp;12Quarterly report&amp;C&amp;G&amp;R&amp;D</oddHeader><oddFooter>&amp;L&amp;F&amp;CPage &amp;P of &amp;N&amp;R&amp;A</oddFooter></headerFooter>` +
+    `<rowBreaks count="1" manualBreakCount="1"><brk id="30" max="16383" man="1"/></rowBreaks><legacyDrawingHF r:id="rId1"/></worksheet>`;
+  const wideXml = `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:T60"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><sheetData>${wide.join('')}</sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><pageSetup fitToHeight="0" orientation="portrait"/><headerFooter><oddFooter>&amp;CPage &amp;P</oddFooter></headerFooter></worksheet>`;
+  const vml = `<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" o:preferrelative="t" path="m@4@5l@4@11@9@11@9@5xe" filled="f" stroked="f"><v:stroke joinstyle="miter"/><v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/><o:lock v:ext="edit" aspectratio="t"/></v:shapetype><v:shape id="CH" o:spid="_x0000_s1025" type="#_x0000_t75" style="position:absolute;margin-left:0;margin-top:0;width:48pt;height:24pt;z-index:1"><v:imagedata o:relid="rId1" o:title="stripes"/><o:lock v:ext="edit" rotation="t"/></v:shape></xml>`;
+  return zip([
+    [
+      '[Content_Types].xml',
+      `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+    ],
+    [
+      '_rels/.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ],
+    [
+      'xl/workbook.xml',
+      `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><bookViews><workbookView/></bookViews><sheets><sheet name="Report" sheetId="1" r:id="rId1"/><sheet name="Wide" sheetId="2" r:id="rId2"/></sheets><definedNames><definedName name="_xlnm.Print_Titles" localSheetId="0">Report!$1:$1</definedName></definedNames><calcPr calcId="191029"/></workbook>`,
+    ],
+    [
+      'xl/_rels/workbook.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${RELS}/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="${RELS}/styles" Target="styles.xml"/></Relationships>`,
+    ],
+    ['xl/styles.xml', HEADER + PLAIN_STYLES],
+    ['xl/worksheets/sheet1.xml', reportXml],
+    ['xl/worksheets/sheet2.xml', wideXml],
+    [
+      'xl/worksheets/_rels/sheet1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/vmlDrawing" Target="../drawings/vmlDrawingHF1.vml"/></Relationships>`,
+    ],
+    ['xl/drawings/vmlDrawingHF1.vml', vml],
+    [
+      'xl/drawings/_rels/vmlDrawingHF1.vml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/image" Target="../media/image1.png"/></Relationships>`,
+    ],
+    ['xl/media/image1.png', STRIPES_PNG],
+  ]);
+}
+
 /**
  * One of each thing in a file that holds a cell address, for structural edits to get right: merges,
  * conditional formats old and new, validation, a link, a comment and its shape, a chart, a table,

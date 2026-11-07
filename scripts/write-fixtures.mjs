@@ -12,6 +12,7 @@ import {
   movingPartsBook,
   prefixedBook,
   pivotBook,
+  printBook,
   structuresBook,
 } from '../tests/fixtures/workbooks.mjs';
 
@@ -28,6 +29,7 @@ for (const [name, bytes] of Object.entries({
   'structures.xlsx': structuresBook(),
   'moving-parts.xlsx': movingPartsBook(),
   'prefixed.xlsx': prefixedBook(),
+  'print.xlsx': printBook(),
 })) {
   writeFileSync(join(good, name), bytes);
 }

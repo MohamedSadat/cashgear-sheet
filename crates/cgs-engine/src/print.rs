@@ -573,6 +573,9 @@ impl Session {
             "manualRows": page.manual_row_breaks().collect::<Vec<_>>(),
             "manualCols": page.manual_col_breaks().collect::<Vec<_>>(),
             "printAreas": self.print_names(sheet).areas.into_iter().map(rect_json).collect::<Vec<_>>(),
+            "pictures": page.pictures.iter().map(|p| json!({
+                "place": p.place, "part": p.part, "width": p.width, "height": p.height,
+            })).collect::<Vec<_>>(),
         }))
     }
 }

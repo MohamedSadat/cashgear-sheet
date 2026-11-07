@@ -492,6 +492,79 @@ pub fn page_elements(page: &PageSetup, captured: &[(String, Vec<u8>)]) -> Vec<Ne
     ]
 }
 
+/// A length in VML's style, such as `94.5pt` or `1in`, in points.
+fn vml_points(value: &str) -> Option<f64> {
+    let value = value.trim();
+    let (number, unit) = value
+        .find(|c: char| c.is_ascii_alphabetic())
+        .map_or((value, "px"), |at| value.split_at(at));
+    let number: f64 = number.trim().parse().ok()?;
+    Some(match unit {
+        "pt" => number,
+        "in" => number * 72.0,
+        "cm" => number * 72.0 / 2.54,
+        "mm" => number * 72.0 / 25.4,
+        "pc" => number * 12.0,
+        _ => number * 0.75,
+    })
+}
+
+/// The pictures of `legacyDrawingHF`'s VML: each shape's place, from its id, its size from its
+/// style, and its picture through the VML's own relationships.
+pub fn read_hf_pictures<S: std::hash::BuildHasher>(
+    xml: &[u8],
+    rels: &std::collections::HashMap<String, (String, String), S>,
+) -> Vec<cgs_model::HfPicture> {
+    let mut out = Vec::new();
+    let mut reader = Reader::from_reader(xml);
+    let mut buf = Vec::new();
+    let mut shape: Option<(String, f64, f64)> = None;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Start(element)) | Ok(Event::Empty(element)) => {
+                match element.local_name().as_ref() {
+                    b"shape" => {
+                        let id = attr(&element, b"id").unwrap_or_default();
+                        let style = attr(&element, b"style").unwrap_or_default();
+                        let mut width = 0.0;
+                        let mut height = 0.0;
+                        for part in style.split(';') {
+                            if let Some((key, value)) = part.split_once(':') {
+                                match key.trim() {
+                                    "width" => width = vml_points(value).unwrap_or(0.0),
+                                    "height" => height = vml_points(value).unwrap_or(0.0),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        shape = Some((id, width, height));
+                    }
+                    b"imagedata" => {
+                        let Some((place, width, height)) = shape.clone() else {
+                            continue;
+                        };
+                        let relid = attr(&element, b"relid").or_else(|| attr(&element, b"id"));
+                        if let Some((_, part)) = relid.and_then(|id| rels.get(&id)) {
+                            out.push(cgs_model::HfPicture {
+                                place,
+                                part: part.clone(),
+                                width,
+                                height,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"shape" => shape = None,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 /// `sheetPr` with `pageSetUpPr`'s `fitToPage` as given, the element made where it is needed
 /// and every other part kept.
 pub fn edit_sheet_pr(xml: &[u8], fit: bool) -> io::Result<Vec<u8>> {
@@ -562,6 +635,26 @@ mod tests {
         let mut page = PageSetup::default();
         read_page_element(name.as_bytes(), xml.as_bytes(), &mut page);
         page
+    }
+
+    #[test]
+    fn reads_header_pictures() {
+        let vml = br##"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><v:shapetype id="_x0000_t75"/><v:shape id="CH" o:spid="_x0000_s1025" type="#_x0000_t75" style='position:absolute;margin-left:0;margin-top:0;width:94.5pt;height:0.5in;z-index:1'><v:imagedata o:relid="rId1" o:title="logo"/><o:lock v:ext="edit" rotation="t"/></v:shape><v:shape id="RFFIRST" style="width:20pt;height:10pt"><v:imagedata o:relid="rId2"/></v:shape></xml>"##;
+        let mut rels = std::collections::HashMap::new();
+        rels.insert(
+            "rId1".to_string(),
+            ("image".to_string(), "xl/media/image1.png".to_string()),
+        );
+        rels.insert(
+            "rId2".to_string(),
+            ("image".to_string(), "xl/media/image2.jpeg".to_string()),
+        );
+        let pictures = read_hf_pictures(vml, &rels);
+        assert_eq!(pictures.len(), 2);
+        assert_eq!(pictures[0].place, "CH");
+        assert_eq!(pictures[0].part, "xl/media/image1.png");
+        assert_eq!((pictures[0].width, pictures[0].height), (94.5, 36.0));
+        assert_eq!(pictures[1].place, "RFFIRST");
     }
 
     #[test]

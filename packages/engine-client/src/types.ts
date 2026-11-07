@@ -908,6 +908,8 @@ export interface PagesInfo {
   manualRows: number[];
   manualCols: number[];
   printAreas: CellArea[];
+  /** The header and footer's pictures, by section: `CH` is the centre of the header. */
+  pictures: { place: string; part: string; width: number; height: number }[];
 }
 
 /** A colour as a format gives it. Theme colours stay references to the theme. */

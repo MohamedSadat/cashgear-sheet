@@ -292,6 +292,7 @@ impl Loader {
                             self.read_drawings(book, sheet, rel);
                         }
                         self.read_notes(book, sheet);
+                        self.read_hf_pictures(book, sheet);
                     }
                     if !keep_going() {
                         return Ok(false);
@@ -342,6 +343,22 @@ impl Loader {
             .find(|(name, _)| name == "hyperlinks")
             .map(|(_, xml)| notes::read_links(xml, &self.package, &part));
         info.links = links.unwrap_or_default();
+    }
+
+    /// The pictures a sheet's header and footer show, from `legacyDrawingHF`.
+    fn read_hf_pictures(&self, book: &mut Book, sheet: u32) {
+        let info = &mut book.sheets[sheet as usize];
+        let (Some(part), Some(rel)) = (info.part.clone(), info.page.pictures_rel.clone()) else {
+            return;
+        };
+        let rels = workbook::read_relationships(&self.package, &part);
+        let Some((_, vml)) = rels.get(&rel) else {
+            return;
+        };
+        if let Some(xml) = self.package.read(vml) {
+            let images = workbook::read_relationships(&self.package, vml);
+            info.page.pictures = page::read_hf_pictures(&xml, &images);
+        }
     }
 
     fn read_drawings(&self, book: &mut Book, sheet: u32, rel: &str) {

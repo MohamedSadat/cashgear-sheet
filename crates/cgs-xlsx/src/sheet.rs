@@ -1032,6 +1032,7 @@ fn read_tail_element(
             }
         }
         b"drawing" => *drawing = attr(element, b"id"),
+        b"legacyDrawingHF" => info.page.pictures_rel = attr(element, b"id"),
         b"pageSetUpPr" => {
             info.page.fit_to_page = crate::xml::attr_bool(element, b"fitToPage").unwrap_or(false);
         }

@@ -24,8 +24,8 @@ pub use filter::{
 };
 pub use notes::{Hyperlink, Note};
 pub use page::{
-    HeaderFooter, HfFields, HfRun, HfSections, HfStyle, HfText, Margins, Orientation, PageBreak,
-    PageOrder, PageSetup, PrintComments, PrintErrors,
+    HeaderFooter, HfFields, HfPicture, HfRun, HfSections, HfStyle, HfText, Margins, Orientation,
+    PageBreak, PageOrder, PageSetup, PrintComments, PrintErrors,
 };
 pub use sheet::{
     Anchor, AnchorPoint, ColAxis, ColumnRuns, Drawing, DrawingKind, Freeze, LineInfo, RowAxis,

@@ -5,7 +5,7 @@ import { drawTile, TILE_COLS, TILE_ROWS } from './tile-draw';
 import { RecordingContext, type Matrix, type PdfOp, type Recording } from './recording';
 import type { SheetLayout } from './layout';
 import type { ViewBlock } from './view-block';
-import { TILE_NOT_READY } from './view-block';
+import { cellText, KIND_MASK, KIND_OTHER, TILE_NOT_READY } from './view-block';
 import type { DrawingBox, HfRun, HfSections, PageInfo, PagesInfo, TilePalette } from './types';
 
 export interface RecordedPage {
@@ -109,11 +109,36 @@ function columnName(col: number): string {
   return name;
 }
 
+const ERRORS =
+  /^#(N\/A|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|NULL!|SPILL!|CALC!|FIELD!|BLOCKED!|CONNECT!|BUSY!|UNKNOWN!|GETTING_DATA)$/;
+
+/** Page Setup's "Cell errors as": error values shown blank, as `--` or as `#N/A`. */
+export function replaceErrors(block: ViewBlock, mode: PagesInfo['errors']): ViewBlock {
+  if (mode === 'displayed') return block;
+  const shown = mode === 'blank' ? '' : mode === 'dash' ? '--' : '#N/A';
+  const extra = new TextEncoder().encode(shown);
+  const heap = new Uint8Array(block.heap.length + extra.length);
+  heap.set(block.heap);
+  heap.set(extra, block.heap.length);
+  const cells = block.cells.slice();
+  for (let row = 0; row < block.rows; row++) {
+    for (let col = 0; col < block.cols; col++) {
+      const at = (row * block.cols + col) * 6;
+      const flags = cells[at + 4]! >>> 16;
+      if ((flags & KIND_MASK) !== KIND_OTHER || !ERRORS.test(cellText(block, row, col))) continue;
+      cells[at] = block.heap.length;
+      cells[at + 1] = extra.length;
+    }
+  }
+  return { ...block, cells, heap };
+}
+
 class Blocks {
   private readonly cache = new Map<string, Promise<ViewBlock>>();
   constructor(
     private readonly source: PrintSource,
     private readonly sheet: number,
+    private readonly errors: PagesInfo['errors'] = 'displayed',
   ) {}
 
   get(firstRow: number, firstCol: number): Promise<ViewBlock> {
@@ -130,7 +155,9 @@ class Blocks {
   private async read(firstRow: number, firstCol: number): Promise<ViewBlock> {
     for (let attempt = 0; ; attempt++) {
       const block = await this.source.block(this.sheet, firstRow, firstCol);
-      if (!(block.flags & TILE_NOT_READY) || attempt >= 200) return block;
+      if (!(block.flags & TILE_NOT_READY) || attempt >= 200) {
+        return replaceErrors(block, this.errors);
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
@@ -229,6 +256,10 @@ function runColor(color: string | null): string {
 }
 
 interface HfPiece {
+  /** A picture's index in the recording, drawn instead of text. */
+  image?: number;
+  /** A picture's height. */
+  height?: number;
   text: string;
   css: string;
   size: number;
@@ -247,9 +278,27 @@ function sectionLines(
   fallback: string,
   scale: number,
   measure: OffscreenCanvasRenderingContext2D,
+  picture: { image: number; width: number; height: number } | null,
 ): HfPiece[][] {
   const lines: HfPiece[][] = [[]];
   for (const run of runs) {
+    if (run.field === 'picture') {
+      if (picture) {
+        lines[lines.length - 1]!.push({
+          image: picture.image,
+          height: picture.height * scale,
+          text: '',
+          css: '',
+          size: 0,
+          color: '#000000',
+          underline: 0,
+          strike: false,
+          rise: 0,
+          width: picture.width * scale,
+        });
+      }
+      continue;
+    }
     let text: string;
     switch (run.field) {
       case 'page':
@@ -272,9 +321,6 @@ function sectionLines(
         break;
       case 'sheet':
         text = fields.sheet;
-        break;
-      case 'picture':
-        text = '';
         break;
       default:
         text = String(run.text ?? '');
@@ -320,6 +366,8 @@ function drawHeaderFooter(
   options: PrintOptions,
   page: number,
   footer: boolean,
+  /** The pictures this page's header or footer shows, by section: `L`, `C` or `R`. */
+  pictures: Record<string, { image: number; width: number; height: number } | null>,
 ) {
   if (!sections) return;
   const [paperW, paperH] = info.paper;
@@ -335,9 +383,21 @@ function drawHeaderFooter(
     ['right', sections.right],
   ] as const) {
     if (!runs.length) continue;
-    const lines = sectionLines(runs, fields, info.font, options.fontFamily, scale, measure);
-    const heights = lines.map(
-      (line) => Math.max(info.font.size * scale, ...line.map((p) => p.size)) * 1.2,
+    const picture = pictures[key[0]!.toUpperCase()] ?? null;
+    const lines = sectionLines(
+      runs,
+      fields,
+      info.font,
+      options.fontFamily,
+      scale,
+      measure,
+      picture,
+    );
+    const heights = lines.map((line) =>
+      Math.max(
+        info.font.size * scale * 1.2,
+        ...line.map((p) => (p.image !== undefined ? (p.height ?? 0) : p.size * 1.2)),
+      ),
     );
     const total = heights.reduce((a, b) => a + b, 0);
     let y = footer ? paperH - info.margins.footer - total : info.margins.header;
@@ -347,6 +407,13 @@ function drawHeaderFooter(
       let x = key === 'left' ? left : key === 'right' ? right - width : (paperW - width) / 2;
       const baseline = y + height * 0.8;
       for (const piece of line) {
+        if (piece.image !== undefined) {
+          // A picture sits on the line's bottom, as Excel lines it up.
+          const h = piece.height ?? 0;
+          context.drawRecorded(piece.image, x, y + height - h, piece.width, h);
+          x += piece.width;
+          continue;
+        }
         context.font = piece.css;
         context.fillStyle = piece.color;
         context.textAlign = 'left';
@@ -503,8 +570,27 @@ async function recordPage(
     undefined,
     options.measuring,
   );
-  drawHeaderFooter(paper, header, info, options, number, false);
-  drawHeaderFooter(paper, footer, info, options, number, true);
+  const hf = info.headerFooter;
+  const suffix =
+    hf.differentFirst && index === 0
+      ? 'FIRST'
+      : hf.differentOddEven && number % 2 === 0
+        ? 'EVEN'
+        : '';
+  const pictures = async (part: 'H' | 'F') => {
+    const out: Record<string, { image: number; width: number; height: number } | null> = {};
+    for (const section of ['L', 'C', 'R']) {
+      const found = info.pictures?.find((p) => p.place.toUpperCase() === section + part + suffix);
+      const image = found && options.picture ? await options.picture(found.part) : null;
+      out[section] =
+        found && image !== null && image !== undefined
+          ? { image, width: found.width, height: found.height }
+          : null;
+    }
+    return out;
+  };
+  drawHeaderFooter(paper, header, info, options, number, false, await pictures('H'));
+  drawHeaderFooter(paper, footer, info, options, number, true, await pictures('F'));
   const ops = [...context.ops, ...paper.ops];
   return {
     width: info.paper[0],
@@ -553,7 +639,7 @@ export async function recordSheetPages(
   sheet: SheetPrint,
   options: PrintOptions,
 ): Promise<RecordedPage[]> {
-  const blocks = new Blocks(source, sheet.info.sheet);
+  const blocks = new Blocks(source, sheet.info.sheet, sheet.info.errors);
   const pages: RecordedPage[] = [];
   for (let index = 0; index < sheet.info.pages.length; index++) {
     pages.push(await recordPage(sheet, sheet.info.pages[index]!, index, blocks, options));

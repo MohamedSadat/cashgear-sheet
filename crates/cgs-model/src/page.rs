@@ -149,6 +149,19 @@ impl HeaderFooter {
     }
 }
 
+/// A picture in a header or footer, as `legacyDrawingHF`'s shapes place them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HfPicture {
+    /// Which section: `LH`, `CH`, `RH`, `LF`, `CF` or `RF`, with `EVEN` or `FIRST` after it for
+    /// those pages' own.
+    pub place: String,
+    /// The picture's part, such as `xl/media/image1.png`.
+    pub part: String,
+    /// In points.
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Everything about how a sheet prints, apart from its print area and titles, which are defined
 /// names.
 #[derive(Debug, Clone, PartialEq)]
@@ -181,6 +194,9 @@ pub struct PageSetup {
     pub header_footer: HeaderFooter,
     pub row_breaks: Vec<PageBreak>,
     pub col_breaks: Vec<PageBreak>,
+    /// The relationship of `legacyDrawingHF`, which holds the header and footer's pictures.
+    pub pictures_rel: Option<String>,
+    pub pictures: Vec<HfPicture>,
 }
 
 impl Default for PageSetup {
@@ -208,6 +224,8 @@ impl Default for PageSetup {
             header_footer: HeaderFooter::default(),
             row_breaks: Vec::new(),
             col_breaks: Vec::new(),
+            pictures_rel: None,
+            pictures: Vec::new(),
         }
     }
 }
