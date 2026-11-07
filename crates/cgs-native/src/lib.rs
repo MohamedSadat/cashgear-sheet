@@ -1,5 +1,6 @@
 //! Desktop-only native side: identifying the host, serving byte ranges of chosen files, saving
-//! them atomically, working copies, and the recent files list. Phase 9 adds the file association.
+//! them atomically, working copies, the recent files list, and the workbook a double-click in
+//! Explorer starts the app with.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -417,9 +418,62 @@ impl RecentStore {
     }
 }
 
+/// The file types the installer registers the app for, which it opens when started with one.
+pub const OPENABLE_EXTENSIONS: [&str; 5] = ["xlsx", "xlsm", "xltx", "xltm", "csv"];
+
+/// The workbook the app was started with: Explorer runs `cgs-desktop.exe "C:\Books\Sales.xlsx"`
+/// for a double-click. The first argument that names an existing file of a type the app opens,
+/// made absolute against `cwd`. Anything else, such as a flag, is no file to open.
+pub fn launch_path(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    cwd: &Path,
+) -> Option<PathBuf> {
+    args.into_iter().skip(1).find_map(|arg| {
+        let path = PathBuf::from(arg);
+        if path.to_string_lossy().starts_with('-') {
+            return None;
+        }
+        let openable = path.extension().is_some_and(|ext| {
+            OPENABLE_EXTENSIONS
+                .iter()
+                .any(|known| ext.to_string_lossy().eq_ignore_ascii_case(known))
+        });
+        let path = if path.is_absolute() {
+            path
+        } else {
+            cwd.join(path)
+        };
+        (openable && path.is_file()).then_some(path)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_double_click_names_the_workbook_to_open() {
+        let dir = temp_dir("launch");
+        let book = dir.join("Quarterly Sales.XLSX");
+        fs::write(&book, b"PK").unwrap();
+        fs::write(dir.join("notes.txt"), b"text").unwrap();
+        let args = |list: &[&str]| -> Vec<std::ffi::OsString> {
+            std::iter::once("cgs-desktop.exe")
+                .chain(list.iter().copied())
+                .map(Into::into)
+                .collect()
+        };
+        let path = book.to_string_lossy().into_owned();
+        assert_eq!(launch_path(args(&[&path]), &dir), Some(book.clone()));
+        // Relative to where it was started, past flags and files it doesn't open.
+        assert_eq!(
+            launch_path(args(&["--flag", "notes.txt", "Quarterly Sales.XLSX"]), &dir),
+            Some(book)
+        );
+        assert_eq!(launch_path(args(&["missing.xlsx"]), &dir), None);
+        assert_eq!(launch_path(args(&[]), &dir), None);
+        assert_eq!(launch_path(args(&["notes.txt"]), &dir), None);
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("cgs-native-{name}-{}", std::process::id()));

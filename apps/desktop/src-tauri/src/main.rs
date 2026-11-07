@@ -1,15 +1,47 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod updates;
+
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use cgs_native::{FileRegistry, NativeFile, ReadRange, RecentFile, RecentStore, SaveStore};
+use serde::Serialize;
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+#[derive(Serialize)]
+struct AppInfo {
+    product: &'static str,
+    /// The app's version from its bundle settings, which the updater compares.
+    version: String,
+    os: &'static str,
+    arch: &'static str,
+}
+
 #[tauri::command]
-fn native_info() -> cgs_native::NativeInfo {
-    cgs_native::info()
+fn native_info(app: AppHandle) -> AppInfo {
+    let info = cgs_native::info();
+    AppInfo {
+        product: info.product,
+        version: app.package_info().version.to_string(),
+        os: info.os,
+        arch: info.arch,
+    }
+}
+
+/// The workbook a double-click in Explorer started this window with, until the page takes it.
+struct LaunchFile(Mutex<Option<PathBuf>>);
+
+/// The workbook to open first, once: a reload of the page doesn't open it again.
+#[tauri::command]
+fn launch_file(
+    launch: State<'_, LaunchFile>,
+    files: State<'_, FileRegistry>,
+) -> Result<Option<NativeFile>, String> {
+    let path = launch.0.lock().map_err(|error| error.to_string())?.take();
+    path.map(|path| files.register(&path)).transpose()
 }
 
 /// Asks for a workbook, without blocking the UI thread the dialog needs.
@@ -275,6 +307,12 @@ fn process_runs(id: u32) -> bool {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(LaunchFile(Mutex::new(
+            std::env::current_dir()
+                .ok()
+                .and_then(|cwd| cgs_native::launch_path(std::env::args_os(), &cwd)),
+        )))
         .manage(FileRegistry::default())
         .manage(SaveStore::default())
         .setup(|app| {
@@ -306,6 +344,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             native_info,
+            launch_file,
+            updates::update_check,
+            updates::update_install,
             pick_file,
             recent_files,
             open_recent,

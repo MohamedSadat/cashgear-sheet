@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CashGear Sheet",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "identifier": "com.cashgear.sheet",
   "build": {
     "beforeDevCommand": "pnpm --dir ../.. dev:web",
@@ -36,6 +36,24 @@
     "category": "Productivity",
     "shortDescription": "CashGear Sheet",
     "longDescription": "A spreadsheet for the browser and the desktop.",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU3NkVFQzk3NDczOThEODYKUldTR2pUbEhsK3h1NTN4ZEFzL3FuZzBvWDVCT1Q3eU53SDk5V1pBRWVyeGttQ1dlR3JFNXp0VkgK",
+      "endpoints": [
+        "https://github.com/MohamedSadat/cashgear-sheet/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

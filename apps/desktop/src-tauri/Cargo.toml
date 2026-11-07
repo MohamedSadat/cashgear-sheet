@@ -11,9 +11,15 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 cgs-native.workspace = true
+serde.workspace = true
+# generate_context! embeds the plugins' settings as JSON.
+serde_json = "1"
 # The same minor as @tauri-apps/api and @tauri-apps/cli, which the Tauri CLI checks.
 tauri = { version = "~2.12", features = [] }
 tauri-plugin-dialog = "2"
+# The OS certificate store (SChannel on Windows) rather than a bundled one: the default rustls
+# brings webpki-root-certs, whose CDLA-Permissive-2.0 the licence gate refuses.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
