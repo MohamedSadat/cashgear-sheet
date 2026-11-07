@@ -240,7 +240,12 @@ export function usePrintTools(host: PrintToolsHost) {
       if (!target) return;
       const bytes = await jobPdf(engine, job, fontSource());
       await target.write(new Blob([bytes.slice()], { type: 'application/pdf' }));
-      h.notice(`Saved ${job.pages.length} page${job.pages.length === 1 ? '' : 's'} as a PDF.`);
+      const left = job.omitted
+        ? ` The ${job.omitted.toLocaleString()} pages after them were left out.`
+        : '';
+      h.notice(
+        `Saved ${job.pages.length} page${job.pages.length === 1 ? '' : 's'} as a PDF.${left}`,
+      );
     },
     [fontSource],
   );

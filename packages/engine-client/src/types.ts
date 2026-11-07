@@ -885,6 +885,8 @@ export interface PagesInfo {
     footer: number;
   };
   zoom: number;
+  /** Every page, where `pages` stops at the engine's limit of 10,000. */
+  pageCount: number;
   firstPage: number | null;
   gridlines: boolean;
   headings: boolean;

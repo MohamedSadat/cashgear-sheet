@@ -54,6 +54,8 @@ export interface PrintJob {
   recording: Recording;
   /** Each sheet's pages, in print order. */
   sheets: PagesInfo[];
+  /** Pages past the engine's limit, which are left out. */
+  omitted: number;
   /** How a face's CSS changes to draw as the PDF will. */
   measuring: (css: string) => string;
 }
@@ -223,6 +225,11 @@ export async function makeJob(host: JobHost, choice: PrintChoice): Promise<Print
     pages,
     recording,
     sheets: infos.filter((info) => !chartSheets.has(info.sheet)),
+    omitted: infos.reduce(
+      (sum, info) =>
+        sum + (chartSheets.has(info.sheet) ? 0 : Math.max(0, info.pageCount - info.pages.length)),
+      0,
+    ),
     measuring,
   };
 }
