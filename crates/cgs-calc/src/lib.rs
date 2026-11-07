@@ -391,4 +391,7 @@ pub trait CalcEngine {
     fn start_volatile(&mut self) -> Result<()>;
     fn read_block(&self, r: SheetRect, out: &mut dyn CellSink);
     fn formula_text(&self, at: CellRef) -> Option<String>;
+    /// The last row and the last column holding a value or a formula, without reading the cells
+    /// between, or nothing on an empty sheet.
+    fn value_bounds(&self, sheet: u32) -> Option<(u32, u32)>;
 }

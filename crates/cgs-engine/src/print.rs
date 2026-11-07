@@ -154,7 +154,10 @@ pub struct PageBox {
 pub struct Paginated {
     /// The percent pages print at.
     pub zoom: u32,
+    /// The first `PAGE_LIMIT` pages.
     pub pages: Vec<PageBox>,
+    /// Every page, those past the limit too.
+    pub count: usize,
     /// The last row and column of each page but the last, for the dashed lines in Normal view.
     pub row_breaks: Vec<u32>,
     pub col_breaks: Vec<u32>,
@@ -207,15 +210,30 @@ fn title_size(titles: Option<(u32, u32)>, size: &dyn Fn(u32) -> f64) -> f64 {
     titles.map_or(0.0, |(a, b)| sum(a, b, size))
 }
 
-/// Pages at one percent, with or without manual breaks. `row` and `col` give each line's
-/// size in screen pixels at 100%, hidden ones 0.
+/// The most pages laid out. A sheet styled to its last cell would print millions of pages; they
+/// are counted, but only these many are placed.
+pub const PAGE_LIMIT: usize = 10_000;
+
+/// The pages at one percent.
+struct AtZoom {
+    pages: Vec<PageBox>,
+    count: usize,
+    row_breaks: Vec<u32>,
+    col_breaks: Vec<u32>,
+    /// Each area's pages down and across.
+    shape: Vec<(usize, usize)>,
+}
+
+/// Pages at one percent, with or without manual breaks, up to `limit` of them placed. `row` and
+/// `col` give each line's size in screen pixels at 100%, hidden ones 0.
 fn pages_at(
     layout: &Layout,
     zoom: u32,
     manual: bool,
+    limit: usize,
     row: &dyn Fn(u32) -> u32,
     col: &dyn Fn(u32) -> u32,
-) -> (Vec<PageBox>, Vec<u32>, Vec<u32>) {
+) -> AtZoom {
     let units = layout.units;
     let (left, right, top, bottom) = layout.margins;
     let printable_w = (layout.paper.0 - left - right).max(1.0);
@@ -248,6 +266,7 @@ fn pages_at(
     let mut pages = Vec::new();
     let mut row_breaks = Vec::new();
     let mut col_breaks = Vec::new();
+    let mut shape = Vec::new();
     for (index, area) in layout.areas.iter().enumerate() {
         let rows = segments(
             area.top,
@@ -270,7 +289,11 @@ fn pages_at(
         // Every area's breaks, as Excel lists them; where one area ends isn't a break.
         row_breaks.extend(rows.iter().rev().skip(1).map(|&(_, end)| end));
         col_breaks.extend(cols.iter().rev().skip(1).map(|&(_, end)| end));
+        shape.push((rows.len(), cols.len()));
         let mut place = |r: (u32, u32), c: (u32, u32)| {
+            if pages.len() >= limit {
+                return;
+            }
             let title_rows = layout.title_rows.filter(|&(_, end)| end < r.0);
             let title_cols = layout.title_cols.filter(|&(_, end)| end < c.0);
             let width = units.points(
@@ -328,7 +351,13 @@ fn pages_at(
     row_breaks.dedup();
     col_breaks.sort_unstable();
     col_breaks.dedup();
-    (pages, row_breaks, col_breaks)
+    AtZoom {
+        pages,
+        count: shape.iter().map(|&(down, across)| down * across).sum(),
+        row_breaks,
+        col_breaks,
+        shape,
+    }
 }
 
 /// How many pages wide and tall the first print area takes at a percent, others added in.
@@ -338,22 +367,10 @@ fn extent(
     row: &dyn Fn(u32) -> u32,
     col: &dyn Fn(u32) -> u32,
 ) -> (u32, u32) {
-    let (pages, _, _) = pages_at(layout, zoom, false, row, col);
-    let mut wide = 0u32;
-    let mut tall = 0u32;
-    for index in 0..layout.areas.len() {
-        let here: Vec<&PageBox> = pages.iter().filter(|p| p.area == index).collect();
-        let mut cols: Vec<(u32, u32)> = here.iter().map(|p| p.cols).collect();
-        cols.dedup();
-        cols.sort_unstable();
-        cols.dedup();
-        let mut rows: Vec<(u32, u32)> = here.iter().map(|p| p.rows).collect();
-        rows.sort_unstable();
-        rows.dedup();
-        wide = wide.max(cols.len() as u32);
-        tall += rows.len() as u32;
-    }
-    (wide, tall)
+    let shape = pages_at(layout, zoom, false, 0, row, col).shape;
+    let wide = shape.iter().map(|&(_, across)| across).max().unwrap_or(0);
+    let tall = shape.iter().map(|&(down, _)| down).sum::<usize>();
+    (wide as u32, tall as u32)
 }
 
 /// Lays out the pages. `row` and `col` give each line's size in screen pixels at 100%, hidden
@@ -371,12 +388,13 @@ pub fn paginate(layout: &Layout, row: &dyn Fn(u32) -> u32, col: &dyn Fn(u32) -> 
             (10..=100).rev().find(|&zoom| fits(zoom)).unwrap_or(10)
         }
     };
-    let (pages, row_breaks, col_breaks) = pages_at(layout, zoom, true, row, col);
+    let at = pages_at(layout, zoom, true, PAGE_LIMIT, row, col);
     Paginated {
         zoom,
-        pages,
-        row_breaks,
-        col_breaks,
+        pages: at.pages,
+        count: at.count,
+        row_breaks: at.row_breaks,
+        col_breaks: at.col_breaks,
     }
 }
 
@@ -507,15 +525,19 @@ impl Session {
             }
         }
         let (rows, cols) = info.used;
-        if rows > 0 && cols > 0 {
+        // Styled blanks can make the used range the whole sheet; values are read only as far as
+        // they go.
+        let (value_rows, value_cols) = self.calc.value_bounds(sheet).unwrap_or((0, 0));
+        let (read_rows, read_cols) = (rows.min(value_rows), cols.min(value_cols));
+        if read_rows > 0 && read_cols > 0 {
             self.calc.read_block(
                 SheetRect {
                     sheet,
                     rect: cgs_calc::Rect {
                         top: 1,
                         left: 1,
-                        bottom: rows,
-                        right: cols,
+                        bottom: read_rows,
+                        right: read_cols,
                     },
                 },
                 &mut Seen {
@@ -524,6 +546,8 @@ impl Session {
                     texts: &mut texts,
                 },
             );
+        }
+        if rows > 0 && cols > 0 {
             let styles = &self.book.styles;
             let shows = |style: u32| {
                 styles.xfs.get(style as usize).is_some_and(|xf| {
@@ -762,6 +786,7 @@ impl Session {
             "margins": { "left": m.left * 72.0, "right": m.right * 72.0, "top": m.top * 72.0,
                          "bottom": m.bottom * 72.0, "header": m.header * 72.0, "footer": m.footer * 72.0 },
             "zoom": paginated.as_ref().map_or(100, |p| p.zoom),
+            "pageCount": paginated.as_ref().map_or(0, |p| p.count),
             "firstPage": page.first_page,
             "gridlines": page.gridlines,
             "headings": page.headings,
@@ -884,6 +909,17 @@ mod tests {
         l.zoom = Zoom::Fit { wide: 1, tall: 2 };
         let fitted = paginate(&l, ROW, COL);
         assert_eq!(fitted.row_breaks, vec![47]);
+    }
+
+    #[test]
+    fn a_sheet_styled_to_its_last_cell_is_counted_not_laid_out() {
+        let paged = paginate(&layout(vec![area(1, 1, 1_048_576, 16_384)]), ROW, COL);
+        assert_eq!(paged.pages.len(), PAGE_LIMIT);
+        // 47 rows a page down and 9 columns across.
+        assert_eq!(
+            paged.count,
+            1_048_576usize.div_ceil(47) * 16_384usize.div_ceil(9)
+        );
     }
 
     #[test]

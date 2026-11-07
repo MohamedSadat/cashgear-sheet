@@ -1933,6 +1933,15 @@ impl CalcEngine for FormualizerEngine {
         );
     }
 
+    fn value_bounds(&self, sheet: u32) -> Option<(u32, u32)> {
+        use formualizer_eval::traits::EvaluationContext;
+        let name = self.sheet_name(sheet).ok()?;
+        let engine = self.workbook.engine();
+        let (_, last_row) = engine.used_rows_for_columns(name, 1, 16_384)?;
+        let (_, last_col) = engine.used_cols_for_rows(name, 1, 1_048_576)?;
+        Some((last_row, last_col))
+    }
+
     fn formula_text(&self, at: CellRef) -> Option<String> {
         if let Some(text) = self.linked.get(&at) {
             return Some(text.clone());
