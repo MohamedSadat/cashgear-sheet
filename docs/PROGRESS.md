@@ -531,6 +531,7 @@ Every formula book's second edit gave the right answers in its row. The first ed
 - Licences: `pnpm deny`, `pnpm licenses:check` (154 packages) and the GPL self-test pass. The updater uses the system's TLS, as its default brings a licence the gate refuses.
 - Unit tests: 175 in Vitest and 555 in Rust. Clippy is clean natively and for WASM.
 - WASM gzip: 3.93 MB, against the 5 MB budget. The installer is 5.6 MB.
+- CI: [run 42362546378](https://github.com/MohamedSadat/cashgear-sheet/actions/runs/42362546378) at `560a8ab` is green, with the browser tests, the desktop smoke test, the save check and the licence gates. The Azure deploy of the same commit serves `sw.js` with `no-cache` and the isolation headers, and the manifest as `application/manifest+json`.
 
 **Found and fixed on the way**
 
