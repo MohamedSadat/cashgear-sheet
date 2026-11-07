@@ -1134,6 +1134,8 @@ export interface DrawingBox {
   /** The picture's part, such as `xl/media/image1.png`. */
   image?: string;
   description?: string;
+  /** False when it is hidden or set not to print. */
+  prints?: boolean;
 }
 
 /** What Insert's chart buttons and Change Chart Type make. */

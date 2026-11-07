@@ -406,6 +406,7 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
     let mut image_rel: Option<String> = None;
     let mut id = 0u32;
     let mut description = String::new();
+    let (mut hidden, mut prints) = (false, true);
     // Anchors and `mc:AlternateContent` blocks at the top, counted as the writer counts them. A
     // block's choice is the drawing; its fallback is the same drawing for older programs.
     let mut anchors = 0u32;
@@ -458,6 +459,7 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                     b"twoCellAnchor" | b"oneCellAnchor" | b"absoluteAnchor" if fallback => {
                         kind = None;
                         name.clear();
+                        (hidden, prints) = (false, true);
                         anchor_kind = 0;
                         depth = 0;
                         chart_rel = None;
@@ -486,6 +488,8 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                             drawing.id = id;
                             drawing.description = std::mem::take(&mut description);
                             drawing.source = Some(anchors);
+                            drawing.hidden = hidden;
+                            drawing.prints = prints;
                             out.push(DrawingRead {
                                 drawing,
                                 chart_rel: chart_rel.take(),
@@ -500,6 +504,7 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                         image_rel = None;
                         anchor_kind = 0;
                         depth = 0;
+                        (hidden, prints) = (false, true);
                     }
                     b"grpSp" | b"graphicFrame" | b"pic" | b"sp" | b"cxnSp" => {
                         depth = depth.saturating_sub(1);
@@ -571,6 +576,16 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                     .and_then(|t| t.parse().ok())
                     .unwrap_or(0);
                 description = attr(element, b"descr").unwrap_or_default();
+                // A control or an embedded object keeps a hidden stand-in in `mc:Choice` while
+                // the real one is drawn from VML, and that one still prints.
+                hidden = alternate == 0
+                    && matches!(attr(element, b"hidden").as_deref(), Some("1" | "true"));
+            }
+            b"clientData" if anchor_kind != 0 => {
+                prints = !matches!(
+                    attr(element, b"fPrintsWithSheet").as_deref(),
+                    Some("0" | "false")
+                );
             }
             b"chart" if kind == Some(DrawingKind::Other) && depth == 1 => {
                 kind = Some(DrawingKind::Chart);
@@ -616,6 +631,37 @@ mod tests {
         assert_eq!(read[0].drawing.source, Some(0));
         assert_eq!(read[1].image_rel.as_deref(), Some("rId2"));
         assert_eq!(read[1].drawing.source, Some(1));
+    }
+
+    #[test]
+    fn hidden_and_unprinted_drawings_are_marked() {
+        let anchor = |name: &str, nv: &str, client: &str| {
+            format!(
+                r#"<xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:sp><xdr:nvSpPr><xdr:cNvPr id="2" name="{name}"{nv}/></xdr:nvSpPr></xdr:sp><xdr:clientData{client}/></xdr:twoCellAnchor>"#
+            )
+        };
+        let xml = format!(
+            r#"<xdr:wsDr xmlns:xdr="x" xmlns:mc="m">{}{}{}<mc:AlternateContent><mc:Choice Requires="a14">{}</mc:Choice><mc:Fallback/></mc:AlternateContent></xdr:wsDr>"#,
+            anchor("Shown", "", ""),
+            anchor("Hidden", r#" hidden="1""#, ""),
+            anchor("Kept off paper", "", r#" fPrintsWithSheet="0""#),
+            anchor("Check Box 1", r#" hidden="1""#, ""),
+        );
+        let read = read_drawing_parts(xml.as_bytes());
+        let flags: Vec<_> = read
+            .iter()
+            .map(|r| (r.drawing.name.as_str(), r.drawing.hidden, r.drawing.prints))
+            .collect();
+        assert_eq!(
+            flags,
+            [
+                ("Shown", false, true),
+                ("Hidden", true, true),
+                ("Kept off paper", false, false),
+                // A control's stand-in, which Excel prints from its VML.
+                ("Check Box 1", false, true),
+            ]
+        );
     }
 
     #[test]

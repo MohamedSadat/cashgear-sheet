@@ -488,6 +488,10 @@ pub struct Drawing {
     pub source: Option<u32>,
     /// The alternative text.
     pub description: String,
+    /// `cNvPr hidden`: Excel neither shows nor prints it.
+    pub hidden: bool,
+    /// `clientData fPrintsWithSheet`: whether it prints.
+    pub prints: bool,
 }
 
 impl Drawing {
@@ -501,6 +505,8 @@ impl Drawing {
             image: None,
             source: None,
             description: String::new(),
+            hidden: false,
+            prints: true,
         }
     }
 }

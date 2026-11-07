@@ -569,6 +569,9 @@ impl Engine {
                     out.push_str(",\"description\":");
                     json::push_string(&mut out, &model.description);
                 }
+                if model.hidden || !model.prints {
+                    out.push_str(",\"prints\":false");
+                }
             }
             out.push('}');
         }

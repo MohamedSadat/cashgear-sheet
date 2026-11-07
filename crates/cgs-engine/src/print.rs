@@ -517,7 +517,9 @@ impl Session {
                     self.filled.push((row, col));
                 }
                 if let CalcValue::Text(text) = value {
-                    let longest = text.split('\n').map(text_units).max();
+                    // Excel draws only a cell's first 1,024 characters.
+                    let shown: String = text.chars().take(1024).collect();
+                    let longest = shown.split('\n').map(text_units).max();
                     if let Some(units) = longest.filter(|&units| units > 0) {
                         self.texts.push((row, col, units));
                     }
@@ -626,7 +628,7 @@ impl Session {
                 take(row, reach.min(next).max(col));
             }
         }
-        for drawing in &info.drawings {
+        for drawing in info.drawings.iter().filter(|d| !d.hidden && d.prints) {
             if let Anchor::TwoCell { from, to } = drawing.anchor {
                 take(from.row, from.col);
                 take(to.row, to.col);

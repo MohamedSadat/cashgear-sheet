@@ -617,6 +617,7 @@ async function recordPage(
     const width = colAxis.sum(page.cols[0], page.cols[1]);
     const height = rowAxis.sum(page.rows[0], page.rows[1]);
     for (const drawing of sheet.drawings) {
+      if (drawing.prints === false) continue;
       const x = (drawing.x - left) * units.perPixelX;
       const y = (drawing.y - top) * units.perPixelY;
       const w = drawing.width * units.scale;
