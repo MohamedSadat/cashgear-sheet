@@ -528,6 +528,8 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | --- | --- |
 | Office was uninstalled from this PC at 13:51 on 2026-11-07, while the phase was being built | "I'll reinstall; carry on": the phase was built meanwhile, and the Excel checks ran once Excel was back. Office came back as Office Professional Plus, Click-to-Run 16.0.19127.20860 (x86) |
 | Public test files that hold page setup, against Phase 1's rule that public files never open in Excel | They open in Excel as temporary copies, read-only, with macros forced off and links not updated, and only their page counts are read. Everything else about public files stays as Phase 1 decided |
+| The PDF review against Excel's `ExportAsFixedFormat` (8 workbooks, 2026-11-07), with its remaining differences listed: Excel moves the table below a header picture taller than the top margin, prints gray125 solid, and exports A4 sheets on Letter | "Sign off" |
+| Page counts on public files: 1,723 of 1,886 sheets (91.4%) of the 1,154 public files with page setup match Excel; the rest are pivots Excel refreshes on open, rows Excel sizes taller, overflow estimates and blank pages Excel sometimes skips | "Accept 91.4%": the exit criterion is met at that figure, and the causes are known gaps |
 
 **Defaults picked during the phase**
 
@@ -551,3 +553,10 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | A workbook-wide print | Visible worksheets in tab order, then each visible chart sheet as one landscape Letter page with its chart inside Excel's normal margins. Page numbers run on from sheet to sheet unless a sheet sets its own first number, and `&N` counts the whole print |
 | Page Layout icons | The library's existing icons for now; print icons are a Track U job |
 | qpdf | 12.4.2, fetched into `.tools` by `scripts/fetch-qpdf.mjs` and checked by its SHA-256. A test tool only |
+| Text running into empty cells | It prints with them, as in Excel. Rust has no text measure, so the text is measured in Calibri's advance widths, scaled to the cell's font by its widest digit and turned into printer dots, and only its first 1,024 characters count, as Excel draws no more. Left and General text runs right, centred text half each way; wrapped, shrunk, rotated and merged text doesn't run on |
+| Drawings that print | Not those hidden (`cNvPr hidden`) or set not to print (`fPrintsWithSheet="0"`). A control's or an embedded object's hidden stand-in in `mc:Choice` still prints, as Excel draws the real one from VML. One-cell and absolute pictures print with every cell they cover |
+| A sheet styled to its last cell | Values are read only as far as the calc engine holds them. Pages past 10,000 are counted but not laid out, and a PDF says how many it left out |
+| A page setup scale of 0 | 100%, as Excel prints it. Other scales are held to 10 to 400 |
+| Rows of fonts under 12 points | Excel's own heights, measured for 19 fonts and sizes (Calibri 10 is 12.75 points). Fonts not measured keep size × 1.75 |
+| On paper | Gridlines and headings' lines print black, as Excel prints them. `&D` is Windows' short date with the year in full. A cell's text may hang a quarter of its row below it, so marks a substitute font sets low aren't cut |
+| A cell starting with a number | With a Context reading order it is aligned by its first strong letter but drawn by its first character with a direction, digits reading left to right, as Excel draws "42 رقم" |
