@@ -11,6 +11,78 @@ use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+/// An installed font the PDF writer reads through the file protocol.
+#[derive(Serialize)]
+struct SystemFont {
+    file: NativeFile,
+    index: u32,
+}
+
+/// The installed fonts, listed once.
+fn font_list() -> &'static [cgs_native::fonts::Listed] {
+    static LIST: std::sync::OnceLock<Vec<cgs_native::fonts::Listed>> = std::sync::OnceLock::new();
+    LIST.get_or_init(cgs_native::fonts::installed)
+}
+
+#[tauri::command]
+fn system_font(
+    family: String,
+    bold: bool,
+    italic: bool,
+    files: State<'_, FileRegistry>,
+) -> Result<Option<SystemFont>, String> {
+    let Some(found) = cgs_native::fonts::find_in(font_list(), &family, bold, italic) else {
+        return Ok(None);
+    };
+    if !found.path.is_file() {
+        return Ok(None);
+    }
+    let file = files.register(&found.path)?;
+    Ok(Some(SystemFont {
+        file,
+        index: found.index,
+    }))
+}
+
+/// Opens Windows' own print dialog on what the page shows for printing.
+// Async, so it waits off the main thread, where the webview's closure runs.
+#[tauri::command]
+async fn system_print(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2_16, COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM,
+        };
+        use windows::core::Interface;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        window
+            .with_webview(move |webview| {
+                let result = (|| -> windows::core::Result<()> {
+                    // SAFETY: WebView2's COM objects, used on the thread Tauri gives them to.
+                    unsafe {
+                        let core = webview.controller().CoreWebView2()?;
+                        let core: ICoreWebView2_16 = core.cast()?;
+                        core.ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM)
+                    }
+                })();
+                let _ = sender.send(result.map_err(|error| error.message().to_string()));
+            })
+            .map_err(|error| error.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || {
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|error| error.to_string())?
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        Err("Printing from the system's dialog needs Windows.".to_string())
+    }
+}
+
 #[derive(Serialize)]
 struct AppInfo {
     product: &'static str,
@@ -84,6 +156,8 @@ async fn pick_save_path(
         .add_filter(
             if extension.eq_ignore_ascii_case("csv") {
                 "CSV"
+            } else if extension.eq_ignore_ascii_case("pdf") {
+                "PDF"
             } else {
                 "Excel workbook"
             },
@@ -359,7 +433,9 @@ fn main() {
             finish_save,
             abort_save,
             make_working_copy,
-            release_working_copy
+            release_working_copy,
+            system_font,
+            system_print
         ])
         .run(tauri::generate_context!())
         .expect("the desktop app failed to start");

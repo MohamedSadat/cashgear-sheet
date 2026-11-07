@@ -21,5 +21,10 @@ tauri-plugin-dialog = "2"
 # brings webpki-root-certs, whose CDLA-Permissive-2.0 the licence gate refuses.
 tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls"] }
 
+# The system's print dialog, which Tauri doesn't reach on its own.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows = "0.62"
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

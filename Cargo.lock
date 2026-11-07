@@ -635,6 +635,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-updater",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]
@@ -666,6 +668,8 @@ version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "ttf-parser",
+ "winreg",
 ]
 
 [[package]]

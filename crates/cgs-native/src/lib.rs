@@ -1,6 +1,8 @@
 //! Desktop-only native side: identifying the host, serving byte ranges of chosen files, saving
 //! them atomically, working copies, the recent files list, and the workbook a double-click in
 //! Explorer starts the app with.
+
+pub mod fonts;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
