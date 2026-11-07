@@ -12,6 +12,7 @@ import {
   pageSvg,
   pdfParts,
   Recording,
+  RecordingContext,
   recordSheetPages,
   svgToRecording,
   type CellArea,
@@ -20,7 +21,6 @@ import {
   type FontSource,
   type PagesInfo,
   type RecordedPage,
-  type RecordingContext,
   type SheetSummary,
 } from '@cgs/engine-client';
 import { chartProps } from '../charts/chartProps';
@@ -103,7 +103,12 @@ function sheetsFor(host: JobHost, choice: PrintChoice): number[] {
   const order = host.order.length ? host.order : host.sheets.map((_, index) => index);
   return order.filter((index) => {
     const sheet = host.sheets[index];
-    return sheet && !sheet.deleted && sheet.state === 'visible' && sheet.kind === 'worksheet';
+    return (
+      sheet &&
+      !sheet.deleted &&
+      sheet.state === 'visible' &&
+      (sheet.kind === 'worksheet' || sheet.kind === 'chart')
+    );
   });
 }
 
@@ -129,7 +134,29 @@ export async function makeJob(host: JobHost, choice: PrintChoice): Promise<Print
     measuring = withBundledArabic;
   }
   const infos: PagesInfo[] = [];
+  // A chart sheet prints its chart on one landscape Letter page, filling it inside Excel's normal
+  // margins, as Excel prints one with its page setup untouched.
+  const chartSheets = new Map<number, RecordedPage>();
   for (const sheet of sheetsFor(host, choice)) {
+    if (host.sheets[sheet]?.kind === 'chart') {
+      const drawing = (await engine.drawings(sheet))[0];
+      if (!drawing) continue;
+      const [width, height] = [792, 612];
+      const [left, top] = [0.7 * 72, 0.75 * 72];
+      const context = new RecordingContext(recording, measure, [0.75, 0, 0, 0.75, left, top]);
+      await chartPainter(
+        engine,
+        sheet,
+        host.locale,
+      )(context, {
+        ...drawing,
+        width: (width - 2 * left) / 0.75,
+        height: (height - 2 * top) / 0.75,
+      });
+      chartSheets.set(sheet, { width, height, ops: context.ops });
+      infos.push({ sheet, chart: true } as unknown as PagesInfo);
+      continue;
+    }
     const info = await engine.query({
       kind: 'pages',
       sheet,
@@ -140,11 +167,20 @@ export async function makeJob(host: JobHost, choice: PrintChoice): Promise<Print
     });
     if (info.pages.length) infos.push(info);
   }
-  const total = infos.reduce((sum, info) => sum + info.pages.length, 0);
+  const total = infos.reduce(
+    (sum, info) => sum + (chartSheets.has(info.sheet) ? 1 : info.pages.length),
+    0,
+  );
   const pages: RecordedPage[] = [];
   const pictures = new Map<string, number | null>();
   let number = 1;
   for (const info of infos) {
+    const chart = chartSheets.get(info.sheet);
+    if (chart) {
+      pages.push(chart);
+      number += 1;
+      continue;
+    }
     const [layout, drawings] = await Promise.all([
       engine.layout(info.sheet),
       engine.drawings(info.sheet),
@@ -182,7 +218,13 @@ export async function makeJob(host: JobHost, choice: PrintChoice): Promise<Print
     number = (info.firstPage ?? number) + info.pages.length;
   }
   const title = host.fileName.replace(/\.[^.]*$/, '');
-  return { title, pages, recording, sheets: infos, measuring };
+  return {
+    title,
+    pages,
+    recording,
+    sheets: infos.filter((info) => !chartSheets.has(info.sheet)),
+    measuring,
+  };
 }
 
 /** The job as a PDF. */
