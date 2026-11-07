@@ -478,3 +478,12 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Repeated formulas | A fill of 833,334 copies of one formula costs almost nothing: Formualizer stores a column of the same relative formula once. The memory check had to fill many columns to reach the top |
 | `generate_context!` | Needs `serde_json` in the desktop crate once a plugin has settings, as CashGear Video found |
 | A silent uninstall | Keeps the app's data folder, as Tauri's uninstaller only deletes it when its box is ticked. Recovery data and settings outlive a reinstall. The installer test records it and removes it |
+
+## 2026-11-07: The v1.0.0 release
+
+| Question | Answer |
+| --- | --- |
+| Publish the release the `v1.0.0` tag drafted? | "build github release": published and marked latest at <https://github.com/MohamedSadat/cashgear-sheet/releases/tag/v1.0.0>. It holds `CashGear-Sheet_1.0.0_x64-setup.exe` (5.6 MB), its `.sig`, `latest.json` and `third-party-notices.txt`, built by release run 42366588097 at `31650ca`, whose installer test passed on GitHub's runner |
+
+- **Signing:** the installer is signed by the run's throwaway certificate (`CN=CashGear Test Signing`), which Windows doesn't trust, so SmartScreen warns. The release notes say so.
+- **Updates:** `releases/latest/download/latest.json` now answers with 1.0.0, so installed copies will see later versions once their releases are published.
