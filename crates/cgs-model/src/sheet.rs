@@ -632,6 +632,8 @@ pub struct SheetInfo {
     /// The XML of `conditionalFormatting`, `dataValidations`, `hyperlinks` and `extLst`, as the file
     /// has them, for what reads them once the sheet is in.
     pub captured: Vec<(String, Vec<u8>)>,
+    /// How the sheet prints.
+    pub page: crate::PageSetup,
     styles: Vec<ColumnRuns>,
 }
 
@@ -665,6 +667,7 @@ impl SheetInfo {
         self.threaded.clear();
         self.links.clear();
         self.captured.clear();
+        self.page = crate::PageSetup::default();
     }
 
     /// Records a cell's style while loading. Rows mostly arrive in order.
@@ -885,6 +888,9 @@ impl SheetInfo {
     /// Moves everything on the sheet that an edit to rows or columns moves, as Excel does: a merge
     /// grows or shrinks with its range, and one that comes down to a single cell stops being one.
     pub fn apply_axis(&mut self, edit: &AxisEdit) {
+        // A page break after a row or column that goes goes with it, as in Excel.
+        self.page
+            .move_breaks(edit.axis == Axis::Row, |id| edit.point(id));
         if !self.rich.is_empty() {
             self.rich = std::mem::take(&mut self.rich)
                 .into_iter()

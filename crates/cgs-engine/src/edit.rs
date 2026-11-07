@@ -407,6 +407,20 @@ impl Session {
                 active_cell: info.view.active_cell,
             });
         }
+        for &sheet in &edits.page_sheets.clone() {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            if info.kind != cgs_model::SheetKind::Worksheet {
+                continue;
+            }
+            edits
+                .elements
+                .entry(sheet)
+                .or_default()
+                .extend(cgs_xlsx::page::page_elements(&info.page, &info.captured));
+            edits.extras.entry(sheet).or_default().fit_to_page = Some(info.page.fit_to_page);
+        }
         for &sheet in &edits.dv_sheets.clone() {
             let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
                 continue;

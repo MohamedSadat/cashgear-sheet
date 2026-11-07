@@ -145,6 +145,12 @@ const CAPTURED: &[&[u8]] = &[
     b"dataValidations",
     b"hyperlinks",
     b"extLst",
+    b"printOptions",
+    b"pageMargins",
+    b"pageSetup",
+    b"headerFooter",
+    b"rowBreaks",
+    b"colBreaks",
 ];
 
 fn entry<'a>(
@@ -1004,6 +1010,9 @@ fn keep_captured(name: Vec<u8>, xml: Vec<u8>, info: &mut SheetInfo) {
         }
         return;
     }
+    if crate::page::is_page_element(&name) {
+        crate::page::read_page_element(&name, &xml, &mut info.page);
+    }
     info.captured
         .push((String::from_utf8_lossy(&name).into_owned(), xml));
 }
@@ -1023,6 +1032,9 @@ fn read_tail_element(
             }
         }
         b"drawing" => *drawing = attr(element, b"id"),
+        b"pageSetUpPr" => {
+            info.page.fit_to_page = crate::xml::attr_bool(element, b"fitToPage").unwrap_or(false);
+        }
         _ => {}
     }
 }

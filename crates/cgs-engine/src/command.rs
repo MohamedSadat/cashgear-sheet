@@ -285,6 +285,36 @@ pub enum Command {
         query: crate::find::FindQuery,
         with: String,
     },
+    /// Changes page setup on these sheets.
+    PageSetup {
+        sheets: Vec<u32>,
+        spec: crate::page::PageSpec,
+    },
+    /// Inserts or removes a manual page break where `row` and `col` start a page, or takes
+    /// every manual break off.
+    PageBreak {
+        sheet: u32,
+        #[serde(default)]
+        row: Option<u32>,
+        #[serde(default)]
+        col: Option<u32>,
+        action: crate::page::BreakAction,
+    },
+    /// Sets, adds to or clears the print area.
+    PrintArea {
+        sheet: u32,
+        #[serde(default)]
+        areas: Vec<Area>,
+        action: crate::page::PrintAreaAction,
+    },
+    /// The rows and columns that repeat on every page, or none.
+    PrintTitles {
+        sheet: u32,
+        #[serde(default)]
+        rows: Option<(u32, u32)>,
+        #[serde(default)]
+        cols: Option<(u32, u32)>,
+    },
     /// Shows or hides gridlines and headings.
     ViewFlags {
         sheet: u32,
@@ -660,6 +690,11 @@ pub(crate) enum Op {
         caches: Vec<cgs_model::pivot::PivotCache>,
         records: Vec<Option<std::rc::Rc<cgs_model::pivot::CacheRecords>>>,
     },
+    /// A sheet's page setup.
+    PageSetup {
+        sheet: u32,
+        page: Box<cgs_model::PageSetup>,
+    },
     Many(Vec<Op>),
 }
 
@@ -698,6 +733,9 @@ impl Op {
             Self::SheetLinks { links, .. } => 256 + links.len() * 256,
             Self::BookNames(names) => names.len() * 128,
             Self::Merges { merges, .. } => merges.len() * 16,
+            Self::PageSetup { page, .. } => {
+                1024 + (page.row_breaks.len() + page.col_breaks.len()) * 16
+            }
             Self::Format { .. } | Self::MergeArea { .. } | Self::View { .. } => 256,
             Self::Styles(before) => before.bytes(),
             Self::Lines { rows, cols, .. } => 64 + rows.len() * 24 + cols.len() * 32,
@@ -1875,6 +1913,7 @@ impl Session {
                 view,
                 freeze,
             } => Ok(self.apply_view(sheet, view, freeze)),
+            Op::PageSetup { sheet, page } => self.apply_page(sheet, *page),
             Op::Many(list) => {
                 let mut undo = Vec::with_capacity(list.len());
                 for op in list {
@@ -3438,6 +3477,21 @@ impl Session {
                     },
                     None,
                 )
+            }
+            Command::PageSetup { sheets, spec } => self.page_setup_command(&sheets, &spec),
+            Command::PageBreak {
+                sheet,
+                row,
+                col,
+                action,
+            } => self.page_break_command(sheet, row, col, action),
+            Command::PrintArea {
+                sheet,
+                areas,
+                action,
+            } => self.print_area_command(sheet, &areas, action),
+            Command::PrintTitles { sheet, rows, cols } => {
+                self.print_titles_command(sheet, rows, cols)
             }
             Command::Undo => self.step_back(),
             Command::Redo => self.step_forward(),

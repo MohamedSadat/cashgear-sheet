@@ -21,6 +21,7 @@ pub mod input;
 mod json;
 pub mod names;
 pub mod notes;
+pub mod page;
 pub mod pivot_style;
 pub mod pivots;
 pub mod query;

@@ -20,7 +20,7 @@ impl CellSink for Filled {
 }
 
 /// The cell of a sheet name and a reference, as `Sheet1!A1` or `'My Sheet'!A1:B2`.
-fn split_sheet(text: &str) -> (Option<String>, &str) {
+pub(crate) fn split_sheet(text: &str) -> (Option<String>, &str) {
     let Some(at) = text.rfind('!') else {
         return (None, text);
     };
@@ -58,7 +58,7 @@ fn whole_lines(text: &str) -> Option<Area> {
     })
 }
 
-fn read_area(text: &str) -> Option<Area> {
+pub(crate) fn read_area(text: &str) -> Option<Area> {
     if let Some(((top, left), (bottom, right))) = parse_range(text) {
         return Some(Area {
             top: top.min(bottom),

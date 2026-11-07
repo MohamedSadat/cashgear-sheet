@@ -17,6 +17,7 @@ pub mod dxf;
 pub mod filter;
 pub mod notes;
 pub mod package;
+pub mod page;
 pub mod patch_parts;
 pub mod patch_sheet;
 pub mod pivot;

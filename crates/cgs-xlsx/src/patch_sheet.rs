@@ -158,6 +158,12 @@ pub const REPLACED: &[&str] = &[
     "hyperlinks",
     "legacyDrawing",
     "extLst",
+    "printOptions",
+    "pageMargins",
+    "pageSetup",
+    "headerFooter",
+    "rowBreaks",
+    "colBreaks",
 ];
 
 /// Excel wraps `oleObjects` and `controls` this way, which sets where the wrapper sits.
@@ -234,6 +240,8 @@ pub struct SheetExtras {
     pub default_row_px: Option<u32>,
     /// Whether a filter hides rows, for `sheetPr`'s `filterMode`.
     pub filter_mode: Option<bool>,
+    /// Whether the sheet fits to pages, for `sheetPr`'s `pageSetUpPr`.
+    pub fit_to_page: Option<bool>,
 }
 
 impl SheetExtras {
@@ -244,6 +252,7 @@ impl SheetExtras {
             && self.view.is_none()
             && self.default_row_px.is_none()
             && self.filter_mode.is_none()
+            && self.fit_to_page.is_none()
     }
 }
 
@@ -1531,7 +1540,7 @@ impl Patcher<'_> {
 
     /// A new element in a worksheet with a prefix declares the default namespace for itself.
     fn element_bytes(&self, xml: &str) -> Vec<u8> {
-        if self.prefix.is_empty() {
+        if self.prefix.is_empty() || xml.is_empty() {
             return xml.as_bytes().to_vec();
         }
         let end = xml
@@ -1629,9 +1638,12 @@ impl Patcher<'_> {
                     // A filtering sheet with no `sheetPr` gets one first.
                     if self.sheet_pr_due && local != b"sheetPr" {
                         self.sheet_pr_due = false;
-                        if self.extras.filter_mode == Some(true) {
+                        if let Some(xml) = crate::page::new_sheet_pr(
+                            self.extras.fit_to_page == Some(true),
+                            self.extras.filter_mode == Some(true),
+                        ) {
                             self.outcome.changed = true;
-                            out.write_all(&self.element_bytes("<sheetPr filterMode=\"1\"/>"))?;
+                            out.write_all(&self.element_bytes(&xml))?;
                         }
                     }
                     if order.is_some() {
@@ -1714,12 +1726,28 @@ impl Patcher<'_> {
                         }
                         b"sheetPr" if self.sheet_pr_due => {
                             self.sheet_pr_due = false;
-                            let wanted = (self.extras.filter_mode == Some(true)).then_some("1");
-                            let edited = edit_tag(&tag, &[("filterMode", wanted)]);
-                            self.outcome.changed = self.outcome.changed || edited != tag;
-                            out.write_all(&edited)?;
-                            if kind == Kind::Start {
-                                depth += 1;
+                            let mut edited = tag.clone();
+                            if self.extras.filter_mode.is_some() {
+                                let wanted = (self.extras.filter_mode == Some(true)).then_some("1");
+                                edited = edit_tag(&edited, &[("filterMode", wanted)]);
+                            }
+                            match self.extras.fit_to_page {
+                                Some(fit) => {
+                                    let mut xml = edited;
+                                    if kind == Kind::Start {
+                                        crate::structure::read_element(&mut scanner, &mut xml)?;
+                                    }
+                                    let whole = crate::page::edit_sheet_pr(&xml, fit)?;
+                                    self.outcome.changed = true;
+                                    out.write_all(&whole)?;
+                                }
+                                None => {
+                                    self.outcome.changed = self.outcome.changed || edited != tag;
+                                    out.write_all(&edited)?;
+                                    if kind == Kind::Start {
+                                        depth += 1;
+                                    }
+                                }
                             }
                         }
                         b"sheetFormatPr" => {
@@ -1919,7 +1947,7 @@ pub fn patch_into<R: Read, W: Write>(
             extras,
             cols_due: !extras.cols.is_empty(),
             view_due: extras.view.is_some(),
-            sheet_pr_due: extras.filter_mode.is_some(),
+            sheet_pr_due: extras.filter_mode.is_some() || extras.fit_to_page.is_some(),
             strings: &mut *strings,
             elements: elements.iter().collect(),
             replaced: Vec::new(),

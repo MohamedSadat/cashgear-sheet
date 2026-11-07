@@ -135,6 +135,8 @@ pub struct WorkbookEdits {
     pub notes_sheets: std::collections::BTreeSet<u32>,
     /// Sheets whose hyperlinks changed.
     pub link_sheets: std::collections::BTreeSet<u32>,
+    /// Sheets whose page setup changed. The engine turns these into elements when it saves.
+    pub page_sheets: std::collections::BTreeSet<u32>,
     /// Sheets whose drawings were added, moved, resized or deleted.
     pub drawing_sheets: std::collections::BTreeSet<u32>,
     /// Pictures added, by the part they will be saved as.
@@ -162,6 +164,7 @@ impl WorkbookEdits {
             && !self.names_changed
             && self.notes_sheets.is_empty()
             && self.link_sheets.is_empty()
+            && self.page_sheets.is_empty()
             && self.drawing_sheets.is_empty()
             && !self.pivots_changed
     }

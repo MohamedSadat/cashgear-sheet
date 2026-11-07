@@ -51,6 +51,8 @@ enum Question {
         #[serde(default)]
         options: Option<PreviewOptions>,
     },
+    /// A sheet's page setup, print area and titles, for the Page Layout tab and Page Setup.
+    PageSetup { sheet: u32 },
 }
 
 /// Which parts of a table a gallery preview picks out, as the Table Design tab has them.
@@ -130,6 +132,7 @@ fn filter_json(filter: &cgs_model::AutoFilter, table: Option<&str>) -> Value {
 impl Session {
     fn answer(&self, question: Question, locale: &cgs_numfmt::Locale) -> Result<Value, String> {
         Ok(match question {
+            Question::PageSetup { sheet } => self.page_setup_json(sheet)?,
             Question::TableAt { sheet, row, col } => {
                 let Some(info) = self.table_at(sheet, row, col) else {
                     return Ok(Value::Null);

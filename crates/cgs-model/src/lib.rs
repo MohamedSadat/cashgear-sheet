@@ -8,6 +8,7 @@ pub mod dv;
 pub mod dxf;
 pub mod filter;
 pub mod notes;
+pub mod page;
 pub mod pivot;
 pub mod sheet;
 pub mod style;
@@ -22,6 +23,10 @@ pub use filter::{
     AutoFilter, DateGroup, FilterColumn, FilterCriteria, FilterOp, SortBy, SortKey, SortState,
 };
 pub use notes::{Hyperlink, Note};
+pub use page::{
+    HeaderFooter, HfFields, HfRun, HfSections, HfStyle, HfText, Margins, Orientation, PageBreak,
+    PageOrder, PageSetup, PrintComments, PrintErrors,
+};
 pub use sheet::{
     Anchor, AnchorPoint, ColAxis, ColumnRuns, Drawing, DrawingKind, Freeze, LineInfo, RowAxis,
     SheetInfo, SheetKind, SheetShape, SheetState, SheetView, NO_CELL,
