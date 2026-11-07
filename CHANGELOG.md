@@ -4,6 +4,31 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.1.0] - 2026-11-07
+
+Printing and PDF export, with Excel's page setup and its page breaks.
+
+- **Page setup:** a Page Layout tab (margins, orientation, paper size, print area, breaks, print
+  titles, scale to fit, and gridlines and headings to view and print) and Excel's Page Setup
+  dialog with its Page, Margins, Header/Footer and Sheet tabs. Page setup is read from the file
+  and saved by editing the file's own elements, so the printer settings Excel keeps stay.
+- **Page breaks:** pages break where Excel 2016 breaks them, as measured against Excel with
+  Microsoft Print to PDF: scaling and Fit To, print titles, manual breaks, hidden rows and columns,
+  headings, centring, page order and print areas. Normal view shows dashed lines where pages break
+  once page setup has been used. Breaks move with inserted and deleted rows and columns.
+- **Headers and footers:** text with page numbers, page count, date, time, file name, path and
+  sheet name, fonts, sizes, bold, italic, underline and colour, a different first page and
+  different odd and even pages. Pictures already in a header or footer are kept and printed.
+- **File › Print:** a preview of the pages as they will print, for the active sheet, the whole
+  workbook or the selection, and printing through Windows' print dialog on the desktop and the
+  browser's on the web.
+- **Export as PDF:** vector PDFs drawn by the same code as the screen, in the file's own colours.
+  Text can be searched and copied, Arabic included, and fonts are embedded as subsets: the
+  file's own fonts where they are installed, else fonts with the same widths (Carlito, Caladea,
+  Liberation and Noto Sans Arabic), which are fetched the first time a PDF needs them.
+- **Fixed:** a cell in the workbook's normal font no longer makes its row taller than the
+  default, so rows of Arial 10 workbooks are 12.75 points as in Excel.
+
 ## [1.0.0] - 2026-11-07
 
 The first release: an Excel-like spreadsheet for the browser and for Windows, free to use, that
