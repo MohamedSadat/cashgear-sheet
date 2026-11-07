@@ -158,6 +158,81 @@ const MOVES = {
   'a sheet added, then deleted': [{ kind: 'insertSheet', position: 0 }, { kind: 'undo' }],
   'rows in, then undone': [rows(0, 2, 1), { kind: 'undo' }],
   'rows in, undone, redone': [rows(0, 2, 1), { kind: 'undo' }, { kind: 'redo' }],
+  // Phase 10: page setup, written by editing the file's own elements.
+  'page setup: landscape A4 fitted a page wide': [
+    {
+      kind: 'pageSetup',
+      sheets: [0],
+      spec: { orientation: 'landscape', paper: 9, fitToPage: true, fitWidth: 1, fitHeight: 0 },
+    },
+  ],
+  'page setup: margins, centring, gridlines and headings': [
+    {
+      kind: 'pageSetup',
+      sheets: [0],
+      spec: {
+        margins: { left: 0.25, right: 0.4, top: 1, bottom: 1.2, header: 0.5, footer: 0.6 },
+        centerHorizontally: true,
+        centerVertically: true,
+        gridlines: true,
+        headings: true,
+        scale: 85,
+        pageOrder: 'overThenDown',
+        firstPage: 3,
+        blackAndWhite: true,
+        errors: 'dash',
+        comments: 'atEnd',
+      },
+    },
+  ],
+  'page setup: headers and footers': [
+    {
+      kind: 'pageSetup',
+      sheets: [0],
+      spec: {
+        headerFooter: {
+          oddHeader: '&L&"Arial,Bold"&14Report &A&C&D&R&T',
+          oddFooter: '&LConfidential && private&CPage &P of &N&R&F',
+          evenFooter: '&CEven &P',
+          firstHeader: '&CFirst page',
+          differentOddEven: true,
+          differentFirst: true,
+        },
+      },
+    },
+  ],
+  'page breaks in, then rows moved': [
+    { kind: 'pageBreak', sheet: 0, row: 6, col: 3, action: 'insert' },
+    { kind: 'pageBreak', sheet: 0, row: 12, action: 'insert' },
+    rows(0, 1, 2),
+    rows(0, 9, 1, true),
+  ],
+  'print area and titles, then rows moved': [
+    {
+      kind: 'printArea',
+      sheet: 0,
+      areas: [
+        { top: 1, left: 1, bottom: 20, right: 5 },
+        { top: 22, left: 2, bottom: 30, right: 4 },
+      ],
+      action: 'set',
+    },
+    { kind: 'printTitles', sheet: 0, rows: [1, 2], cols: [1, 1] },
+    rows(0, 1, 1),
+  ],
+  'page setup everything, then undone': [
+    { kind: 'pageSetup', sheets: [0], spec: { orientation: 'landscape', scale: 60 } },
+    { kind: 'printTitles', sheet: 0, rows: [1, 1] },
+    { kind: 'pageBreak', sheet: 0, row: 4, action: 'insert' },
+    { kind: 'undo' },
+    { kind: 'undo' },
+    { kind: 'undo' },
+  ],
+  'print area cleared and breaks reset': [
+    { kind: 'printArea', sheet: 0, action: 'clear' },
+    { kind: 'pageBreak', sheet: 0, action: 'reset' },
+    { kind: 'pageSetup', sheets: [0], spec: { fitToPage: false, scale: 100 } },
+  ],
   'a cell, then rows, then a cell': [input(0, 3, 2, '77'), rows(0, 2, 1), input(0, 2, 2, '=1+1')],
   'cells moved': [
     {
@@ -875,6 +950,7 @@ const MOVED = {
   'arabic.xlsx': 'xlsx',
   'defaults.xlsx': 'xlsx',
   'macro.xlsm': 'xlsm',
+  'print.xlsx': 'xlsx',
 };
 
 try {

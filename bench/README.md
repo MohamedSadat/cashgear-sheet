@@ -87,3 +87,21 @@ node bench/run-excel-format.mjs bench/results/excel-format-private.json --privat
 pnpm dev:web
 node bench/run-visual-review.mjs bench/results/visual
 ```
+
+# Phase 10 checks
+
+What printing is held to. Excel measures with Microsoft Print to PDF as its active printer, which each script sets for its own COM session and puts back afterwards. Generated workbooks and fixtures go through Excel; public files only with `--public`, as temporary copies that open read-only with macros forced off, for their page counts.
+
+- `print-books.mjs`: generated books covering every page setup option: paper, orientation, scale and fitting, margins, print titles, manual breaks, hidden and resized lines, headings, centring, page order, print areas, and where the printed range starts and ends.
+- `run-page-breaks.mjs`, `excel-page-breaks.ps1`, `harness/src/bin/pagebreaks.rs`: every sheet's `HPageBreaks`, `VPageBreaks` and page count from Excel, against the engine's.
+- `run-page-setup-roundtrip.mjs`, `excel-page-setup.ps1`: page setup made in the app opens in Excel with no repair and reads as meant, and Excel's own copy reads back the same.
+- `run-pdf-review.mjs`, `excel-export-pdf.ps1`: Excel's `ExportAsFixedFormat` beside the app's PDFs, page by page, as `index.html` to review by eye. `export-pdfs.mjs` exports any workbooks. Both check the app's PDFs with `qpdf --check` (a test tool, fetched by `scripts/fetch-qpdf.mjs` and never shipped) and read their text back with pdf.js (`pdf-text.mjs`), Arabic included.
+- `run-excel-matrix.mjs` adds page setup, breaks, print areas and titles to its edits, and the print fixture to its books.
+
+```bash
+node scripts/write-fixtures.mjs
+node bench/run-page-breaks.mjs bench/results/page-breaks.json --public
+node bench/run-page-setup-roundtrip.mjs
+pnpm dev:web
+node bench/run-pdf-review.mjs
+```
