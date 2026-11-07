@@ -32,7 +32,11 @@ const script = readFileSync(join(root, 'bench/excel-page-breaks.ps1'), 'utf8');
 const quoted = (text) => "'" + text.replace(/'/g, "''") + "'";
 
 function ours(path) {
-  const run = spawnSync(tool, [path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const run = spawnSync(tool, [path], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: 120000,
+  });
   if (run.status !== 0) throw new Error('pagebreaks: ' + run.stderr.slice(0, 300));
   return JSON.parse(run.stdout);
 }
