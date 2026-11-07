@@ -131,6 +131,11 @@ Found in Phase 10:
 - Carlito and Liberation reserve their names, so ship them unmodified; stripping hinting would be a modified version.
 - `target/debug` grows to about 100 GB. When links fail with LNK1318 or LNK1140, D: is full: clear `target/debug/incremental`.
 - A PowerShell function named `Measure` is shadowed by the `Measure-Object` alias.
+- Excel crashes (RPC unavailable) opening a sheet for printing when its header picture's VML shape type has no `v:formulas`. Copy the shape type Excel writes.
+- `ExportAsFixedFormat` through Microsoft Print to PDF puts A4 sheets on Letter paper, though it breaks their pages for A4.
+- A line from `Get-Content` carries PowerShell's provider properties, and `ConvertTo-Json` serialises them all (1.2 GB for 25 lines). Cast to `[string]` first.
+- Formualizer's `for_each_range_value` visits every cell of its range. Styled blank rows can make a sheet's used range all of XFD1048576, so read values only as far as `value_bounds` says.
+- `pnpm dev:web` rebuilds the WASM when Rust changes and reloads the page, which breaks a bench run mid-book. Let it settle first.
 
 Carried over from CashGear Video, where they were measured:
 
