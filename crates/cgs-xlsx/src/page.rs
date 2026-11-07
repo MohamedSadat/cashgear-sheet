@@ -47,7 +47,8 @@ pub fn read_page_element(name: &[u8], xml: &[u8], page: &mut PageSetup) {
                         if let Some(paper) = attr_u32(element, b"paperSize") {
                             page.paper = paper;
                         }
-                        if let Some(scale) = attr_u32(element, b"scale") {
+                        // Excel prints a scale of 0, which some writers leave, at 100%.
+                        if let Some(scale) = attr_u32(element, b"scale").filter(|&s| s > 0) {
                             page.scale = scale.clamp(10, 400);
                         }
                         if let Some(width) = attr_u32(element, b"fitToWidth") {
@@ -673,6 +674,10 @@ mod tests {
         assert_eq!(page.comments, PrintComments::AtEnd);
         assert_eq!(page.errors, PrintErrors::Dash);
         assert_eq!(page.dpi, Some(600));
+        // Some writers leave a scale of 0, which Excel prints at 100%.
+        let zero = read("pageSetup", r#"<pageSetup paperSize="0" scale="0"/>"#);
+        assert_eq!(zero.scale, 100);
+        assert_eq!(read("pageSetup", r#"<pageSetup scale="5"/>"#).scale, 10);
     }
 
     #[test]
