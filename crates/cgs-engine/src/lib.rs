@@ -24,6 +24,7 @@ pub mod notes;
 pub mod page;
 pub mod pivot_style;
 pub mod pivots;
+pub mod print;
 pub mod query;
 mod shift;
 pub mod sort;

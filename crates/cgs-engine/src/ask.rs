@@ -53,6 +53,12 @@ enum Question {
     },
     /// A sheet's page setup, print area and titles, for the Page Layout tab and Page Setup.
     PageSetup { sheet: u32 },
+    /// Where a sheet's pages break and what each shows, for printing and Normal view.
+    Pages {
+        sheet: u32,
+        #[serde(default)]
+        request: crate::print::PrintRequest,
+    },
 }
 
 /// Which parts of a table a gallery preview picks out, as the Table Design tab has them.
@@ -133,6 +139,7 @@ impl Session {
     fn answer(&self, question: Question, locale: &cgs_numfmt::Locale) -> Result<Value, String> {
         Ok(match question {
             Question::PageSetup { sheet } => self.page_setup_json(sheet)?,
+            Question::Pages { sheet, request } => self.pages_json(sheet, &request)?,
             Question::TableAt { sheet, row, col } => {
                 let Some(info) = self.table_at(sheet, row, col) else {
                     return Ok(Value::Null);

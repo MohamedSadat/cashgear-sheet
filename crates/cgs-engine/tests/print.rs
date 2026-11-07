@@ -225,3 +225,38 @@ fn a_sheet_untouched_saves_its_page_setup_byte_for_byte() {
     let sheet = part(&bytes, "xl/worksheets/sheet1.xml");
     assert!(sheet.contains(r#"<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="portrait" horizontalDpi="1200" verticalDpi="1200" r:id="rId1"/>"#), "{sheet}");
 }
+
+fn pages(engine: &Engine, sheet: u32, request: &str) -> Value {
+    let text = engine
+        .query(&format!(
+            r#"{{"kind":"pages","sheet":{sheet},"request":{request}}}"#
+        ))
+        .unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn pages_follow_the_print_area_titles_and_breaks() {
+    let mut engine = opened(book(BODY));
+    // A4 portrait at Excel's normal margins: 841.89 - 108 points hold 48 rows of 15.
+    let all = pages(&engine, 0, "{}");
+    assert_eq!(all["pages"].as_array().unwrap().len(), 1);
+    assert_eq!(all["pages"][0]["rows"], serde_json::json!([1, 40]));
+    run(&mut engine, CHANGES[4]);
+    let broken = pages(&engine, 0, "{}");
+    assert_eq!(broken["rowBreaks"], serde_json::json!([10]));
+    assert_eq!(broken["pages"][1]["rows"], serde_json::json!([11, 40]));
+    run(&mut engine, CHANGES[1]);
+    run(&mut engine, CHANGES[3]);
+    let titled = pages(&engine, 0, "{}");
+    assert_eq!(titled["pages"][1]["titleRows"], serde_json::json!([1, 2]));
+    assert_eq!(titled["pages"][1]["rows"], serde_json::json!([11, 30]));
+    // A selection prints instead of the print area, and an empty sheet has no pages.
+    let chosen = pages(
+        &engine,
+        0,
+        r#"{"selection":[{"top":5,"left":1,"bottom":6,"right":1}]}"#,
+    );
+    assert_eq!(chosen["pages"][0]["rows"], serde_json::json!([5, 6]));
+    assert_eq!(pages(&engine, 1, "{}")["pages"], serde_json::json!([]));
+}
