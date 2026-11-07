@@ -521,3 +521,33 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Headers and footers | Text and fields (`&P`, `&N`, `&D`, `&T`, `&F`, `&A`, `&Z`), fonts, sizes, bold, italic, underline and colour, a different first page and different odd and even pages. Pictures already in a file (`&G`) are kept on save and drawn in pages and PDFs, but not added or changed here |
 | The printer Excel measures with | Microsoft Print to PDF, which every Windows PC has. The bench sets it as Excel's `ActivePrinter` for its COM session only and puts the default printer (the Samsung ML-371x) back afterwards. The app's pages model that printer |
 | How close page breaks must be | Exact: every break equals Excel's on every generated book, and page counts are equal on every public file with page setup. A public file whose fonts aren't installed here is listed as a known gap, not a failure |
+
+**Asked during the phase**
+
+| Question | Answer |
+| --- | --- |
+| Office was uninstalled from this PC at 13:51 on 2026-11-07, while the phase was being built | "I'll reinstall; carry on": the phase was built meanwhile, and the Excel checks ran once Excel was back. Office came back as Office Professional Plus, Click-to-Run 16.0.19127.20860 (x86) |
+| Public test files that hold page setup, against Phase 1's rule that public files never open in Excel | They open in Excel as temporary copies, read-only, with macros forced off and links not updated, and only their page counts are read. Everything else about public files stays as Phase 1 decided |
+
+**Defaults picked during the phase**
+
+| Choice | Default |
+| --- | --- |
+| Where page setup lives | `cgs-model`'s `PageSetup` on each sheet, read from `pageSetup`, `pageMargins`, `printOptions`, `headerFooter`, `rowBreaks`, `colBreaks` and `sheetPr`'s `pageSetUpPr`. A save edits the file's own tags, so attributes the app doesn't know, such as the printer settings' `r:id`, stay; a sheet nobody changed keeps its elements byte for byte. One undo step per change |
+| Print area and titles | The sheet's own `_xlnm.Print_Area` and `_xlnm.Print_Titles` names, written as Excel writes them (columns first, then rows). They move with inserted and deleted rows as every name does |
+| Page breaks | Kept as Excel writes them: a break's id is the last row or column before it. Insert Page Break goes above and left of the active cell, only above it when whole rows are selected and only left of it for whole columns. A break whose row is deleted goes with it. Only manual breaks are written |
+| Where pages break | `crates/cgs-engine/src/print.rs`, in Excel's printer dots as measured over COM with Microsoft Print to PDF at 600 dpi: a row is `floor(pixels × f)` dots rounded again at the page's scale and a column `round(pixels × g)` dots times the scale, with `f` and `g` measured for 24 normal fonts (6.0567 and 6.75 for Calibri 11); the room for rows is 8 dots short of the margins. Whole rows and columns fill that room; title rows and columns repeat on pages after their own and take their room; manual breaks end pages; Fit To picks the largest whole percent from 100 down to 10 that fits, ignores manual breaks along a side it fits and keeps them along a side left automatic; breaks come from every print area; headings take a column as wide as the last row number's digits and a row as tall as the default row. Excel's own breaks are the test |
+| What prints when nothing says | From A1 to the last cell holding a value, a fill or a border, with any drawing's cells, as Excel prints |
+| The PDF writer | `crates/cgs-pdf`, in the WASM module: pdf-writer, subsetter (without its variable-font part), rustybuzz, unicode-bidi and miniz_oxide, all MIT or Apache-2.0 |
+| Text in PDFs | Each face is a CID font holding only the glyphs used. Each glyph and the text it stands for get their own code, with a CIDToGIDMap, so a glyph that several letters share copies as the right one. Marks with no text of their own, such as the dots Noto draws apart from its letters, are drawn as outlines. Each run also carries its text as ActualText |
+| Installed fonts | The desktop reads Windows' font registry and serves the file through the file protocol; a collection's face is found by its own names. The web reads installed fonts only once Chrome's Local Font Access is granted, from a button in File › Print, never by surprise. A font whose licence forbids embedding is passed over |
+| Bundled fonts | Carlito, Caladea, Liberation Sans, Serif and Mono, and Noto Sans Arabic, as their authors made them: Carlito and Liberation reserve their names, so modified copies couldn't keep them. 7.8 MB, fetched the first time a PDF needs them and not in the offline cache's first download |
+| Arabic when installed fonts can't be read | Pages measure Arabic in the bundled Noto Sans Arabic, so cells fit as the PDF draws them. On this PC Calibri has Arabic glyphs, so the screen draws Arabic in Calibri |
+| Printing | The pages are SVG made from the same recording as the PDF, put in a print-only part of the page with each paper size as a CSS page. The desktop opens Windows' print dialog through WebView2; the web opens the browser's |
+| Preview | File › Print shows the same SVG pages, with Settings (active sheets, the whole workbook or the selection, Ignore Print Area), orientation, paper, margins and scaling, Page Setup, Print and Save as PDF. Export as PDF… opens it with Save as PDF first |
+| Normal view | Dashed lines where pages break, once page setup was changed or the sheet was previewed in this session, longer dashes for manual breaks |
+| On paper | Gridlines thin and grey, headings in the workbook's normal font, black and white as greys, draft quality with no gridlines or drawings, and errors as shown, blank, `--` or `#N/A` |
+| Header and footer | The workbook's normal font unless a run says otherwise, scaled with the page when Scale with document is on, at the margins when Align with page margins is on. Pictures are drawn on their line's bottom, at their VML size |
+| A workbook-wide print | Visible worksheets in tab order, then each visible chart sheet as one landscape Letter page with its chart inside Excel's normal margins. Page numbers run on from sheet to sheet unless a sheet sets its own first number, and `&N` counts the whole print |
+| Page Layout icons | The library's existing icons for now; print icons are a Track U job |
+| qpdf | 12.4.2, fetched into `.tools` by `scripts/fetch-qpdf.mjs` and checked by its SHA-256. A test tool only |
