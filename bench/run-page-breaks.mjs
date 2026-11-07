@@ -5,7 +5,7 @@
 // (read-only, macros forced off, links not updated), and their page counts are compared. They go
 // through one Excel session at a time in chunks, and the results are written after each chunk.
 // Usage: node bench/run-page-breaks.mjs [out.json] [--public] [--only=name]
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
   mkdirSync,
@@ -30,6 +30,18 @@ const only = process.argv.find((arg) => arg.startsWith('--only='))?.slice(7);
 const tool = join(root, 'target/fast/pagebreaks.exe');
 const script = readFileSync(join(root, 'bench/excel-page-breaks.ps1'), 'utf8');
 const quoted = (text) => "'" + text.replace(/'/g, "''") + "'";
+
+/** As `ours`, without waiting, for scanning many books at once. */
+function oursLater(path) {
+  return new Promise((done, fail) => {
+    execFile(
+      tool,
+      [path],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000, windowsHide: true },
+      (error, stdout) => (error ? fail(error) : done(JSON.parse(stdout))),
+    );
+  });
+}
 
 function ours(path) {
   const run = spawnSync(tool, [path], {
@@ -178,10 +190,22 @@ try {
   if (withPublic) {
     const publicFolder = join(root, 'tests/workbooks/public');
     const books = [];
-    for (const path of walk(publicFolder)) {
-      if (statSync(path).size > 40 * 1024 * 1024) continue;
+    const paths = walk(publicFolder).filter((path) => statSync(path).size <= 40 * 1024 * 1024);
+    const scanned = new Array(paths.length);
+    let next = 0;
+    // Six at a time: the engine's side of a scan takes most of an hour one by one.
+    await Promise.all(
+      Array.from({ length: 6 }, async () => {
+        while (next < paths.length) {
+          const at = next++;
+          scanned[at] = await oursLater(paths[at]).catch(() => null);
+        }
+      }),
+    );
+    for (const [at, path] of paths.entries()) {
       try {
-        const mine = ours(path);
+        const mine = scanned[at];
+        if (!mine) continue;
         if (!mine.some((sheet) => sheet.hasSetup)) continue;
         // Excel takes hours over a sheet styled to its last cell, which the engine counts in
         // millions of pages; such books are listed, not compared.
