@@ -86,9 +86,12 @@ if (hostedRunner) {
 /** What the app's CSP refused, from the console of every launch. The smoke fails on any. */
 const policyViolations = [];
 
-/** Starts the desktop app and attaches to its WebView2. Launches share the profile. */
-async function launch() {
-  const child = spawn(join(root, 'target/release/cgs-desktop.exe'), [], {
+/**
+ * Starts the desktop app and attaches to its WebView2. Launches share the profile. `args` are
+ * what Explorer passes: a double-clicked workbook's path.
+ */
+async function launch(args = []) {
+  const child = spawn(join(root, 'target/release/cgs-desktop.exe'), args, {
     cwd: root,
     windowsHide: true,
     env: {
@@ -351,6 +354,17 @@ try {
   await page.getByRole('menuitem', { name: 'formatting.xlsx' }).click();
   await waitForGrid(page, 'dark');
   results.reopenedFromRecent = await page.getByRole('heading', { level: 1 }).textContent();
+
+  // Started with a workbook, as a double-click in Explorer starts it: it opens by itself, and a
+  // reload doesn't open it again.
+  await kill(app);
+  app = await launch([books.defaults]);
+  page = app.page;
+  await waitForGrid(page, 'dark');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('defaults.xlsx');
+  if ((await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('launch_file', {}))) !== null)
+    throw new Error('The workbook the app started with was offered twice.');
+  results.startedWithFile = 'defaults.xlsx';
 
   // Back to the system: the window lets go of its override too.
   await page.getByRole('radio', { name: 'System' }).click();
