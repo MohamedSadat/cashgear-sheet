@@ -325,6 +325,21 @@ pub fn starts_rtl(text: &str) -> bool {
     false
 }
 
+/// Whether Excel lays text out right to left when its reading order is Context: by its first
+/// character with a direction, where a digit reads left to right. So "42 رقم" is aligned as
+/// Arabic, by `starts_rtl`, but its number still comes first from the left, as Excel draws it.
+pub fn draws_rtl(text: &str) -> bool {
+    for ch in text.chars() {
+        if is_rtl_char(ch) {
+            return true;
+        }
+        if ch.is_alphabetic() || ch.is_ascii_digit() {
+            return false;
+        }
+    }
+    false
+}
+
 fn truncate(text: &mut String) {
     if text.len() > MAX_CELL_TEXT {
         let mut end = MAX_CELL_TEXT;
@@ -415,7 +430,7 @@ fn show_plain(
     let rtl = match reading_order {
         ReadingOrder::RightToLeft => true,
         ReadingOrder::LeftToRight => false,
-        ReadingOrder::Context => shown.starts_rtl,
+        ReadingOrder::Context => shown.starts_rtl && draws_rtl(out),
     };
     if rtl {
         shown.flags |= CELL_RTL;
@@ -1469,6 +1484,12 @@ mod tests {
         assert!(!starts_rtl("Hello مرحبا"));
         assert!(!starts_rtl("123"));
         assert!(!starts_rtl(""));
+        assert!(draws_rtl("مرحبا 42"));
+        assert!(
+            !draws_rtl("42 مرحبا"),
+            "a leading number reads left to right"
+        );
+        assert!(draws_rtl(" - مرحبا"));
     }
 
     #[test]
