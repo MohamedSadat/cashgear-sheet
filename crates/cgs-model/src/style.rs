@@ -472,12 +472,42 @@ const ROW_FIT_SIZES: [f32; 12] = [
     12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 36.0, 48.0, 72.0,
 ];
 
+/// Excel's row heights for smaller fonts, in points: each font's default row height when it is
+/// the workbook's normal font, measured over COM in Phase 10.
+const SMALL_ROW_FITS: [(&str, f32, f64); 19] = [
+    ("calibri", 9.0, 12.0),
+    ("calibri", 10.0, 12.75),
+    ("calibri", 11.0, 15.0),
+    ("arial", 8.0, 11.25),
+    ("arial", 9.0, 12.0),
+    ("arial", 10.0, 12.75),
+    ("arial", 11.0, 14.25),
+    ("times new roman", 10.0, 12.75),
+    ("times new roman", 11.0, 15.0),
+    ("tahoma", 8.0, 10.5),
+    ("tahoma", 10.0, 12.75),
+    ("verdana", 8.0, 10.5),
+    ("verdana", 10.0, 12.75),
+    ("segoe ui", 9.0, 12.0),
+    ("segoe ui", 10.0, 14.25),
+    ("courier new", 10.0, 13.5),
+    ("georgia", 10.0, 12.75),
+    ("cambria", 11.0, 14.25),
+    ("consolas", 11.0, 15.0),
+];
+
 /// The height Excel fits a row to for this font, in pixels at 100%.
 pub fn fitted_row_px(font: &Font) -> u32 {
+    let name = font.name.to_ascii_lowercase();
     if font.size < ROW_FIT_SIZES[0] {
+        if let Some(&(_, _, points)) = SMALL_ROW_FITS
+            .iter()
+            .find(|(known, size, _)| *known == name && (*size - font.size).abs() < 0.01)
+        {
+            return points_to_px(points);
+        }
         return (f64::from(font.size) * 1.75).ceil() as u32;
     }
-    let name = font.name.to_ascii_lowercase();
     let heights = ROW_FITS
         .iter()
         .find(|(known, _)| *known == name)
@@ -588,6 +618,24 @@ mod tests {
             ..Font::default()
         };
         assert_eq!(fitted_row_px(&arial), 40);
+    }
+
+    #[test]
+    fn rows_fit_small_fonts_as_excel_fits_them() {
+        let fit = |name: &str, size| {
+            fitted_row_px(&Font {
+                name: name.to_string(),
+                size,
+                ..Font::default()
+            })
+        };
+        // 12.75 points, as Excel gives Calibri 10 and Arial 10.
+        assert_eq!(fit("Calibri", 10.0), 17);
+        assert_eq!(fit("Arial", 10.0), 17);
+        assert_eq!(fit("Arial", 11.0), 19);
+        assert_eq!(fit("Tahoma", 8.0), 14);
+        // A font nobody measured keeps the rule of thumb.
+        assert_eq!(fit("Unknown Sans", 10.0), 18);
     }
 
     #[test]
