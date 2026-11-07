@@ -146,6 +146,7 @@ const tally = (list) => {
   return {
     books: list.length,
     failed: list.filter((book) => book.error).length,
+    skipped: list.filter((book) => book.skipped).length,
     sheets: sheets.length,
     matched: sheets.filter((sheet) => sheet.match).length,
   };
@@ -177,7 +178,17 @@ try {
       if (statSync(path).size > 40 * 1024 * 1024) continue;
       try {
         const mine = ours(path);
-        if (mine.some((sheet) => sheet.hasSetup)) books.push({ path, mine });
+        if (!mine.some((sheet) => sheet.hasSetup)) continue;
+        // Excel takes hours over a sheet styled to its last cell, which the engine counts in
+        // millions of pages; such books are listed, not compared.
+        if (mine.some((sheet) => sheet.pages > 10000)) {
+          results.public.push({
+            book: relative(join(root, 'tests/workbooks/public'), path),
+            skipped: 'over 10,000 pages',
+          });
+          continue;
+        }
+        books.push({ path, mine });
       } catch {
         // A file the engine can't read has no pages to compare.
       }

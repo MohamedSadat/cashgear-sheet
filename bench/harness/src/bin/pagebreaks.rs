@@ -107,7 +107,7 @@ fn main() {
         out.push(SheetPages {
             sheet: index as u32,
             name: sheet["name"].as_str().unwrap_or_default().to_string(),
-            pages: answer["pages"].as_array().map_or(0, Vec::len),
+            pages: answer["pageCount"].as_u64().unwrap_or(0) as usize,
             zoom: answer["zoom"].as_u64().unwrap_or(100),
             rows: after("rowBreaks"),
             cols: after("colBreaks"),
