@@ -891,7 +891,10 @@ export interface PagesInfo {
   blackAndWhite: boolean;
   draft: boolean;
   errors: 'displayed' | 'blank' | 'dash' | 'NA';
+  /** In screen pixels at 100%. */
   headingSize: [number, number] | null;
+  /** Excel's printer dots: per inch, and per pixel of a row and a column at 100%. */
+  units?: { dpi: number; row: number; col: number };
   headerFooter: {
     odd: [HfSections | null, HfSections | null];
     even: [HfSections | null, HfSections | null];

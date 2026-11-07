@@ -27,6 +27,8 @@ struct SheetPages {
     has_setup: bool,
     /// The sheet's page setup as the engine reads it.
     setup: Value,
+    /// The first and last row and column any page prints: [top, left, bottom, right].
+    extent: [u64; 4],
 }
 
 fn has_setup(setup: &Value) -> bool {
@@ -87,6 +89,21 @@ fn main() {
         .expect("page setup as JSON");
         // Breaks as the first line of the next page, as Excel's locations say them.
         let after = |key: &str| numbers(&answer[key]).into_iter().map(|n| n + 1).collect();
+        let mut extent = [u64::MAX, u64::MAX, 0, 0];
+        for page in answer["pages"].as_array().into_iter().flatten() {
+            let rows = numbers(&page["rows"]);
+            let cols = numbers(&page["cols"]);
+            if let (Some(&top), Some(&bottom), Some(&left), Some(&right)) =
+                (rows.first(), rows.last(), cols.first(), cols.last())
+            {
+                extent = [
+                    extent[0].min(top),
+                    extent[1].min(left),
+                    extent[2].max(bottom),
+                    extent[3].max(right),
+                ];
+            }
+        }
         out.push(SheetPages {
             sheet: index as u32,
             name: sheet["name"].as_str().unwrap_or_default().to_string(),
@@ -98,6 +115,7 @@ fn main() {
             manual_cols: after("manualCols"),
             has_setup: has_setup(&setup),
             setup,
+            extent,
         });
     }
     println!("{}", serde_json::to_string(&out).expect("pages as JSON"));

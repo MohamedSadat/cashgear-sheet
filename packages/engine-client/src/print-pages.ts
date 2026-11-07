@@ -54,16 +54,28 @@ export interface PrintOptions {
 
 /** Excel prints gridlines thin and dark grey. */
 const PRINT_GRIDLINE = '#a0a0a0';
-const POINT = 0.75;
 
-/** Sizes along one axis, from the layout's runs, with sums over stretches. */
+/**
+ * Sizes along one axis, from the layout's runs, with sums over stretches. `unit` turns a line's
+ * pixels into the units pages are drawn in, such as Excel's printer dots.
+ */
 export class Axis {
   constructor(
     private readonly runs: Uint32Array,
-    private readonly fallback: number,
+    private readonly fallbackPx: number,
+    readonly unit: (px: number) => number = (px) => px,
   ) {}
 
+  private get fallback() {
+    return this.unit(this.fallbackPx);
+  }
+
   size(index: number): number {
+    return this.unit(this.px(index));
+  }
+
+  /** A line's pixels at 100%. */
+  px(index: number): number {
     const runs = this.runs;
     let low = 0;
     let high = runs.length / 3 - 1;
@@ -75,7 +87,7 @@ export class Axis {
       else if (index > last) low = mid + 1;
       else return runs[mid * 3 + 2]!;
     }
-    return this.fallback;
+    return this.fallbackPx;
   }
 
   /** The sum of `first` to `last`, inclusive. */
@@ -86,7 +98,7 @@ export class Axis {
     for (let at = 0; at < runs.length; at += 3) {
       const a = Math.max(first, runs[at]!);
       const b = Math.min(last, runs[at + 1]!);
-      if (a <= b) total += (b - a + 1) * (runs[at + 2]! - this.fallback);
+      if (a <= b) total += (b - a + 1) * (this.unit(runs[at + 2]!) - this.fallback);
       if (runs[at]! > last) break;
     }
     return total;
@@ -164,12 +176,27 @@ class Blocks {
 }
 
 /** Draws cells `rows` by `cols` with their top left at `x`, `y` in the context's pixels. */
+/** Excel's printer units for a page: dots per inch, and dots per pixel at the page's scale. */
+interface PageUnits {
+  scale: number;
+  perPixelX: number;
+  perPixelY: number;
+}
+
+/** A tile's cell edges in page units. */
+function edgesOf(sizes: ArrayLike<number>, axis: Axis): Float64Array {
+  const edges = new Float64Array(sizes.length + 1);
+  for (let at = 0; at < sizes.length; at++) edges[at + 1] = edges[at]! + axis.unit(sizes[at]!);
+  return edges;
+}
+
 async function drawCells(
   context: RecordingContext,
   blocks: Blocks,
   rowAxis: Axis,
   colAxis: Axis,
   palette: TilePalette,
+  units: PageUnits,
   rows: [number, number],
   cols: [number, number],
   x: number,
@@ -201,7 +228,12 @@ async function drawCells(
         x + colAxis.offset(cols[0], firstCol),
         y + rowAxis.offset(rows[0], firstRow),
       );
-      drawTile(context as never, block, palette, 1);
+      drawTile(context as never, block, palette, units.scale, {
+        xs: edgesOf(block.colPx, colAxis),
+        ys: edgesOf(block.rowPx, rowAxis),
+        perPixelX: units.perPixelX,
+        perPixelY: units.perPixelY,
+      });
       context.restore();
     }
   }
@@ -216,22 +248,23 @@ function drawHeadings(
   lines: { rows: [number, number][]; cols: [number, number][] },
   headW: number,
   headH: number,
+  line: number,
 ) {
   context.save();
   context.strokeStyle = PRINT_GRIDLINE;
   context.fillStyle = '#000000';
-  context.lineWidth = 1;
+  context.lineWidth = line;
   context.font = font;
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.direction = 'ltr';
-  context.strokeRect(0.5, 0.5, headW - 1, headH - 1);
+  context.strokeRect(line / 2, line / 2, headW - line, headH - line);
   let x = headW;
   for (const [first, last] of lines.cols) {
     for (let col = first; col <= last; col++) {
       const w = colAxis.size(col);
       if (!w) continue;
-      context.strokeRect(x + 0.5, 0.5, w - 1, headH - 1);
+      context.strokeRect(x + line / 2, line / 2, w - line, headH - line);
       context.fillText(columnName(col), x + w / 2, headH / 2);
       x += w;
     }
@@ -241,7 +274,7 @@ function drawHeadings(
     for (let row = first; row <= last; row++) {
       const h = rowAxis.size(row);
       if (!h) continue;
-      context.strokeRect(0.5, y + 0.5, headW - 1, h - 1);
+      context.strokeRect(line / 2, y + line / 2, headW - line, h - line);
       context.fillText(String(row), headW / 2, y + h / 2);
       y += h;
     }
@@ -457,10 +490,27 @@ async function recordPage(
   options: PrintOptions,
 ): Promise<RecordedPage> {
   const { info, layout } = sheet;
-  const rowAxis = new Axis(layout.rows, layout.defaultRowPx);
-  const colAxis = new Axis(layout.cols, layout.defaultColPx);
-  const scale = (info.zoom / 100) * POINT;
-  const content: Matrix = [scale, 0, 0, scale, page.x, page.y];
+  // Excel's printer dots, as `crates/cgs-engine/src/print.rs` breaks pages in them: rows a
+  // little shorter and columns a little wider than on screen, while text keeps its size.
+  const zoom = info.zoom / 100;
+  const dots = info.units ?? { dpi: 600, row: 6.0567, col: 6.75 };
+  const rowAxis = new Axis(layout.rows, layout.defaultRowPx, (px) =>
+    Math.round(Math.floor(px * dots.row) * zoom),
+  );
+  const colAxis = new Axis(
+    layout.cols,
+    layout.defaultColPx,
+    (px) => Math.round(px * dots.col) * zoom,
+  );
+  const rowPx = new Axis(layout.rows, layout.defaultRowPx);
+  const colPx = new Axis(layout.cols, layout.defaultColPx);
+  const units: PageUnits = {
+    scale: (dots.dpi / 96) * zoom,
+    perPixelX: dots.col * zoom,
+    perPixelY: dots.row * zoom,
+  };
+  const toPoints = 72 / dots.dpi;
+  const content: Matrix = [toPoints, 0, 0, toPoints, page.x, page.y];
   const context = new RecordingContext(
     options.recording,
     options.measure,
@@ -475,8 +525,8 @@ async function recordPage(
     fontFamily: options.fontFamily,
     showGrid: info.gridlines && !info.draft,
   };
-  const headW = info.headingSize ? info.headingSize[0] / POINT : 0;
-  const headH = info.headingSize ? info.headingSize[1] / POINT : 0;
+  const headW = info.headingSize ? colAxis.unit(info.headingSize[0]) : 0;
+  const headH = info.headingSize ? rowAxis.unit(info.headingSize[1]) : 0;
   const titleW = page.titleCols ? colAxis.sum(page.titleCols[0], page.titleCols[1]) : 0;
   const titleH = page.titleRows ? rowAxis.sum(page.titleRows[0], page.titleRows[1]) : 0;
   const cellsX = headW + titleW;
@@ -491,6 +541,7 @@ async function recordPage(
       rowAxis,
       colAxis,
       palette,
+      units,
       page.titleRows,
       page.titleCols,
       headW,
@@ -504,6 +555,7 @@ async function recordPage(
       rowAxis,
       colAxis,
       palette,
+      units,
       page.titleRows,
       page.cols,
       cellsX,
@@ -517,35 +569,59 @@ async function recordPage(
       rowAxis,
       colAxis,
       palette,
+      units,
       page.rows,
       page.titleCols,
       headW,
       cellsY,
     );
   }
-  await drawCells(context, blocks, rowAxis, colAxis, palette, page.rows, page.cols, cellsX, cellsY);
+  await drawCells(
+    context,
+    blocks,
+    rowAxis,
+    colAxis,
+    palette,
+    units,
+    page.rows,
+    page.cols,
+    cellsX,
+    cellsY,
+  );
   if (palette.showGrid) {
     // The tiles draw each cell's right and bottom lines; the printout's top and left close it.
     const w = titleW + colAxis.sum(page.cols[0], page.cols[1]);
     const h = titleH + rowAxis.sum(page.rows[0], page.rows[1]);
     context.fillStyle = PRINT_GRIDLINE;
-    context.fillRect(headW, headH, w, 1);
-    context.fillRect(headW, headH, 1, h);
+    context.fillRect(headW, headH, w, units.scale);
+    context.fillRect(headW, headH, units.scale, h);
   }
   if (info.headingSize) {
-    const size = (info.font.size * 96) / 72;
+    const size = ((info.font.size * 96) / 72) * units.scale;
     const font = size.toFixed(2) + 'px "' + info.font.name + '", ' + options.fontFamily;
-    drawHeadings(context, rowAxis, colAxis, font, { rows: rowLines, cols: colLines }, headW, headH);
+    drawHeadings(
+      context,
+      rowAxis,
+      colAxis,
+      font,
+      { rows: rowLines, cols: colLines },
+      headW,
+      headH,
+      units.scale,
+    );
   }
   if (!info.draft) {
-    const left = colAxis.sum(1, page.cols[0] - 1);
-    const top = rowAxis.sum(1, page.rows[0] - 1);
+    // Drawings stay where their cells are and keep their own size, as Excel prints them.
+    const left = colPx.sum(1, page.cols[0] - 1);
+    const top = rowPx.sum(1, page.rows[0] - 1);
     const width = colAxis.sum(page.cols[0], page.cols[1]);
     const height = rowAxis.sum(page.rows[0], page.rows[1]);
     for (const drawing of sheet.drawings) {
-      const x = drawing.x - left;
-      const y = drawing.y - top;
-      if (x >= width || y >= height || x + drawing.width <= 0 || y + drawing.height <= 0) continue;
+      const x = (drawing.x - left) * units.perPixelX;
+      const y = (drawing.y - top) * units.perPixelY;
+      const w = drawing.width * units.scale;
+      const h = drawing.height * units.scale;
+      if (x >= width || y >= height || x + w <= 0 || y + h <= 0) continue;
       context.save();
       context.beginPath();
       context.rect(cellsX, cellsY, width, height);
@@ -553,10 +629,11 @@ async function recordPage(
       if (drawing.kind === 'picture' && drawing.image && options.picture) {
         const picture = await options.picture(drawing.image);
         if (picture !== null) {
-          context.drawRecorded(picture, cellsX + x, cellsY + y, drawing.width, drawing.height);
+          context.drawRecorded(picture, cellsX + x, cellsY + y, w, h);
         }
       } else if (drawing.kind === 'chart' && options.drawChart) {
         context.translate(cellsX + x, cellsY + y);
+        context.scale(units.scale, units.scale);
         await options.drawChart(context, drawing);
       }
       context.restore();

@@ -149,14 +149,23 @@ impl Loader {
             sheet.cols.default_px = cgs_model::style::base_col_width_to_px(8.0, digit);
         }
 
+        let normal = book.styles.normal_font().clone();
         let xf_heights = book
             .styles
             .xfs
             .iter()
             .map(|xf| {
                 let turns = xf.alignment.wrap || xf.alignment.rotation != 0;
-                cgs_model::style::fitted_row_px(book.styles.font(xf))
-                    | if turns { sheet::WRAPS } else { 0 }
+                let font = book.styles.font(xf);
+                // The normal font is what the default row fits, as Excel sizes it: Arial 10's
+                // rows stay 12.75 points, which the rule for small sizes would round up.
+                let fitted =
+                    if font.name.eq_ignore_ascii_case(&normal.name) && font.size == normal.size {
+                        0
+                    } else {
+                        cgs_model::style::fitted_row_px(font)
+                    };
+                fitted | if turns { sheet::WRAPS } else { 0 }
             })
             .collect();
 

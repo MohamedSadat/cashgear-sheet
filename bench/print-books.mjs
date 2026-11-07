@@ -54,7 +54,7 @@ function book({
   const sheet =
     `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}">` +
     (pr ? `<sheetPr>${pr}</sheetPr>` : '') +
-    `<sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"${format}/>` +
+    `<sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr${format.includes('defaultRowHeight') ? '' : ' defaultRowHeight="15"'}${format}/>` +
     (colsXml.length ? `<cols>${colsXml.join('')}</cols>` : '') +
     `<sheetData>${body.join('')}</sheetData>` +
     (xml ||
@@ -163,8 +163,8 @@ export function printBooks() {
       cols: 6,
       extra: '<row r="95"><c r="J95" s="1"/></row>',
     }),
-    'big-font.xlsx': book({ font: ['Calibri', 16], format: '' }),
-    'arial-10.xlsx': book({ font: ['Arial', 10] }),
+    'big-font.xlsx': book({ font: ['Calibri', 16], format: ' defaultRowHeight="21"' }),
+    'arial-10.xlsx': book({ font: ['Arial', 10], format: ' defaultRowHeight="12.75"' }),
     'default-width.xlsx': book({ format: ' defaultColWidth="14.5"' }),
     'everything.xlsx': book({
       rows: 260,

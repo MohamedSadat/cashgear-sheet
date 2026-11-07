@@ -62,7 +62,13 @@ function compare(mine, theirs, countsOnly) {
     if (!ownSheet) continue;
     if (countsOnly && !ownSheet.hasSetup) continue;
     const pagesMatch = ownSheet.pages === sheet.pages;
-    const breaksMatch = same(ownSheet.rows, sheet.rows) && same(ownSheet.cols, sheet.cols);
+    // GET.DOCUMENT also lists where the printed range starts and ends, and breaks past it, so
+    // only breaks inside what prints are compared.
+    const [top, left, bottom, right] = ownSheet.extent;
+    const inside = (list, first, last) => (list ?? []).filter((at) => at > first && at <= last);
+    const breaksMatch =
+      same(inside(ownSheet.rows, top, bottom), inside(sheet.rows, top, bottom)) &&
+      same(inside(ownSheet.cols, left, right), inside(sheet.cols, left, right));
     sheets.push({
       sheet: sheet.name,
       match: !sheet.error && (countsOnly ? pagesMatch : pagesMatch && breaksMatch),

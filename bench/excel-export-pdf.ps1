@@ -41,9 +41,11 @@ try {
   $excel.DisplayAlerts = $false
   $excel.AskToUpdateLinks = $false
   $excel.AutomationSecurity = 3
+  $book = $excel.Workbooks.Open($Workbook, 0, $true)
+  # Excel takes a printer only once a workbook is open.
   $before = [string]$excel.ActivePrinter
   $excel.ActivePrinter = "Microsoft Print to PDF on $port"
-  $book = $excel.Workbooks.Open($Workbook, 0, $true)
+
   # Type 0 is PDF; standard quality, with the document's properties, honouring print areas.
   $book.ExportAsFixedFormat(0, $Pdf, 0, $true, $false)
   $book.Close($false)

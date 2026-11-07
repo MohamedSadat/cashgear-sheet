@@ -2,6 +2,12 @@
 //! inside the margins at the page's scale, title rows and columns repeat on every page after
 //! their own, a manual break ends a page, and fitting to pages picks the largest whole percent
 //! that fits, ignoring manual breaks as Excel does. Print areas each start their own pages.
+//!
+//! Excel lays a page out in its printer's dots, which `Units` holds as measured over COM with
+//! Microsoft Print to PDF at 600 dpi: a row is `floor(pixels × 6.0567)` dots, rounded again at
+//! the page's scale, and a column `round(pixels × 6.75)` dots times the scale. So printed rows are
+//! about 3% shorter than on screen and columns 8% wider, while text keeps its size. The room for
+//! rows is 8 dots short of the margins.
 
 use cgs_model::{
     page::{HfRun, HfSections, HfText},
@@ -11,6 +17,90 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::Session;
+
+/// Excel's printer units for a sheet whose normal font is Calibri 11, measured on the reference
+/// printer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Units {
+    /// Dots per inch.
+    pub dpi: f64,
+    /// Dots per screen pixel of a row's height and a column's width, at 100%.
+    pub row: f64,
+    pub col: f64,
+    /// Dots the room for rows falls short of the margins by.
+    pub row_slack: f64,
+}
+
+/// Excel's dots per screen pixel of rows and columns for workbooks of other normal fonts,
+/// measured over COM with Microsoft Print to PDF (`bench/excel-page-breaks.ps1`'s probe):
+/// printed sizes follow the printer's font metrics, which no formula here reproduces. Where a
+/// column factor didn't fit one value, the middle of what fitted the default width is used.
+const FONT_UNITS: &[(&str, f32, f64, f64)] = &[
+    ("calibri", 9.0, 6.1935, 6.368),
+    ("calibri", 10.0, 6.427, 6.017),
+    ("calibri", 11.0, 6.0567, 6.75),
+    ("calibri", 12.0, 6.195, 6.40),
+    ("calibri", 14.0, 6.009, 5.923),
+    ("calibri", 16.0, 6.1055, 6.15),
+    ("arial", 8.0, 5.671, 6.222),
+    ("arial", 9.0, 5.817, 6.017),
+    ("arial", 10.0, 6.0685, 6.62),
+    ("arial", 11.0, 6.009, 6.40),
+    ("arial", 12.0, 6.164, 6.224),
+    ("times new roman", 10.0, 6.2425, 6.2),
+    ("times new roman", 11.0, 5.806, 6.24),
+    ("times new roman", 12.0, 6.009, 6.24),
+    ("cambria", 11.0, 6.0575, 6.40),
+    ("verdana", 8.0, 6.289, 6.20),
+    ("verdana", 10.0, 6.366, 6.665),
+    ("segoe ui", 9.0, 7.134, 6.62),
+    ("segoe ui", 10.0, 6.531, 6.62),
+    ("courier new", 10.0, 5.3415, 6.24),
+    ("tahoma", 8.0, 6.371, 6.222),
+    ("tahoma", 10.0, 6.366, 6.40),
+    ("georgia", 10.0, 6.0567, 5.72),
+    ("consolas", 11.0, 5.806, 6.40),
+];
+
+impl Units {
+    pub const EXCEL: Self = Self {
+        dpi: 600.0,
+        row: 6.0567,
+        col: 6.75,
+        row_slack: 8.0,
+    };
+
+    /// The units for a workbook whose normal font is this, or Calibri 11's for one not measured.
+    pub fn for_font(name: &str, size: f32) -> Self {
+        let name = name.to_ascii_lowercase();
+        FONT_UNITS
+            .iter()
+            .find(|(known, known_size, _, _)| *known == name && (*known_size - size).abs() < 0.01)
+            .map_or(Self::EXCEL, |&(_, _, row, col)| Self {
+                row,
+                col,
+                ..Self::EXCEL
+            })
+    }
+
+    /// A row's height in dots at a percent.
+    pub fn row_dots(&self, px: u32, zoom: u32) -> f64 {
+        ((f64::from(px) * self.row).floor() * f64::from(zoom) / 100.0).round()
+    }
+
+    /// A column's width in dots at a percent.
+    pub fn col_dots(&self, px: u32, zoom: u32) -> f64 {
+        (f64::from(px) * self.col).round() * f64::from(zoom) / 100.0
+    }
+
+    pub fn dots(&self, points: f64) -> f64 {
+        points * self.dpi / 72.0
+    }
+
+    pub fn points(&self, dots: f64) -> f64 {
+        dots * 72.0 / self.dpi
+    }
+}
 
 /// How a page is scaled: a percent, or fitted to so many pages wide and tall (0 is any).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,11 +123,13 @@ pub struct Layout {
     /// The last row or column before each manual break, sorted.
     pub manual_rows: Vec<u32>,
     pub manual_cols: Vec<u32>,
-    /// The row headings' width and the column headings' height, when headings print, in sheet
-    /// points at 100%.
-    pub headings: Option<(f64, f64)>,
+    /// The row headings' width and the column headings' height, when headings print, in screen
+    /// pixels at 100%.
+    pub headings: Option<(u32, u32)>,
     pub center: (bool, bool),
     pub order: PageOrder,
+    /// Excel's printer units for the workbook's normal font.
+    pub units: Units,
 }
 
 /// One page: which cells it shows and where they go on the paper.
@@ -53,7 +145,7 @@ pub struct PageBox {
     /// The top left of what it prints, headings included, in points from the paper's corner.
     pub x: f64,
     pub y: f64,
-    /// What it prints, at 100%, in sheet points.
+    /// What it prints, in points on the paper.
     pub width: f64,
     pub height: f64,
 }
@@ -81,7 +173,7 @@ fn segments(
 ) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     let mut start = first;
-    // Excel counts in device units, so a sum a hair over from rounding still fits.
+    // Dots add up exactly; this only absorbs a column's fraction of a dot.
     const SLACK: f64 = 1e-6;
     while start <= last {
         let repeats = titles.is_some_and(|(_, end)| end < start);
@@ -115,29 +207,44 @@ fn title_size(titles: Option<(u32, u32)>, size: &dyn Fn(u32) -> f64) -> f64 {
     titles.map_or(0.0, |(a, b)| sum(a, b, size))
 }
 
-/// Pages at one percent, with or without manual breaks.
+/// Pages at one percent, with or without manual breaks. `row` and `col` give each line's
+/// size in screen pixels at 100%, hidden ones 0.
 fn pages_at(
     layout: &Layout,
     zoom: u32,
     manual: bool,
-    row: &dyn Fn(u32) -> f64,
-    col: &dyn Fn(u32) -> f64,
+    row: &dyn Fn(u32) -> u32,
+    col: &dyn Fn(u32) -> u32,
 ) -> (Vec<PageBox>, Vec<u32>, Vec<u32>) {
-    let scale = f64::from(zoom) / 100.0;
+    let units = layout.units;
     let (left, right, top, bottom) = layout.margins;
     let printable_w = (layout.paper.0 - left - right).max(1.0);
     let printable_h = (layout.paper.1 - top - bottom).max(1.0);
-    let (head_w, head_h) = layout.headings.unwrap_or((0.0, 0.0));
-    let room_w = printable_w / scale - head_w;
-    let room_h = printable_h / scale - head_h;
+    let row_dots = |r: u32| units.row_dots(row(r), zoom);
+    let col_dots = |c: u32| units.col_dots(col(c), zoom);
+    let (head_w, head_h) = layout.headings.map_or((0.0, 0.0), |(w, h)| {
+        (units.col_dots(w, zoom), units.row_dots(h, zoom))
+    });
+    let room_w = units.dots(printable_w) - head_w;
+    let room_h = units.dots(printable_h).round() - units.row_slack - head_h;
     let none: Vec<u32> = Vec::new();
-    let (manual_rows, manual_cols) = if manual {
-        (&layout.manual_rows, &layout.manual_cols)
-    } else {
-        (&none, &none)
+    // Fitting ignores manual breaks, except along a side whose pages it leaves automatic.
+    let (keep_rows, keep_cols) = match layout.zoom {
+        Zoom::Percent(_) => (manual, manual),
+        Zoom::Fit { wide, tall } => (manual && tall == 0, manual && wide == 0),
     };
-    let title_h = title_size(layout.title_rows, row);
-    let title_w = title_size(layout.title_cols, col);
+    let manual_rows = if keep_rows {
+        &layout.manual_rows
+    } else {
+        &none
+    };
+    let manual_cols = if keep_cols {
+        &layout.manual_cols
+    } else {
+        &none
+    };
+    let title_h = title_size(layout.title_rows, &row_dots);
+    let title_w = title_size(layout.title_cols, &col_dots);
     let mut pages = Vec::new();
     let mut row_breaks = Vec::new();
     let mut col_breaks = Vec::new();
@@ -149,7 +256,7 @@ fn pages_at(
             layout.title_rows,
             title_h,
             manual_rows,
-            row,
+            &row_dots,
         );
         let cols = segments(
             area.left,
@@ -158,30 +265,33 @@ fn pages_at(
             layout.title_cols,
             title_w,
             manual_cols,
-            col,
+            &col_dots,
         );
-        if index == 0 {
-            row_breaks.extend(rows.iter().rev().skip(1).map(|&(_, end)| end));
-            col_breaks.extend(cols.iter().rev().skip(1).map(|&(_, end)| end));
-            row_breaks.sort_unstable();
-            col_breaks.sort_unstable();
-        }
+        // Every area's breaks, as Excel lists them; where one area ends isn't a break.
+        row_breaks.extend(rows.iter().rev().skip(1).map(|&(_, end)| end));
+        col_breaks.extend(cols.iter().rev().skip(1).map(|&(_, end)| end));
         let mut place = |r: (u32, u32), c: (u32, u32)| {
             let title_rows = layout.title_rows.filter(|&(_, end)| end < r.0);
             let title_cols = layout.title_cols.filter(|&(_, end)| end < c.0);
-            let width =
-                head_w + title_cols.map_or(0.0, |(a, b)| sum(a, b, col)) + sum(c.0, c.1, col);
-            let height =
-                head_h + title_rows.map_or(0.0, |(a, b)| sum(a, b, row)) + sum(r.0, r.1, row);
+            let width = units.points(
+                head_w
+                    + title_cols.map_or(0.0, |(a, b)| sum(a, b, &col_dots))
+                    + sum(c.0, c.1, &col_dots),
+            );
+            let height = units.points(
+                head_h
+                    + title_rows.map_or(0.0, |(a, b)| sum(a, b, &row_dots))
+                    + sum(r.0, r.1, &row_dots),
+            );
             let x = left
                 + if layout.center.0 {
-                    ((printable_w - width * scale) / 2.0).max(0.0)
+                    ((printable_w - width) / 2.0).max(0.0)
                 } else {
                     0.0
                 };
             let y = top
                 + if layout.center.1 {
-                    ((printable_h - height * scale) / 2.0).max(0.0)
+                    ((printable_h - height) / 2.0).max(0.0)
                 } else {
                     0.0
                 };
@@ -214,6 +324,10 @@ fn pages_at(
             }
         }
     }
+    row_breaks.sort_unstable();
+    row_breaks.dedup();
+    col_breaks.sort_unstable();
+    col_breaks.dedup();
     (pages, row_breaks, col_breaks)
 }
 
@@ -221,8 +335,8 @@ fn pages_at(
 fn extent(
     layout: &Layout,
     zoom: u32,
-    row: &dyn Fn(u32) -> f64,
-    col: &dyn Fn(u32) -> f64,
+    row: &dyn Fn(u32) -> u32,
+    col: &dyn Fn(u32) -> u32,
 ) -> (u32, u32) {
     let (pages, _, _) = pages_at(layout, zoom, false, row, col);
     let mut wide = 0u32;
@@ -242,8 +356,9 @@ fn extent(
     (wide, tall)
 }
 
-/// Lays out the pages. `row` and `col` give each line's size in points at 100%, hidden ones 0.
-pub fn paginate(layout: &Layout, row: &dyn Fn(u32) -> f64, col: &dyn Fn(u32) -> f64) -> Paginated {
+/// Lays out the pages. `row` and `col` give each line's size in screen pixels at 100%, hidden
+/// ones 0.
+pub fn paginate(layout: &Layout, row: &dyn Fn(u32) -> u32, col: &dyn Fn(u32) -> u32) -> Paginated {
     let zoom = match layout.zoom {
         Zoom::Percent(percent) => percent.clamp(10, 400),
         Zoom::Fit { wide, tall } => {
@@ -251,27 +366,12 @@ pub fn paginate(layout: &Layout, row: &dyn Fn(u32) -> f64, col: &dyn Fn(u32) -> 
                 let (w, t) = extent(layout, zoom, row, col);
                 (wide == 0 || w <= wide) && (tall == 0 || t <= tall)
             };
-            // Pages only grow as the percent does, so the largest that fits is found by halves.
-            if fits(100) {
-                100
-            } else if !fits(10) {
-                10
-            } else {
-                let (mut low, mut high) = (10u32, 100u32);
-                while high - low > 1 {
-                    let mid = (low + high) / 2;
-                    if fits(mid) {
-                        low = mid;
-                    } else {
-                        high = mid;
-                    }
-                }
-                low
-            }
+            // Rounding at each percent means fitting isn't strictly monotonic, so every percent
+            // is tried from 100 down, as Excel finds the largest that fits.
+            (10..=100).rev().find(|&zoom| fits(zoom)).unwrap_or(10)
         }
     };
-    let manual = matches!(layout.zoom, Zoom::Percent(_));
-    let (pages, row_breaks, col_breaks) = pages_at(layout, zoom, manual, row, col);
+    let (pages, row_breaks, col_breaks) = pages_at(layout, zoom, true, row, col);
     Paginated {
         zoom,
         pages,
@@ -340,8 +440,8 @@ fn rect_json(r: Rect) -> Value {
 }
 
 impl Session {
-    /// The cells that print when nothing says which: from the first to the last cell holding a
-    /// value, a fill or a border, with any drawing's cells.
+    /// The cells that print when nothing says which: from A1 to the last cell holding a value, a
+    /// fill or a border, or any drawing's, as Excel prints them.
     pub(crate) fn print_range(&self, sheet: u32) -> Option<Rect> {
         use cgs_calc::{CalcEngine, CalcValue, CellSink, SheetRect};
         let info = self.book.sheets.get(sheet as usize)?;
@@ -417,7 +517,12 @@ impl Session {
             take(from.row, from.col);
             take(to.row, to.col);
         }
-        bounds
+        bounds.map(|b| Rect {
+            top: 1,
+            left: 1,
+            bottom: b.bottom,
+            right: b.right,
+        })
     }
 
     /// The layout of a sheet's pages, or nothing to print.
@@ -472,8 +577,8 @@ impl Session {
                 &self.book.styles.fonts.first().cloned().unwrap_or_default(),
             );
             (
-                (digits * digit + 2.0 * (digit / 4.0).ceil() + 1.0) * 0.75,
-                f64::from(info.rows.default_px) * 0.75,
+                (digits * digit + 2.0 * (digit / 4.0).ceil() + 1.0) as u32,
+                info.rows.default_px,
             )
         });
         Some(Layout {
@@ -488,14 +593,18 @@ impl Session {
             headings,
             center: (page.center_horizontally, page.center_vertically),
             order: page.page_order,
+            units: {
+                let font = self.book.styles.normal_font();
+                Units::for_font(&font.name, font.size)
+            },
         })
     }
 
     pub(crate) fn paginate_sheet(&self, sheet: u32, request: &PrintRequest) -> Option<Paginated> {
         let info = self.book.sheets.get(sheet as usize)?;
         let layout = self.layout_for(sheet, request)?;
-        let row = |r: u32| f64::from(info.rows.px(r)) * 0.75;
-        let col = |c: u32| f64::from(info.cols.px(c)) * 0.75;
+        let row = |r: u32| info.rows.px(r);
+        let col = |c: u32| info.cols.px(c);
         Some(paginate(&layout, &row, &col))
     }
 
@@ -565,6 +674,10 @@ impl Session {
                 cgs_model::PrintErrors::Na => "NA",
             },
             "headingSize": self.layout_for(sheet, request).and_then(|l| l.headings).map(|(w, h)| [w, h]),
+            "units": self.layout_for(sheet, request).map_or(
+                json!({ "dpi": Units::EXCEL.dpi, "row": Units::EXCEL.row, "col": Units::EXCEL.col }),
+                |l| json!({ "dpi": l.units.dpi, "row": l.units.row, "col": l.units.col }),
+            ),
             "headerFooter": header_footer,
             "font": { "name": font.name, "size": font.size },
             "pages": pages,
@@ -597,6 +710,7 @@ mod tests {
             headings: None,
             center: (false, false),
             order: PageOrder::DownThenOver,
+            units: Units::EXCEL,
         }
     }
 
@@ -609,19 +723,29 @@ mod tests {
         }
     }
 
-    const ROW: &dyn Fn(u32) -> f64 = &|_| 15.0;
-    const COL: &dyn Fn(u32) -> f64 = &|_| 48.0;
+    // Excel's default row and column: 20 and 64 pixels.
+    const ROW: &dyn Fn(u32) -> u32 = &|_| 20;
+    const COL: &dyn Fn(u32) -> u32 = &|_| 64;
 
     #[test]
-    fn whole_rows_and_columns_fit_a_letter_page() {
-        // 684 points tall holds 45 rows of 15, and 511.2 wide holds 10 columns of 48.
+    fn a_letter_page_holds_what_excel_puts_on_it() {
+        // Excel, measured: 47 default rows and 9 default columns to a Letter page.
         let paged = paginate(&layout(vec![area(1, 1, 100, 25)]), ROW, COL);
-        assert_eq!(paged.row_breaks, vec![45, 90]);
-        assert_eq!(paged.col_breaks, vec![10, 20]);
+        assert_eq!(paged.row_breaks, vec![47, 94]);
+        assert_eq!(paged.col_breaks, vec![9, 18]);
         assert_eq!(paged.pages.len(), 9);
-        assert_eq!(paged.pages[1].rows, (46, 90));
-        assert_eq!(paged.pages[1].cols, (1, 10));
-        assert_eq!(paged.pages[3].cols, (11, 20));
+        assert_eq!(paged.pages[1].rows, (48, 94));
+        assert_eq!(paged.pages[3].cols, (10, 18));
+    }
+
+    #[test]
+    fn units_round_as_excel_does() {
+        let units = Units::EXCEL;
+        assert_eq!(units.row_dots(20, 100), 121.0);
+        assert_eq!(units.row_dots(18, 100), 109.0);
+        assert_eq!(units.row_dots(20, 50), 61.0);
+        assert_eq!(units.col_dots(64, 100), 432.0);
+        assert_eq!(units.col_dots(64, 50), 216.0);
     }
 
     #[test]
@@ -629,8 +753,8 @@ mod tests {
         let mut l = layout(vec![area(1, 1, 100, 25)]);
         l.order = PageOrder::OverThenDown;
         let paged = paginate(&l, ROW, COL);
-        assert_eq!(paged.pages[1].rows, (1, 45));
-        assert_eq!(paged.pages[1].cols, (11, 20));
+        assert_eq!(paged.pages[1].rows, (1, 47));
+        assert_eq!(paged.pages[1].cols, (10, 18));
     }
 
     #[test]
@@ -638,23 +762,28 @@ mod tests {
         let mut l = layout(vec![area(1, 1, 100, 5)]);
         l.title_rows = Some((1, 2));
         let paged = paginate(&l, ROW, COL);
-        assert_eq!(paged.pages[0].rows, (1, 45));
+        assert_eq!(paged.pages[0].rows, (1, 47));
         assert_eq!(paged.pages[0].title_rows, None);
-        assert_eq!(paged.pages[1].rows, (46, 88));
+        // Two title rows take 242 of the 5,692 dots, which leaves room for 45.
+        assert_eq!(paged.pages[1].rows, (48, 92));
         assert_eq!(paged.pages[1].title_rows, Some((1, 2)));
-        assert_eq!(paged.pages[1].height, 45.0 * 15.0);
     }
 
     #[test]
-    fn manual_breaks_end_pages_unless_fitting() {
+    fn manual_breaks_end_pages_unless_fitting_fixes_that_side() {
         let mut l = layout(vec![area(1, 1, 60, 5)]);
         l.manual_rows = vec![10];
         let paged = paginate(&l, ROW, COL);
-        assert_eq!(paged.row_breaks, vec![10, 55]);
+        assert_eq!(paged.row_breaks, vec![10, 57]);
+        // Fitting a page wide leaves the height automatic, and Excel keeps manual row breaks.
         l.zoom = Zoom::Fit { wide: 1, tall: 0 };
         let fitted = paginate(&l, ROW, COL);
-        assert_eq!(fitted.row_breaks, vec![45]);
+        assert_eq!(fitted.row_breaks, vec![10, 57]);
         assert_eq!(fitted.zoom, 100);
+        // Fitting both ways ignores them.
+        l.zoom = Zoom::Fit { wide: 1, tall: 2 };
+        let fitted = paginate(&l, ROW, COL);
+        assert_eq!(fitted.row_breaks, vec![47]);
     }
 
     #[test]
@@ -662,23 +791,23 @@ mod tests {
         let mut l = layout(vec![area(1, 1, 100, 25)]);
         l.zoom = Zoom::Fit { wide: 1, tall: 0 };
         let paged = paginate(&l, ROW, COL);
-        // 25 columns of 48 is 1200 points, and 511.2 / 1200 is 42.6%.
-        assert_eq!(paged.zoom, 42);
+        // 25 columns of 432 dots against 4,260: 39% is the largest that fits.
+        assert_eq!(paged.zoom, 39);
         assert!(paged.col_breaks.is_empty());
         l.zoom = Zoom::Fit { wide: 1, tall: 1 };
-        // 100 rows of 15 is 1500 points, and 684 / 1500 is 45.6%, but the width needs 42.
-        assert_eq!(paginate(&l, ROW, COL).zoom, 42);
+        assert_eq!(paginate(&l, ROW, COL).zoom, 39);
         assert_eq!(paginate(&l, ROW, COL).pages.len(), 1);
     }
 
     #[test]
-    fn scaling_fits_more_and_hidden_lines_take_none() {
-        let mut l = layout(vec![area(1, 1, 100, 5)]);
+    fn scaling_rounds_rows_and_hidden_lines_take_none() {
+        let mut l = layout(vec![area(1, 1, 200, 5)]);
         l.zoom = Zoom::Percent(50);
-        assert_eq!(paginate(&l, ROW, COL).row_breaks, vec![91]);
-        let hidden: &dyn Fn(u32) -> f64 = &|r| if r <= 10 { 0.0 } else { 15.0 };
+        // At 50% a row is 61 dots, so 93 fit, as Excel measured.
+        assert_eq!(paginate(&l, ROW, COL).row_breaks[0], 93);
+        let hidden: &dyn Fn(u32) -> u32 = &|r| if r <= 10 { 0 } else { 20 };
         l.zoom = Zoom::Percent(100);
-        assert_eq!(paginate(&l, hidden, COL).row_breaks, vec![55]);
+        assert_eq!(paginate(&l, hidden, COL).row_breaks[0], 57);
     }
 
     #[test]
@@ -688,13 +817,15 @@ mod tests {
         let paged = paginate(&l, ROW, COL);
         assert_eq!(paged.pages.len(), 2);
         assert_eq!(paged.pages[1].area, 1);
-        assert_eq!(paged.pages[0].x, 50.4 + (511.2 - 96.0) / 2.0);
-        assert_eq!(paged.pages[0].y, 54.0 + (684.0 - 150.0) / 2.0);
+        let width = 864.0 * 72.0 / 600.0;
+        let height = 1210.0 * 72.0 / 600.0;
+        assert!((paged.pages[0].x - (50.4 + (511.2 - width) / 2.0)).abs() < 1e-9);
+        assert!((paged.pages[0].y - (54.0 + (684.0 - height) / 2.0)).abs() < 1e-9);
     }
 
     #[test]
     fn a_row_taller_than_a_page_gets_one() {
-        let tall: &dyn Fn(u32) -> f64 = &|r| if r == 3 { 900.0 } else { 15.0 };
+        let tall: &dyn Fn(u32) -> u32 = &|r| if r == 3 { 1200 } else { 20 };
         let paged = paginate(&layout(vec![area(1, 1, 5, 1)]), tall, COL);
         assert_eq!(paged.row_breaks, vec![2, 3]);
     }

@@ -185,21 +185,33 @@ function lineOf(pieces: RichPiece[]): RichLine {
   return { pieces, width, ascent, descent };
 }
 
+/**
+ * Cell edges given instead of worked out from the tile's sizes, as pages draw them: each axis in
+ * device units, with how many of those a pixel past the tile's edge takes.
+ */
+export interface TileEdges {
+  xs: ArrayLike<number>;
+  ys: ArrayLike<number>;
+  perPixelX: number;
+  perPixelY: number;
+}
+
 /** Everything drawing one tile needs. It lives as long as the drawing does. */
 class Painter {
   private fonts = new Map<number, FontMetrics>();
   private currentFont = '';
-  readonly xs: Int32Array;
-  readonly ys: Int32Array;
+  readonly xs: ArrayLike<number>;
+  readonly ys: ArrayLike<number>;
 
   constructor(
     private readonly context: TileContext,
     private readonly block: ViewBlock,
     private readonly palette: TilePalette,
     private readonly scale: number,
+    private readonly edges?: TileEdges,
   ) {
-    this.xs = tileEdges(block.colPx, scale);
-    this.ys = tileEdges(block.rowPx, scale);
+    this.xs = edges?.xs ?? tileEdges(block.colPx, scale);
+    this.ys = edges?.ys ?? tileEdges(block.rowPx, scale);
     context.textBaseline = 'alphabetic';
     context.direction = 'ltr';
   }
@@ -424,14 +436,22 @@ class Painter {
   }
 
   /** A CSS position, as device pixels from the tile's corner. Lines inside the tile are exact. */
-  private mapped(css: number, sizes: ArrayLike<number>, edges: Int32Array) {
-    if (css <= 0) return devicePx(css, this.scale);
+  private mapped(css: number, sizes: ArrayLike<number>, edges: ArrayLike<number>) {
+    const perPixel =
+      edges === this.xs
+        ? this.edges?.perPixelX
+        : edges === this.ys
+          ? this.edges?.perPixelY
+          : undefined;
+    const beyond = (px: number) =>
+      perPixel === undefined ? devicePx(px, this.scale) : px * perPixel;
+    if (css <= 0) return beyond(css);
     let total = 0;
     for (let index = 0; index < sizes.length; index++) {
       if (total === css) return edges[index]!;
       total += sizes[index]!;
     }
-    return edges[sizes.length]! + devicePx(css - total, this.scale);
+    return edges[sizes.length]! + beyond(css - total);
   }
 
   drawExtras() {
@@ -1101,8 +1121,9 @@ export function drawTile(
   block: ViewBlock,
   palette: TilePalette,
   scale: number,
+  edges?: TileEdges,
 ) {
-  const painter = new Painter(context, block, palette, scale);
+  const painter = new Painter(context, block, palette, scale, edges);
   painter.drawBackground();
   painter.drawMarks(false);
   painter.drawCellsText();

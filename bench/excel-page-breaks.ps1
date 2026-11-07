@@ -49,9 +49,10 @@ try {
   $excel.DisplayAlerts = $false
   $excel.AskToUpdateLinks = $false
   $excel.AutomationSecurity = 3
+  $book = $excel.Workbooks.Open($Workbook, 0, $true)
+  # Excel takes a printer only once a workbook is open.
   $before = [string]$excel.ActivePrinter
   $excel.ActivePrinter = $printer
-  $book = $excel.Workbooks.Open($Workbook, 0, $true)
   $index = 0
   foreach ($sheet in $book.Worksheets) {
     $entry = @{ sheet = $index; name = [string]$sheet.Name; rows = @(); cols = @(); manualRows = @(); manualCols = @(); pages = 0; zoom = 100; error = $null }
@@ -62,15 +63,15 @@ try {
       if ($IgnorePrintArea) { $sheet.PageSetup.PrintArea = '' }
       # Excel works breaks out fully only in Page Break Preview.
       $excel.ActiveWindow.View = 2
-      foreach ($break in $sheet.HPageBreaks) {
-        $row = [int]$break.Location.Row
-        $entry.rows += $row
-        if ([int]$break.Type -eq -4135) { $entry.manualRows += $row }
-      }
-      foreach ($break in $sheet.VPageBreaks) {
-        $col = [int]$break.Location.Column
-        $entry.cols += $col
-        if ([int]$break.Type -eq -4135) { $entry.manualCols += $col }
+      # Excel 4's GET.DOCUMENT lists every break of the active sheet: the HPageBreaks and
+      # VPageBreaks collections can leave breaks out or refuse an index their Count gave. Over
+      # COM it gives only an array's first item, so INDEX reads them one at a time.
+      foreach ($kind in @(64, 65)) {
+        for ($at = 1; $at -le 5000; $at++) {
+          $value = $excel.ExecuteExcel4Macro("INDEX(GET.DOCUMENT($kind),$at)")
+          if ($value -isnot [double]) { break }
+          if ($kind -eq 64) { $entry.rows += [int]$value } else { $entry.cols += [int]$value }
+        }
       }
       $entry.pages = [int]$sheet.PageSetup.Pages.Count
       $zoom = $sheet.PageSetup.Zoom
