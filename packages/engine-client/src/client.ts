@@ -142,6 +142,24 @@ function watch(worker: Worker, name: string, onError: (message: string) => void)
   worker.addEventListener('messageerror', () => onError(`Could not read a ${name} response.`));
 }
 
+/** What a call on an engine that has been disposed rejects with. The shell says nothing about it. */
+export const ENGINE_STOPPED = 'The engine has stopped.';
+
+/**
+ * A remote whose calls also fail once `gone` rejects: a worker that is terminated mid-call never
+ * answers, and a caller waiting on it would wait for ever.
+ */
+function untilGone<T>(remote: Remote<T>, gone: Promise<never>): Remote<T> {
+  return new Proxy(remote as object, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key);
+      if (typeof key !== 'string' || key === 'then' || typeof value !== 'function') return value;
+      return (...args: unknown[]) =>
+        Promise.race([(value as (...args: unknown[]) => unknown)(...args), gone]);
+    },
+  }) as Remote<T>;
+}
+
 /**
  * Starts the engine and tile workers. Both start here on the main thread, because
  * WebView2 never loads a worker started by a worker (see CLAUDE.md), and they talk to
@@ -162,8 +180,16 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
   });
   watch(engineWorker, 'engine', report);
   watch(tileWorker, 'tile', report);
-  const engine: Remote<EngineApi> = wrap<EngineApi>(engineWorker);
-  const tiles: Remote<TileWorkerApi> = wrap<TileWorkerApi>(tileWorker);
+  let stop: (error: Error) => void = () => undefined;
+  const gone = new Promise<never>((_, reject) => {
+    stop = reject;
+  });
+  // Nobody may be waiting when it goes.
+  gone.catch(() => undefined);
+  const engineRemote = wrap<EngineApi>(engineWorker);
+  const tilesRemote = wrap<TileWorkerApi>(tileWorker);
+  const engine: Remote<EngineApi> = untilGone(engineRemote, gone);
+  const tiles: Remote<TileWorkerApi> = untilGone(tilesRemote, gone);
   /** Text measures as tiles draw it, so with the font they last used. */
   let lastPalette: TilePalette | undefined;
   const measuringPalette = (): TilePalette =>
@@ -269,8 +295,9 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     dispose() {
       if (disposed) return;
       disposed = true;
-      engine[releaseProxy]();
-      tiles[releaseProxy]();
+      stop(new Error(ENGINE_STOPPED));
+      engineRemote[releaseProxy]();
+      tilesRemote[releaseProxy]();
       engineWorker.terminate();
       tileWorker.terminate();
     },

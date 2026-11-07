@@ -779,3 +779,62 @@ body {
   padding: var(--cg-space-1);
   border: var(--cg-border-style);
 }
+
+/* About and Update (release/ReleaseDialogs.tsx). */
+.cgs-about {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+}
+
+.cgs-about p {
+  margin: 0;
+}
+
+.cgs-about-muted {
+  color: var(--cg-color-text-muted);
+}
+
+.cgs-about-warning {
+  color: var(--cg-color-danger);
+}
+
+.cgs-about-notices {
+  margin: 0;
+  max-block-size: 50vh;
+  overflow: auto;
+  padding: var(--cg-space-2);
+  border: 1px solid var(--cg-color-border);
+  background: var(--cg-color-surface-subtle);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  /* Licence texts are English, whatever the page around them. */
+  direction: ltr;
+  text-align: start;
+}
+
+.cgs-update-notes {
+  white-space: pre-wrap;
+}
+
+.cgs-progress {
+  block-size: 6px;
+  background: var(--cg-color-surface-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.cgs-progress-bar {
+  block-size: 100%;
+  background: var(--cg-color-focus);
+}
+
+.cgs-update-status {
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}

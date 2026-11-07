@@ -9,6 +9,7 @@ export {
   type RecentHandle,
   type SaveTarget,
   type SheetPlatform,
+  type UpdateInfo,
   type WorkingCopy,
 } from './platform';
 export { ThemeController, type Theme, type ThemePreference } from './theme';

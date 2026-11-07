@@ -345,15 +345,32 @@ function message(error: unknown) {
   return String(error);
 }
 
-const OUT_OF_MEMORY = 'This workbook is too large to open here: it ran out of memory.';
+const TOO_LARGE = 'This workbook is too large to open here: it ran out of memory.';
+const RAN_OUT =
+  'The engine ran out of memory: a workbook here can use up to 4 GB. A new engine is starting, ' +
+  'and your edits since the last save can be recovered.';
+
+/** The open workbook has finished opening, so running out of memory is no longer about opening. */
+let opened = false;
 
 /**
  * A trap means WASM's memory ran out or a bug fired, and this module can't be used again.
  * Anything else that was asked of it gets the same plain answer, and the shell starts a new one.
+ * Both answers say "ran out of memory", which is what the shell looks for.
  */
 let trapped = false;
+let OUT_OF_MEMORY = TOO_LARGE;
 function friendly(error: unknown) {
-  if (error instanceof WebAssembly.RuntimeError || error instanceof RangeError) trapped = true;
+  // After a trap, wasm-bindgen still holds the borrow of the call that trapped, so every later
+  // call says this instead. Seeing it means a trap went by somewhere nothing caught it.
+  const broken = error instanceof Error && /recursive use of an object/.test(error.message);
+  if (
+    !trapped &&
+    (error instanceof WebAssembly.RuntimeError || error instanceof RangeError || broken)
+  ) {
+    trapped = true;
+    OUT_OF_MEMORY = opened ? RAN_OUT : TOO_LARGE;
+  }
   return trapped ? new Error(OUT_OF_MEMORY) : error;
 }
 
@@ -407,7 +424,8 @@ async function runCalculation(wasm: Engine) {
     }
   } finally {
     calculating = false;
-    if (mine === generation) reportCalc(wasm);
+    // A module that trapped can't be asked anything.
+    if (mine === generation && !trapped) reportCalc(wasm);
   }
 }
 
@@ -416,7 +434,11 @@ function afterChange(wasm: Engine) {
   flushChanges(wasm);
   if (wasm.is_calculating() && !wasm.is_manual()) {
     void runCalculation(wasm).catch((error) => {
-      console.error('Calculation stopped:', error);
+      const answer = friendly(error);
+      // Running out of memory in a slice leaves the engine unusable: the shell has to know now,
+      // not at the next command.
+      if (trapped) onCalc?.({ calculating: false, manual: false, failure: message(answer) });
+      else console.error('Calculation stopped:', error);
     });
   }
   reportCalc(wasm);
@@ -469,6 +491,7 @@ async function pump(
       if (!wasm.prepare_step()) break;
     }
     if (mine === generation) {
+      opened = true;
       onEvent({ type: 'prepared' });
       // What a saved value doesn't cover: volatile functions, or a file that asks for it.
       afterChange(wasm);
@@ -499,7 +522,7 @@ const api: EngineApi = {
     return { version: version() };
   },
   attachTileWorker(port) {
-    expose(tilePort, port);
+    expose(guarded(tilePort), port);
   },
   touchSharedMemory(buffer, value) {
     Atomics.store(new Int32Array(buffer), 0, value);
@@ -526,6 +549,7 @@ const api: EngineApi = {
   },
   async open(next, onEvent, name) {
     loadedCsv = undefined;
+    opened = false;
     const wasm = await ensureEngine();
     const mine = ++generation;
     const { read, size } = reader(next);
@@ -642,17 +666,22 @@ const api: EngineApi = {
   },
   async calculateNow(all) {
     const wasm = await ensureEngine();
-    wasm.calculate_now(all);
-    // A manual workbook only calculates when asked, so this drives it itself.
-    while (calculating) await nextTask();
-    for (;;) {
-      if (!wasm.calc_step(CALC_SLICE_MS, -1, 0, 0, 0, 0)) break;
+    if (trapped) throw new Error(OUT_OF_MEMORY);
+    try {
+      wasm.calculate_now(all);
+      // A manual workbook only calculates when asked, so this drives it itself.
+      while (calculating) await nextTask();
+      for (;;) {
+        if (!wasm.calc_step(CALC_SLICE_MS, -1, 0, 0, 0, 0)) break;
+        flushChanges(wasm);
+        await nextTask();
+        wasm.calculate_now(false);
+      }
       flushChanges(wasm);
-      await nextTask();
-      wasm.calculate_now(false);
+      reportCalc(wasm);
+    } catch (error) {
+      throw friendly(error);
     }
-    flushChanges(wasm);
-    reportCalc(wasm);
   },
   async calculateSheet(sheet) {
     const wasm = await ensureEngine();
@@ -713,6 +742,7 @@ const api: EngineApi = {
     return recoverables;
   },
   async openRecovered(id, onEvent) {
+    opened = false;
     const wasm = await ensureEngine();
     const mine = ++generation;
     releaseWorkingCopy();
@@ -840,4 +870,28 @@ const api: EngineApi = {
   },
 };
 
-expose(api);
+/**
+ * Every call goes through the same door: once the module has trapped, nothing reaches it again,
+ * and whatever a call throws is put in words a person can use. A trap can come in any call,
+ * including a calculation slice or a tile, and wasm-bindgen then fails every later call.
+ */
+function guarded<T extends object>(target: T): T {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(target)) {
+    if (typeof value !== 'function') {
+      wrapped[name] = value;
+      continue;
+    }
+    wrapped[name] = async (...args: unknown[]) => {
+      if (trapped) throw new Error(OUT_OF_MEMORY);
+      try {
+        return await (value as (...args: unknown[]) => unknown).apply(target, args);
+      } catch (error) {
+        throw friendly(error);
+      }
+    };
+  }
+  return wrapped as T;
+}
+
+expose(guarded(api));

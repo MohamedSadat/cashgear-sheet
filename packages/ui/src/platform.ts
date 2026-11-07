@@ -8,6 +8,12 @@ export interface NativeInfo {
   arch: string;
 }
 
+/** A newer version the desktop's release feed offers. */
+export interface UpdateInfo {
+  version: string;
+  notes: string | null;
+}
+
 /** A workbook the user chose, ready to hand to the engine. */
 export interface OpenedFile {
   name: string;
@@ -53,6 +59,21 @@ export interface SheetPlatform {
   onCloseRequested?(ask: () => Promise<boolean>): () => void;
   /** The native host, or null on the web. */
   nativeInfo(): Promise<NativeInfo | null>;
+  /**
+   * Desktop: the workbook a double-click in Explorer started this window with, once. Null when
+   * it started without one, or after the first ask.
+   */
+  launchFile?(): Promise<OpenedFile | null>;
+  /** Desktop: newer versions from the release feed. */
+  updates?: {
+    /** The newer version the feed offers, or null. */
+    check(): Promise<UpdateInfo | null>;
+    /**
+     * Downloads the update, checks its signature and installs it: the installer closes the app
+     * and starts the new version.
+     */
+    install(onProgress: (received: number, total: number | null) => void): Promise<void>;
+  };
   /** Sets the window's own theme, such as its title bar; null follows the system. */
   setWindowTheme(theme: Theme | null): Promise<void>;
   /** Asks the user for a workbook. Null if they changed their mind. */

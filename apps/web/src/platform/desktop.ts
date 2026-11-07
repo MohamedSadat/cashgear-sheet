@@ -1,6 +1,14 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import type { NativeInfo, OpenedFile, RecentFile, SaveTarget, SheetPlatform } from '@cgs/ui';
+import type {
+  NativeInfo,
+  OpenedFile,
+  RecentFile,
+  SaveTarget,
+  SheetPlatform,
+  UpdateInfo,
+} from '@cgs/ui';
 
 /** A file the native side can serve through the `cgs-file` protocol. */
 interface NativeFile {
@@ -41,6 +49,23 @@ const pathTarget = (path: string): SaveTarget => ({
 export const desktopPlatform: SheetPlatform = {
   kind: 'desktop',
   nativeInfo: () => invoke<NativeInfo>('native_info'),
+  async launchFile() {
+    const file = await invoke<NativeFile | null>('launch_file');
+    return file && opened(file);
+  },
+  updates: {
+    check: () => invoke<UpdateInfo | null>('update_check'),
+    async install(onProgress) {
+      const stop = await listen<[number, number | null]>('update-progress', ({ payload }) =>
+        onProgress(...payload),
+      );
+      try {
+        await invoke('update_install');
+      } finally {
+        stop();
+      }
+    },
+  },
   setWindowTheme: (theme) => getCurrentWindow().setTheme(theme),
   onCloseRequested(ask) {
     const listening = getCurrentWindow().onCloseRequested(async (event) => {

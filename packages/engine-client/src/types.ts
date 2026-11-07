@@ -872,6 +872,8 @@ export interface WorkbookChanges {
 export interface CalcStatus {
   calculating: boolean;
   manual: boolean;
+  /** Why calculation stopped for good: the engine ran out of memory and can't be used again. */
+  failure?: string;
 }
 
 /** Edits a crashed session left behind. */

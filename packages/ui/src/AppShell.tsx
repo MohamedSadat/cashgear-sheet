@@ -30,6 +30,7 @@ import {
 } from '@cashgear/ui';
 import {
   createEngineClient,
+  ENGINE_STOPPED,
   localeData,
   type Applied,
   type BookSummary,
@@ -81,6 +82,8 @@ import { fromArea, SheetEditing, toArea, type EditingHost } from './sheet-editin
 import { bordersFromPicker, SheetFormat } from './sheet-format';
 import type { GridAction } from './shortcuts';
 import { readGridColors, readPalette, type ThemeController, type ThemePreference } from './theme';
+import { AboutDialog, UpdateDialog } from './release/ReleaseDialogs';
+import { useUpdates } from './release/useUpdates';
 
 const themeChoices = [
   { name: 'system', text: 'System' },
@@ -102,9 +105,20 @@ interface CellDetail {
 interface AppShellProps {
   platform: SheetPlatform;
   theme: ThemeController;
+  /** The app's version, for About. The desktop's own comes from its bundle. */
+  version?: string;
 }
 
 const noCell: CellDetail = { name: '', edit: '' };
+
+/**
+ * The engine's memory budget (docs/decisions.md, Phase 9): WASM can have 4 GiB, and its memory
+ * never shrinks. Past this much the status bar says so, while there is still room to save.
+ */
+const MEMORY_WARNING_BYTES = 3 * 1024 ** 3;
+const memoryNotice = (bytes: number) =>
+  `This workbook uses ${(bytes / 1024 ** 3).toFixed(1)} of the 4 GB the engine can have: ` +
+  'save your work before adding much more.';
 
 /** A dialog the shell is showing. */
 type ShellDialog =
@@ -135,7 +149,7 @@ async function csvFileText(source: OpenedFile['source']) {
   }
 }
 
-export function AppShell({ platform, theme }: AppShellProps) {
+export function AppShell({ platform, theme, version = 'development' }: AppShellProps) {
   const [client, setClient] = useState<EngineClient | null>(null);
   const [clientVersion, setClientVersion] = useState(0);
   const [problem, setProblem] = useState<string | null>(null);
@@ -157,6 +171,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const [showReport, setShowReport] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [calc, setCalc] = useState<CalcStatus>({ calculating: false, manual: false });
+  const calcRef = useRef(calc);
+  calcRef.current = calc;
   const [undoLabels, setUndoLabels] = useState<{ undo: string | null; redo: string | null }>({
     undo: null,
     redo: null,
@@ -164,6 +180,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
   const [names, setNames] = useState<string[]>([]);
   const [renaming, setRenaming] = useState<{ sheet: number; name: string } | null>(null);
   const [recoverable, setRecoverable] = useState<Recoverable[]>([]);
+  const [release, setRelease] = useState<'about' | 'update' | null>(null);
+  const updates = useUpdates(platform);
   const [format, setFormat] = useState<CellFormat | null>(null);
   const [lists, setLists] = useState<FormatLists | null>(null);
   const [dialog, setDialog] = useState<ShellDialog | null>(null);
@@ -236,9 +254,34 @@ export function AppShell({ platform, theme }: AppShellProps) {
     void current;
     return readGridColors();
   }, [current]);
-  const report = useCallback((error: unknown) => {
-    setProblem(error instanceof Error ? error.message : String(error));
+  /**
+   * A module that ran out of memory can't be used again: the workbook goes, a new engine starts,
+   * and it offers what the journal kept. Once per engine, however many calls fail with it.
+   */
+  const lostRef = useRef<EngineClient | null>(null);
+  const loseEngine = useCallback(() => {
+    const engine = clientRef.current;
+    if (!engine || lostRef.current === engine) return;
+    lostRef.current = engine;
+    // Commands queued behind one the old engine never answered start afresh.
+    commands.current = Promise.resolve();
+    fileRef.current = null;
+    setBook(null);
+    setFileName(null);
+    setLoad({ phase: 'idle', done: 0, total: 0 });
+    controller.current?.reset();
+    setClientVersion((version) => version + 1);
   }, []);
+  const report = useCallback(
+    (error: unknown) => {
+      const text = error instanceof Error ? error.message : String(error);
+      // A call the engine was answering when it was replaced: what replaced it has said why.
+      if (text === ENGINE_STOPPED) return;
+      setProblem(text);
+      if (/ran out of memory/.test(text)) loseEngine();
+    },
+    [loseEngine],
+  );
 
   useEffect(() => {
     const started = createEngineClient(report);
@@ -336,6 +379,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
           break;
         case 'prepared':
           setLoad((state) => ({ ...state, phase: 'ready' }));
+          void engine.memoryBytes().then((bytes) => {
+            if (bytes >= MEMORY_WARNING_BYTES && token === openToken.current) {
+              setNotice(memoryNotice(bytes));
+            }
+          });
           break;
         case 'error':
           setProblem(event.message);
@@ -344,11 +392,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
           setLoad({ phase: 'idle', done: 0, total: 0 });
           controller.current?.reset();
           // A trap leaves the module unusable, so the next file gets a new one.
-          if (/ran out of memory/.test(event.message)) setClientVersion((version) => version + 1);
+          if (/ran out of memory/.test(event.message)) loseEngine();
           break;
       }
     },
-    [report, showSheet],
+    [loseEngine, report, showSheet],
   );
 
   /** A working copy on the native side isn't needed once something else is the source. */
@@ -412,12 +460,10 @@ export function AppShell({ platform, theme }: AppShellProps) {
         setFileName(null);
         setLoad({ phase: 'idle', done: 0, total: 0 });
         report(error);
-        if (error instanceof Error && /ran out of memory/.test(error.message)) {
-          setClientVersion((version) => version + 1);
-        }
+        if (error instanceof Error && /ran out of memory/.test(error.message)) loseEngine();
       }
     },
-    [onLoadEvent, platform, refreshRecent, releaseWorking, report],
+    [loseEngine, onLoadEvent, platform, refreshRecent, releaseWorking, report],
   );
 
   const openFile = useCallback(
@@ -588,6 +634,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
           setCanSave(changed || Boolean(file.isNew));
           setUndoLabels({ undo: applied.undo, redo: applied.redo });
           if (applied.lost) setNotice('That change was too big to keep for undo.');
+          const bytes = await engine.memoryBytes();
+          if (bytes >= MEMORY_WARNING_BYTES) setNotice(memoryNotice(bytes));
           // The tabs have to be right before anything goes to a sheet.
           let summary: BookSummary | null = null;
           if (
@@ -847,12 +895,26 @@ export function AppShell({ platform, theme }: AppShellProps) {
         client.bookSummary().then(applySummary).catch(report);
       }
     };
-    client.watchChanges(onChanges, setCalc).catch(report);
+    client
+      .watchChanges(onChanges, (status) => {
+        setCalc(status);
+        if (status.failure) report(new Error(status.failure));
+      })
+      .catch(report);
     client
       .recoverable()
       .then(setRecoverable)
       .catch((error) => console.warn('Could not look for recovered edits:', error));
   }, [applySummary, client, engineReady, report, showSheet]);
+
+  // On the desktop, the workbook a double-click in Explorer started this window with.
+  useEffect(() => {
+    if (!engineReady || !platform.launchFile) return;
+    platform
+      .launchFile()
+      .then((file) => file && openFile(file))
+      .catch(report);
+  }, [engineReady, openFile, platform, report]);
 
   // On the web, closing a tab with unsaved edits asks first.
   useEffect(() => {
@@ -971,6 +1033,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
         cellText: (row: number, col: number) => Promise<string>;
         loadPhase: () => LoadState['phase'];
         memoryBytes: () => Promise<number>;
+        calculateNow: (all: boolean) => Promise<void>;
+        calculating: () => boolean;
         edit: (
           sheet: number,
           row: number,
@@ -999,6 +1063,8 @@ export function AppShell({ platform, theme }: AppShellProps) {
       },
       loadPhase: () => loadRef.current,
       memoryBytes: () => clientRef.current?.memoryBytes() ?? Promise.resolve(0),
+      calculateNow: (all) => clientRef.current?.calculateNow(all) ?? Promise.resolve(),
+      calculating: () => calcRef.current.calculating,
       edit: async (sheet, row, col, content) => {
         let text = '';
         if (content.formula !== undefined) text = '=' + content.formula;
@@ -1188,6 +1254,11 @@ export function AppShell({ platform, theme }: AppShellProps) {
               tooltip: file.detail,
               onActivate: () => void openFromRecent(file.id),
             })),
+          },
+          {
+            key: 'about',
+            text: 'About CashGear Sheet',
+            onActivate: () => setRelease('about'),
           },
         ],
       },
@@ -1915,6 +1986,23 @@ export function AppShell({ platform, theme }: AppShellProps) {
                 },
               ]
             : []),
+          ...(updates.available
+            ? [
+                {
+                  key: 'update',
+                  content: (
+                    <button
+                      type="button"
+                      className="cgs-update-status"
+                      data-testid="update-status"
+                      onClick={() => setRelease('update')}
+                    >
+                      Update to {updates.available.version}
+                    </button>
+                  ),
+                },
+              ]
+            : []),
           ...(sharedMemory === false
             ? [
                 {
@@ -2049,6 +2137,17 @@ export function AppShell({ platform, theme }: AppShellProps) {
             setDialog(null);
             controller.current?.focus();
           }}
+        />
+      )}
+      {release === 'about' && (
+        <AboutDialog version={version} native={native} onClose={() => setRelease(null)} />
+      )}
+      {release === 'update' && (
+        <UpdateDialog
+          updates={updates}
+          dirty={canSave}
+          save={() => save().then(() => !editedRef.current)}
+          onClose={() => setRelease(null)}
         />
       )}
       {dialog?.kind === 'size' && (

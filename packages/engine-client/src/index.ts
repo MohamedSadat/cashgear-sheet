@@ -1,4 +1,4 @@
-export { createEngineClient, decodeChanges, type EngineClient } from './client';
+export { createEngineClient, decodeChanges, ENGINE_STOPPED, type EngineClient } from './client';
 export { decodeLayout, type SheetLayout } from './layout';
 export { localeData } from './locale';
 export { TileCache, type TileAddress, type TileStyle } from './tile-cache';
