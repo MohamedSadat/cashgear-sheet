@@ -71,6 +71,32 @@ fn book(sheet_body: &str) -> Vec<u8> {
     ])
 }
 
+/// The same workbook with a styles part.
+fn with_styles(bytes: Vec<u8>, styles: &str) -> Vec<u8> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut parts: Vec<(String, Vec<u8>)> = Vec::new();
+    for index in 0..zip.len() {
+        let mut file = zip.by_index(index).unwrap();
+        let name = file.name().unwrap().to_string();
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).unwrap();
+        let text = String::from_utf8(data.clone()).unwrap_or_default();
+        let data = match name.as_str() {
+            "[Content_Types].xml" => text
+                .replace("</Types>", r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>"#)
+                .into_bytes(),
+            "xl/_rels/workbook.xml.rels" => text
+                .replace("</Relationships>", &format!(r#"<Relationship Id="rId9" Type="{RELS}/styles" Target="styles.xml"/></Relationships>"#))
+                .into_bytes(),
+            _ => data,
+        };
+        parts.push((name, data));
+    }
+    parts.push(("xl/styles.xml".to_string(), styles.as_bytes().to_vec()));
+    let named: Vec<(&str, Vec<u8>)> = parts.iter().map(|(n, d)| (n.as_str(), d.clone())).collect();
+    zip_of(&named)
+}
+
 const BODY: &str = r#"<sheetPr codeName="Sheet1"><tabColor rgb="FFFF0000"/></sheetPr><dimension ref="A1:A40"/><sheetData>ROWS</sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="portrait" horizontalDpi="1200" verticalDpi="1200" r:id="rId1"/><legacyDrawingHF r:id="rId7"/>"#;
 
 fn opened(bytes: Vec<u8>) -> Engine {
@@ -259,4 +285,35 @@ fn pages_follow_the_print_area_titles_and_breaks() {
     );
     assert_eq!(chosen["pages"][0]["rows"], serde_json::json!([5, 6]));
     assert_eq!(pages(&engine, 1, "{}")["pages"], serde_json::json!([]));
+}
+
+#[test]
+fn text_running_into_empty_cells_prints_with_them() {
+    let long = "Text long enough to run on across many empty columns to its right ".repeat(2);
+    let sheet = |extra: &str| {
+        format!(
+            r#"<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{long}</t></is></c>{extra}</row><row r="2"><c r="A2"><v>1</v></c></row></sheetData><pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="portrait"/>"#
+        )
+    };
+    let engine = opened(book(&sheet("")));
+    let wide = pages(&engine, 0, "{}");
+    // About 900 pixels of text from A1: past the eight columns an A4 page holds.
+    assert_eq!(wide["pages"].as_array().unwrap().len(), 2, "{wide}");
+    // A value in B1 stops it.
+    let engine = opened(book(&sheet(r#"<c r="B1"><v>2</v></c>"#)));
+    assert_eq!(
+        pages(&engine, 0, "{}")["pages"].as_array().unwrap().len(),
+        1
+    );
+    // So does wrapping, which keeps the text in its cell.
+    let wrapped = sheet("").replace(
+        r#"<c r="A1" t="inlineStr">"#,
+        r#"<c r="A1" s="1" t="inlineStr">"#,
+    );
+    let styles = r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellXfs count="2"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="0" fillId="0" borderId="0" applyAlignment="1"><alignment wrapText="1"/></xf></cellXfs></styleSheet>"#;
+    let engine = opened(with_styles(book(&wrapped), styles));
+    assert_eq!(
+        pages(&engine, 0, "{}")["pages"].as_array().unwrap().len(),
+        1
+    );
 }

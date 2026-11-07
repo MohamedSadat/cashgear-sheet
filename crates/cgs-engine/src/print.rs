@@ -439,9 +439,31 @@ fn rect_json(r: Rect) -> Value {
     json!({ "top": r.top, "left": r.left, "bottom": r.bottom, "right": r.right })
 }
 
+/// Calibri's advance widths for ASCII from space to `~`, in units of 2048 to the em. Other
+/// characters are taken as 1000.
+const CALIBRI_UNITS: [u16; 95] = [
+    463, 544, 821, 1038, 1038, 1464, 1397, 452, 621, 621, 1038, 1038, 511, 627, 517, 791, 1038,
+    1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 1038, 548, 548, 1038, 1038, 1038, 948, 1823,
+    1185, 1114, 1092, 1260, 1000, 941, 1292, 1276, 516, 653, 1064, 861, 1751, 1322, 1356, 1058,
+    1378, 1112, 941, 998, 1314, 1162, 1822, 1063, 998, 959, 627, 799, 627, 1038, 1019, 597, 981,
+    1076, 866, 1076, 1019, 625, 964, 1076, 470, 490, 931, 470, 1636, 1076, 1080, 1076, 1076, 714,
+    801, 686, 1076, 925, 1464, 887, 927, 809, 648, 943, 648, 1038,
+];
+
+/// A line of text's width in Calibri units.
+fn text_units(line: &str) -> u32 {
+    line.chars()
+        .map(|c| match c as u32 {
+            code @ 32..=126 => u32::from(CALIBRI_UNITS[(code - 32) as usize]),
+            _ => 1000,
+        })
+        .sum()
+}
+
 impl Session {
     /// The cells that print when nothing says which: from A1 to the last cell holding a value, a
-    /// fill or a border, or any drawing's, as Excel prints them.
+    /// fill or a border, or any drawing's, and the empty cells text overflows into, as Excel
+    /// prints them.
     pub(crate) fn print_range(&self, sheet: u32) -> Option<Rect> {
         use cgs_calc::{CalcEngine, CalcValue, CellSink, SheetRect};
         let info = self.book.sheets.get(sheet as usize)?;
@@ -462,11 +484,25 @@ impl Session {
                 },
             });
         };
-        struct Seen<'a>(&'a mut dyn FnMut(u32, u32));
+        // Every cell with a value, by row, and the text that may overflow to its right.
+        let mut filled: Vec<(u32, u32)> = Vec::new();
+        let mut texts: Vec<(u32, u32, u32)> = Vec::new();
+        struct Seen<'a> {
+            take: &'a mut dyn FnMut(u32, u32),
+            filled: &'a mut Vec<(u32, u32)>,
+            texts: &'a mut Vec<(u32, u32, u32)>,
+        }
         impl CellSink for Seen<'_> {
             fn cell(&mut self, row: u32, col: u32, value: &CalcValue) {
                 if *value != CalcValue::Empty {
-                    (self.0)(row, col);
+                    (self.take)(row, col);
+                    self.filled.push((row, col));
+                }
+                if let CalcValue::Text(text) = value {
+                    let longest = text.split('\n').map(text_units).max();
+                    if let Some(units) = longest.filter(|&units| units > 0) {
+                        self.texts.push((row, col, units));
+                    }
                 }
             }
         }
@@ -482,7 +518,11 @@ impl Session {
                         right: cols,
                     },
                 },
-                &mut Seen(&mut take),
+                &mut Seen {
+                    take: &mut take,
+                    filled: &mut filled,
+                    texts: &mut texts,
+                },
             );
             let styles = &self.book.styles;
             let shows = |style: u32| {
@@ -508,14 +548,74 @@ impl Session {
                 }
             }
         }
+        // Text left to itself runs on through empty cells to its right, and they print too.
+        // Rust has no text measure, so text is measured in Calibri's widths and scaled to the
+        // cell's font by its widest digit.
+        if !texts.is_empty() {
+            filled.sort_unstable();
+            let styles = &self.book.styles;
+            let default_font = styles.fonts.first().cloned().unwrap_or_default();
+            let printer = Units::for_font(&default_font.name, default_font.size);
+            let (units_per_inch, col_dots) = (printer.dpi, printer.col);
+            for &(row, col, units) in &texts {
+                let Some(xf) = styles.xfs.get(info.style_at(row, col) as usize) else {
+                    continue;
+                };
+                let alignment = xf.alignment;
+                let share = match alignment.horizontal {
+                    cgs_model::HAlign::General | cgs_model::HAlign::Left => 1.0,
+                    cgs_model::HAlign::Center => 0.5,
+                    _ => continue,
+                };
+                if alignment.wrap
+                    || alignment.shrink
+                    || alignment.rotation != 0
+                    || info.merge_at(row, col).is_some()
+                {
+                    continue;
+                }
+                let font = styles.fonts.get(xf.font as usize).unwrap_or(&default_font);
+                let digit = cgs_model::style::max_digit_width(font);
+                // Text prints at its size while columns print wider than on screen (`Units`),
+                // so the text's width in dots is turned back into a column's screen pixels.
+                let calibri = cgs_model::style::max_digit_width(&cgs_model::Font {
+                    name: "Calibri".into(),
+                    ..font.clone()
+                });
+                let dots = f64::from(units) / 2048.0 * f64::from(font.size) * units_per_inch / 72.0
+                    * (digit / calibri);
+                let left = crate::tile::sheet_x(info, col);
+                let own = i64::from(info.cols.px(col));
+                let padding = 2.0 * (digit / 4.0).ceil();
+                let text = dots / col_dots + padding + f64::from(alignment.indent) * 3.0 * digit;
+                let spill = ((text - own as f64) * share).ceil() as i64;
+                if spill <= 0 {
+                    continue;
+                }
+                // It stops at the next cell holding something.
+                let after = filled.partition_point(|&cell| cell <= (row, col));
+                let next = filled
+                    .get(after)
+                    .filter(|cell| cell.0 == row)
+                    .map_or(cgs_model::MAX_COLS, |cell| cell.1 - 1);
+                let (reach, _) = crate::chart_edit::col_at(info, left + own + spill - 1);
+                take(row, reach.min(next).max(col));
+            }
+        }
         for drawing in &info.drawings {
-            let (from, to) = match drawing.anchor {
-                Anchor::TwoCell { from, to } => (from, to),
-                Anchor::OneCell { from, .. } => (from, from),
-                Anchor::Absolute { .. } => continue,
-            };
-            take(from.row, from.col);
-            take(to.row, to.col);
+            if let Anchor::TwoCell { from, to } = drawing.anchor {
+                take(from.row, from.col);
+                take(to.row, to.col);
+                continue;
+            }
+            // A picture of a fixed size prints with every cell it covers.
+            let (x, y, width, height) = crate::drawing_box(info, drawing.anchor);
+            let (left, _) = crate::chart_edit::col_at(info, x.max(0));
+            let (top, _) = crate::chart_edit::row_at(info, y.max(0));
+            let (right, _) = crate::chart_edit::col_at(info, (x + width - 1).max(0));
+            let (bottom, _) = crate::chart_edit::row_at(info, (y + height - 1).max(0));
+            take(top, left);
+            take(bottom, right);
         }
         bounds.map(|b| Rect {
             top: 1,

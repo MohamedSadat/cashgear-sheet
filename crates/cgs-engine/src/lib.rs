@@ -171,7 +171,7 @@ fn point_position(info: &SheetInfo, point: AnchorPoint) -> (i64, i64) {
     )
 }
 
-fn drawing_box(info: &SheetInfo, anchor: Anchor) -> (i64, i64, i64, i64) {
+pub(crate) fn drawing_box(info: &SheetInfo, anchor: Anchor) -> (i64, i64, i64, i64) {
     match anchor {
         Anchor::TwoCell { from, to } => {
             let (x, y) = point_position(info, from);

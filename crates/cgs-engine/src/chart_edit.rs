@@ -884,7 +884,7 @@ pub fn series_from(sheet_name: &str, area: Area, plan: Plan, scatter: bool) -> V
 // ---------------------------------------------------------------------------------------------
 // Placing drawings
 
-fn col_at(info: &SheetInfo, x: i64) -> (u32, i64) {
+pub(crate) fn col_at(info: &SheetInfo, x: i64) -> (u32, i64) {
     let (mut low, mut high) = (1u32, cgs_model::MAX_COLS);
     while low < high {
         let mid = (low + high).div_ceil(2);
@@ -897,7 +897,7 @@ fn col_at(info: &SheetInfo, x: i64) -> (u32, i64) {
     (low, x - sheet_x(info, low))
 }
 
-fn row_at(info: &SheetInfo, y: i64) -> (u32, i64) {
+pub(crate) fn row_at(info: &SheetInfo, y: i64) -> (u32, i64) {
     let (mut low, mut high) = (1u32, cgs_model::MAX_ROWS);
     while low < high {
         let mid = (low + high).div_ceil(2);
