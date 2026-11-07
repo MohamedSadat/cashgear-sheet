@@ -19,6 +19,9 @@ export default defineConfig({
     : [['list'], ['json', { outputFile: 'bench/results/browser-tests.json' }]],
   use: {
     baseURL,
+    // Every spec runs without the service worker, so each load is the build itself.
+    // tests/e2e/pwa.spec.ts allows it in a profile of its own.
+    serviceWorkers: 'block',
     viewport: { width: 1280, height: 800 },
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
