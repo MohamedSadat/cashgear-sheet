@@ -508,3 +508,16 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Each release | Its `CHANGELOG.md` section and one version across the app, crates and packages, as for 1.0.0. Publishing the drafted release stays yours |
 | Exit thresholds | Proposals, as before, confirmed in each phase's questions: 100 ms p99 reads during a save, a refusal within 30 s, and the 10M book ready in under 175 s |
 | Phase 13's scope | A list of candidates from Phases 5 to 8's known gaps, ranked and cut by you when the phase starts |
+
+## 2026-11-07: Phase 10
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| How PDFs are made and pages printed | In Rust, from a recording: pages are drawn by the grid's own drawing code into a recording 2D context, and Rust writes vector PDF with font subsets, so text is searchable and Arabic is shaped as on screen. Printing uses the same pages |
+| Views in this phase | Normal view only, with dashed lines where pages break, as Excel shows them after a preview or a page setup change. File › Print shows the preview. Page Break Preview and Page Layout view go to Later |
+| The font embedded in a PDF | The file's own font when it is installed and its licence allows embedding (the desktop reads Windows' fonts; the web asks for Chrome's local font access when exporting). Otherwise bundled OFL fonts with the same widths: Carlito for Calibri, Caladea for Cambria, Liberation Sans, Serif and Mono for Arial, Times New Roman and Courier New, and Noto for Arabic |
+| Headers and footers | Text and fields (`&P`, `&N`, `&D`, `&T`, `&F`, `&A`, `&Z`), fonts, sizes, bold, italic, underline and colour, a different first page and different odd and even pages. Pictures already in a file (`&G`) are kept on save and drawn in pages and PDFs, but not added or changed here |
+| The printer Excel measures with | Microsoft Print to PDF, which every Windows PC has. The bench sets it as Excel's `ActivePrinter` for its COM session only and puts the default printer (the Samsung ML-371x) back afterwards. The app's pages model that printer |
+| How close page breaks must be | Exact: every break equals Excel's on every generated book, and page counts are equal on every public file with page setup. A public file whose fonts aren't installed here is listed as a known gap, not a failure |
