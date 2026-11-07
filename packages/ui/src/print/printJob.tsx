@@ -119,7 +119,12 @@ function fields(host: JobHost) {
   return {
     file: host.fileName,
     path: host.filePath,
-    date: new Intl.DateTimeFormat(host.locale, { dateStyle: 'short' }).format(now),
+    // Windows' short date, as Excel prints it: the year in full.
+    date: new Intl.DateTimeFormat(host.locale, {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+    }).format(now),
     time: new Intl.DateTimeFormat(host.locale, { timeStyle: 'short' }).format(now),
   };
 }

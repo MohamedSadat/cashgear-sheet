@@ -52,8 +52,8 @@ export interface PrintOptions {
   measuring?: (css: string) => string;
 }
 
-/** Excel prints gridlines thin and dark grey. */
-const PRINT_GRIDLINE = '#a0a0a0';
+/** Excel prints gridlines and headings' lines black, whatever their colour on screen. */
+const PRINT_GRIDLINE = '#000000';
 
 /**
  * Sizes along one axis, from the layout's runs, with sums over stretches. `unit` turns a line's

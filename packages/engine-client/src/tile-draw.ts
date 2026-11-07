@@ -436,6 +436,15 @@ class Painter {
   }
 
   /** A CSS position, as device pixels from the tile's corner. Lines inside the tile are exact. */
+  /**
+   * How tall a cell's text may draw. On paper, text may hang a quarter of the row below its cell,
+   * as the font a page draws in can set marks lower than the one Excel measured with: Noto's dots
+   * under a final yeh fall below a 15-point row.
+   */
+  private hang(top: number, bottom: number) {
+    return this.edges ? (bottom - top) * 1.25 : bottom - top;
+  }
+
   private mapped(css: number, sizes: ArrayLike<number>, edges: ArrayLike<number>) {
     const perPixel =
       edges === this.xs
@@ -515,7 +524,7 @@ class Painter {
       if (clipRight <= clipLeft) continue;
       context.save();
       context.beginPath();
-      context.rect(clipLeft, top, clipRight - clipLeft, bottom - top);
+      context.rect(clipLeft, top, clipRight - clipLeft, this.hang(top, bottom));
       context.clip();
       if (rich) this.paintRichLine(rich, style, extra.flags, start, top, bottom);
       else
@@ -623,7 +632,7 @@ class Painter {
     else y = top;
     context.save();
     context.beginPath();
-    context.rect(left, top, right - left - 1, bottom - top);
+    context.rect(left, top, right - left - 1, this.hang(top, bottom));
     context.clip();
     for (const line of lines) {
       const start = this.textStart(style, left, right, line.width, inset);
@@ -838,7 +847,7 @@ class Painter {
     }
     context.save();
     context.beginPath();
-    context.rect(clipLeft, top, clipRight - clipLeft, height);
+    context.rect(clipLeft, top, clipRight - clipLeft, this.hang(top, top + height));
     context.clip();
     if (rich) this.paintRichLine(rich, style, cell.flags, start, top, bottom);
     else this.paintLine(line, style, metrics, cell.color, cell.flags, start, measured, top, bottom);
@@ -924,7 +933,7 @@ class Painter {
     }
     context.save();
     context.beginPath();
-    context.rect(left, top, right - left - 1, bottom - top);
+    context.rect(left, top, right - left - 1, this.hang(top, bottom));
     context.clip();
     for (const line of lines) {
       const width = this.width(line);
@@ -967,7 +976,7 @@ class Painter {
     };
     context.save();
     context.beginPath();
-    context.rect(left, top, width - 1, height);
+    context.rect(left, top, width - 1, this.hang(top, top + height));
     context.clip();
     context.fillStyle = hasAlpha(cell.color) ? cssColor(cell.color) : palette.text;
     context.direction = cell.flags & CELL_RTL ? 'rtl' : 'ltr';
