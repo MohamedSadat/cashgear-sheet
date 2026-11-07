@@ -102,9 +102,9 @@ try {
   if ($List) {
     foreach ($path in (Get-Content -Path $List -Encoding utf8 | Where-Object { $_ })) {
       try {
-        $line = @{ book = $path; result = (Get-Book $path) }
+        $line = @{ book = [string]$path; result = (Get-Book ([string]$path)) }
       } catch {
-        $line = @{ book = $path; error = $_.Exception.Message }
+        $line = @{ book = [string]$path; error = [string]$_.Exception.Message }
         # A workbook that brings Excel down takes the session with it, so the next starts anew.
         try { [void]$excel.Workbooks.Count } catch {
           try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null } catch {}
