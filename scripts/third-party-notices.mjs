@@ -118,9 +118,7 @@ const vendored = readdirSync(vendorDir).map((dir) => {
 const fontDir = join(root, 'packages/engine-client/src/fonts');
 // The fonts PDFs fall back on, shipped as their authors made them.
 const pdfFontDir = join(root, 'packages/engine-client/src/pdf-fonts');
-const pdfLicence = (name) => [
-  { name, text: readFileSync(join(pdfFontDir, name), 'utf8').trim() },
-];
+const pdfLicence = (name) => [{ name, text: readFileSync(join(pdfFontDir, name), 'utf8').trim() }];
 const fonts = [
   {
     name: 'Carlito',
