@@ -14,7 +14,9 @@ Printing and PDF export, with Excel's page setup and its page breaks.
   and saved by editing the file's own elements, so the printer settings Excel keeps stay.
 - **Page breaks:** pages break where Excel 2016 breaks them, as measured against Excel with
   Microsoft Print to PDF: scaling and Fit To, print titles, manual breaks, hidden rows and columns,
-  headings, centring, page order and print areas. Normal view shows dashed lines where pages break
+  headings, centring, page order and print areas. With no print area, what prints runs from A1
+  to the last cell in use, with the cells text overflows into and the pictures. Normal view shows
+  dashed lines where pages break
   once page setup has been used. Breaks move with inserted and deleted rows and columns.
 - **Headers and footers:** text with page numbers, page count, date, time, file name, path and
   sheet name, fonts, sizes, bold, italic, underline and colour, a different first page and
@@ -27,7 +29,8 @@ Printing and PDF export, with Excel's page setup and its page breaks.
   file's own fonts where they are installed, else fonts with the same widths (Carlito, Caladea,
   Liberation and Noto Sans Arabic), which are fetched the first time a PDF needs them.
 - **Fixed:** a cell in the workbook's normal font no longer makes its row taller than the
-  default, so rows of Arial 10 workbooks are 12.75 points as in Excel.
+  default, so rows of Arial 10 workbooks are 12.75 points as in Excel. Cells in fonts under 12
+  points, such as Calibri 10, make rows as tall as Excel does.
 
 ## [1.0.0] - 2026-11-07
 
