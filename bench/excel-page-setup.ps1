@@ -66,8 +66,9 @@ try {
       orientation = [int]$ps.Orientation
       paper = [int]$ps.PaperSize
       zoom = if ($zoom -is [bool]) { 0 } else { [int]$zoom }
-      fitWide = if ($ps.FitToPagesWide -is [bool]) { -1 } else { [int]$ps.FitToPagesWide }
-      fitTall = if ($ps.FitToPagesTall -is [bool]) { -1 } else { [int]$ps.FitToPagesTall }
+      # False is "automatic": as many pages as it takes, which the file says as 0.
+      fitWide = if ($ps.FitToPagesWide -is [bool]) { 0 } else { [int]$ps.FitToPagesWide }
+      fitTall = if ($ps.FitToPagesTall -is [bool]) { 0 } else { [int]$ps.FitToPagesTall }
       margins = @([double]$ps.LeftMargin, [double]$ps.RightMargin, [double]$ps.TopMargin, [double]$ps.BottomMargin, [double]$ps.HeaderMargin, [double]$ps.FooterMargin)
       centerH = [bool]$ps.CenterHorizontally
       centerV = [bool]$ps.CenterVertically

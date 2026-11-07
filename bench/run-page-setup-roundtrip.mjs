@@ -218,7 +218,13 @@ try {
     }
     const ours = setupOf(saved);
     const back = seen.error ? null : setupOf(copy);
-    const lost = back ? KEYS.filter((key) => !close(ours[key], back[key])) : KEYS;
+    // Excel saves an orientation nobody set as portrait, which is what the default prints as.
+    const plain = (setup) =>
+      setup && {
+        ...setup,
+        orientation: setup.orientation === 'default' ? 'portrait' : setup.orientation,
+      };
+    const lost = back ? KEYS.filter((key) => !close(plain(ours)[key], plain(back)[key])) : KEYS;
     results.push({
       case: name,
       opened: seen.opened,
