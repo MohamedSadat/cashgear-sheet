@@ -120,7 +120,7 @@ test('a refused margin says why and changes nothing', async ({ page }) => {
 });
 
 test('File › Print previews the pages, and a page break adds one', async ({ page }) => {
-  // 100 rows of 20 pixels: 45 to a Letter page at Excel's normal margins.
+  // 100 rows of 20 pixels: 47 to a Letter page at Excel's normal margins, as Excel prints them.
   await fill(page, 100);
   await page.keyboard.press('Control+p');
   const view = page.getByTestId('print-view');
@@ -131,7 +131,7 @@ test('File › Print previews the pages, and a page break adds one', async ({ pa
   await expect(view.getByTestId('print-count')).toHaveText('2 of 3');
   await view.getByTestId('print-back').click();
   await expect(view).toBeHidden();
-  // A manual break above row 51 ends a page at row 50: 1-45, 46-50, 51-95 and 96-100.
+  // A manual break above row 51 ends a page at row 50: 1-47, 48-50, 51-97 and 98-100.
   await page.evaluate(() =>
     window.cgsTest.grid()!.selectArea({ top: 50, left: 0, bottom: 50, right: 0 }),
   );
@@ -164,5 +164,5 @@ test('Normal view shows where pages break once page setup is used', async ({ pag
         return grid.pageBreaks?.rows ?? null;
       }),
     )
-    .toEqual([45]);
+    .toEqual([47]);
 });

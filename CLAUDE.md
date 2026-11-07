@@ -120,6 +120,18 @@ Found in Phase 9:
 - `tauri::generate_context!` needs `serde_json` in the desktop crate once a plugin has settings.
 - This checkout's `.cargo/config.toml` (excluded through `.git/info/exclude`) points Formualizer at `../formualizer-fork`. Keep that folder at the pinned commit, or local builds differ from CI's.
 
+Found in Phase 10:
+
+- Excel breaks pages in its printer's dots, not in points: rows print about 3% shorter and columns 8% wider than on screen, and both factors follow the workbook's normal font (`Units` in `crates/cgs-engine/src/print.rs`, measured for 24 fonts). Measure with Microsoft Print to PDF as Excel's `ActivePrinter`, which Excel takes only once a workbook is open.
+- `HPageBreaks` and `VPageBreaks` leave breaks out or refuse indexes their `Count` gave. Read breaks with `INDEX(GET.DOCUMENT(64), n)` and `65`; over COM a bare `GET.DOCUMENT` returns only the first. It also lists where the printed range starts and ends.
+- Excel prints from A1, keeps manual breaks along a side Fit To leaves automatic, and takes `sheetFormatPr defaultRowHeight` from the normal font, not the attribute.
+- On this PC Calibri has Arabic glyphs, so the screen draws Arabic in Calibri. When the PDF can't use installed fonts, pages measure Arabic in the bundled Noto, or text won't fit its cells.
+- Noto Sans Arabic draws dots as marks that many letters share. A PDF needs a code per glyph and text, and marks as outlines, or copying gives the wrong letters. pdf.js treats an empty ToUnicode entry as missing and falls back to the code.
+- `requestAnimationFrame` never fires in a hidden window or browser pane. Wait for a frame or a timeout.
+- Carlito and Liberation reserve their names, so ship them unmodified; stripping hinting would be a modified version.
+- `target/debug` grows to about 100 GB. When links fail with LNK1318 or LNK1140, D: is full: clear `target/debug/incremental`.
+- A PowerShell function named `Measure` is shadowed by the `Measure-Object` alias.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
