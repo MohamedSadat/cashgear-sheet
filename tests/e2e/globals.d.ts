@@ -55,5 +55,9 @@ interface Window {
     problem(): string | null;
     cellFormat(row: number, col: number): Promise<import('@cgs/engine-client').CellFormat | null>;
     saveBytes(): Promise<Uint8Array>;
+    pdf(choice?: {
+      what?: 'active' | 'workbook' | 'selection';
+      ignorePrintArea?: boolean;
+    }): Promise<{ bytes: Uint8Array; pages: number }>;
   };
 }

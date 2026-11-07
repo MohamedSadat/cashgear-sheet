@@ -838,3 +838,149 @@ body {
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* Page Layout's labelled controls. */
+.cgs-ribbon-labelled {
+  display: flex;
+  gap: var(--cg-space-1);
+  align-items: center;
+  font-size: var(--cg-font-size-sm);
+  white-space: nowrap;
+}
+
+.cgs-ribbon-labelled .cgs-ribbon-select {
+  inline-size: 6.5rem;
+}
+
+.cgs-ribbon-number {
+  box-sizing: border-box;
+  inline-size: 4rem;
+  block-size: 1.6rem;
+  color: var(--cg-text);
+  font: inherit;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+  border-radius: var(--cg-radius-sm);
+}
+
+/* File › Print: settings beside a preview of the pages, over the whole window. */
+.cgs-print-view {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-columns: minmax(16rem, 20rem) 1fr;
+  color: var(--cg-text);
+  background: var(--cg-surface);
+}
+
+.cgs-print-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-2);
+  padding: var(--cg-space-3);
+  overflow: auto;
+  background: var(--cg-surface-subtle);
+  border-inline-end: var(--cg-border-style);
+}
+
+.cgs-print-title {
+  display: flex;
+  gap: var(--cg-space-2);
+  align-items: center;
+}
+
+.cgs-print-title h2 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 400;
+}
+
+.cgs-print-actions {
+  display: flex;
+  gap: var(--cg-space-2);
+}
+
+.cgs-print-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cg-space-1);
+}
+
+.cgs-print-field select {
+  block-size: 2rem;
+  color: var(--cg-text);
+  font: inherit;
+  background: var(--cg-surface);
+  border: var(--cg-border-style);
+  border-radius: var(--cg-radius-sm);
+}
+
+.cgs-print-status {
+  margin: 0;
+  color: var(--cg-color-text-muted);
+}
+
+.cgs-print-preview {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+}
+
+.cgs-print-sheet {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 0;
+  padding: var(--cg-space-3);
+  overflow: auto;
+  /* The paper is white in both themes: pages use the file's own colours. */
+  background: var(--cg-surface-subtle);
+}
+
+.cgs-print-paper {
+  line-height: 0;
+  box-shadow: 0 0 0.25rem rgb(0 0 0 / 35%);
+}
+
+.cgs-print-paper svg {
+  block-size: calc(100vh - 7rem);
+  inline-size: auto;
+  max-inline-size: 100%;
+}
+
+.cgs-print-pager {
+  display: flex;
+  gap: var(--cg-space-2);
+  align-items: center;
+  justify-content: center;
+  padding: var(--cg-space-2);
+}
+
+/* What the print dialog takes: only the pages, each on its own sheet of paper. */
+@media screen {
+  .cgs-print-pages {
+    position: fixed;
+    inset-block-start: 0;
+    inset-inline-start: -100000px;
+  }
+}
+
+@media print {
+  body > :not(.cgs-print-pages) {
+    display: none !important;
+  }
+
+  .cgs-print-sheet-page {
+    overflow: hidden;
+    break-after: page;
+  }
+
+  .cgs-print-sheet-page svg {
+    display: block;
+    inline-size: 100%;
+    block-size: 100%;
+  }
+}

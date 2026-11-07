@@ -31,6 +31,7 @@ import type {
   WorkbookChanges,
 } from './types';
 import { decodeLayout, type SheetLayout } from './layout';
+import { decodeViewBlock, type ViewBlock } from './view-block';
 
 export interface EngineClient {
   /** Starts the engine and connects the tile worker to it. */
@@ -47,6 +48,10 @@ export interface EngineClient {
   close(): Promise<void>;
   /** The bytes of a new blank workbook. */
   blankWorkbook(): Promise<Uint8Array>;
+  /** A PDF of recorded pages. See `recordPages` and `cgs_pdf::Document`. */
+  writePdf(document: string, blob: Uint8Array): Promise<Uint8Array>;
+  /** A tile's cells in the file's own colours, for drawing pages. */
+  viewBlock(sheet: number, firstRow: number, firstCol: number): Promise<ViewBlock>;
   /** Makes saves independent of the file on disk, before the first edit. See `EngineApi`. */
   protectSource(source?: FileSource): Promise<boolean>;
   /** Runs a command, and fits any rows it left to measure. Rejects with a message people can read. */
@@ -221,6 +226,11 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     open: (source, onEvent, name) => engine.open(source, proxy(onEvent), name),
     close: () => engine.close(),
     blankWorkbook: () => engine.blankWorkbook(),
+    writePdf: (document, blob) =>
+      engine.writePdf(document, transfer(blob, [blob.buffer as ArrayBuffer])),
+    async viewBlock(sheet, firstRow, firstCol) {
+      return decodeViewBlock(await engine.viewBlock(sheet, firstRow, firstCol, false, 0xffffff, 0));
+    },
     protectSource: (source) => engine.protectSource(source),
     async command(command) {
       const applied = await engine.command(command);

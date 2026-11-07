@@ -113,7 +113,32 @@ const MIME_TYPES: Record<string, string> = {
   xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
   xltx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
   xltm: 'application/vnd.ms-excel.template.macroEnabled.12',
+  pdf: 'application/pdf',
 };
+
+const DESCRIPTIONS: Record<string, string> = { csv: 'CSV', pdf: 'PDF' };
+
+/** What Chrome's Local Font Access gives for each installed face. */
+interface LocalFont {
+  family: string;
+  style: string;
+  fullName: string;
+  blob(): Promise<Blob>;
+}
+
+let localFonts: Promise<LocalFont[]> | null = null;
+
+/** Installed fonts, once Chrome has been allowed to list them. */
+function listLocalFonts(): Promise<LocalFont[]> {
+  const query = (window as unknown as { queryLocalFonts?: () => Promise<LocalFont[]> })
+    .queryLocalFonts;
+  if (!query) return Promise.resolve([]);
+  localFonts ??= query.call(window).catch(() => {
+    localFonts = null;
+    return [];
+  });
+  return localFonts;
+}
 
 /**
  * Writes through the browser's own swap file, which only replaces the real file on `close`. A
@@ -151,6 +176,26 @@ const downloadTarget = (name: string): SaveTarget => ({
 
 export const webPlatform: SheetPlatform = {
   kind: 'web',
+  askFontAccess() {
+    void listLocalFonts();
+  },
+  async systemFont(family, bold, italic) {
+    const fonts = await listLocalFonts();
+    const wanted = family.toLowerCase();
+    const styled = (font: LocalFont) => {
+      const style = font.style.toLowerCase();
+      return /bold|black|heavy/.test(style) === bold && /italic|oblique/.test(style) === italic;
+    };
+    const font =
+      fonts.find((f) => f.family.toLowerCase() === wanted && styled(f)) ??
+      fonts.find((f) => f.family.toLowerCase() === wanted && /regular|normal/i.test(f.style));
+    if (!font) return null;
+    const data = new Uint8Array(await (await font.blob()).arrayBuffer());
+    return { data, index: 0, name: font.fullName };
+  },
+  async print() {
+    window.print();
+  },
   nativeInfo: () => Promise.resolve(null),
   // A browser's window isn't ours to theme.
   setWindowTheme: () => Promise.resolve(),
@@ -229,7 +274,7 @@ export const webPlatform: SheetPlatform = {
         suggestedName,
         types: [
           {
-            description: 'Excel workbook',
+            description: DESCRIPTIONS[extension] ?? 'Excel workbook',
             accept: { [MIME_TYPES[extension] ?? MIME_TYPES.xlsx!]: ['.' + extension] },
           },
         ],

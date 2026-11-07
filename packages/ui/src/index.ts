@@ -3,6 +3,7 @@ export {
   MAX_RECENT_FILES,
   OPENABLE_EXTENSIONS,
   WORKBOOK_EXTENSIONS,
+  type InstalledFont,
   type NativeInfo,
   type OpenedFile,
   type RecentFile,

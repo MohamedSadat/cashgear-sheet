@@ -3,7 +3,7 @@
 // slices of 8 ms: a slice returns to the event loop, so a command or a tile never waits for more
 // than one of them.
 import { expose, transfer } from 'comlink';
-import initWasm, { blank_workbook, Engine, version } from './pkg/cgs_wasm';
+import initWasm, { blank_workbook, Engine, version, write_pdf } from './pkg/cgs_wasm';
 import type {
   Applied,
   BookSummary,
@@ -524,6 +524,7 @@ const api: EngineApi = {
   attachTileWorker(port) {
     expose(guarded(tilePort), port);
   },
+  viewBlock: (...args) => tilePort.viewBlock(...args),
   touchSharedMemory(buffer, value) {
     Atomics.store(new Int32Array(buffer), 0, value);
   },
@@ -574,6 +575,11 @@ const api: EngineApi = {
   async blankWorkbook() {
     await ensureEngine();
     const bytes = blank_workbook();
+    return transfer(bytes, [bytes.buffer as ArrayBuffer]);
+  },
+  async writePdf(document, blob) {
+    await ensureEngine();
+    const bytes = write_pdf(document, blob);
     return transfer(bytes, [bytes.buffer as ArrayBuffer]);
   },
   async protectSource(given) {

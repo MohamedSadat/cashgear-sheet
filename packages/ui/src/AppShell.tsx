@@ -76,6 +76,9 @@ import { useDataTools } from './data/useDataTools';
 import { useChartTools } from './charts/useChartTools';
 import { chartInsertGroups, chartTabs } from './charts/ribbon-charts';
 import { usePivotTools } from './pivots/usePivotTools';
+import { usePrintTools } from './print/usePrintTools';
+import { pageLayoutTab } from './print/ribbon-page';
+import type { PrintChoice } from './print/printJob';
 import { pivotInsertItem, pivotTabs } from './pivots/ribbon-pivots';
 import { saveReportLines, saveSummary, workbookExtension } from './save-report';
 import { fromArea, SheetEditing, toArea, type EditingHost } from './sheet-editing';
@@ -218,6 +221,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   // The chart tools come later than the code that tells them about sheets and changes.
   const chartDrawingsRef = useRef<((drawings: DrawingBox[]) => void) | null>(null);
   const chartRefreshRef = useRef<(() => void) | null>(null);
+  const printRefreshRef = useRef<() => void>(() => undefined);
+  const printSelectionRef = useRef<(selection: GridSelection) => void>(() => undefined);
+  const printPdfRef = useRef<
+    (choice: PrintChoice) => Promise<{ bytes: Uint8Array; pages: number }>
+  >(() => Promise.reject(new Error('No workbook is open.')));
   const chartDeselectRef = useRef<(() => void) | null>(null);
   const loadedRef = useRef<ReadonlySet<number>>(new Set());
   /** The source has been copied, or there's nowhere to copy it, so edits can go ahead. */
@@ -336,6 +344,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     shownSheet.current = index;
     controller.current?.showSheet(index, layout, drawings);
     chartDrawingsRef.current?.(drawings);
+    printRefreshRef.current();
     setFlags({
       frozen: layout.frozenRows > 0 || layout.frozenCols > 0,
       showGrid: layout.showGrid,
@@ -862,6 +871,31 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     themeColors: themeColors(lists),
     menu: (x, y) => void contextMenu.current?.showAt(x, y, 'drawing'),
   });
+  const printTools = usePrintTools({
+    engine: () => clientRef.current,
+    grid: () => controller.current,
+    sheet: () => sheetRef.current,
+    selection: () => selectionRef.current,
+    book: () => bookRef.current,
+    hasBook: Boolean(book),
+    file: () => {
+      const file = fileRef.current;
+      const path = typeof file?.recent === 'string' ? file.recent : (file?.name ?? '');
+      return { name: file?.name ?? 'Book1.xlsx', path };
+    },
+    platform,
+    fontFamily: () => palette.fontFamily,
+    locale: navigator.language || 'en-US',
+    showGrid: flags.showGrid,
+    showHeadings: flags.showHeadings,
+    setView: (next) => send({ kind: 'viewFlags', sheet: sheetRef.current, ...next }),
+    run: runCommand,
+    notice: setNotice,
+  });
+  printRefreshRef.current = () => void printTools.refresh();
+  printSelectionRef.current = printTools.selectionChanged;
+  printPdfRef.current = printTools.pdfFor;
+  const openPrint = printTools.openPrint;
   chartDrawingsRef.current = chartTools.setDrawings;
   chartRefreshRef.current = chartTools.refresh;
   chartDeselectRef.current = chartTools.deselect;
@@ -1051,6 +1085,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         problem: () => string | null;
         cellFormat: (row: number, col: number) => Promise<CellFormat | null>;
         saveBytes: () => Promise<Uint8Array>;
+        pdf: (choice?: Partial<PrintChoice>) => Promise<{ bytes: Uint8Array; pages: number }>;
       };
     };
     hooks.cgsTest = {
@@ -1091,6 +1126,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         const saved = await clientRef.current?.save();
         return new Uint8Array((await saved?.blob.arrayBuffer()) ?? new ArrayBuffer(0));
       },
+      pdf: (choice) => printPdfRef.current({ what: 'active', ignorePrintArea: false, ...choice }),
     };
   }, [openFile, runCommand, writeTo]);
 
@@ -1124,6 +1160,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           before.col !== selection.col ||
           JSON.stringify(before.range) !== JSON.stringify(selection.range);
         if (moved) chartDeselectRef.current?.();
+        printSelectionRef.current(selection);
         refreshCell();
       },
       onZoom: setZoom,
@@ -1239,6 +1276,19 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
             onActivate: () => void saveAs(),
           },
           {
+            key: 'print',
+            text: 'Print…',
+            shortcut: 'Ctrl+P',
+            disabled: !book,
+            onActivate: () => openPrint('print'),
+          },
+          {
+            key: 'export-pdf',
+            text: 'Export as PDF…',
+            disabled: !book,
+            onActivate: () => openPrint('pdf'),
+          },
+          {
             key: 'export-csv',
             text: 'Export sheet as CSV…',
             disabled: !saveReady,
@@ -1264,9 +1314,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       },
     ],
     [
+      book,
       canSave,
       exportCsv,
       newWorkbook,
+      openPrint,
       openFromRecent,
       pick,
       recent,
@@ -1442,32 +1494,44 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     ],
   );
   const ribbonTabs = useMemo(
-    () => [
-      ...builtTabs.map((tab) =>
-        tab.key === 'insert'
-          ? {
-              ...tab,
-              groups: [
-                ...tab.groups.map((group) =>
-                  group.key === 'tables'
-                    ? {
-                        ...group,
-                        items: [
-                          pivotInsertItem(pivotTools.state, pivotTools.actions),
-                          ...group.items,
-                        ],
-                      }
-                    : group,
-                ),
-                ...chartInsertGroups(chartTools.state, chartTools.actions),
-              ],
-            }
-          : tab,
+    () =>
+      [
+        ...builtTabs.map((tab) =>
+          tab.key === 'insert'
+            ? {
+                ...tab,
+                groups: [
+                  ...tab.groups.map((group) =>
+                    group.key === 'tables'
+                      ? {
+                          ...group,
+                          items: [
+                            pivotInsertItem(pivotTools.state, pivotTools.actions),
+                            ...group.items,
+                          ],
+                        }
+                      : group,
+                  ),
+                  ...chartInsertGroups(chartTools.state, chartTools.actions),
+                ],
+              }
+            : tab,
+        ),
+        ...pivotTabs(pivotTools.state, pivotTools.actions),
+        ...chartTabs(chartTools.state, chartTools.actions),
+      ].flatMap((tab) =>
+        // Page Layout comes after Insert, as in Excel.
+        tab.key === 'insert' ? [tab, pageLayoutTab(printTools.state, printTools.actions)] : [tab],
       ),
-      ...pivotTabs(pivotTools.state, pivotTools.actions),
-      ...chartTabs(chartTools.state, chartTools.actions),
+    [
+      builtTabs,
+      chartTools.state,
+      chartTools.actions,
+      pivotTools.state,
+      pivotTools.actions,
+      printTools.state,
+      printTools.actions,
     ],
-    [builtTabs, chartTools.state, chartTools.actions, pivotTools.state, pivotTools.actions],
   );
 
   formatActionRef.current = (action) => {
@@ -1688,11 +1752,15 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         // Browsers keep Ctrl+N for a new window, and a page never sees it.
         event.preventDefault();
         void newWorkbook();
+      } else if (key === 'p' && !event.altKey) {
+        // Ours, so that the browser never prints the app's own window.
+        event.preventDefault();
+        if (!event.shiftKey) openPrint('print');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [newWorkbook, pick, save, saveAs]);
+  }, [newWorkbook, openPrint, pick, save, saveAs]);
 
   const hostText = native ? `Desktop ${native.version}` : 'Web';
   const sheets = book?.sheets ?? [];
@@ -2119,6 +2187,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       {dataTools.overlays}
       {pivotTools.overlays}
       {chartTools.overlays}
+      {printTools.overlays}
       {dialog?.kind === 'find' && (
         <FindDialog
           open

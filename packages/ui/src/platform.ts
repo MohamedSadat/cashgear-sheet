@@ -97,6 +97,19 @@ export interface SheetPlatform {
    * do, and the engine worker copies a browser file itself. Rejects if the file has changed.
    */
   workingCopy(file: OpenedFile): Promise<WorkingCopy | null>;
+  /** An installed font's file, for PDFs. Null when it isn't installed or can't be read. */
+  systemFont?(family: string, bold: boolean, italic: boolean): Promise<InstalledFont | null>;
+  /** Asks to read installed fonts, while the user's click still allows asking. */
+  askFontAccess?(): void;
+  /** Opens a print dialog on what the page shows for printing: the system's on the desktop. */
+  print(): Promise<void>;
+}
+
+/** An installed font's bytes, and which face in a collection. */
+export interface InstalledFont {
+  data: Uint8Array;
+  index: number;
+  name: string;
 }
 
 /** The file types the app opens. Macros stay in the file and never run. */

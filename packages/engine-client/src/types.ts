@@ -325,6 +325,22 @@ export type Command =
     }
   | { kind: 'replaceAll'; query: FindQuery; with: string }
   | { kind: 'viewFlags'; sheet: number; grid?: boolean; headings?: boolean }
+  | { kind: 'pageSetup'; sheets: number[]; spec: PageSpec }
+  | {
+      kind: 'pageBreak';
+      sheet: number;
+      /** The first row and column of the new page. */
+      row?: number | null;
+      col?: number | null;
+      action: 'insert' | 'remove' | 'reset';
+    }
+  | { kind: 'printArea'; sheet: number; areas?: CellArea[]; action: 'set' | 'add' | 'clear' }
+  | {
+      kind: 'printTitles';
+      sheet: number;
+      rows?: [number, number] | null;
+      cols?: [number, number] | null;
+    }
   | {
       kind: 'createTable';
       sheet: number;
@@ -710,7 +726,9 @@ export type Question =
   | { kind: 'linkAt'; sheet: number; row: number; col: number }
   | { kind: 'notes'; sheet: number }
   | { kind: 'cellStyles' }
-  | { kind: 'tableStyles'; options?: Omit<TableOptions, 'style' | 'filterButton'> };
+  | { kind: 'tableStyles'; options?: Omit<TableOptions, 'style' | 'filterButton'> }
+  | { kind: 'pageSetup'; sheet: number }
+  | { kind: 'pages'; sheet: number; request?: PrintRequest };
 
 export interface Answers {
   tableAt: TableInfo | null;
@@ -727,6 +745,169 @@ export interface Answers {
   notes: { row: number; col: number; author: string; text: string }[];
   cellStyles: { group: string; styles: CellStyleInfo[] }[];
   tableStyles: TableStyleInfo[];
+  pageSetup: PageSetupInfo;
+  pages: PagesInfo;
+}
+
+/** Margins in inches, as the file holds them. */
+export interface PageMargins {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  header: number;
+  footer: number;
+}
+
+export interface HeaderFooterTexts {
+  oddHeader: string;
+  oddFooter: string;
+  evenHeader: string;
+  evenFooter: string;
+  firstHeader: string;
+  firstFooter: string;
+  differentOddEven: boolean;
+  differentFirst: boolean;
+  scaleWithDoc: boolean;
+  alignWithMargins: boolean;
+}
+
+export type Orientation = 'default' | 'portrait' | 'landscape';
+
+/** The parts of page setup to change. See `PageSpec` in crates/cgs-engine/src/page.rs. */
+export interface PageSpec {
+  paper?: number;
+  orientation?: Orientation;
+  scale?: number;
+  fitToPage?: boolean;
+  fitWidth?: number;
+  fitHeight?: number;
+  firstPage?: number;
+  firstPageAuto?: boolean;
+  pageOrder?: 'downThenOver' | 'overThenDown';
+  blackAndWhite?: boolean;
+  draft?: boolean;
+  comments?: 'none' | 'atEnd' | 'asDisplayed';
+  errors?: 'displayed' | 'blank' | 'dash' | 'NA';
+  margins?: Partial<PageMargins>;
+  centerHorizontally?: boolean;
+  centerVertically?: boolean;
+  headings?: boolean;
+  gridlines?: boolean;
+  headerFooter?: Partial<HeaderFooterTexts>;
+}
+
+/** A sheet's page setup, print area and titles. */
+export interface PageSetupInfo {
+  paper: number;
+  paperWidth: number;
+  paperHeight: number;
+  orientation: Orientation;
+  scale: number;
+  fitToPage: boolean;
+  fitWidth: number;
+  fitHeight: number;
+  firstPage: number | null;
+  pageOrder: 'downThenOver' | 'overThenDown';
+  blackAndWhite: boolean;
+  draft: boolean;
+  comments: 'none' | 'atEnd' | 'asDisplayed';
+  errors: 'displayed' | 'blank' | 'dash' | 'NA';
+  margins: PageMargins;
+  centerHorizontally: boolean;
+  centerVertically: boolean;
+  headings: boolean;
+  gridlines: boolean;
+  headerFooter: HeaderFooterTexts;
+  rowBreaks: number[];
+  colBreaks: number[];
+  /** As Excel shows it, without the sheet: `$A$1:$D$20`. */
+  printArea: string;
+  printAreas: CellArea[];
+  titleRows: string | null;
+  titleCols: string | null;
+  papers: { code: number; name: string; width: number; height: number }[];
+}
+
+/** What to print instead of the print area. */
+export interface PrintRequest {
+  selection?: CellArea[];
+  ignorePrintArea?: boolean;
+}
+
+/** A run of a header or footer. `field` names what `&P` and the rest show. */
+export interface HfRun {
+  field: 'page' | 'pages' | 'date' | 'time' | 'file' | 'path' | 'sheet' | 'picture' | null;
+  /** The literal text, or `&P`'s offset. */
+  text: string | number | null;
+  font: string | null;
+  bold: boolean;
+  italic: boolean;
+  size: number | null;
+  underline: number;
+  strike: boolean;
+  superscript: boolean;
+  subscript: boolean;
+  color: string | null;
+}
+
+export interface HfSections {
+  left: HfRun[];
+  center: HfRun[];
+  right: HfRun[];
+}
+
+/** One page: its cells, and its top left on the paper in points. */
+export interface PageInfo {
+  area: number;
+  rows: [number, number];
+  cols: [number, number];
+  titleRows: [number, number] | null;
+  titleCols: [number, number] | null;
+  x: number;
+  y: number;
+  /** What it prints at 100%, in sheet points. */
+  width: number;
+  height: number;
+}
+
+/** A sheet's pages. Lengths are in points. See `pages_json` in crates/cgs-engine/src/print.rs. */
+export interface PagesInfo {
+  sheet: number;
+  name: string;
+  paper: [number, number];
+  margins: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    header: number;
+    footer: number;
+  };
+  zoom: number;
+  firstPage: number | null;
+  gridlines: boolean;
+  headings: boolean;
+  blackAndWhite: boolean;
+  draft: boolean;
+  errors: 'displayed' | 'blank' | 'dash' | 'NA';
+  headingSize: [number, number] | null;
+  headerFooter: {
+    odd: [HfSections | null, HfSections | null];
+    even: [HfSections | null, HfSections | null];
+    first: [HfSections | null, HfSections | null];
+    differentOddEven: boolean;
+    differentFirst: boolean;
+    scaleWithDoc: boolean;
+    alignWithMargins: boolean;
+  };
+  font: { name: string; size: number };
+  pages: PageInfo[];
+  rowBreaks: number[];
+  colBreaks: number[];
+  manualRows: number[];
+  manualCols: number[];
+  printAreas: CellArea[];
 }
 
 /** A colour as a format gives it. Theme colours stay references to the theme. */
@@ -1207,6 +1388,17 @@ export interface EngineApi {
   close(): void;
   /** The bytes of a new blank workbook. */
   blankWorkbook(): Promise<Uint8Array>;
+  /** A PDF of recorded pages: `document` is JSON for `cgs_pdf::Document`, over `blob`. */
+  writePdf(document: string, blob: Uint8Array): Promise<Uint8Array>;
+  /** A tile's data, as the tile worker reads it, for drawing pages. */
+  viewBlock(
+    sheet: number,
+    firstRow: number,
+    firstCol: number,
+    dark: boolean,
+    background: number,
+    text: number,
+  ): Promise<ArrayBuffer>;
   /**
    * Makes saves independent of the file on disk before the first edit. With a source, the
    * workbook reads from that copy. With none, the worker copies a browser file to OPFS itself.

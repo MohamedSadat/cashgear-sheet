@@ -162,6 +162,17 @@ interface SheetView {
   extra: CellRange[];
 }
 
+/** Where pages break, as Normal view shows it once page setup has been used. 1-based. */
+export interface PageBreakLines {
+  /** The last row and column of each page but the last. */
+  rows: number[];
+  cols: number[];
+  /** The ones set by hand, drawn with longer dashes. */
+  manualRows: number[];
+  manualCols: number[];
+  areas: { top: number; left: number; bottom: number; right: number }[];
+}
+
 interface Pane {
   x: number;
   y: number;
@@ -190,6 +201,7 @@ export class GridController {
   private frame = 0;
 
   private sheet = -1;
+  private pageBreaks: PageBreakLines | null = null;
   private layout: SheetLayout | null = null;
   private drawings: DrawingBox[] = [];
   private drawingListener: ((sheet: number, frames: DrawingFrame[]) => void) | null = null;
@@ -311,6 +323,7 @@ export class GridController {
 
   /** Shows a sheet. Comes back to where it was if it has been shown before. */
   showSheet(sheet: number, layout: SheetLayout, drawings: DrawingBox[]) {
+    if (sheet !== this.sheet) this.pageBreaks = null;
     if (this.sheet >= 0) this.remember();
     const sameSheet = sheet === this.sheet;
     const kept = this.remembered.get(sheet);
@@ -491,6 +504,49 @@ export class GridController {
   }
 
   /** The references in the formula being typed. */
+  /** Shows where pages break on the current sheet, or nothing. */
+  setPageBreaks(lines: PageBreakLines | null) {
+    this.pageBreaks = lines;
+    this.schedule();
+  }
+
+  /** Dashed lines between the cells where pages break, as Excel draws them. */
+  private drawPageBreaks(pane: Pane) {
+    const lines = this.pageBreaks;
+    if (!lines) return;
+    const { context, colors } = this;
+    const pixel = Math.max(1, Math.round(this.dpr));
+    const manualRows = new Set(lines.manualRows);
+    const manualCols = new Set(lines.manualCols);
+    context.save();
+    context.strokeStyle = colors.textMuted;
+    context.lineWidth = pixel;
+    const top = pane.y;
+    const bottom = pane.y + pane.height;
+    const left = pane.x;
+    const right = pane.x + pane.width;
+    for (const col of lines.cols) {
+      // After 1-based column `col`, which is the left edge of the 0-based column of that number.
+      const x = this.cols.offset(col) - pane.sheetX + pane.x + 0.5 * pixel;
+      if (x < left || x > right) continue;
+      context.setLineDash(manualCols.has(col) ? [6 * pixel, 3 * pixel] : [2 * pixel, 2 * pixel]);
+      context.beginPath();
+      context.moveTo(x, top);
+      context.lineTo(x, bottom);
+      context.stroke();
+    }
+    for (const row of lines.rows) {
+      const y = this.rows.offset(row) - pane.sheetY + pane.y + 0.5 * pixel;
+      if (y < top || y > bottom) continue;
+      context.setLineDash(manualRows.has(row) ? [6 * pixel, 3 * pixel] : [2 * pixel, 2 * pixel]);
+      context.beginPath();
+      context.moveTo(left, y);
+      context.lineTo(right, y);
+      context.stroke();
+    }
+    context.restore();
+  }
+
   setHighlights(highlights: GridHighlight[]) {
     this.highlights = highlights;
     this.schedule();
@@ -882,6 +938,7 @@ export class GridController {
           context.drawImage(bitmap, x, y, width, height);
         }
       }
+      this.drawPageBreaks(pane);
       this.drawDrawings(pane, panes.indexOf(pane));
       this.drawSelectionIn(pane);
       this.drawButtons(pane);

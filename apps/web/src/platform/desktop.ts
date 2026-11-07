@@ -48,6 +48,22 @@ const pathTarget = (path: string): SaveTarget => ({
 
 export const desktopPlatform: SheetPlatform = {
   kind: 'desktop',
+  async systemFont(family, bold, italic) {
+    const found = await invoke<{ file: NativeFile; index: number } | null>('system_font', {
+      family,
+      bold,
+      italic,
+    });
+    if (!found) return null;
+    const response = await fetch(convertFileSrc(found.file.id, 'cgs-file'));
+    if (!response.ok) return null;
+    return {
+      data: new Uint8Array(await response.arrayBuffer()),
+      index: found.index,
+      name: found.file.name,
+    };
+  },
+  print: () => invoke('system_print'),
   nativeInfo: () => invoke<NativeInfo>('native_info'),
   async launchFile() {
     const file = await invoke<NativeFile | null>('launch_file');

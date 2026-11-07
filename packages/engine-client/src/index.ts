@@ -3,9 +3,53 @@ export { decodeLayout, type SheetLayout } from './layout';
 export { localeData } from './locale';
 export { TileCache, type TileAddress, type TileStyle } from './tile-cache';
 export { devicePx, TILE_COLS, TILE_ROWS } from './tile-draw';
+export {
+  Recording,
+  RecordingContext,
+  imagePixels,
+  multiply,
+  parseFont,
+  replay,
+  type FaceRequest,
+  type Matrix,
+  type PdfOp,
+  type RecordedImage,
+} from './recording';
+export {
+  Axis,
+  recordSheetPages,
+  type PageFields,
+  type PrintOptions,
+  type PrintSource,
+  type RecordedPage,
+  type SheetPrint,
+} from './print-pages';
+export {
+  BUNDLED_ARABIC,
+  bundledFont,
+  faceCss,
+  loadBundledArabic,
+  withBundledArabic,
+  pdfParts,
+  type FontBytes,
+  type FontSource,
+  type PdfParts,
+} from './pdf-document';
+export { svgToRecording } from './svg-record';
+export { imageUrls, pageSvg } from './svg-pages';
 export type {
   Answers,
   Applied,
+  HeaderFooterTexts,
+  HfRun,
+  HfSections,
+  Orientation,
+  PageInfo,
+  PageMargins,
+  PagesInfo,
+  PageSetupInfo,
+  PageSpec,
+  PrintRequest,
   CellStyleInfo,
   CfFormat,
   CfPoint,
