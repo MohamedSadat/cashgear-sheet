@@ -1,7 +1,7 @@
 //! Fonts and text: each face's fallback chain, shaping with rustybuzz in bidirectional runs,
 //! and the subsets embedded as CID fonts with a ToUnicode map, so text can be searched and copied.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use pdf_writer::types::{CidFontType, FontFlags, SystemInfo};
 use pdf_writer::{Filter, Name, Pdf, Rect, Ref, Str};
@@ -20,6 +20,13 @@ pub struct FontFile<'a> {
     used: BTreeMap<u16, String>,
     /// The subset's glyph ids, given out as glyphs are first used.
     pub remapper: subsetter::GlyphRemapper,
+    /// Codes in the PDF, one for each glyph with each text it stands for, so a glyph that
+    /// several letters share, as Noto's Arabic skeletons are, copies as the right letter. Each is
+    /// (subset glyph, glyph in the whole font, text); code 0 is `.notdef`.
+    codes: Vec<(u16, u16, String)>,
+    code_of: HashMap<(u16, String), u16>,
+    /// CFF outlines take no map from codes to glyphs, so their codes are the glyphs.
+    cff: bool,
     pub units: f32,
     pub embeddable: bool,
 }
@@ -36,6 +43,7 @@ impl<'a> FontFile<'a> {
                 Some(rustybuzz::ttf_parser::Permissions::Restricted)
             )
         });
+        let cff = face.tables().cff.is_some();
         Some(Self {
             data,
             index,
@@ -43,6 +51,9 @@ impl<'a> FontFile<'a> {
             face,
             used: BTreeMap::new(),
             remapper: subsetter::GlyphRemapper::new(),
+            codes: vec![(0, 0, String::new())],
+            code_of: HashMap::new(),
+            cff,
             units,
             embeddable,
         })
@@ -65,11 +76,16 @@ impl<'a> FontFile<'a> {
     }
 }
 
-/// A shaped glyph: which file, its id in the subset, and how it moves the pen, in ems.
+/// A shaped glyph: which file, its code in the PDF, and how it moves the pen, in ems.
 #[derive(Debug, Clone)]
 pub struct Glyph {
     pub file: usize,
     pub id: u16,
+    /// Its id in the whole font.
+    pub old: u16,
+    /// A mark with no text of its own, such as a dot Noto draws apart from its letter: drawn as
+    /// an outline, so it neither copies as a stray character nor spaces the letters out.
+    pub mark: bool,
     /// The width the font gives it, which the PDF's widths say.
     pub natural: f32,
     pub advance: f32,
@@ -159,13 +175,19 @@ fn shape_chunk(files: &mut [FontFile<'_>], file: usize, text: &str, rtl: bool) -
         text.get(cluster..next).unwrap_or("").to_string()
     };
     let units = font.units;
+    // A cluster's text goes on its widest glyph, the letter itself: Noto draws dots as marks that
+    // many letters share, which must copy as nothing.
+    let mut base: std::collections::HashMap<u32, (usize, i32)> = std::collections::HashMap::new();
+    for (index, (info, pos)) in infos.iter().zip(positions).enumerate() {
+        let entry = base.entry(info.cluster).or_insert((index, pos.x_advance));
+        if pos.x_advance > entry.1 {
+            *entry = (index, pos.x_advance);
+        }
+    }
     let mut raw = Vec::with_capacity(infos.len());
-    let mut seen_cluster: Option<u32> = None;
-    for (info, pos) in infos.iter().zip(positions) {
+    for (index, (info, pos)) in infos.iter().zip(positions).enumerate() {
         let old = info.glyph_id as u16;
-        let first_of_cluster = seen_cluster != Some(info.cluster);
-        seen_cluster = Some(info.cluster);
-        let text = if first_of_cluster {
+        let text = if base.get(&info.cluster).map(|b| b.0) == Some(index) {
             cluster_text(info.cluster as usize)
         } else {
             String::new()
@@ -182,13 +204,36 @@ fn shape_chunk(files: &mut [FontFile<'_>], file: usize, text: &str, rtl: bool) -
     let font = &mut files[file];
     let mut glyphs = Vec::with_capacity(raw.len());
     for (old, natural, advance, x_offset, y_offset, text) in raw {
-        let entry = font.used.entry(old).or_default();
-        if entry.is_empty() && !text.is_empty() {
-            *entry = text.clone();
+        let mark_glyph = text.is_empty() && advance == 0;
+        if !mark_glyph {
+            let entry = font.used.entry(old).or_default();
+            if entry.is_empty() && !text.is_empty() {
+                *entry = text.clone();
+            }
         }
+        let mark = text.is_empty() && advance == 0;
+        let new = if mark { 0 } else { font.remapper.remap(old) };
+        let id = if mark {
+            0
+        } else if font.cff {
+            new
+        } else {
+            let key = (new, text.clone());
+            match font.code_of.get(&key) {
+                Some(&code) => code,
+                None => {
+                    let code = u16::try_from(font.codes.len()).unwrap_or(u16::MAX);
+                    font.codes.push((new, old, text.clone()));
+                    font.code_of.insert(key, code);
+                    code
+                }
+            }
+        };
         glyphs.push(Glyph {
             file,
-            id: font.remapper.remap(old),
+            id,
+            old,
+            mark,
             natural,
             advance: advance as f32 / units,
             x_offset: x_offset as f32 / units,
@@ -229,12 +274,13 @@ pub fn embed(
         let mapper = &file.remapper;
         let subset = subsetter::subset(file.data, file.index, mapper)
             .map_err(|error| format!("The font {} couldn't be subset: {error}", file.name))?;
-        let is_cff = subset.len() >= 4 && &subset[..4] == b"OTTO";
+        let is_cff = file.cff;
         let type0 = refs[index];
         let cid = next();
         let descriptor = next();
         let stream = next();
         let cmap_ref = next();
+        let map_ref = next();
         let name = base_name(&file.name, index);
         pdf.type0_font(type0)
             .base_font(Name(name.as_bytes()))
@@ -259,13 +305,32 @@ pub fn embed(
                 .font_descriptor(descriptor)
                 .default_width(0.0);
             if !is_cff {
-                cid_font.cid_to_gid_map_predefined(Name(b"Identity"));
+                cid_font.cid_to_gid_map_stream(map_ref);
             }
             let mut widths = cid_font.widths();
-            for old in mapper.remapped_gids() {
-                let new = mapper.get(old).unwrap_or(0);
-                widths.consecutive(new, [file.advance(old) * 1000.0]);
+            if is_cff {
+                for old in mapper.remapped_gids() {
+                    let new = mapper.get(old).unwrap_or(0);
+                    widths.consecutive(new, [file.advance(old) * 1000.0]);
+                }
+            } else {
+                widths.consecutive(
+                    0,
+                    file.codes
+                        .iter()
+                        .map(|&(_, old, _)| file.advance(old) * 1000.0),
+                );
             }
+        }
+        if !is_cff {
+            // Each code's glyph in the subset, two bytes a code.
+            let map: Vec<u8> = file
+                .codes
+                .iter()
+                .flat_map(|&(new, _, _)| new.to_be_bytes())
+                .collect();
+            let packed = miniz_oxide::deflate::compress_to_vec_zlib(&map, 6);
+            pdf.stream(map_ref, &packed).filter(Filter::FlateDecode);
         }
         let face = &file.face;
         let bbox = face.global_bounding_box();
@@ -306,15 +371,90 @@ pub fn embed(
         }
         drop(font_stream);
         let mut cmap = pdf_writer::types::UnicodeCmap::<u16>::new(Name(b"Custom"), info);
-        for (&old, text) in &file.used {
-            let Some(new) = mapper.get(old) else { continue };
-            if text.is_empty() {
-                continue;
+        // A glyph with no text of its own, such as a dot drawn as a mark, maps to nothing, so a
+        // reader doesn't guess a character for it.
+        if is_cff {
+            for (&old, text) in &file.used {
+                let Some(new) = mapper.get(old) else { continue };
+                cmap.pair_with_multiple(new, text.chars());
             }
-            cmap.pair_with_multiple(new, text.chars());
+        } else {
+            for (code, (_, _, text)) in file.codes.iter().enumerate().skip(1) {
+                cmap.pair_with_multiple(code as u16, text.chars());
+            }
         }
         let data = cmap.finish();
         pdf.cmap(cmap_ref, data.as_slice());
     }
     Ok(())
+}
+
+/// Draws a glyph's outline as a path, its origin at `x`, `y` in a space whose y runs down.
+pub fn outline(
+    files: &[FontFile<'_>],
+    glyph: &Glyph,
+    x: f32,
+    y: f32,
+    size: f32,
+    content: &mut pdf_writer::Content,
+) -> bool {
+    struct Pen<'c> {
+        content: &'c mut pdf_writer::Content,
+        x: f32,
+        y: f32,
+        scale: f32,
+        last: (f32, f32),
+    }
+    impl Pen<'_> {
+        fn at(&self, fx: f32, fy: f32) -> (f32, f32) {
+            (self.x + fx * self.scale, self.y - fy * self.scale)
+        }
+    }
+    impl rustybuzz::ttf_parser::OutlineBuilder for Pen<'_> {
+        fn move_to(&mut self, fx: f32, fy: f32) {
+            let (px, py) = self.at(fx, fy);
+            self.content.move_to(px, py);
+            self.last = (px, py);
+        }
+        fn line_to(&mut self, fx: f32, fy: f32) {
+            let (px, py) = self.at(fx, fy);
+            self.content.line_to(px, py);
+            self.last = (px, py);
+        }
+        fn quad_to(&mut self, x1: f32, y1: f32, fx: f32, fy: f32) {
+            let (qx, qy) = self.at(x1, y1);
+            let (px, py) = self.at(fx, fy);
+            let (sx, sy) = self.last;
+            self.content.cubic_to(
+                sx + 2.0 / 3.0 * (qx - sx),
+                sy + 2.0 / 3.0 * (qy - sy),
+                px + 2.0 / 3.0 * (qx - px),
+                py + 2.0 / 3.0 * (qy - py),
+                px,
+                py,
+            );
+            self.last = (px, py);
+        }
+        fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, fx: f32, fy: f32) {
+            let (ax, ay) = self.at(x1, y1);
+            let (bx, by) = self.at(x2, y2);
+            let (px, py) = self.at(fx, fy);
+            self.content.cubic_to(ax, ay, bx, by, px, py);
+            self.last = (px, py);
+        }
+        fn close(&mut self) {
+            self.content.close_path();
+        }
+    }
+    let file = &files[glyph.file];
+    let mut pen = Pen {
+        content,
+        x,
+        y,
+        scale: size / file.units,
+        last: (x, y),
+    };
+    file.face
+        .outline_glyph(GlyphId(glyph.old), &mut pen)
+        .is_some()
 }

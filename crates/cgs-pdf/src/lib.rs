@@ -625,10 +625,17 @@ fn draw(
                 .get(*face)
                 .map(|f| f.chain.clone())
                 .unwrap_or_default();
-            let chain: Vec<usize> = chain
+            let mut chain: Vec<usize> = chain
                 .into_iter()
                 .filter(|&f| f < writer.files.len())
                 .collect();
+            // A font whose licence forbids embedding is passed over, keeping the last resort.
+            if let Some(&last) = chain.last() {
+                chain.retain(|&f| writer.files[f].embeddable);
+                if chain.is_empty() {
+                    chain.push(last);
+                }
+            }
             if chain.is_empty() || t.is_empty() {
                 return Ok(());
             }
@@ -664,13 +671,32 @@ fn draw(
                 .begin_marked_content_with_properties(Name(b"Span"))
                 .properties()
                 .actual_text(TextStr(t));
+            // Where each glyph goes along the line, in ems from the start.
+            let mut pen = 0.0f32;
+            let placed: Vec<f32> = glyphs
+                .iter()
+                .map(|glyph| {
+                    let at = pen + glyph.x_offset;
+                    pen += glyph.advance;
+                    at
+                })
+                .collect();
+            let main: Vec<usize> = (0..glyphs.len()).filter(|&i| !glyphs[i].mark).collect();
             content.begin_text();
-            content.set_text_matrix([1.0, 0.0, 0.0, -1.0, start, baseline]);
             let mut current: Option<usize> = None;
-            let mut rise = 0.0f32;
-            let mut at = 0usize;
-            while at < glyphs.len() {
-                let file = glyphs[at].file;
+            let mut k = 0usize;
+            while k < main.len() {
+                let first = main[k];
+                let file = glyphs[first].file;
+                let rise = glyphs[first].y_offset;
+                // One show for the glyphs that share a file and a height.
+                let mut end = k;
+                while end < main.len()
+                    && glyphs[main[end]].file == file
+                    && (glyphs[main[end]].y_offset - rise).abs() <= 1e-6
+                {
+                    end += 1;
+                }
                 if current != Some(file) {
                     let name = format!("F{file}");
                     content.set_font(Name(name.as_bytes()), *size);
@@ -679,37 +705,46 @@ fn draw(
                         resources.fonts.push(file);
                     }
                 }
-                let wanted_rise = glyphs[at].y_offset * size;
-                if (wanted_rise - rise).abs() > 1e-4 {
-                    content.set_rise(wanted_rise);
-                    rise = wanted_rise;
-                }
-                // One show for the glyphs that share a file and a rise.
-                let mut end = at;
-                while end < glyphs.len()
-                    && glyphs[end].file == file
-                    && (glyphs[end].y_offset * size - rise).abs() <= 1e-4
-                {
-                    end += 1;
-                }
+                content.set_text_matrix([
+                    1.0,
+                    0.0,
+                    0.0,
+                    -1.0,
+                    start + placed[first] * size,
+                    baseline - rise * size,
+                ]);
                 let mut shown = content.show_positioned();
                 let mut items = shown.items();
-                for glyph in &glyphs[at..end] {
-                    if glyph.x_offset != 0.0 {
-                        items.adjust(-glyph.x_offset * 1000.0);
+                let mut at = placed[first];
+                for &i in &main[k..end] {
+                    let gap = placed[i] - at;
+                    if gap.abs() > 1e-5 {
+                        items.adjust(-gap * 1000.0);
                     }
-                    items.show(Str(&glyph.id.to_be_bytes()));
-                    let after = (glyph.x_offset + glyph.natural - glyph.advance) * 1000.0;
-                    if after.abs() > 1e-3 {
-                        items.adjust(after);
-                    }
+                    items.show(Str(&glyphs[i].id.to_be_bytes()));
+                    at = placed[i] + glyphs[i].natural;
                 }
                 drop(items);
                 drop(shown);
-                at = end;
+                k = end;
             }
             content.end_text();
             content.end_marked_content();
+            // Marks as outlines, in the text's colour.
+            let mut any = false;
+            for (i, glyph) in glyphs.iter().enumerate().filter(|(_, g)| g.mark) {
+                any |= text::outline(
+                    &writer.files,
+                    glyph,
+                    start + placed[i] * size,
+                    baseline - glyph.y_offset * size,
+                    *size,
+                    content,
+                );
+            }
+            if any {
+                content.fill_nonzero();
+            }
             content.restore_state();
         }
     }
