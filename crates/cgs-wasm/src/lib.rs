@@ -551,6 +551,15 @@ pub fn blank_workbook() -> Result<Vec<u8>, JsError> {
     cgs_xlsx::blank::blank_workbook().map_err(|error| JsError::new(&error.to_string()))
 }
 
+/// A PDF of recorded pages. `document` is the JSON `cgs_pdf::Document` describes, and `blob`
+/// holds the font files and pictures it points into.
+#[wasm_bindgen]
+pub fn write_pdf(document: &str, blob: &[u8]) -> Result<Vec<u8>, JsError> {
+    let doc: cgs_pdf::Document =
+        serde_json::from_str(document).map_err(|error| JsError::new(&error.to_string()))?;
+    cgs_pdf::write_pdf(&doc, blob).map_err(|error| JsError::new(&error))
+}
+
 /// The crate version this module was built from.
 #[wasm_bindgen]
 pub fn version() -> String {

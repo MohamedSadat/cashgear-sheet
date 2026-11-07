@@ -116,6 +116,11 @@ const vendored = readdirSync(vendorDir).map((dir) => {
 });
 
 const fontDir = join(root, 'packages/engine-client/src/fonts');
+// The fonts PDFs fall back on, shipped as their authors made them.
+const pdfFontDir = join(root, 'packages/engine-client/src/pdf-fonts');
+const pdfLicence = (name) => [
+  { name, text: readFileSync(join(pdfFontDir, name), 'utf8').trim() },
+];
 const fonts = [
   {
     name: 'Carlito',
@@ -123,6 +128,27 @@ const fonts = [
     licence: 'OFL-1.1',
     home: 'https://github.com/googlefonts/carlito',
     texts: licenceTexts(fontDir),
+  },
+  {
+    name: 'Caladea',
+    version: '',
+    licence: 'OFL-1.1',
+    home: 'https://github.com/huertatipografica/Caladea',
+    texts: pdfLicence('OFL-Caladea.txt'),
+  },
+  {
+    name: 'Liberation Fonts',
+    version: '2.1.5',
+    licence: 'OFL-1.1',
+    home: 'https://github.com/liberationfonts/liberation-fonts',
+    texts: pdfLicence('LICENSE-Liberation.txt'),
+  },
+  {
+    name: 'Noto Sans Arabic',
+    version: '',
+    licence: 'OFL-1.1',
+    home: 'https://github.com/notofonts/arabic',
+    texts: pdfLicence('OFL-Noto.txt'),
   },
 ];
 

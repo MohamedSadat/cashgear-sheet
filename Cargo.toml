@@ -9,6 +9,7 @@ default-members = [
   "crates/cgs-refs",
   "crates/cgs-xlsx",
   "crates/cgs-pivot",
+  "crates/cgs-pdf",
   "crates/cgs-engine",
   "crates/cgs-wasm",
   "crates/cgs-native",

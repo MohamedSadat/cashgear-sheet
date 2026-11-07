@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 cgs-engine.workspace = true
 cgs-calc = { path = "../cgs-calc" }
 cgs-numfmt = { path = "../cgs-numfmt" }
+cgs-pdf = { path = "../cgs-pdf" }
+serde_json = "1"
 cgs-xlsx = { path = "../cgs-xlsx" }
 js-sys = "=0.3.106"
 wasm-bindgen.workspace = true
