@@ -205,7 +205,7 @@ try {
       { encoding: 'utf8', timeout: 600000, windowsHide: true },
     );
     if (run.status !== 0) throw new Error(`${name}: Excel failed: ${run.stderr.slice(0, 300)}`);
-    const seen = JSON.parse(readFileSync(target, 'utf8').replace(/^﻿/, ''));
+    const seen = JSON.parse(readFileSync(target, 'utf8').replace(/^\uFEFF/, ''));
     const differences = [];
     for (const [key, wanted] of Object.entries(excel)) {
       const got = seen.setup?.[key];

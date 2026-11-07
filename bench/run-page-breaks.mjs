@@ -49,7 +49,7 @@ function excels(path, scratch) {
     { encoding: 'utf8', timeout: 600000, windowsHide: true },
   );
   if (run.status !== 0) throw new Error('Excel: ' + run.stderr.slice(0, 300));
-  return JSON.parse(readFileSync(target, 'utf8').replace(/^﻿/, ''));
+  return JSON.parse(readFileSync(target, 'utf8').replace(/^\uFEFF/, ''));
 }
 
 const same = (a, b) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []);
