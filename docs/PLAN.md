@@ -360,6 +360,7 @@ Not chosen on 2026-11-07, and kept for a later plan:
 - Engine upkeep: rebasing the Formualizer fork onto current upstream, upstream PRs, `FORECAST.ETS`, and the 99.5% accuracy target.
 - A native desktop host to pass the ~10M-formula WASM ceiling.
 - Collaboration, only if that changes.
+- The app's own UI in Arabic, with the shell mirrored when it is Arabic (deferred from Phase 11 on 2026-11-08).
 
 Macros are preserved on save but never run.
 

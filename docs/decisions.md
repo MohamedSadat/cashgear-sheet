@@ -560,3 +560,14 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Rows of fonts under 12 points | Excel's own heights, measured for 19 fonts and sizes (Calibri 10 is 12.75 points). Fonts not measured keep size × 1.75 |
 | On paper | Gridlines and headings' lines print black, as Excel prints them. `&D` is Windows' short date with the year in full. A cell's text may hang a quarter of its row below it, so marks a substitute font sets low aren't cut |
 | A cell starting with a number | With a Context reading order it is aligned by its first strong letter but drawn by its first character with a direction, digits reading left to right, as Excel draws "42 رقم" |
+
+## 2026-11-08: Phase 11
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Translating the app's own UI into Arabic | Later. This phase mirrors sheets only, and the shell stays English and left to right. Translation, with the shell mirrored in Arabic, goes under Later in `PLAN.md` |
+| The direction of new sheets | Left to right, with a Default direction setting as in Excel's Options › Advanced. Page Layout › Sheet Right-to-Left flips one sheet |
+| Charts, pictures, shapes, notes and filter buttons on right-to-left sheets | Placed from the right as Excel places them, their contents not flipped, and their anchors saved unchanged |
+| How exact right-to-left page breaks must be | Phase 10's 36 generated books, set right to left, have exactly Excel's breaks and page counts. Public files holding right-to-left sheets are compared too, against Phase 10's accepted bar of about 91% |
