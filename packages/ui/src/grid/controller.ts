@@ -38,6 +38,7 @@ import {
   tilesCovering,
   type CellRange,
 } from './geometry';
+import { mirroredContext } from './mirror';
 
 const SCROLLBAR_PX = 14;
 const HEADER_HEIGHT_PX = 20;
@@ -191,7 +192,14 @@ const defaultRowHeightFallback = 20;
  * worker draws them from the engine's data, so nothing here waits on the engine or sees a cell.
  */
 export class GridController {
-  private readonly context: CanvasRenderingContext2D;
+  private readonly plain: CanvasRenderingContext2D;
+  private readonly mirrored: CanvasRenderingContext2D;
+  /**
+   * Sheet Right-to-Left. Everything here works in left-to-right canvas positions; drawing goes
+   * through a mirrored context and pointer positions are mirrored on the way in, so column A
+   * shows on the right and every pointer and keyboard path stays one path.
+   */
+  private rtl = false;
   private readonly cache: TileCache;
   private palette: TilePalette;
   private colors: GridColors;
@@ -249,7 +257,8 @@ export class GridController {
   ) {
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('This browser has no 2D canvas.');
-    this.context = context;
+    this.plain = context;
+    this.mirrored = mirroredContext(context, () => this.width);
     this.palette = palette;
     this.colors = colors;
     canvas.dataset.background = palette.background;
@@ -274,10 +283,34 @@ export class GridController {
     return (this.zoom / 100) * this.dpr;
   }
 
+  /** What the grid draws with: mirrored on a right-to-left sheet. */
+  private get context() {
+    return this.rtl ? this.mirrored : this.plain;
+  }
+
+  /** Whether the sheet showing is right to left. */
+  get rightToLeft() {
+    return this.rtl;
+  }
+
+  /** A canvas x as the grid's own left-to-right positions have it. Its own inverse. */
+  private flipX(x: number) {
+    return this.rtl ? this.width - x : x;
+  }
+
+  /** A box in left-to-right canvas positions, where it shows. */
+  private shownBox<T extends { x: number; width: number }>(box: T): T {
+    return this.rtl ? { ...box, x: this.width - box.x - box.width } : box;
+  }
+
   private tileStyle() {
     return {
       scale: this.scale,
-      palette: { ...this.palette, showGrid: this.layout?.showGrid ?? true },
+      palette: {
+        ...this.palette,
+        showGrid: this.layout?.showGrid ?? true,
+        rightToLeft: this.rtl,
+      },
     };
   }
 
@@ -316,6 +349,7 @@ export class GridController {
     this.remembered.clear();
     this.sheet = -1;
     this.layout = null;
+    this.rtl = false;
     this.drawings = [];
     this.merges = new Uint32Array();
     this.schedule();
@@ -329,6 +363,7 @@ export class GridController {
     const kept = this.remembered.get(sheet);
     this.sheet = sheet;
     this.layout = layout;
+    this.rtl = layout.rightToLeft;
     this.drawings = drawings;
     this.merges = layout.merges;
     this.zoom = sameSheet || kept ? (kept?.zoom ?? this.zoom) : layout.zoom;
@@ -595,7 +630,9 @@ export class GridController {
         ? view.y + this.rows.offset(top) - this.rows.offset(frozen.firstRow)
         : pane.y + this.rows.offset(top) - this.scrollY;
     const { dpr } = this;
-    element.style.left = x / dpr + 'px';
+    // On a right-to-left sheet the editor keeps to its cell's right edge and grows to the left.
+    element.style.left = (this.rtl ? this.width - x : x) / dpr + 'px';
+    element.style.transform = this.rtl ? 'translateX(-100%)' : '';
     element.style.top = y / dpr + 'px';
     element.style.minWidth = (this.cols.offset(right + 1) - this.cols.offset(left)) / dpr + 'px';
     element.style.minHeight = (this.rows.offset(bottom + 1) - this.rows.offset(top)) / dpr + 'px';
@@ -680,7 +717,7 @@ export class GridController {
       ? view.y + this.rows.offset(row) - this.rows.offset(frozen.firstRow)
       : pane.y + this.rows.offset(row) - this.scrollY;
     return {
-      x: (x + this.cols.size(col) / 2) / this.dpr,
+      x: this.flipX(x + this.cols.size(col) / 2) / this.dpr,
       y: (y + this.rows.size(row) / 2) / this.dpr,
     };
   }
@@ -1026,16 +1063,19 @@ export class GridController {
       if (x > pane.x + pane.width || y > pane.y + pane.height) continue;
       if (x + width < pane.x || y + height < pane.y) continue;
       if (this.drawingListener && drawnByLayer(box)) {
+        // Placed from the right on a right-to-left sheet, as Excel places them.
+        const clip = this.shownBox(pane);
+        const shown = this.shownBox({ x, width });
         this.frames.push({
           index: box.index,
           pane: paneIndex,
           clip: {
-            x: pane.x / dpr,
+            x: clip.x / dpr,
             y: pane.y / dpr,
             width: pane.width / dpr,
             height: pane.height / dpr,
           },
-          x: x / dpr,
+          x: shown.x / dpr,
           y: y / dpr,
           width: width / dpr,
           height: height / dpr,
@@ -1091,7 +1131,7 @@ export class GridController {
         this.rows.offset(row) < candidate.sheetY + candidate.height,
     );
     if (!pane) return null;
-    const box = this.cellRect(row, col, pane);
+    const box = this.shownBox(this.cellRect(row, col, pane));
     const bounds = this.canvas.getBoundingClientRect();
     return {
       left: bounds.left + box.x / this.dpr,
@@ -1138,10 +1178,11 @@ export class GridController {
       for (const button of this.buttons) {
         const box = this.buttonBox(button, pane);
         if (x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height) {
+          const shown = this.shownBox(box);
           return {
             button,
             box: {
-              left: bounds.left + box.x / this.dpr,
+              left: bounds.left + shown.x / this.dpr,
               top: bounds.top + box.y / this.dpr,
               width: box.width / this.dpr,
               height: box.height / this.dpr,
@@ -1419,7 +1460,8 @@ export class GridController {
       return;
     }
     const unit = event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? this.height : 1;
-    let dx = event.deltaX * unit * this.dpr;
+    // A sideways swipe moves the sheet the way it shows.
+    let dx = event.deltaX * unit * this.dpr * (this.rtl ? -1 : 1);
     let dy = event.deltaY * unit * this.dpr;
     if (event.shiftKey && !dx) {
       dx = dy;
@@ -1446,7 +1488,7 @@ export class GridController {
   private pointerPosition(event: PointerEvent) {
     const bounds = this.canvas.getBoundingClientRect();
     return {
-      x: (event.clientX - bounds.left) * this.dpr,
+      x: this.flipX((event.clientX - bounds.left) * this.dpr),
       y: (event.clientY - bounds.top) * this.dpr,
     };
   }
@@ -1534,7 +1576,7 @@ export class GridController {
 
   private readonly onDoubleClick = (event: MouseEvent) => {
     const bounds = this.canvas.getBoundingClientRect();
-    const x = (event.clientX - bounds.left) * this.dpr;
+    const x = this.flipX((event.clientX - bounds.left) * this.dpr);
     const y = (event.clientY - bounds.top) * this.dpr;
     if (this.onFillHandle(x, y)) {
       this.events.onFill?.(this.range, null);
@@ -1833,7 +1875,7 @@ export class GridController {
 
   private readonly onContextMenu = (event: MouseEvent) => {
     const bounds = this.canvas.getBoundingClientRect();
-    const x = (event.clientX - bounds.left) * this.dpr;
+    const x = this.flipX((event.clientX - bounds.left) * this.dpr);
     const y = (event.clientY - bounds.top) * this.dpr;
     const view = this.view();
     const bar = this.scrollbarSize();
@@ -1913,6 +1955,12 @@ export class GridController {
     this.dragging = null;
   };
 
+  /** Columns an arrow key moves by, as it points on screen. */
+  columnsFor(key: string) {
+    const cols = key === 'ArrowRight' ? 1 : key === 'ArrowLeft' ? -1 : 0;
+    return this.rtl ? -cols : cols;
+  }
+
   /** One line from this one, skipping hidden lines, or leaving a merged area. */
   private stepped(axis: Axis, line: number, direction: number, maximum: number) {
     const next = line + direction;
@@ -1931,7 +1979,7 @@ export class GridController {
     if ((event.ctrlKey || event.metaKey) && event.key.startsWith('Arrow')) {
       event.preventDefault();
       const rows = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
-      const cols = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+      const cols = this.columnsFor(event.key);
       this.events.onJump?.(rows, cols, event.shiftKey);
       return;
     }
@@ -1968,11 +2016,13 @@ export class GridController {
         row = this.stepped(this.rows, merge ? merge.top : focusRow, -1, MAX_ROWS);
         break;
       case 'ArrowRight':
-        col = this.stepped(this.cols, merge ? merge.right : focusCol, 1, MAX_COLS);
+      case 'ArrowLeft': {
+        // An arrow goes the way it points, which is towards column A on a right-to-left sheet.
+        const step = this.columnsFor(event.key);
+        const from = merge ? (step > 0 ? merge.right : merge.left) : focusCol;
+        col = this.stepped(this.cols, from, step, MAX_COLS);
         break;
-      case 'ArrowLeft':
-        col = this.stepped(this.cols, merge ? merge.left : focusCol, -1, MAX_COLS);
-        break;
+      }
       case 'Tab':
         event.preventDefault();
         this.moveBy(0, event.shiftKey ? -1 : 1);

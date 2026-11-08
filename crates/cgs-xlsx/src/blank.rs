@@ -16,6 +16,17 @@ fn with_declaration(body: String) -> Vec<u8> {
 
 /// The bytes of a workbook with one empty sheet.
 pub fn blank_workbook() -> io::Result<Vec<u8>> {
+    blank_workbook_directed(false)
+}
+
+/// The bytes of a workbook with one empty sheet, right to left if the default direction says so,
+/// as Excel writes it.
+pub fn blank_workbook_directed(right_to_left: bool) -> io::Result<Vec<u8>> {
+    let direction = if right_to_left {
+        " rightToLeft=\"1\""
+    } else {
+        ""
+    };
     let content_types = with_declaration("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>".to_string());
     let package_rels = with_declaration(format!(
         "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"{RELS}/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>"
@@ -27,7 +38,7 @@ pub fn blank_workbook() -> io::Result<Vec<u8>> {
         "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"{RELS}/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId2\" Type=\"{RELS}/styles\" Target=\"styles.xml\"/></Relationships>"
     ));
     let sheet = with_declaration(format!(
-        "<worksheet xmlns=\"{MAIN}\"><dimension ref=\"A1\"/><sheetViews><sheetView tabSelected=\"1\" workbookViewId=\"0\"/></sheetViews><sheetFormatPr defaultRowHeight=\"15\"/><sheetData/></worksheet>"
+        "<worksheet xmlns=\"{MAIN}\"><dimension ref=\"A1\"/><sheetViews><sheetView{direction} tabSelected=\"1\" workbookViewId=\"0\"/></sheetViews><sheetFormatPr defaultRowHeight=\"15\"/><sheetData/></worksheet>"
     ));
     let styles = minimal_styles();
     write_new(&[
@@ -61,5 +72,17 @@ mod tests {
         assert_eq!(book.sheets.len(), 1);
         assert_eq!(book.sheets[0].name, "Sheet1");
         assert_eq!(book.styles.xfs.len(), 1);
+    }
+
+    #[test]
+    fn a_blank_workbook_can_start_right_to_left() {
+        let bytes = blank_workbook_directed(true).unwrap();
+        let package = Package::open(Rc::new(bytes)).unwrap();
+        let sheet = package.read("xl/worksheets/sheet1.xml").unwrap();
+        let text = String::from_utf8_lossy(&sheet);
+        assert!(
+            text.contains(r#"<sheetView rightToLeft="1" tabSelected="1" workbookViewId="0"/>"#),
+            "{text}"
+        );
     }
 }

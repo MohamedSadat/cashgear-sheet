@@ -187,7 +187,8 @@ function lineOf(pieces: RichPiece[]): RichLine {
 
 /**
  * Cell edges given instead of worked out from the tile's sizes, as pages draw them: each axis in
- * device units, with how many of those a pixel past the tile's edge takes.
+ * device units, with how many of those a pixel past the tile's edge takes. On a right-to-left
+ * sheet `xs` runs from the tile's last column on the left to its first on the right.
  */
 export interface TileEdges {
   xs: ArrayLike<number>;
@@ -196,12 +197,30 @@ export interface TileEdges {
   perPixelY: number;
 }
 
-/** Everything drawing one tile needs. It lives as long as the drawing does. */
+/** A tile's column sizes as they show from the left: reversed on a right-to-left sheet. */
+export function visualColPx(block: ViewBlock, rightToLeft: boolean): ArrayLike<number> {
+  return rightToLeft ? Array.from(block.colPx).reverse() : block.colPx;
+}
+
+/**
+ * Everything drawing one tile needs. It lives as long as the drawing does.
+ *
+ * Columns here are counted as they show, from the left. On a right-to-left sheet that is from the
+ * tile's last column, so text lays out and overflows by where cells are on screen, as Excel's
+ * does: alignment isn't mirrored, but cells, borders, gridlines, data bars and notes' corners are.
+ * Each cell draws its own right line, the line after it, at its right on screen in a left-to-right
+ * sheet and at its left in a right-to-left one, so no line is needed from another tile.
+ */
 class Painter {
   private fonts = new Map<number, FontMetrics>();
   private currentFont = '';
   readonly xs: ArrayLike<number>;
   readonly ys: ArrayLike<number>;
+  private readonly rtl: boolean;
+  private readonly colPx: ArrayLike<number>;
+  /** Device pixels a cell gives its gridline on its left and on its right. */
+  private readonly gridLeft: number;
+  private readonly gridRight: number;
 
   constructor(
     private readonly context: TileContext,
@@ -210,14 +229,23 @@ class Painter {
     private readonly scale: number,
     private readonly edges?: TileEdges,
   ) {
-    this.xs = edges?.xs ?? tileEdges(block.colPx, scale);
+    this.rtl = palette.rightToLeft === true;
+    this.colPx = visualColPx(block, this.rtl);
+    this.xs = edges?.xs ?? tileEdges(this.colPx, scale);
     this.ys = edges?.ys ?? tileEdges(block.rowPx, scale);
+    this.gridLeft = this.rtl ? 1 : 0;
+    this.gridRight = this.rtl ? 0 : 1;
     context.textBaseline = 'alphabetic';
     context.direction = 'ltr';
   }
 
+  /** The block's own column for a column on screen. */
+  private logical(col: number) {
+    return this.rtl ? this.block.cols - 1 - col : col;
+  }
+
   private cell(row: number, col: number) {
-    const at = (row * this.block.cols + col) * 6;
+    const at = (row * this.block.cols + this.logical(col)) * 6;
     const { cells } = this.block;
     const packed = cells[at + 4]!;
     return {
@@ -294,7 +322,7 @@ class Painter {
         } else if (palette.showGrid !== false) {
           context.fillStyle = palette.gridline;
           if (!(flags & CELL_NO_RIGHT_GRID))
-            context.fillRect(left + width - pixel, top, pixel, height);
+            context.fillRect(this.rtl ? left : left + width - pixel, top, pixel, height);
           if (!(flags & CELL_NO_BOTTOM_GRID))
             context.fillRect(left, top + height - pixel, width, pixel);
         }
@@ -308,7 +336,7 @@ class Painter {
     const pixel = Math.max(1, Math.round(this.scale));
     for (const mark of block.marks) {
       const row = Math.floor(mark.cell / block.cols);
-      const col = mark.cell % block.cols;
+      const col = this.logical(mark.cell % block.cols);
       const left = xs[col]!;
       const top = ys[row]!;
       const width = xs[col + 1]! - left;
@@ -317,13 +345,20 @@ class Painter {
       if (!over && mark.kind === MARK_BAR) {
         const inset = 2 * pixel;
         const room = width - 2 * inset;
-        const from = left + inset + Math.round(mark.start * room);
-        const to = left + inset + Math.round(mark.end * room);
+        // A right-to-left sheet's bars grow from the right, as Excel draws them.
+        const edge = (share: number) =>
+          this.rtl
+            ? left + width - inset - Math.round(share * room)
+            : left + inset + Math.round(share * room);
+        const from = this.rtl ? edge(mark.end) : edge(mark.start);
+        const to = this.rtl ? edge(mark.start) : edge(mark.end);
         const barTop = top + inset;
         const barHeight = Math.max(1, height - 2 * inset - pixel);
         const color = cssColor(mark.color);
         if (mark.flags & BAR_GRADIENT && to > from) {
-          const gradient = context.createLinearGradient(from, 0, to, 0);
+          const gradient = this.rtl
+            ? context.createLinearGradient(to, 0, from, 0)
+            : context.createLinearGradient(from, 0, to, 0);
           gradient.addColorStop(0, color);
           gradient.addColorStop(1, cssColor((mark.color & 0xffffff00) | 0x18));
           context.fillStyle = gradient;
@@ -342,7 +377,7 @@ class Painter {
           );
         }
         if (mark.flags & BAR_AXIS) {
-          const axis = left + inset + Math.round(mark.start * room);
+          const axis = this.rtl ? edge(mark.start) - pixel : edge(mark.start);
           context.fillStyle = cssColor(mark.second || 0x000000ff);
           for (let y = top; y < top + height; y += 3 * pixel)
             context.fillRect(axis, y, pixel, pixel);
@@ -353,10 +388,13 @@ class Painter {
       } else if (over && (mark.kind === MARK_NOTE || mark.kind === MARK_THREAD)) {
         const size = 5 * pixel;
         context.fillStyle = mark.kind === MARK_NOTE ? '#d00000' : '#7b45b8';
+        // In the cell's top corner after its text: its left on a right-to-left sheet.
+        const corner = this.rtl ? left : left + width;
+        const inward = this.rtl ? size : -size;
         context.beginPath();
-        context.moveTo(left + width - size, top);
-        context.lineTo(left + width, top);
-        context.lineTo(left + width, top + size);
+        context.moveTo(corner + inward, top);
+        context.lineTo(corner, top);
+        context.lineTo(corner, top + size);
         context.closePath();
         context.fill();
       } else if (over && mark.kind === MARK_INVALID) {
@@ -409,9 +447,10 @@ class Painter {
     const height = ys[row + 1]! - top - pixel;
     if (height <= 0) return;
     for (let col = fromCol; col < toCol; col++) {
-      const { fill } = this.cell(row, col);
+      // The line between two cells is drawn inside the one it belongs to.
+      const { fill } = this.cell(row, this.rtl ? col + 1 : col);
       context.fillStyle = hasAlpha(fill) ? cssColor(fill) : palette.background;
-      context.fillRect(xs[col + 1]! - pixel, top, pixel, height);
+      context.fillRect(this.rtl ? xs[col + 1]! : xs[col + 1]! - pixel, top, pixel, height);
     }
   }
 
@@ -424,7 +463,7 @@ class Painter {
         const { textOffset, textLength, flags, style, color, fillAt } = this.cell(row, col);
         if (!textLength && !(flags & CELL_HASHES)) continue;
         this.drawText(
-          cellText(block, row, col),
+          cellText(block, row, this.logical(col)),
           { row, col, flags, style, color, fillAt, runs: block.runs.get(textOffset) },
           xs[col]!,
           ys[row]!,
@@ -466,9 +505,11 @@ class Painter {
   drawExtras() {
     const { block, xs, ys, context } = this;
     for (const extra of block.extras) {
-      const left = this.mapped(extra.x, block.colPx, xs);
+      // The extra's place from the tile's left on screen.
+      const x = this.rtl ? sum(block.colPx) - extra.x - extra.width : extra.x;
+      const left = this.mapped(x, this.colPx, xs);
       const top = this.mapped(extra.y, block.rowPx, ys);
-      const right = this.mapped(extra.x + extra.width, block.colPx, xs);
+      const right = this.mapped(x + extra.width, this.colPx, xs);
       const bottom = this.mapped(extra.y + extra.height, block.rowPx, ys);
       if (extra.kind === 1) {
         this.drawText(
@@ -500,7 +541,7 @@ class Painter {
       if (!rich) this.fontFor(extra.style, style);
       const width = rich ? rich.width : this.width(line);
       const inset = devicePx(CELL_INSET, this.scale);
-      const fromLeft = extra.x < 0;
+      const fromLeft = x < 0;
       const start = this.textStart(style, left, right, width, inset);
       const end = start + width;
       if (fromLeft ? end <= 0 : start >= xs[block.cols]!) continue;
@@ -518,7 +559,7 @@ class Painter {
       } else {
         let col = block.cols - 1;
         while (col >= 0 && this.free(rowIndex, col) && xs[col + 1]! > start) col--;
-        clipLeft = xs[col + 1]!;
+        clipLeft = xs[col + 1]! + (col >= 0 ? this.gridLeft : 0);
         this.clearGrid(rowIndex, col + 1, block.cols - 1);
       }
       if (clipRight <= clipLeft) continue;
@@ -632,7 +673,7 @@ class Painter {
     else y = top;
     context.save();
     context.beginPath();
-    context.rect(left, top, right - left - 1, this.hang(top, bottom));
+    context.rect(left + this.gridLeft, top, right - left - 1, this.hang(top, bottom));
     context.clip();
     for (const line of lines) {
       const start = this.textStart(style, left, right, line.width, inset);
@@ -657,13 +698,13 @@ class Painter {
     const indent = devicePx(style.indent * INDENT_PX, this.scale);
     switch (style.horizontal) {
       case ALIGN_RIGHT:
-        return right - inset - indent - width - 1;
+        return right - inset - indent - width - this.gridRight;
       case ALIGN_CENTER:
       case ALIGN_CENTER_CONTINUOUS:
       case ALIGN_DISTRIBUTED:
         return (left + right - width) / 2;
       default:
-        return left + inset + indent;
+        return left + inset + indent + this.gridLeft;
     }
   }
 
@@ -738,17 +779,21 @@ class Painter {
     const style = this.styleOf(cell.style);
     let right = left + width;
     const bottom = top + height;
-    // Centred across a selection: over the empty cells after it that say the same.
+    // Centred across a selection: over the empty cells after it that say the same, which are
+    // to its left on a right-to-left sheet.
     if (style.horizontal === ALIGN_CENTER_CONTINUOUS && cell.row >= 0) {
+      const step = this.rtl ? -1 : 1;
       let last = cell.col;
       while (
-        last + 1 < block.cols &&
-        this.free(cell.row, last + 1) &&
-        this.styleOf(this.cell(cell.row, last + 1).style).horizontal === ALIGN_CENTER_CONTINUOUS
+        last + step >= 0 &&
+        last + step < block.cols &&
+        this.free(cell.row, last + step) &&
+        this.styleOf(this.cell(cell.row, last + step).style).horizontal === ALIGN_CENTER_CONTINUOUS
       ) {
-        last++;
+        last += step;
       }
-      right = xs[last + 1]!;
+      if (this.rtl) left = xs[last]!;
+      else right = xs[last + 1]!;
     }
     const inset = devicePx(CELL_INSET, scale);
     const indent = devicePx(style.indent * INDENT_PX, scale);
@@ -827,8 +872,8 @@ class Painter {
     if (!rich) metrics = this.fontFor(cell.style, style, shrink);
     const measured = rich ? rich.width : this.width(line);
     const start = this.textStart(style, left, right, measured, inset);
-    let clipLeft = left;
-    let clipRight = right - 1;
+    let clipLeft = left + this.gridLeft;
+    let clipRight = right - this.gridRight;
     const overflowEnd = left + width;
     const canOverflow =
       kind === KIND_TEXT && cell.row >= 0 && !cell.fillAt && style.horizontal !== ALIGN_FILL;
@@ -840,9 +885,9 @@ class Painter {
       }
       let first = cell.col;
       while (first > 0 && xs[first]! > start && this.free(cell.row, first - 1)) first--;
-      clipLeft = xs[first]!;
+      clipLeft = first === 0 ? xs[0]! : xs[first]! + this.gridLeft;
       // Text reaching the tile's edge carries on in the next tile.
-      clipRight = last === block.cols - 1 ? xs[block.cols]! : xs[last + 1]! - 1;
+      clipRight = last === block.cols - 1 ? xs[block.cols]! : xs[last + 1]! - this.gridRight;
       if (first < last) this.clearGrid(cell.row, first, last);
     }
     context.save();
@@ -933,7 +978,7 @@ class Painter {
     }
     context.save();
     context.beginPath();
-    context.rect(left, top, right - left - 1, this.hang(top, bottom));
+    context.rect(left + this.gridLeft, top, right - left - 1, this.hang(top, bottom));
     context.clip();
     for (const line of lines) {
       const width = this.width(line);
@@ -976,7 +1021,7 @@ class Painter {
     };
     context.save();
     context.beginPath();
-    context.rect(left, top, width - 1, this.hang(top, top + height));
+    context.rect(left + this.gridLeft, top, width - 1, this.hang(top, top + height));
     context.clip();
     context.fillStyle = hasAlpha(cell.color) ? cssColor(cell.color) : palette.text;
     context.direction = cell.flags & CELL_RTL ? 'rtl' : 'ltr';
@@ -991,7 +1036,9 @@ class Painter {
         baseline += lineHeight;
       }
     } else {
-      const angle = style.rotation <= 90 ? style.rotation : 90 - style.rotation;
+      // A right-to-left sheet turns text the other way, as Excel does.
+      const turned = style.rotation <= 90 ? style.rotation : 90 - style.rotation;
+      const angle = this.rtl ? -turned : turned;
       const radians = (angle * Math.PI) / 180;
       const length = this.width(line);
       const { x, y } = middle(
@@ -1019,7 +1066,9 @@ class Painter {
         const { style: index } = this.cell(row, col);
         const style = this.styleOf(index);
         if (style.rightLine) {
-          this.drawLine(style.rightLine, style.rightColor, right, top, right, bottom, true);
+          // The line after the cell, which is on its left on a right-to-left sheet.
+          const x = this.rtl ? left : right;
+          this.drawLine(style.rightLine, style.rightColor, x, top, x, bottom, true);
         }
         if (style.bottomLine) {
           this.drawLine(style.bottomLine, style.bottomColor, left, bottom, right, bottom, false);
@@ -1029,7 +1078,10 @@ class Painter {
     }
   }
 
-  /** A line along a cell's right or bottom edge, kept inside the cell so tiles can't cut it. */
+  /**
+   * A line along a cell's right or bottom edge, kept inside the cell so tiles can't cut it. On a
+   * right-to-left sheet a vertical line is on the cell's left edge, inside it to its right.
+   */
   private drawLine(
     kind: number,
     color: number,
@@ -1047,11 +1099,13 @@ class Painter {
     if (kind === LINE_SLANT_DASH_DOT) weight = pixel * 2;
     if (kind === LINE_THICK) weight = pixel * 3;
     const css = hasAlpha(color) ? cssColor(color) : palette.text;
+    // Where a vertical line of this weight starts, inside its cell.
+    const inside = (size: number) => (this.rtl ? x1 : x1 - size);
     if (kind === LINE_DOUBLE) {
       context.fillStyle = css;
       if (vertical) {
-        context.fillRect(x1 - pixel, y1, pixel, y2 - y1);
-        context.fillRect(x1 - pixel * 3, y1, pixel, y2 - y1);
+        context.fillRect(inside(pixel), y1, pixel, y2 - y1);
+        context.fillRect(this.rtl ? x1 + pixel * 2 : x1 - pixel * 3, y1, pixel, y2 - y1);
       } else {
         context.fillRect(x1, y1 - pixel, x2 - x1, pixel);
         context.fillRect(x1, y1 - pixel * 3, x2 - x1, pixel);
@@ -1061,7 +1115,7 @@ class Painter {
     const dash = lineDash(kind, pixel);
     if (!dash) {
       context.fillStyle = css;
-      if (vertical) context.fillRect(x1 - weight, y1, weight, y2 - y1);
+      if (vertical) context.fillRect(inside(weight), y1, weight, y2 - y1);
       else context.fillRect(x1, y1 - weight, x2 - x1, weight);
       return;
     }
@@ -1072,8 +1126,9 @@ class Painter {
     context.beginPath();
     const offset = weight / 2;
     if (vertical) {
-      context.moveTo(x1 - offset, y1);
-      context.lineTo(x2 - offset, y2);
+      const x = this.rtl ? x1 + offset : x1 - offset;
+      context.moveTo(x, y1);
+      context.lineTo(x, y2);
     } else {
       context.moveTo(x1, y1 - offset);
       context.lineTo(x2, y2 - offset);
@@ -1103,6 +1158,12 @@ class Painter {
     context.stroke();
     context.restore();
   }
+}
+
+function sum(values: ArrayLike<number>) {
+  let total = 0;
+  for (let index = 0; index < values.length; index++) total += values[index]!;
+  return total;
 }
 
 function lineDash(kind: number, pixel: number): number[] | null {

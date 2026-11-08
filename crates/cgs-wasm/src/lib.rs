@@ -545,10 +545,11 @@ impl Default for Engine {
     }
 }
 
-/// The bytes of a new blank workbook.
+/// The bytes of a new blank workbook, whose sheet is right to left if `right_to_left`.
 #[wasm_bindgen]
-pub fn blank_workbook() -> Result<Vec<u8>, JsError> {
-    cgs_xlsx::blank::blank_workbook().map_err(|error| JsError::new(&error.to_string()))
+pub fn blank_workbook(right_to_left: bool) -> Result<Vec<u8>, JsError> {
+    cgs_xlsx::blank::blank_workbook_directed(right_to_left)
+        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// A PDF of recorded pages. `document` is the JSON `cgs_pdf::Document` describes, and `blob`

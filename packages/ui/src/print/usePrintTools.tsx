@@ -40,7 +40,8 @@ export interface PrintToolsHost {
   locale: string;
   showGrid: boolean;
   showHeadings: boolean;
-  setView: (flags: { grid?: boolean; headings?: boolean }) => void;
+  rightToLeft: boolean;
+  setView: (flags: { grid?: boolean; headings?: boolean; rightToLeft?: boolean }) => void;
   run: (command: Command) => Promise<Applied>;
   notice: (message: string | null) => void;
 }
@@ -173,9 +174,10 @@ export function usePrintTools(host: PrintToolsHost) {
       setup,
       showGrid: host.showGrid,
       showHeadings: host.showHeadings,
+      rightToLeft: host.rightToLeft,
       canBreak,
     }),
-    [host.hasBook, setup, host.showGrid, host.showHeadings, canBreak],
+    [host.hasBook, setup, host.showGrid, host.showHeadings, host.rightToLeft, canBreak],
   );
 
   /**

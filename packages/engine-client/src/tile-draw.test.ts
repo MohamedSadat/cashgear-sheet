@@ -259,3 +259,69 @@ describe('drawTile', () => {
     expect(rects).toContainEqual(['#0000ffff', 0, 18, 64, 2]);
   });
 });
+
+describe('drawTile on a right-to-left sheet', () => {
+  const rtl = { ...palette, rightToLeft: true };
+  function drawRtl(tile: Parameters<typeof encodeTile>[0]) {
+    const recording = recorder();
+    drawTile(recording.context, decodeViewBlock(encodeTile(tile)), rtl, 1);
+    return recording;
+  }
+
+  it('puts the first column on the right, with gridlines on each cell’s left', () => {
+    const { rects } = drawRtl({
+      rowPx: [20],
+      colPx: [64, 32],
+      cells: [{ fill: 0xff0000ff }, {}],
+    });
+    expect(rects).toContainEqual(['#ff0000ff', 32, 0, 64, 20]);
+    // The second column, on the left, has its line on its own left edge.
+    expect(rects).toContainEqual(['#dddddd', 0, 0, 1, 20]);
+    expect(rects).not.toContainEqual(['#dddddd', 31, 0, 1, 20]);
+  });
+
+  it('keeps alignment as it is, as Excel does', () => {
+    const { texts } = drawRtl({
+      rowPx: [20],
+      colPx: [100, 100],
+      cells: [{ text: 'left' }, { text: 'end', style: 1 }],
+      styles: [{ horizontal: 0 }, { horizontal: 2 }],
+    });
+    // Column A is on the right: its text starts at its own left edge.
+    const at = (text: string) => texts.find((drawn) => drawn.text === text)!.x;
+    expect(at('left')).toBe(100 + 2 + 1);
+    expect(at('end')).toBe(100 - 2 - 18);
+  });
+
+  it('lets text aligned left run on into earlier columns, to its right', () => {
+    const { clips, rects } = drawRtl({
+      rowPx: [20],
+      colPx: [40, 40, 40],
+      cells: [{}, { text: 'a long piece of text' }, {}],
+    });
+    // B is in the middle; the text runs right through A to the tile's edge.
+    expect(clips).toContainEqual([41, 0, 79, 20]);
+    // The line between B and A, which is A's, is painted over.
+    expect(rects).toContainEqual(['#ffffff', 80, 0, 1, 19]);
+  });
+
+  it('draws a cell’s right border on its left, and a note’s corner at its top left', () => {
+    const { rects } = drawRtl({
+      rowPx: [20],
+      colPx: [64, 64],
+      cells: [{ style: 1 }, {}],
+      styles: [{}, { rightLine: LINE_THIN, rightColor: 0x00ff00ff }],
+    });
+    expect(rects).toContainEqual(['#00ff00ff', 64, 0, 1, 20]);
+  });
+
+  it('places extras from the right', () => {
+    const { texts } = drawRtl({
+      rowPx: [20, 20],
+      colPx: [64, 64, 64],
+      extras: [{ kind: EXTRA_MERGE, x: 0, y: 0, width: 128, height: 40, text: 'mid', style: 0 }],
+      styles: [{ horizontal: 1, vertical: 1 }],
+    });
+    expect(texts[0]!.x).toBe(64 + (128 - 18) / 2);
+  });
+});

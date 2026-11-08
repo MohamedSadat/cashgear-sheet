@@ -9,6 +9,8 @@ export interface PageLayoutState {
   setup: PageSetupInfo | null;
   showGrid: boolean;
   showHeadings: boolean;
+  /** Sheet Right-to-Left. */
+  rightToLeft: boolean;
   /** Whether the active cell is past the first row and column, where a break can go. */
   canBreak: boolean;
 }
@@ -18,7 +20,7 @@ export interface PageLayoutActions {
   openPageSetup(tab?: PageSetupTab): void;
   printArea(action: 'set' | 'add' | 'clear'): void;
   pageBreak(action: 'insert' | 'remove' | 'reset'): void;
-  setView(flags: { grid?: boolean; headings?: boolean }): void;
+  setView(flags: { grid?: boolean; headings?: boolean; rightToLeft?: boolean }): void;
 }
 
 export type PageSetupTab = 'page' | 'margins' | 'header' | 'sheet';
@@ -292,6 +294,16 @@ export function pageLayoutTab(state: PageLayoutState, actions: PageLayoutActions
         onLauncherClick: () => actions.openPageSetup('sheet'),
         launcherLabel: 'Page Setup',
         items: [
+          {
+            // Where Excel 2016 has it once a right-to-left language is on.
+            name: 'sheet-rtl',
+            text: 'Sheet Right-to-Left',
+            icon: 'align-right',
+            size: 'large',
+            disabled: !state.hasBook,
+            checked: state.rightToLeft,
+            onCheckedChange: (on) => actions.setView({ rightToLeft: on }),
+          },
           {
             name: 'grid-view',
             text: 'Gridlines: View',

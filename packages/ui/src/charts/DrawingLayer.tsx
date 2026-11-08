@@ -56,6 +56,8 @@ interface Drag {
   index: number;
   handle: Handle | null;
   startX: number;
+  /** On a right-to-left sheet, where the pointer moving right moves the drawing left in the sheet. */
+  mirrored?: boolean;
   startY: number;
   start: DrawingPlace;
   zoom: number;
@@ -64,6 +66,11 @@ interface Drag {
 }
 
 /** Where a drag leaves a drawing. Corners keep a picture's proportions with Shift, as in Excel. */
+/** The handle at the other side, for a right-to-left sheet. */
+function mirroredHandle(handle: Handle): Handle {
+  return handle.replace(/[ew]/, (side) => (side === 'e' ? 'w' : 'e')) as Handle;
+}
+
 export function dragged(drag: Drag, dx: number, dy: number, shift: boolean): DrawingPlace {
   const { start, handle } = drag;
   const zx = dx / drag.zoom;
@@ -366,9 +373,12 @@ export function DrawingLayer(props: DrawingLayerProps) {
     if (!box || !frame) return;
     if (latest.current.selected !== index)
       latest.current.onSelect(index, handle ? null : { kind: 'chartArea' });
+    // On a right-to-left sheet a handle on the right is the drawing's left edge in the sheet.
+    const mirrored = controller?.rightToLeft ?? false;
     drag.current = {
       index,
-      handle,
+      handle: mirrored && handle ? mirroredHandle(handle) : handle,
+      mirrored,
       startX: event.clientX,
       startY: event.clientY,
       start: { x: box.x, y: box.y, width: box.width, height: box.height },
@@ -383,7 +393,7 @@ export function DrawingLayer(props: DrawingLayerProps) {
   const moveDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     const active = drag.current;
     if (!active) return;
-    const dx = event.clientX - active.startX;
+    const dx = (event.clientX - active.startX) * (active.mirrored ? -1 : 1);
     const dy = event.clientY - active.startY;
     if (!active.moved && Math.hypot(dx, dy) < 3) return;
     active.moved = true;
@@ -398,7 +408,7 @@ export function DrawingLayer(props: DrawingLayerProps) {
     if (!active.moved) return;
     const next = dragged(
       active,
-      event.clientX - active.startX,
+      (event.clientX - active.startX) * (active.mirrored ? -1 : 1),
       event.clientY - active.startY,
       event.shiftKey,
     );
@@ -418,7 +428,8 @@ export function DrawingLayer(props: DrawingLayerProps) {
       event.preventDefault();
       const box = byIndex.get(index)!;
       const step = event.ctrlKey ? 1 : 1;
-      const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+      const sideways = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+      const dx = controller?.rightToLeft ? -sideways : sideways;
       const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
       latest.current.onPlace(index, {
         x: Math.max(0, box.x + dx),
@@ -527,7 +538,11 @@ export function DrawingLayer(props: DrawingLayerProps) {
                     ref={outline}
                     className="cgs-drawing-outline"
                     style={{
-                      left: live.x - box.x,
+                      // From the host's left on screen, which is the drawing's right edge on a
+                      // right-to-left sheet.
+                      left: controller?.rightToLeft
+                        ? box.x + box.width - (live.x + live.width)
+                        : live.x - box.x,
                       top: live.y - box.y,
                       width: live.width,
                       height: live.height,

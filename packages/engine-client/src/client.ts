@@ -47,7 +47,8 @@ export interface EngineClient {
   ): Promise<BookSummary>;
   close(): Promise<void>;
   /** The bytes of a new blank workbook. */
-  blankWorkbook(): Promise<Uint8Array>;
+  /** A new workbook, whose sheet is right to left if the default direction says so. */
+  blankWorkbook(rightToLeft?: boolean): Promise<Uint8Array>;
   /** A PDF of recorded pages. See `recordPages` and `cgs_pdf::Document`. */
   writePdf(document: string, blob: Uint8Array): Promise<Uint8Array>;
   /** A tile's cells in the file's own colours, for drawing pages. */
@@ -225,7 +226,7 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     setLocale: (locale) => engine.setLocale(locale),
     open: (source, onEvent, name) => engine.open(source, proxy(onEvent), name),
     close: () => engine.close(),
-    blankWorkbook: () => engine.blankWorkbook(),
+    blankWorkbook: (rightToLeft) => engine.blankWorkbook(rightToLeft),
     writePdf: (document, blob) =>
       engine.writePdf(document, transfer(blob, [blob.buffer as ArrayBuffer])),
     async viewBlock(sheet, firstRow, firstCol) {

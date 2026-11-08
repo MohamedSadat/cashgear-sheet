@@ -15,6 +15,8 @@ export interface TilePalette {
   fontOverride?: string;
   /** The sheet's own setting. */
   showGrid?: boolean;
+  /** Sheet Right-to-Left: the tile's columns run from the right, as Excel mirrors them. */
+  rightToLeft?: boolean;
 }
 
 /** One cell to measure for a row or column to fit. */
@@ -1396,7 +1398,7 @@ export interface EngineApi {
   ): Promise<BookSummary>;
   close(): void;
   /** The bytes of a new blank workbook. */
-  blankWorkbook(): Promise<Uint8Array>;
+  blankWorkbook(rightToLeft?: boolean): Promise<Uint8Array>;
   /** A PDF of recorded pages: `document` is JSON for `cgs_pdf::Document`, over `blob`. */
   writePdf(document: string, blob: Uint8Array): Promise<Uint8Array>;
   /** A tile's data, as the tile worker reads it, for drawing pages. */

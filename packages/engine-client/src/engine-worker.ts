@@ -572,9 +572,9 @@ const api: EngineApi = {
     releaseWorkingCopy();
     source = undefined;
   },
-  async blankWorkbook() {
+  async blankWorkbook(rightToLeft = false) {
     await ensureEngine();
-    const bytes = blank_workbook();
+    const bytes = blank_workbook(rightToLeft);
     return transfer(bytes, [bytes.buffer as ArrayBuffer]);
   },
   async writePdf(document, blob) {

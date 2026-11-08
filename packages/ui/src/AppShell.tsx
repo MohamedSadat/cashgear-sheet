@@ -87,6 +87,7 @@ import type { GridAction } from './shortcuts';
 import { readGridColors, readPalette, type ThemeController, type ThemePreference } from './theme';
 import { AboutDialog, UpdateDialog } from './release/ReleaseDialogs';
 import { useUpdates } from './release/useUpdates';
+import { readDefaultDirection, writeDefaultDirection, type Direction } from './direction';
 
 const themeChoices = [
   { name: 'system', text: 'System' },
@@ -130,6 +131,7 @@ type ShellDialog =
   | { kind: 'size'; axis: 'row' | 'col'; value: string }
   | { kind: 'shift'; remove: boolean; choice: 'side' | 'down' | 'row' | 'col' }
   | { kind: 'merge'; answer: (accepted: boolean) => void }
+  | { kind: 'options'; direction: Direction }
   | { kind: 'close'; answer: (close: boolean) => void };
 
 /** How the sheet showing is set up, for the View tab. */
@@ -137,6 +139,7 @@ interface SheetFlags {
   frozen: boolean;
   showGrid: boolean;
   showHeadings: boolean;
+  rightToLeft: boolean;
 }
 
 /** A CSV's bytes as text: UTF-8 if they can be, or else Windows' usual code page. */
@@ -192,6 +195,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     frozen: false,
     showGrid: true,
     showHeadings: true,
+    rightToLeft: false,
   });
   const [showFormulaBar, setShowFormulaBar] = useState(true);
   const [fontColor, setFontColor] = useState<CgColorPickerValue>({ kind: 'rgb', color: '#ff0000' });
@@ -349,6 +353,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       frozen: layout.frozenRows > 0 || layout.frozenCols > 0,
       showGrid: layout.showGrid,
       showHeadings: layout.showHeaders,
+      rightToLeft: layout.rightToLeft,
     });
     // A layout that changed under a ribbon box being typed in leaves the keyboard there.
     const active = document.activeElement;
@@ -484,7 +489,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       }
       // A CSV is cells for a new workbook, and saving it asks where.
       csvRef.current = await csvFileText(file.source);
-      const bytes = await engine.blankWorkbook();
+      const bytes = await engine.blankWorkbook(readDefaultDirection() === 'rtl');
       await openBook({
         name: file.name.replace(/\.csv$/i, '.xlsx'),
         source: { kind: 'blob', blob: new Blob([bytes as BlobPart]) },
@@ -498,7 +503,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     const engine = clientRef.current;
     if (!engine) return;
     try {
-      const bytes = await engine.blankWorkbook();
+      const bytes = await engine.blankWorkbook(readDefaultDirection() === 'rtl');
       untitled.current += 1;
       await openFile({
         name: `Book${untitled.current}.xlsx`,
@@ -693,6 +698,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       runCommand({
         kind: 'insertSheet',
         position: at < 0 ? order.length : at + (after ? 1 : 0),
+        rightToLeft: readDefaultDirection() === 'rtl',
       }).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
     },
     [runCommand],
@@ -888,6 +894,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     locale: navigator.language || 'en-US',
     showGrid: flags.showGrid,
     showHeadings: flags.showHeadings,
+    rightToLeft: flags.rightToLeft,
     setView: (next) => send({ kind: 'viewFlags', sheet: sheetRef.current, ...next }),
     run: runCommand,
     notice: setNotice,
@@ -1304,6 +1311,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
               tooltip: file.detail,
               onActivate: () => void openFromRecent(file.id),
             })),
+          },
+          {
+            key: 'options',
+            text: 'Options…',
+            onActivate: () => setDialog({ kind: 'options', direction: readDefaultDirection() }),
           },
           {
             key: 'about',
@@ -2245,6 +2257,43 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
               onChange={(event) => setDialog({ ...dialog, value: event.target.value })}
             />
           </label>
+        </CgMessageBox>
+      )}
+      {dialog?.kind === 'options' && (
+        <CgMessageBox
+          defaultOpen
+          title="Options"
+          actionLabel="OK"
+          data-testid="options-dialog"
+          onClosed={(accepted) => {
+            if (accepted) writeDefaultDirection(dialog.direction);
+            setDialog(null);
+            controller.current?.focus();
+          }}
+        >
+          <div className="cgs-dialog-column" role="radiogroup" aria-label="Default direction">
+            <strong>Default direction</strong>
+            {(
+              [
+                ['rtl', 'Right-to-left'],
+                ['ltr', 'Left-to-right'],
+              ] as const
+            ).map(([value, text]) => (
+              <label key={value} className="cgs-dialog-check">
+                <input
+                  type="radio"
+                  name="cgs-direction"
+                  data-testid={'direction-' + value}
+                  checked={dialog.direction === value}
+                  onChange={() => setDialog({ ...dialog, direction: value })}
+                />
+                {text}
+              </label>
+            ))}
+            <span>
+              New sheets and workbooks start this way. Sheet Right-to-Left changes one sheet.
+            </span>
+          </div>
         </CgMessageBox>
       )}
       {dialog?.kind === 'shift' && (

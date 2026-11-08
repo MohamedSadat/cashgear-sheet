@@ -24,6 +24,8 @@ export interface FilterMenuProps {
   col: number;
   /** Where to show it: the button's box in page pixels. */
   anchor: { left: number; top: number; width: number; height: number };
+  /** Opens to the left of the button's right edge, as on a right-to-left sheet. */
+  leftward?: boolean;
   run: (command: Command) => Promise<Applied>;
   onClose: () => void;
 }
@@ -642,7 +644,10 @@ export function FilterMenu(props: FilterMenuProps) {
     );
   }
 
-  const left = Math.max(4, Math.min(props.anchor.left, window.innerWidth - MENU_WIDTH - 4));
+  const from = props.leftward
+    ? props.anchor.left + props.anchor.width - MENU_WIDTH
+    : props.anchor.left;
+  const left = Math.max(4, Math.min(from, window.innerWidth - MENU_WIDTH - 4));
   const top = props.anchor.top + props.anchor.height + 1;
   const advanced =
     list?.filtered === 'custom' || list?.filtered === 'top10' || list?.filtered === 'dynamic';

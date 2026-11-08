@@ -95,6 +95,8 @@ interface ListMenu {
 interface Tip {
   x: number;
   y: number;
+  /** `x` is the tip's right edge: it opens to the left, as on a right-to-left sheet. */
+  leftward?: boolean;
   title?: string;
   text: string;
 }
@@ -200,11 +202,15 @@ export function useDataTools(host: DataToolsHost) {
             : null;
         placeButtons();
         // The input message shows beside the active cell, as Excel shows it.
-        const box = hostRef.current.grid()?.cellBox(row - 1, col - 1);
+        const grid = hostRef.current.grid();
+        const box = grid?.cellBox(row - 1, col - 1);
+        // Beside the cell after it: to its left on a right-to-left sheet.
+        const leftward = grid?.rightToLeft ?? false;
         setInputTip(
           validation?.showInput && (validation.inputTitle || validation.inputText) && box
             ? {
-                x: box.left + box.width + 6,
+                x: leftward ? box.left - 6 : box.left + box.width + 6,
+                leftward,
                 y: box.top + box.height + 4,
                 title: validation.inputTitle,
                 text: validation.inputText,
@@ -439,20 +445,22 @@ export function useDataTools(host: DataToolsHost) {
     }
     const sheet = hostRef.current.sheet();
     const at = { sheet, row: cell.row + 1, col: cell.col + 1 };
+    // A note opens to the left of the pointer on a right-to-left sheet.
+    const leftward = hostRef.current.grid()?.rightToLeft ?? false;
+    const near = { x: leftward ? x - 14 : x + 14, y: y + 10, leftward };
     void Promise.all([
       engine.query({ kind: 'noteAt', ...at }),
       engine.query({ kind: 'linkAt', ...at }),
     ])
       .then(([note, link]) => {
         if (note?.text !== undefined) {
-          setHoverTip({ x: x + 14, y: y + 10, title: note.author, text: note.text });
+          setHoverTip({ ...near, title: note.author, text: note.text });
         } else if (note?.threaded) {
-          setHoverTip({ x: x + 14, y: y + 10, text: 'Threaded comment (from a newer Excel)' });
+          setHoverTip({ ...near, text: 'Threaded comment (from a newer Excel)' });
         } else if (link) {
           const target = link.address ?? link.location ?? '';
           setHoverTip({
-            x: x + 14,
-            y: y + 10,
+            ...near,
             text: link.tooltip ?? `${target} - Click once to follow.`,
           });
         } else {
@@ -783,6 +791,7 @@ export function useDataTools(host: DataToolsHost) {
           area={filterMenu.area}
           col={filterMenu.col}
           anchor={filterMenu.anchor}
+          leftward={hostRef.current.grid()?.rightToLeft ?? false}
           run={run}
           onClose={() => {
             menuClosed.current = { col: filterMenu.col, at: performance.now() };
@@ -840,6 +849,7 @@ export function useDataTools(host: DataToolsHost) {
                 position: 'fixed',
                 left: tip.x,
                 top: tip.y,
+                transform: tip.leftward ? 'translateX(-100%)' : undefined,
                 maxWidth: 260,
                 padding: '4px 6px',
                 background: index === 0 ? '#ffffe1' : '#ffffe1',

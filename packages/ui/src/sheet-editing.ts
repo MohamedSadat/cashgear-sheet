@@ -260,7 +260,9 @@ export class SheetEditing {
         if (state.mode === 'edit' || state.place === 'bar') return;
         event.preventDefault();
         const rows = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
-        const cols = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+        const sideways = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+        // Arrows go the way they point, towards column A on a right-to-left sheet.
+        const cols = this.host.grid()?.columnsFor(event.key) ?? sideways;
         if (this.session.canPoint()) this.pointBy(rows, cols, event.shiftKey);
         else this.commit(rows, cols);
         return;
