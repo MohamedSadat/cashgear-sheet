@@ -504,11 +504,11 @@ impl Session {
         };
         // Every cell with a value, by row, and the text that may overflow to its right.
         let mut filled: Vec<(u32, u32)> = Vec::new();
-        let mut texts: Vec<(u32, u32, u32)> = Vec::new();
+        let mut texts: Vec<(u32, u32, u32, bool)> = Vec::new();
         struct Seen<'a> {
             take: &'a mut dyn FnMut(u32, u32),
             filled: &'a mut Vec<(u32, u32)>,
-            texts: &'a mut Vec<(u32, u32, u32)>,
+            texts: &'a mut Vec<(u32, u32, u32, bool)>,
         }
         impl CellSink for Seen<'_> {
             fn cell(&mut self, row: u32, col: u32, value: &CalcValue) {
@@ -521,7 +521,8 @@ impl Session {
                     let shown: String = text.chars().take(1024).collect();
                     let longest = shown.split('\n').map(text_units).max();
                     if let Some(units) = longest.filter(|&units| units > 0) {
-                        self.texts.push((row, col, units));
+                        self.texts
+                            .push((row, col, units, crate::tile::starts_rtl(&shown)));
                     }
                 }
             }
@@ -583,14 +584,19 @@ impl Session {
             let default_font = styles.fonts.first().cloned().unwrap_or_default();
             let printer = Units::for_font(&default_font.name, default_font.size);
             let (units_per_inch, col_dots) = (printer.dpi, printer.col);
-            for &(row, col, units) in &texts {
+            let right_to_left = info.view.right_to_left;
+            for &(row, col, units, arabic) in &texts {
                 let Some(xf) = styles.xfs.get(info.style_at(row, col) as usize) else {
                     continue;
                 };
                 let alignment = xf.alignment;
+                // On a right-to-left sheet later columns lie to the left, where text aligned
+                // right runs, and General text that starts in Arabic.
                 let share = match alignment.horizontal {
-                    cgs_model::HAlign::General | cgs_model::HAlign::Left => 1.0,
                     cgs_model::HAlign::Center => 0.5,
+                    cgs_model::HAlign::General | cgs_model::HAlign::Left if !right_to_left => 1.0,
+                    cgs_model::HAlign::General if right_to_left && arabic => 1.0,
+                    cgs_model::HAlign::Right if right_to_left => 1.0,
                     _ => continue,
                 };
                 if alignment.wrap

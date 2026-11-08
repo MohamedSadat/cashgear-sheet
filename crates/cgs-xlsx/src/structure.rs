@@ -781,6 +781,15 @@ fn edit_view(view: &mut Element, patch: &crate::patch_sheet::ViewPatch) {
     if let Some(show) = patch.show_headers {
         view.set_attr("showRowColHeaders", flag(show));
     }
+    // Written only when it differs, so a view that says `rightToLeft="0"` keeps saying it.
+    if let Some(on) = patch.right_to_left {
+        let was = view
+            .attr(b"rightToLeft")
+            .is_some_and(|value| value == b"1" || value == b"true");
+        if was != on {
+            view.set_attr("rightToLeft", on.then_some("1"));
+        }
+    }
     let Some(freeze) = patch.freeze else {
         return;
     };

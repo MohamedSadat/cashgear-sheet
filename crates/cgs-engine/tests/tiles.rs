@@ -483,6 +483,52 @@ fn text_near_a_tile_edge_comes_along_as_an_overflow() {
 }
 
 #[test]
+fn on_a_right_to_left_sheet_text_overflows_from_the_other_sides() {
+    // Column A is on the right, so text aligned left runs on into earlier columns and text
+    // aligned right into later ones.
+    let cells = r#"<row r="1">
+      <c r="P1" t="inlineStr"><is><t>going right</t></is></c>
+      <c r="AG1" t="inlineStr"><is><t>مرحبا going left</t></is></c>
+    </row>
+    <row r="2">
+      <c r="P2" t="inlineStr"><is><t>مرحبا into the tile</t></is></c>
+      <c r="AG2" t="inlineStr"><is><t>into the tile too</t></is></c>
+    </row>"#;
+    let sheet = format!(
+        r#"<worksheet><sheetViews><sheetView rightToLeft="1" workbookViewId="0"/></sheetViews><sheetData>{cells}</sheetData></worksheet>"#
+    );
+    let bytes = zip_of(&[
+        (
+            "xl/workbook.xml",
+            r#"<workbook><sheets><sheet name="One" sheetId="1" r:id="r1"/></sheets></workbook>"#
+                .to_string(),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<Relationships><Relationship Id="r1" Type="http://x/worksheet" Target="s.xml"/><Relationship Id="r2" Type="http://x/styles" Target="styles.xml"/></Relationships>"#.to_string(),
+        ),
+        ("xl/styles.xml", STYLES.to_string()),
+        ("xl/s.xml", sheet),
+    ]);
+    let mut engine = Engine::new();
+    engine.open(Rc::new(bytes)).unwrap();
+    while engine.load_step(1.0).unwrap().phase == LoadPhase::Reading {}
+    let tile = Tile::new(&mut engine, 0, 0, 16, LIGHT);
+    let texts: Vec<_> = (0..tile.extras).map(|index| tile.extra(index).5).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("into the tile")),
+        "{texts:?}"
+    );
+    assert!(texts.iter().any(|t| t == "into the tile too"), "{texts:?}");
+    assert!(
+        !texts
+            .iter()
+            .any(|t| t == "going right" || t.contains("going left")),
+        "{texts:?}"
+    );
+}
+
+#[test]
 fn each_line_is_drawn_once_with_its_neighbours_borders() {
     let cells = r#"<row r="1"><c r="A1" s="7"/><c r="C1"/><c r="D1" s="8"/></row>"#;
     let mut engine = open(cells, "");

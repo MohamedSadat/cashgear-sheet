@@ -506,6 +506,55 @@ fn panes_and_view_flags_save_and_read_back() {
 }
 
 #[test]
+fn sheet_right_to_left_saves_reads_back_and_undoes() {
+    let source = book();
+    let mut engine = opened(source.clone());
+    assert_eq!(engine.layout_numbers(0)[18], 0);
+    run(
+        &mut engine,
+        r#"{"kind":"viewFlags","sheet":0,"rightToLeft":true}"#,
+    );
+    assert!(engine.layout(0).unwrap().right_to_left);
+    assert_eq!(engine.layout_numbers(0)[18], 1);
+    let out = saved(&mut engine);
+    let sheet = sheet_part(&out);
+    assert!(
+        sheet.contains(r#"<sheetView workbookViewId="0" rightToLeft="1">"#),
+        "{sheet}"
+    );
+    // Nothing else in the sheet changed.
+    assert_eq!(
+        sheet.replace(r#" rightToLeft="1""#, ""),
+        sheet_part(&source)
+    );
+    let again = opened(out);
+    assert!(again.book().unwrap().sheets[0].view.right_to_left);
+    undo(&mut engine);
+    assert!(!engine.layout(0).unwrap().right_to_left);
+    assert_eq!(saved(&mut engine), source);
+}
+
+#[test]
+fn a_new_sheet_takes_the_default_direction() {
+    let mut engine = opened(book());
+    run(
+        &mut engine,
+        r#"{"kind":"insertSheet","position":1,"name":"Two","rightToLeft":true}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"insertSheet","position":2,"name":"Three"}"#,
+    );
+    let sheets = &engine.book().unwrap().sheets;
+    assert!(sheets[1].view.right_to_left);
+    assert!(!sheets[2].view.right_to_left);
+    let again = opened(saved(&mut engine));
+    let sheets = &again.book().unwrap().sheets;
+    assert!(sheets[1].view.right_to_left);
+    assert!(!sheets[2].view.right_to_left);
+}
+
+#[test]
 fn more_decimals_start_from_what_general_showed() {
     let mut engine = opened(book());
     run(

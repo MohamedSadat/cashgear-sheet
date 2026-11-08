@@ -196,6 +196,9 @@ pub enum Command {
         position: u32,
         #[serde(default)]
         name: Option<String>,
+        /// The default direction setting, for a sheet that starts right to left.
+        #[serde(default, rename = "rightToLeft")]
+        right_to_left: bool,
     },
     DeleteSheet {
         sheet: u32,
@@ -322,6 +325,9 @@ pub enum Command {
         grid: Option<bool>,
         #[serde(default)]
         headings: Option<bool>,
+        /// Sheet Right-to-Left: column A on the right.
+        #[serde(default, rename = "rightToLeft")]
+        right_to_left: Option<bool>,
     },
     /// Makes a table. No `headers` guesses them from the first row.
     CreateTable {
@@ -627,6 +633,7 @@ pub(crate) enum Op {
     AddSheet {
         name: String,
         position: u32,
+        right_to_left: bool,
     },
     RemoveSheet {
         sheet: u32,
@@ -1710,7 +1717,11 @@ impl Session {
                     merges: before,
                 })
             }
-            Op::AddSheet { name, position } => {
+            Op::AddSheet {
+                name,
+                position,
+                right_to_left,
+            } => {
                 let sheet = self.calc.add_sheet(&name).map_err(|error| error.0)?;
                 let first = self.book.sheets.first();
                 let mut info =
@@ -1718,6 +1729,10 @@ impl Session {
                 info.rows.default_px = first.map_or(20, |sheet| sheet.rows.default_px);
                 info.cols.default_px = first.map_or(64, |sheet| sheet.cols.default_px);
                 info.loaded = true;
+                if right_to_left {
+                    info.view.right_to_left = true;
+                    self.edits.view_flags.insert(sheet);
+                }
                 let mut order = self.book.tab_order();
                 order.insert((position as usize).min(order.len()), sheet);
                 self.book.sheets.push(info);
@@ -3030,7 +3045,11 @@ impl Session {
                 };
                 self.perform("rows or columns", Op::Axis { sheet, edit }, None)
             }
-            Command::InsertSheet { position, name } => {
+            Command::InsertSheet {
+                position,
+                name,
+                right_to_left,
+            } => {
                 let name = match name {
                     Some(name) => name,
                     None => next_sheet_name(&self.book),
@@ -3038,7 +3057,15 @@ impl Session {
                 if let Some(problem) = sheet_name_problem(&self.book, &name, None) {
                     return Err(problem);
                 }
-                self.perform("a new sheet", Op::AddSheet { name, position }, None)
+                self.perform(
+                    "a new sheet",
+                    Op::AddSheet {
+                        name,
+                        position,
+                        right_to_left,
+                    },
+                    None,
+                )
             }
             Command::DeleteSheet { sheet } => {
                 let info = self.sheet_for_edit(sheet)?;
@@ -3458,10 +3485,14 @@ impl Session {
                 sheet,
                 grid,
                 headings,
+                right_to_left,
             } => {
                 let info = self.sheet_for_edit(sheet)?;
                 number_only(info)?;
                 let mut view = info.view;
+                if let Some(on) = right_to_left {
+                    view.right_to_left = on;
+                }
                 if let Some(show) = grid {
                     view.show_grid = show;
                 }

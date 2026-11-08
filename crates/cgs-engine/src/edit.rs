@@ -404,6 +404,7 @@ impl Session {
                     .then_some(info.view.freeze),
                 show_grid: Some(info.view.show_grid),
                 show_headers: Some(info.view.show_headers),
+                right_to_left: Some(info.view.right_to_left),
                 active_cell: info.view.active_cell,
             });
         }

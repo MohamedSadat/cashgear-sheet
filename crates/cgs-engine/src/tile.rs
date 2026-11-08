@@ -1208,6 +1208,7 @@ pub fn build_tile(
     }
 
     // Text from either side that might overflow into this tile.
+    let right_to_left = info.view.right_to_left;
     let overflows_right = |h: u8| h == 0 || h == 1 || h == 5;
     let overflows_left = |h: u8| h == 2 || h == 1 || h == 5;
     let add_overflow = |row: u32,
@@ -1234,7 +1235,8 @@ pub fn build_tile(
             return;
         }
         let horizontal = horizontal_code(alignment.horizontal, shown.flags, shown.starts_rtl);
-        let fits = if going_right {
+        // On a right-to-left sheet, later columns lie to the left.
+        let fits = if going_right != right_to_left {
             overflows_right(horizontal)
         } else {
             overflows_left(horizontal)

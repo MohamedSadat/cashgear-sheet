@@ -142,6 +142,8 @@ pub struct SheetLayout {
     pub zoom: u32,
     pub show_grid: bool,
     pub show_headers: bool,
+    /// Column A on the right, as `sheetView rightToLeft` says.
+    pub right_to_left: bool,
     pub frozen_rows: u32,
     pub frozen_cols: u32,
     pub first_row: u32,
@@ -422,6 +424,7 @@ impl Engine {
             zoom: u32::from(view.zoom),
             show_grid: view.show_grid,
             show_headers: view.show_headers,
+            right_to_left: view.right_to_left,
             frozen_rows: freeze.rows,
             frozen_cols: freeze.cols,
             first_row: freeze.top.max(1),
@@ -473,6 +476,7 @@ impl Engine {
             layout.rows.len() as u32,
             layout.cols.len() as u32,
             layout.merges.len() as u32,
+            u32::from(layout.right_to_left),
         ];
         for (first, last, px) in &layout.rows {
             out.extend_from_slice(&[*first, *last, *px]);

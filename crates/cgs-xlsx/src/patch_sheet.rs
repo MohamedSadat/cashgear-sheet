@@ -223,6 +223,7 @@ pub struct ViewPatch {
     pub freeze: Option<Option<cgs_model::Freeze>>,
     pub show_grid: Option<bool>,
     pub show_headers: Option<bool>,
+    pub right_to_left: Option<bool>,
     /// 1-based, for a pane's selection.
     pub active_cell: (u32, u32),
 }

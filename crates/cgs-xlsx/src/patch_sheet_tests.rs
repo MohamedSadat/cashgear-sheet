@@ -694,6 +694,7 @@ fn a_frozen_view_writes_its_pane_and_selections() {
             })),
             show_grid: Some(false),
             show_headers: None,
+            right_to_left: None,
             active_cell: (3, 2),
         }),
         ..SheetExtras::default()
@@ -718,6 +719,35 @@ fn a_frozen_view_writes_its_pane_and_selections() {
         back.contains(r#"<selection activeCell="B3" sqref="B3"/>"#),
         "{back}"
     );
+}
+
+#[test]
+fn right_to_left_is_written_only_where_it_changes() {
+    let xml = r#"<worksheet><sheetViews><sheetView tabSelected="1" workbookViewId="0"/></sheetViews><sheetData/></worksheet>"#;
+    let flip = |on: bool| SheetExtras {
+        view: Some(ViewPatch {
+            right_to_left: Some(on),
+            ..ViewPatch::default()
+        }),
+        ..SheetExtras::default()
+    };
+    let out = with_extras(xml, &flip(true));
+    assert!(
+        out.contains(r#"<sheetView tabSelected="1" workbookViewId="0" rightToLeft="1"/>"#),
+        "{out}"
+    );
+    let back = with_extras(&out, &flip(false));
+    assert!(
+        back.contains(r#"<sheetView tabSelected="1" workbookViewId="0"/>"#),
+        "{back}"
+    );
+    // A view that already says so, either way, is left as it says it.
+    let said = r#"<worksheet><sheetViews><sheetView rightToLeft="0" workbookViewId="0"/></sheetViews><sheetData/></worksheet>"#;
+    assert!(with_extras(said, &flip(false))
+        .contains(r#"<sheetView rightToLeft="0" workbookViewId="0"/>"#));
+    let said = r#"<worksheet><sheetViews><sheetView rightToLeft="true" workbookViewId="0"/></sheetViews><sheetData/></worksheet>"#;
+    assert!(with_extras(said, &flip(true))
+        .contains(r#"<sheetView rightToLeft="true" workbookViewId="0"/>"#));
 }
 
 #[test]

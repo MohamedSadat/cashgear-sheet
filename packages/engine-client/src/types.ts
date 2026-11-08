@@ -288,7 +288,7 @@ export type Command =
     }
   | { kind: 'pasteExternal'; sheet: number; row: number; col: number; text: string; html?: string }
   | { kind: 'axis'; sheet: number; axis: 'row' | 'col'; at: number; count: number; delete: boolean }
-  | { kind: 'insertSheet'; position: number; name?: string }
+  | { kind: 'insertSheet'; position: number; name?: string; rightToLeft?: boolean }
   | { kind: 'deleteSheet'; sheet: number }
   | { kind: 'renameSheet'; sheet: number; name: string }
   | {
@@ -324,7 +324,7 @@ export type Command =
       col: number;
     }
   | { kind: 'replaceAll'; query: FindQuery; with: string }
-  | { kind: 'viewFlags'; sheet: number; grid?: boolean; headings?: boolean }
+  | { kind: 'viewFlags'; sheet: number; grid?: boolean; headings?: boolean; rightToLeft?: boolean }
   | { kind: 'pageSetup'; sheets: number[]; spec: PageSpec }
   | {
       kind: 'pageBreak';

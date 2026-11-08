@@ -8,6 +8,8 @@ export interface SheetLayout {
   zoom: number;
   showGrid: boolean;
   showHeaders: boolean;
+  /** Sheet Right-to-Left: column A on the right. */
+  rightToLeft: boolean;
   frozenRows: number;
   frozenCols: number;
   /** 1-based: the first row and column of the frozen area. */
@@ -27,7 +29,7 @@ export interface SheetLayout {
   merges: Uint32Array;
 }
 
-const HEADER = 18;
+const HEADER = 19;
 
 export function decodeLayout(numbers: Uint32Array): SheetLayout {
   if (numbers.length < HEADER) throw new Error('This is not a sheet layout.');
@@ -50,7 +52,8 @@ export function decodeLayout(numbers: Uint32Array): SheetLayout {
     rowCount,
     colCount,
     mergeCount,
-  ] = numbers as unknown as number[] & { length: 18 };
+    rightToLeft,
+  ] = numbers as unknown as number[] & { length: 19 };
   const rowsEnd = HEADER + rowCount! * 3;
   const colsEnd = rowsEnd + colCount! * 3;
   return {
@@ -61,6 +64,7 @@ export function decodeLayout(numbers: Uint32Array): SheetLayout {
     zoom: zoom!,
     showGrid: showGrid === 1,
     showHeaders: showHeaders === 1,
+    rightToLeft: rightToLeft === 1,
     frozenRows: frozenRows!,
     frozenCols: frozenCols!,
     firstRow: firstRow!,

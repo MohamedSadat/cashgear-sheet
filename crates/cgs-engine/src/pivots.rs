@@ -1294,7 +1294,17 @@ impl Session {
                     .position(|&s| s == sheet)
                     .unwrap_or(0) as u32;
                 slot = Some((session.book.sheets.len() as u32, 3, 1));
-                return Ok(Some(Op::AddSheet { name, position }));
+                // Excel's new sheet takes the direction of the one it was made from.
+                let right_to_left = session
+                    .book
+                    .sheets
+                    .get(sheet as usize)
+                    .is_some_and(|info| info.view.right_to_left);
+                return Ok(Some(Op::AddSheet {
+                    name,
+                    position,
+                    right_to_left,
+                }));
             }
             if step != usize::from(new_sheet) {
                 return Ok(None);
