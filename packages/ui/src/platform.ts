@@ -60,8 +60,9 @@ export interface SheetPlatform {
   /** The native host, or null on the web. */
   nativeInfo(): Promise<NativeInfo | null>;
   /**
-   * Desktop: the workbook a double-click in Explorer started this window with, once. Null when
-   * it started without one, or after the first ask.
+   * The workbook a double-click or Open with in Explorer started this window with, once: the
+   * desktop app's command line, or the installed web app's launch queue. Null when it started
+   * without one, or after the first ask. A web app started without a file may never answer.
    */
   launchFile?(): Promise<OpenedFile | null>;
   /** Desktop: newer versions from the release feed. */

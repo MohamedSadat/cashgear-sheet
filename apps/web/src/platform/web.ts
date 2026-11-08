@@ -118,6 +118,33 @@ const MIME_TYPES: Record<string, string> = {
 
 const DESCRIPTIONS: Record<string, string> = { csv: 'CSV', pdf: 'PDF' };
 
+/** What the installed app hears when it is started with files, from Open with in Explorer. */
+interface LaunchParams {
+  files?: readonly FileSystemHandle[];
+}
+
+interface LaunchWindow {
+  launchQueue?: { setConsumer(consumer: (params: LaunchParams) => void): void };
+}
+
+/**
+ * The file the installed web app was started with, from the browser's launch queue. The manifest
+ * opens each file in a window of its own (`launch_handler`), so a window has one launch at most.
+ * Taken as soon as this loads: the browser holds the launch until a consumer is set.
+ */
+const launched = new Promise<FileSystemFileHandle | null>((resolve) => {
+  const queue = (window as LaunchWindow).launchQueue;
+  if (!queue) {
+    resolve(null);
+    return;
+  }
+  queue.setConsumer((params) => {
+    const file = params.files?.find((handle) => handle.kind === 'file');
+    resolve((file as FileSystemFileHandle | undefined) ?? null);
+  });
+});
+let launchTaken = false;
+
 /** What Chrome's Local Font Access gives for each installed face. */
 interface LocalFont {
   family: string;
@@ -197,6 +224,12 @@ export const webPlatform: SheetPlatform = {
     window.print();
   },
   nativeInfo: () => Promise.resolve(null),
+  async launchFile() {
+    if (launchTaken) return null;
+    launchTaken = true;
+    const handle = await launched;
+    return handle ? opened(await handle.getFile(), handle) : null;
+  },
   // A browser's window isn't ours to theme.
   setWindowTheme: () => Promise.resolve(),
   async pickFile() {

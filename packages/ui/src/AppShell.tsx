@@ -969,7 +969,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       .catch((error) => console.warn('Could not look for recovered edits:', error));
   }, [applySummary, client, engineReady, report, showSheet]);
 
-  // On the desktop, the workbook a double-click in Explorer started this window with.
+  // The workbook Explorer started this window with: a double-click on the desktop, or Open with
+  // for the installed web app.
   useEffect(() => {
     if (!engineReady || !platform.launchFile) return;
     platform
