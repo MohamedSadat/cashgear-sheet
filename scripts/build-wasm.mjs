@@ -5,6 +5,9 @@ import { gzipSync } from 'node:zlib';
 import { bindgenPath, bindgenVersion, root, run, wasmOutput } from './lib.mjs';
 
 const release = process.argv.includes('--release');
+// For bench/profile-read.mjs: a release build that keeps its function names, left as the compiler
+// made it, so a profile says where time goes. Never shipped.
+const profiling = release && process.argv.includes('--profiling');
 // The Phase 1 budget: the formula engine plus our own crates, gzipped.
 const limitBytes = 5000000;
 const bindgen = bindgenPath();
@@ -23,6 +26,7 @@ await run(
     '--target',
     'wasm32-unknown-unknown',
     ...(release ? ['--release'] : []),
+    ...(profiling ? ['--config', 'profile.release.strip=false'] : []),
   ],
   {
     env: {
@@ -57,7 +61,9 @@ async function optimize(path) {
   return { wasmBytes: bytes.length, gzippedBytes: gzipSync(bytes, { level: 9 }).length };
 }
 
-if (release) {
+if (profiling) {
+  console.log('Profiling WASM: function names kept, not optimized by binaryen. Never ship it.');
+} else if (release) {
   const { wasmBytes, gzippedBytes } = await optimize(join(wasmOutput, 'cgs_wasm_bg.wasm'));
   await mkdir(join(root, 'bench/results'), { recursive: true });
   await writeFile(
