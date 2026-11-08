@@ -30,7 +30,7 @@ const started = Date.now();
 await choose(join(speed, 'formulas-past-memory.xlsx'));
 await page.waitForFunction(
   () =>
-    /ran out of memory/.test(
+    /ran out of memory|too large to open/.test(
       document.querySelector('[data-testid="engine-status"]')?.textContent ?? '',
     ),
   undefined,
@@ -39,9 +39,10 @@ await page.waitForFunction(
 const message = await status.textContent();
 const memory = await page.evaluate(() => window.cgsTest.memoryBytes().catch(() => 0));
 console.log('After ' + (Date.now() - started) + ' ms: ' + message);
-console.log('The new engine holds ' + Math.round(memory / 1048576) + ' MiB');
+console.log('The engine holds ' + Math.round(memory / 1048576) + ' MiB');
 
-// A new engine starts by itself, and the next file opens.
+// The next file opens: since Phase 12 the book is refused before reading, and the same engine
+// takes it; a book that runs out while reading gets a new engine first.
 await page.waitForFunction(() => document.querySelector('[data-testid="welcome"]') !== null);
 await page.waitForTimeout(2000);
 await choose(join(speed, 'values-25mb.xlsx'));
