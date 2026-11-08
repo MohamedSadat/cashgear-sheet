@@ -730,6 +730,7 @@ dependencies = [
  "cgs-model",
  "cgs-refs",
  "flate2",
+ "memchr",
  "quick-xml 0.39.4",
  "rustc-hash 2.1.3",
  "zip 9.2.1",

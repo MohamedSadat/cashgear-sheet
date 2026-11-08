@@ -11,6 +11,7 @@ cgs-calc = { path = "../cgs-calc" }
 cgs-model.workspace = true
 cgs-refs = { path = "../cgs-refs" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+memchr = "2"
 quick-xml = "0.39"
 rustc-hash = "2"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }

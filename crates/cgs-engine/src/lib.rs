@@ -27,6 +27,7 @@ pub mod pivots;
 pub mod print;
 pub mod query;
 mod shift;
+pub mod size;
 pub mod sort;
 pub mod table_style;
 pub mod tables;
@@ -120,6 +121,9 @@ pub struct Engine {
     locale: Locale,
     pivot_captions: cgs_pivot::Captions,
     today: f64,
+    /// Whether `open` turns away a workbook clearly too big for WASM's memory. Native builds
+    /// have more, so only WASM checks unless told to.
+    check_size: bool,
     session: Option<Session>,
 }
 
@@ -239,10 +243,15 @@ impl Engine {
             locale: Locale::en_us(),
             pivot_captions: cgs_pivot::Captions::default(),
             today: 45_000.0,
+            check_size: cfg!(target_arch = "wasm32"),
             session: None,
         }
     }
 
+    /// Turns the size check before reading on or off. See `size`.
+    pub fn set_size_check(&mut self, on: bool) {
+        self.check_size = on;
+    }
 
     pub fn set_locale(&mut self, locale: Locale) {
         self.locale = locale;
@@ -252,6 +261,9 @@ impl Engine {
     pub fn open(&mut self, source: Rc<dyn ByteSource>) -> Result<(), ReadError> {
         self.session = None;
         let (loader, book) = Loader::open(source)?;
+        if self.check_size {
+            size::check(&loader.package(), &book)?;
+        }
         let mut calc = FormualizerEngine::new();
         calc.set_locale(self.locale.clone());
         calc.begin_load(&book_info(&book))

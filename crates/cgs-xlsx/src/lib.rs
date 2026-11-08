@@ -14,6 +14,7 @@ pub mod chart_write;
 pub mod drawings;
 pub mod dv;
 pub mod dxf;
+pub mod estimate;
 pub mod filter;
 pub mod notes;
 pub mod pace;
@@ -57,6 +58,12 @@ pub enum ReadError {
     NotAWorkbook,
     /// More than this app can hold in memory.
     TooLarge,
+    /// More than this app can hold in memory, as estimated before reading: bytes it would need
+    /// and could have.
+    TooLargeFor {
+        needs: u64,
+        limit: u64,
+    },
     Damaged(String),
     Engine(String),
 }
@@ -69,6 +76,12 @@ impl std::fmt::Display for ReadError {
             Self::NotAPackage(_) => f.write_str("This isn't an Excel workbook, or it is damaged."),
             Self::NotAWorkbook => f.write_str("This file has no workbook in it."),
             Self::TooLarge => f.write_str("This workbook is too large to open here."),
+            Self::TooLargeFor { needs, limit } => write!(
+                f,
+                "This workbook is too large to open here: its cells would need about {:.1} GB, and a workbook here can use up to {:.0} GB.",
+                *needs as f64 / (1u64 << 30) as f64,
+                *limit as f64 / (1u64 << 30) as f64,
+            ),
             Self::Damaged(detail) => write!(f, "This workbook is damaged: {detail}"),
             Self::Engine(detail) => write!(f, "The workbook couldn't be loaded: {detail}"),
         }
