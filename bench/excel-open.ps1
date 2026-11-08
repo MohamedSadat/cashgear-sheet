@@ -3,7 +3,9 @@
 # private workbooks only: public files never open in Excel.
 param(
   [Parameter(Mandatory)][string]$Workbook,
-  [Parameter(Mandatory)][string]$Out
+  [Parameter(Mandatory)][string]$Out,
+  # A range on the first sheet whose shown text to return too, such as A1:E2.
+  [string]$Range = ''
 )
 $ErrorActionPreference = 'Stop'
 # Excel turns calls away while it is busy, such as refreshing pivot tables a file asks it to refresh
@@ -42,7 +44,7 @@ function Get-RepairLogs {
     ForEach-Object { $_.FullName }
 }
 $before = @(Get-RepairLogs)
-$result = @{ opened = $false; repaired = $false; logged = $false; renamed = $false; error = $null; sheets = 0; cells = 0 }
+$result = @{ opened = $false; repaired = $false; logged = $false; renamed = $false; error = $null; sheets = 0; cells = 0; texts = @() }
 $excel = New-Object -ComObject Excel.Application
 try {
   $excel.Visible = $false
@@ -60,6 +62,9 @@ try {
     $result.sheets = $book.Sheets.Count
     foreach ($sheet in $book.Worksheets) {
       $result.cells += [int]$excel.WorksheetFunction.CountA($sheet.UsedRange)
+    }
+    if ($Range -ne '') {
+      $result.texts = @(foreach ($cell in $book.Worksheets.Item(1).Range($Range).Cells) { [string]$cell.Text })
     }
     $book.Close($false)
   } catch {
