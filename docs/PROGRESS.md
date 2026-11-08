@@ -19,7 +19,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Planning after v1 | Done 2026-11-07: Phases 10 to 13 added to `PLAN.md` | |
 | Phase 10: Print and PDF export | Done 2026-11-08, with your sign-off on the PDF review and about 91% of public page counts accepted | `v1.1.0` |
 | Phase 11: RTL sheets | Done 2026-11-08, with your sign-off on the right-to-left review | `v1.2.0` |
-| Phase 12: Large books | Not started | `v1.3.0` |
+| Phase 12: Large books | Done 2026-11-09: Open with in Edge starts the app, and the file reaching it is checked in Chrome | `v1.3.0` |
 | Phase 13: Excel parity polish | Not started | `v1.4.0` |
 
 ## Planning
@@ -636,3 +636,75 @@ None this phase. Sheet Right-to-Left uses the library's `align-right` icon; a pr
 - Column A's left border and row 1's top border never draw, in either direction, because a tile carries only each cell's right and bottom lines. It shows most on a printed right-to-left sheet.
 - From the review, not about direction: the chart shows a title where Excel shows its cached empty series, the app doesn't draw Excel's green error triangle, wrapped and rich text can break a word where Excel's measured widths differ, and Excel prints A4 sheets on Letter through Microsoft Print to PDF.
 - The app's own UI stays in English and left to right, as decided; an Arabic UI is under Later in `docs/PLAN.md`.
+
+## Phase 12: Large books
+
+Saving no longer holds the engine, a book past the ceiling is refused in seconds, big books read in well under half the time, and the installed web app opens files from Open with. Measured on 2026-11-08 and 2026-11-09 on the reference machine, in Chrome 156 and Edge, with Excel 2016 (Office Professional Plus, Click-to-Run 16.0.19127.20860, x86), and Formualizer pinned at fork commit `b534673d`. Answers are in `docs/decisions.md`: a save in slices, edits queued behind it, refusal only when clearly past the ceiling, and Open with checked by an automated test.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| During a save of the 25 MB formula book, tiles and cell reads are served within 100 ms at p99, edits made meanwhile land after it with the right answers, and the saved file opens clean in Excel | Pass | `bench/measure-save-reads.mjs`, release build in Chrome: the 2.58M-formula book is opened and edited (A1 = 7), then saved through the app's own Save path (18 s) while the page asks, one after another, for a cell's text, an engine tile and a drawn tile at random rows. During the save, 794 requests: p50 7.1 ms, p95 24.4 ms, **p99 34.1 ms**, the slowest 75.8 ms, none over 100 ms (cells p99 13.4 ms, engine tiles 21.6 ms, drawn tiles 37.1 ms; with nothing going on, p99 21.9 ms). At 25% of the save an edit (A2 = 11) is made: it waits 13.9 s, lands after the save, and row 2 reads 11, 1, 11, 12, 12, with the workbook marked as changed again. Excel opens both saves with no repair and all 4,300,000 cells: the first shows row 1 as 7, 7, 49, 50, 50 and row 2 as before (2, 1, 2, 3, 3), and a second save shows row 2 as 11, 1, 11, 12, 12 |
+| The 15M-formula book is refused within 30 s, and every book on the ladder still opens | Pass | `bench/measure-scale.mjs` on the whole ladder: the 15M book is refused **3.9 s** after it is chosen (Phase 9: 496 s, running out), with "This workbook is too large to open here: its cells would need about 6.1 GB, and a workbook here can use up to 4 GB." Every other book opens, recalculates and takes two edits, with the right answers in every formula book (table below). `bench/measure-out-of-memory.mjs`: refused after 4.1 s, the engine still holds 74 MiB, and the next file opens |
+| The 10M-formula book is ready in under 175 s | Pass | **106.6 s** (Phase 9: 264 s, so 60% less), in 3,857 MiB (Phase 9: 4,042 MiB). A first run the same day gave 110.1 s |
+| The installed web app opens an `.xlsx` from Open with, in Chrome and Edge | Pass in Chrome; in Edge the app starts from Open with, but Edge under automation turns the file away | `tests/e2e/pwa.spec.ts`, "the installed web app opens a workbook from Open with", in both browsers locally and in CI: the manifest offers the five types and the browser reports them as the installed app's file handlers; the ProgID the browser registered appears in `.xlsx`'s Open with list; ShellExecuteEx opens a workbook through it, as Explorer's Open with does. Chrome asks once whether the app may open these types, the test presses Open, and the app's own window shows `Launched.xlsx` with `Item 1` in A1, standalone, and lists it in recent files. In Edge, Open with starts the installed app in its window, but Edge settles that question by itself as a no under automation and then refuses files even from its own DevTools launch, so the file reaching the app is checked in Chrome only. A real Open with in Edge is yours to try |
+
+**The scale ladder**
+
+Chrome 156, the release build, one book at a time, on 2026-11-09. Ready means everything is read and the graph is built; Phase 9's figure is in brackets.
+
+| Book | File | First sheet shown | Ready | Ctrl+Alt+F9 | First edit | Next edit | WASM memory |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1M formulas | 9.9 MB | 4.3 s | 8.9 s (10.9) | 1.8 s | 194 ms | 46 ms | 398 MiB (409) |
+| 2M formulas | 19.7 MB | 8.0 s | 16.7 s (20.1) | 3.4 s | 243 ms | 45 ms | 766 MiB (808) |
+| 2.58M formulas (Phase 2's 25 MB) | 25.4 MB | 10.4 s | 21.2 s (29.9) | 4.4 s | 274 ms | 62 ms | 971 MiB (1,045) |
+| 4M formulas | 39.4 MB | 7.8 s | 34.2 s (62.3) | 8.2 s | 409 ms | 51 ms | 1,522 MiB (1,525) |
+| 6M formulas | 59.1 MB | 11.3 s | 50.6 s (112) | 12.0 s | 556 ms | 58 ms | 2,237 MiB (2,447) |
+| 8M formulas | 78.8 MB | 10.6 s | 74.8 s (171) | 16.6 s | 704 ms | 59 ms | 2,766 MiB (2,827) |
+| 10M formulas | 98.5 MB | 9.3 s | 106.6 s (264) | 23.0 s | 795 ms | 49 ms | 3,857 MiB (4,042) |
+| 15M formulas | 147.7 MB | Refused at 3.9 s (ran out at 496 s) | | | | | |
+| 16M values (Phase 2's 100 MB) | 101.3 MB | 9.5 s | 18.5 s (16.7) | 5 ms | 889 ms | 62 ms | 266 MiB (231) |
+| 50M values | 318.8 MB | 9.9 s | 55.1 s (68.4) | 7 ms | 2.3 s | 57 ms | 714 MiB (697) |
+| 100M values | 637.6 MB | 10.1 s | 110.8 s (120) | 7 ms | 4.5 s | 44 ms | 1,418 MiB (1,379) |
+
+Memory now grows 64 MiB at a time, so a reading can be up to that much over what is in use.
+
+**Memory budgets**
+
+`bench/measure-memory-budget.mjs` on the 10M book: open at 3,857 MiB, the status bar says "This workbook uses 3.8 of the 4 GB the engine can have: save your work before adding much more". Filling columns of formulas runs the engine out after 118.5 s with "The engine ran out of memory: a workbook here can use up to 4 GB. A new engine is starting, and your edits since the last save can be recovered.", the recovery dialog offers the 4 edits, and a new workbook then opens and calculates. Undo (256 MiB) and drawn tiles (512 MiB) are unchanged.
+
+**Where reading went, and what changed**
+
+`bench/profile-read.mjs` runs Chrome's sampling profiler in the engine worker while a book is read, on a build that keeps function names (`node scripts/build-wasm.mjs --release --profiling`). On the 2M book (20.8 s to ready on that build):
+
+- 16% was `memory.grow`: dlmalloc grows memory by what each request needs, and each grow costs about a quarter of a millisecond in Chrome. The engine's allocator (`crates/cgs-wasm/src/alloc.rs`) is now dlmalloc with memory grown 64 MiB at a time.
+- 10% was Formualizer copying its whole staged formula index, every sheet's entries, before building each sheet's graph, only to put it back if the build failed; with four sheets that copied 25M entries for the 10M book. Fork commit `b534673d` takes the sheet's part out whole instead.
+- Staging each formula copied its sheet's name twice and lowercased its text. Neither happens now.
+
+On the same build the 2M book then took 16.9 s and the 4M book 36.4 s. Building every sheet's graph in one step instead of one sheet at a time was tried and gained nothing (37.5 s), so the build stays divided by sheet.
+
+**What else was checked**
+
+- Saving: the sliced writer is the same code as before with points where it may stop, and `crates/cgs-engine/tests/sliced_save.rs` checks that a save in slices of no time writes exactly the bytes of a save in one go, that between slices cells read as they were while commands and calculation are refused, that the check of the saved file runs in slices and catches a damaged byte, and that a cancelled save leaves the edits to save. Inserted rows and shared strings are streamed in slices too.
+- Refusal: `crates/cgs-engine/src/size.rs` checks that a sample overestimating a sheet is counted before anything is refused. The 10M book's sample stays under the line, so it is never counted in full.
+- Fork: Formualizer's own tests, 3,353 of 3,354, the one failing reading its own source with LF line ends on this CRLF checkout, whatever the change.
+- Unit tests: 182 in Vitest and 612 in Rust. Clippy is clean natively and for WASM.
+- WASM gzip: 4.35 MB, against the 5 MB budget.
+- CI: green on `main`, and the tags were pushed after it.
+
+**Found and fixed on the way**
+
+- The speed books had been written before the generator added `[Content_Types].xml`, and it skips books that exist, so Excel refused them and every save of them. They were written again.
+- A save ran outside the command queue, so an edit made between the save and the workbook's move to the saved file could be dropped by the move. The save, the file's replacement and the move are now one job in the queue.
+
+**Track U**
+
+None this phase.
+
+**Known gaps**
+
+- Edge: Open with starts the installed app, but whether the file reaches it was checked in Chrome only, as Edge under automation refuses the files itself. Chrome asks the user once before an installed app opens a type, as it should.
+- The first edit's graph build, a sheet at a time, still can't be divided: on the 10M book each sheet holds the worker for about 20 s once reads have gone quiet, and tiles not yet drawn wait meanwhile.
+- About 10M formulas is still the ceiling. A book between about 10M and 12.5M formulas isn't refused early, and can still run out while reading, as before.
+- During a save, typing still opens the cell editor, and what is typed waits; nothing says that the edit is waiting other than the status bar's "Saving n%".

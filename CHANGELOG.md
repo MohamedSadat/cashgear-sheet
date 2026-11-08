@@ -4,6 +4,28 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.3.0] - 2026-11-09
+
+Large books: saving without holding up the sheet, a book too big refused in seconds, much faster
+reading, and the installed web app opening files from Open with.
+
+- **Saving in the background:** a save is written a few milliseconds at a time, so the sheet
+  keeps scrolling and answering while it runs; on the 25 MB formula book, cells and tiles came
+  back within 35 ms at the 99th percentile during the save. The status bar says how far the save
+  and the check after it have come. Anything typed meanwhile waits and lands once the save is
+  done, and the next save holds it.
+- **Too large, said at once:** a workbook whose cells would clearly need more than the engine's
+  4 GB is turned away before it is read, with how much it would need: the 15M-formula book now
+  says so in about 4 seconds, where it took 8 minutes to run out. Books near the ceiling open as
+  before.
+- **Faster reading:** the 10M-formula book is ready in 107 seconds instead of 264, and every
+  book with formulas reads faster, the 4M book in about half the time. Memory now grows in large
+  steps, and the formula engine no longer copies its whole list of staged formulas for each sheet
+  it prepares.
+- **Open with for the web app:** the installed web app takes `.xlsx`, `.xlsm`, `.xltx`, `.xltm`
+  and `.csv` files from Open with in Windows, each in a window of its own. The browser asks once
+  whether the app may open these types.
+
 ## [1.2.0] - 2026-11-08
 
 Right-to-left sheets, drawn, edited, saved and printed as Excel does them.
