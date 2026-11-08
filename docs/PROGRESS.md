@@ -18,7 +18,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 9: Scale and release | Done 2026-11-07 | `v1.0.0` |
 | Planning after v1 | Done 2026-11-07: Phases 10 to 13 added to `PLAN.md` | |
 | Phase 10: Print and PDF export | Done 2026-11-08, with your sign-off on the PDF review and about 91% of public page counts accepted | `v1.1.0` |
-| Phase 11: RTL sheets | Not started | `v1.2.0` |
+| Phase 11: RTL sheets | Done 2026-11-08, with your sign-off on the right-to-left review | `v1.2.0` |
 | Phase 12: Large books | Not started | `v1.3.0` |
 | Phase 13: Excel parity polish | Not started | `v1.4.0` |
 
@@ -599,3 +599,40 @@ None this phase. The Page Layout tab uses the library's existing icons; print ic
 - Chart sheets print as one landscape Letter page each, with Excel's normal margins. Their own page setup isn't read.
 - Headers and footers keep pictures already in a file, but pictures can't be added or changed here, as decided.
 - In a browser, installed fonts reach a PDF only once Local Font Access is granted. Otherwise Calibri, Cambria, Arial, Times New Roman and Courier New are drawn as their bundled twins with the same widths.
+
+## Phase 11: RTL sheets
+
+Right-to-left sheets look and work as in Excel 2016, save as such and print mirrored. Measured on 2026-11-08 on the reference machine, in Chrome 156 and Edge, with Excel 2016 (Office Professional Plus, Click-to-Run 16.0.19127.20860, x86), and Formualizer pinned at fork commit `4dd2e77a`. Answers are in `docs/decisions.md`: the Arabic UI later, new sheets left to right with a default direction setting, drawings placed from the right as Excel places them, and right-to-left breaks exact on generated books and public files.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Right-to-left sheets drawn by Excel's `CopyPicture` and by the app, in light and dark, are reviewed side by side, and you sign off | Pass: you signed off on 2026-11-08 | `bench/run-visual-review.mjs --rtl` has Excel 2016 draw three books with CopyPicture: the new right-to-left fixture (`rightToLeftBook` in `tests/fixtures/workbooks.mjs`: borders, fills, a diagonal, rotated and wrapped text, a note, a chart, data bars, an icon set, an autofilter and a frozen row), and the formatting and Arabic fixtures set right to left. The app draws the same ranges in Chrome in light and dark. `bench/run-pdf-review.mjs --rtl` adds Excel's `ExportAsFixedFormat` beside the app's PDFs. Both are on one [review page](https://claude.ai/artifact/BHmVfsmEp5dKHifKwWShqY). What Excel mirrors, the app mirrors: cells, borders, gridlines, data bars, notes' corners, filter and list buttons, and drawings placed from the right. What it leaves, the app leaves: alignment, icon sets and diagonals. Rotated text turns the other way, and text overflows on its aligned side |
+| Keyboard and mouse e2e tests pass on mirrored sheets, and every left-to-right golden is unchanged | Pass | `tests/e2e/rtl.spec.ts`, 13 tests in each browser: arrows and Ctrl and Shift+arrows go the way they point, and Tab, Shift+Tab and Home go by column order, as Excel 2016 does under SendKeys; typing then an arrow; clicks with column A and the row headings on the right; dragging a selection and the fill handle at the bottom left; widening a column from its left edge; the editor growing left from its cell's right edge; saving, undoing and reading back; pages printed mirrored; the default direction for new workbooks and sheets; and four new goldens (formatting and Arabic, light and dark), cropped from the canvas's right. CI on `a4de8d2`: 252 of 252 end-to-end tests pass, 126 each in Chrome and Edge. No left-to-right golden changed in this phase (`git diff --stat phase-10..HEAD -- '*.png'` lists only the four new ones) |
+| `rightToLeft` round-trips through Excel, page breaks of right-to-left sheets match Excel's, and the matrix, rules check and fuzz stay clean | Pass | `bench/run-rtl-roundtrip.mjs`, 6 cases: a sheet turned right to left beside ones left alone, one turned back, one edited and kept, a new workbook with a new right-to-left sheet, the Arabic sheet turned and turned back, and the moving parts turned. Excel opens each with no repair and reads every sheet's direction as the app wrote it, drawings stay in their cells, and the app reads Excel's own save back the same: 6 of 6. `bench/run-page-breaks.mjs --rtl`: 36 of 36 generated books set right to left have Excel's row breaks, column breaks and page count, and so do the 2 public files whose sheets are right to left. `bench/run-excel-matrix.mjs` with four direction edits added: 116 edits on each of 11 fixtures, the two new right-to-left ones included, 1,276 of 1,276 saves open with no repair, all 12 broken controls are refused, and 22 of 22 scenarios, 22 of 22 generated books and 4 of 4 large books are clean. `bench/run-excel-rules.mjs`: 43 of 43 cases and 1,572 of 1,572 cells agree. `bench/run-edit-fuzz.mjs`, seeds 1 and 2 with 250 episodes each: 0 steps diverged, and 414 of 414 saves open with no repair and match Excel's own result |
+
+**What else was checked**
+
+- Fixtures: `bench/run-excel-text.mjs` on 11 fixtures, the two right-to-left ones included: Excel opens all, and 3,489 of 3,489 cells match its text.
+- PDFs: Excel and the app give the same page counts for the six right-to-left books (4, 2, 12, 12, 12 and 14 pages), the block sits against the right margin with the headings on the right as in Excel, and qpdf finds nothing in any of the app's PDFs.
+- Saving: `rightToLeft` is written by editing the file's own `sheetView`, only where a sheet's direction changed, so a sheet nobody turned keeps its bytes (`crates/cgs-xlsx/src/patch_sheet_tests.rs`). A new PivotTable sheet takes its source's direction, and a new blank workbook can start right to left.
+- Unit tests: 182 in Vitest and 603 in Rust, among them right-to-left tile drawing, overflow from the other sides, pages placed against the right margin, and the direction saved, read back and undone.
+- WASM gzip: 4.31 MB, against the 5 MB budget.
+- CI: green on `main`, and the tags were pushed after it.
+
+**Found and fixed on the way**
+
+- Excel 2016 doesn't mirror alignment: Latin text stays left and numbers right on a right-to-left sheet, and text overflows on its aligned side, so Latin text in column A is cut at the sheet's edge. Icon sets and diagonals aren't mirrored, and rotated text turns the other way.
+- Excel prints a right-to-left sheet with the same breaks as left to right, against the right margin, with the headings on the right, and doesn't swap the header and footer sections.
+- Notes' red corners printed on the app's pages. Excel never prints them, in either direction, so they no longer do.
+
+**Track U**
+
+None this phase. Sheet Right-to-Left uses the library's `align-right` icon; a proper icon is a Track U job for a later phase.
+
+**Known gaps**
+
+- Column A's left border and row 1's top border never draw, in either direction, because a tile carries only each cell's right and bottom lines. It shows most on a printed right-to-left sheet.
+- From the review, not about direction: the chart shows a title where Excel shows its cached empty series, the app doesn't draw Excel's green error triangle, wrapped and rich text can break a word where Excel's measured widths differ, and Excel prints A4 sheets on Letter through Microsoft Print to PDF.
+- The app's own UI stays in English and left to right, as decided; an Arabic UI is under Later in `docs/PLAN.md`.

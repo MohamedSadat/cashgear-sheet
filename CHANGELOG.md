@@ -4,6 +4,27 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.2.0] - 2026-11-08
+
+Right-to-left sheets, drawn, edited, saved and printed as Excel does them.
+
+- **Sheet Right-to-Left:** on the Page Layout tab, where Excel 2016 has it, and undone like any
+  edit. Column A and the row numbers move to the right, and cells, borders, gridlines, data bars,
+  notes' corners, filter and list buttons, frozen panes and the selection are mirrored. Charts and
+  pictures are placed from the right with their anchors unchanged. As in Excel, alignment isn't
+  mirrored: Latin text stays left and numbers right, and text overflows on its aligned side.
+- **Keys and the mouse:** on a right-to-left sheet the arrow keys and Ctrl+arrows go the way they
+  point, and Tab, Shift+Tab and Home go by column order, as Excel 2016 does. Clicks, dragging a
+  selection, the fill handle at the selection's bottom left, column widths from their left edge,
+  the cell editor and the filter menus are mirrored too.
+- **A default direction:** File › Options sets whether new workbooks and sheets start left to
+  right, the default, or right to left.
+- **Saving:** the direction is saved as `sheetView rightToLeft`, written only on sheets whose
+  direction changed. A new PivotTable sheet takes its source sheet's direction.
+- **Printing:** right-to-left sheets print mirrored against the right margin, with the headings
+  on the right and their pages broken as Excel breaks them. Notes' red corners no longer print,
+  in either direction, as Excel never prints them.
+
 ## [1.1.0] - 2026-11-07
 
 Printing and PDF export, with Excel's page setup and its page breaks.
