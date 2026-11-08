@@ -102,7 +102,7 @@ try {
       { encoding: 'utf8', timeout: 300000, windowsHide: true },
     );
     if (run.status !== 0) throw new Error(`${name}: Excel: ${run.stderr.slice(0, 300)}`);
-    const excel = JSON.parse(readFileSync(target, 'utf8').replace(/^s+/, ''));
+    const excel = JSON.parse(readFileSync(target, 'utf8').replace(/^\s+/, ''));
     const seen = [excel.sheets ?? []].flat().map((sheet) => sheet.rightToLeft);
     const ours = directions(saved);
     const back = excel.error ? null : directions(copy);
