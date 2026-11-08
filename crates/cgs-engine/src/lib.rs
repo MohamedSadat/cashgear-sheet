@@ -97,6 +97,10 @@ struct Session {
     force_calc: bool,
     /// What the last save should have written, until it has been checked and used.
     pending_save: Option<SavePlan>,
+    /// A save being written a slice at a time, during which nothing may change the workbook.
+    saving: Option<edit::SaveJob>,
+    /// The check of what a save wrote, a slice at a time.
+    checking: Option<cgs_xlsx::pace::Sliced<Result<(), cgs_xlsx::save::SaveError>>>,
     /// Why this workbook's formulas can't be made ready for an edit, if they can't.
     cannot_edit: Option<String>,
     loader: Option<Loader>,
@@ -239,6 +243,7 @@ impl Engine {
         }
     }
 
+
     pub fn set_locale(&mut self, locale: Locale) {
         self.locale = locale;
     }
@@ -265,6 +270,8 @@ impl Engine {
             manual: false,
             force_calc: false,
             pending_save: None,
+            saving: None,
+            checking: None,
             cannot_edit: None,
             loader: Some(loader),
             circled: Default::default(),

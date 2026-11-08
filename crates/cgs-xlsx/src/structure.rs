@@ -704,6 +704,23 @@ pub fn rewrite_sheet<R: Read, W: Write>(
     edits: &SheetEdits<'_>,
     masters: &mut Masters,
 ) -> io::Result<Rewritten> {
+    crate::pace::block_on(rewrite_sheet_paced(
+        reader,
+        out,
+        edits,
+        masters,
+        &crate::pace::Pace::unlimited(),
+    ))
+}
+
+/// `rewrite_sheet`, stopping between rows at `pace`'s points.
+pub async fn rewrite_sheet_paced<R: Read, W: Write>(
+    reader: R,
+    out: &mut W,
+    edits: &SheetEdits<'_>,
+    masters: &mut Masters,
+    pace: &crate::pace::Pace,
+) -> io::Result<Rewritten> {
     let mut scanner = Scanner::new(reader);
     let mut result = Rewritten {
         changed: !edits.changes_nothing(),
@@ -716,7 +733,7 @@ pub fn rewrite_sheet<R: Read, W: Write>(
         match kind {
             Kind::Start if depth == 1 && local_name(token) == b"sheetData" => {
                 out.write_all(token)?;
-                rewrite_cells(&mut scanner, out, edits, masters, &mut result)?;
+                rewrite_cells(&mut scanner, out, edits, masters, &mut result, pace).await?;
             }
             Kind::Start | Kind::Empty if depth == 1 => {
                 let mut raw = token.to_vec();
@@ -931,12 +948,13 @@ fn skip_noting_masters<R: Read>(
     Err(damaged("this sheet's cells never end"))
 }
 
-fn rewrite_cells<R: Read, W: Write>(
+async fn rewrite_cells<R: Read, W: Write>(
     scanner: &mut Scanner<R>,
     out: &mut W,
     edits: &SheetEdits<'_>,
     masters: &mut Masters,
     result: &mut Rewritten,
+    pace: &crate::pace::Pace,
 ) -> io::Result<()> {
     let columns_move = edits.own.iter().any(|edit| edit.axis == Axis::Col);
     let mut row = 0u32;
@@ -950,6 +968,9 @@ fn rewrite_cells<R: Read, W: Write>(
                 return Ok(());
             }
             Kind::Start | Kind::Empty if local_name(token) == b"row" => {
+                // A save in slices stops between rows.
+                pace.point().await;
+                let token = scanner.token();
                 row = attr_value(token, b"r")
                     .and_then(parse_u32)
                     .unwrap_or(row + 1);

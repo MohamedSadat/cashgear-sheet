@@ -394,6 +394,59 @@ impl Engine {
         Ok(report_json(&report))
     }
 
+    /// Starts a save that `save_step` writes a slice at a time. Commands and calculation are
+    /// turned away until it ends; tiles and reads are served between slices.
+    pub fn save_begin(&mut self) -> Result<(), JsError> {
+        self.0
+            .save_begin()
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Writes for about `budget_ms` through `write(chunk)`. Returns the save report as JSON once it
+    /// has all been written, and an empty string until then.
+    pub fn save_step(&mut self, budget_ms: f64, write: Function) -> Result<String, JsError> {
+        let mut sink = JsSink {
+            write,
+            buffer: Vec::with_capacity(WRITE_CHUNK + 64 * 1024),
+        };
+        let done = self
+            .0
+            .save_step(budget_ms, &mut sink)
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        sink.flush()
+            .map_err(|error| JsError::new(&error.to_string()))?;
+        Ok(done.map(|report| report_json(&report)).unwrap_or_default())
+    }
+
+    /// How far a save or its check has come: done and total, in bytes of work.
+    pub fn save_progress(&self) -> Vec<f64> {
+        let (done, total) = self.0.save_progress();
+        vec![done as f64, total as f64]
+    }
+
+    pub fn is_saving(&self) -> bool {
+        self.0.is_saving()
+    }
+
+    /// Stops a save or its check.
+    pub fn save_cancel(&mut self) {
+        self.0.save_cancel();
+    }
+
+    /// Starts checking what the save wrote, a slice at a time.
+    pub fn verify_begin(&mut self, read: Function, size: f64) -> Result<(), JsError> {
+        self.0
+            .verify_begin(js_source(read, size))
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
+    /// Checks for about `budget_ms`. Returns whether the check is over and passed.
+    pub fn verify_step(&mut self, budget_ms: f64) -> Result<bool, JsError> {
+        self.0
+            .verify_step(budget_ms)
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
     /// Checks what the last save wrote, before it replaces anything.
     pub fn verify_saved(&self, read: Function, size: f64) -> Result<(), JsError> {
         self.0

@@ -2,13 +2,18 @@
 //! formula engine, so a patch here only says which cells differ from the file, and their values
 //! and formulas are read from the engine when saving.
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
 use cgs_calc::{CalcEngine, CalcValue, CellRef, CellSink, FormulaShape, Rect, SheetRect};
+use cgs_xlsx::pace::{Pace, Sliced};
 use cgs_xlsx::patch_parts::XfChanges;
 use cgs_xlsx::patch_sheet::{ArrayKind, CellChange, ColPatch, NewElement, RowPatch, ViewPatch};
-use cgs_xlsx::save::{save_workbook, verify_directory, verify_saved, SaveError, SaveReport};
+use cgs_xlsx::save::{
+    save_workbook_paced, verify_directory, verify_saved, verify_saved_paced, SaveError, SavePlan,
+    SaveReport,
+};
 use cgs_xlsx::zipdir::Directory;
 use cgs_xlsx::{ByteSource, Package};
 
@@ -522,6 +527,9 @@ impl Engine {
         if session.loader.is_some() {
             return Err("This workbook is still being read.".to_string());
         }
+        if session.saving.is_some() {
+            return Err(SAVING.to_string());
+        }
         Ok(session)
     }
 
@@ -597,10 +605,22 @@ impl Engine {
             .is_some_and(|session| !session.history.at_clean())
     }
 
-    /// Writes the workbook, with its changes, to `out`. The file it came from isn't touched, and
-    /// the changes stay until `commit_saved` says the result has replaced it. Whatever is still
-    /// being calculated gets finished first, so that saved values are current.
+    /// Writes the workbook, with its changes, to `out`, in one go. The file it came from isn't
+    /// touched, and the changes stay until `commit_saved` says the result has replaced it.
+    /// Whatever is still being calculated gets finished first, so that saved values are current.
     pub fn save(&mut self, out: &mut dyn Write) -> Result<SaveReport, SaveError> {
+        self.save_begin()?;
+        loop {
+            if let Some(report) = self.save_step(f64::INFINITY, out)? {
+                return Ok(report);
+            }
+        }
+    }
+
+    /// Starts a save that `save_step` writes a slice at a time. Until it ends, or `save_cancel`
+    /// stops it, nothing may change the workbook: commands and calculation are turned away, while
+    /// tiles and reads are served as usual. What it writes is the workbook as it stands now.
+    pub fn save_begin(&mut self) -> Result<(), SaveError> {
         let session = self
             .session
             .as_mut()
@@ -609,6 +629,9 @@ impl Engine {
             return Err(SaveError::Write(
                 "This workbook is still being read.".to_string(),
             ));
+        }
+        if session.saving.is_some() {
+            return Err(SaveError::Write(SAVING.to_string()));
         }
         if !session.history.at_clean() && session.calc.is_calculating() {
             session
@@ -627,14 +650,96 @@ impl Engine {
             date1904: session.book.date1904,
         };
         session.refresh_chart_caches(&options);
+        session.pending_save = None;
+        session.checking = None;
+        // The job owns what it writes from, so that reads can borrow the session between slices.
+        // These are the differences from the file, not its cells, which stay in the engine.
         let edits = session.edits_for_save();
-        let plan = save_workbook(&session.package, &session.book, &edits, out)?;
-        let report = plan.report.clone();
-        session.pending_save = Some(plan);
-        Ok(report)
+        let book = session.book.clone();
+        let package = Rc::clone(&session.package);
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let pace = Rc::new(Pace::unlimited());
+        let job = {
+            let output = Rc::clone(&output);
+            let pace = Rc::clone(&pace);
+            async move {
+                let mut sink = SharedSink(output);
+                save_workbook_paced(&package, &book, &edits, &mut sink, &pace).await
+            }
+        };
+        session.saving = Some(SaveJob {
+            job: Sliced::new(pace, job),
+            output,
+        });
+        Ok(())
     }
 
-    /// Checks what `save` wrote, before it replaces anything.
+    /// Writes for about `budget_ms` to `out`. Returns the save report once it has all been
+    /// written, for `verify_saved` to check. A failure ends the save.
+    pub fn save_step(
+        &mut self,
+        budget_ms: f64,
+        out: &mut dyn Write,
+    ) -> Result<Option<SaveReport>, SaveError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| SaveError::Write(not_open()))?;
+        let saving = session
+            .saving
+            .as_mut()
+            .ok_or_else(|| SaveError::Write("no save is under way".to_string()))?;
+        let result = saving.job.step(budget_ms);
+        let written = std::mem::take(&mut *saving.output.borrow_mut());
+        let wrote = out
+            .write_all(&written)
+            .map_err(|error| SaveError::Write(error.to_string()));
+        match (result, wrote) {
+            (None, Ok(())) => Ok(None),
+            (Some(Ok(plan)), Ok(())) => {
+                session.saving = None;
+                let report = plan.report.clone();
+                session.pending_save = Some(plan);
+                Ok(Some(report))
+            }
+            (Some(Err(error)), _) | (_, Err(error)) => {
+                session.saving = None;
+                Err(error)
+            }
+        }
+    }
+
+    /// How far a save, or the check after it, has come: (done, total) in bytes of work.
+    pub fn save_progress(&self) -> (u64, u64) {
+        let Some(session) = &self.session else {
+            return (0, 0);
+        };
+        if let Some(saving) = &session.saving {
+            return saving.job.pace().progress();
+        }
+        if let Some(checking) = &session.checking {
+            return checking.pace().progress();
+        }
+        (0, 0)
+    }
+
+    /// Whether a save or its check is under way.
+    pub fn is_saving(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.saving.is_some() || session.checking.is_some())
+    }
+
+    /// Stops a save or its check. What was written so far is of no use.
+    pub fn save_cancel(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            session.saving = None;
+            session.checking = None;
+            session.pending_save = None;
+        }
+    }
+
+    /// Checks what `save` wrote, before it replaces anything, in one go.
     pub fn verify_saved(&self, saved: &dyn ByteSource) -> Result<(), SaveError> {
         let plan = self
             .session
@@ -642,6 +747,45 @@ impl Engine {
             .and_then(|session| session.pending_save.as_ref())
             .ok_or_else(|| SaveError::Verify("nothing has been saved".to_string()))?;
         verify_saved(saved, plan)
+    }
+
+    /// Starts checking what the save wrote, a slice at a time with `verify_step`.
+    pub fn verify_begin(&mut self, saved: Rc<dyn ByteSource>) -> Result<(), SaveError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| SaveError::Write(not_open()))?;
+        let plan: SavePlan = session
+            .pending_save
+            .clone()
+            .ok_or_else(|| SaveError::Verify("nothing has been saved".to_string()))?;
+        let pace = Rc::new(Pace::unlimited());
+        let job = {
+            let pace = Rc::clone(&pace);
+            async move { verify_saved_paced(saved.as_ref(), &plan, &pace).await }
+        };
+        session.checking = Some(Sliced::new(pace, job));
+        Ok(())
+    }
+
+    /// Checks for about `budget_ms`. Returns whether the check is over, which it is only when the
+    /// file is as planned; anything else is an error.
+    pub fn verify_step(&mut self, budget_ms: f64) -> Result<bool, SaveError> {
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| SaveError::Write(not_open()))?;
+        let checking = session
+            .checking
+            .as_mut()
+            .ok_or_else(|| SaveError::Verify("nothing is being checked".to_string()))?;
+        match checking.step(budget_ms) {
+            None => Ok(false),
+            Some(result) => {
+                session.checking = None;
+                result.map(|()| true)
+            }
+        }
     }
 
     /// Says the saved file now stands where it should, and is what this workbook reads from from
@@ -773,4 +917,27 @@ pub fn report_json(report: &SaveReport) -> String {
     }
     out.push_str("]}");
     out
+}
+
+/// What a command or a calculation hears while a save is being written.
+pub(crate) const SAVING: &str = "This workbook is being saved. Try again once it has been.";
+
+/// A save under way: the job, and what it has written that hasn't gone out yet.
+pub(crate) struct SaveJob {
+    job: Sliced<Result<SavePlan, SaveError>>,
+    output: Rc<RefCell<Vec<u8>>>,
+}
+
+/// Where a save job writes, for `save_step` to pass on.
+struct SharedSink(Rc<RefCell<Vec<u8>>>);
+
+impl Write for SharedSink {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

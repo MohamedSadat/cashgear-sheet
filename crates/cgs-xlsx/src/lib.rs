@@ -16,6 +16,7 @@ pub mod dv;
 pub mod dxf;
 pub mod filter;
 pub mod notes;
+pub mod pace;
 pub mod package;
 pub mod page;
 pub mod patch_parts;

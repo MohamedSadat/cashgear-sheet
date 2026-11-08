@@ -9,6 +9,7 @@ use cgs_calc::CalcValue;
 use cgs_refs::SharedFormula;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::pace::{block_on, Pace};
 use crate::scan::{
     attr_value, closed, edit_tag, escape_text, escape_x, local_name, opened, prefix,
     utf8_declaration, Kind, Scanner,
@@ -1468,12 +1469,15 @@ impl Patcher<'_> {
         Ok(())
     }
 
-    fn read_sheet_data<R: Read>(
+    async fn read_sheet_data<R: Read>(
         &mut self,
         scanner: &mut Scanner<R>,
         out: &mut dyn Write,
+        pace: &Pace,
     ) -> io::Result<()> {
         loop {
+            // A save in slices stops between rows.
+            pace.point().await;
             let Some(kind) = scanner.next()? else {
                 return Err(io_err("this sheet's cells never end"));
             };
@@ -1616,7 +1620,12 @@ impl Patcher<'_> {
         edit_tag(tag, &[("ref", Some(&reference))])
     }
 
-    fn run<R: Read>(&mut self, reader: R, out: &mut dyn Write) -> io::Result<Pass> {
+    async fn run<R: Read>(
+        &mut self,
+        reader: R,
+        out: &mut dyn Write,
+        pace: &Pace,
+    ) -> io::Result<Pass> {
         let mut scanner = Scanner::new(reader);
         let mut depth = 0u32;
         let mut wrote_data = false;
@@ -1657,7 +1666,7 @@ impl Patcher<'_> {
                         b"sheetData" if kind == Kind::Start => {
                             out.write_all(&tag)?;
                             wrote_data = true;
-                            self.read_sheet_data(&mut scanner, out)?;
+                            self.read_sheet_data(&mut scanner, out, pace).await?;
                         }
                         b"sheetData" => {
                             wrote_data = true;
@@ -1905,14 +1914,55 @@ fn spans_cover(spans: &[u8], (first, last): (u32, u32)) -> bool {
 /// Runs passes until one finishes, with new output each time, so a pass that has to be repeated
 /// leaves nothing behind.
 pub fn patch_into<R: Read, W: Write>(
-    mut open: impl FnMut() -> io::Result<R>,
-    mut output: impl FnMut() -> W,
+    open: impl FnMut() -> io::Result<R>,
+    output: impl FnMut() -> W,
     patches: &BTreeMap<(u32, u32), CellPatch>,
     elements: &[NewElement],
     extras: &SheetExtras,
     strings: &mut StringTable,
     ascii_only: bool,
 ) -> io::Result<(W, Outcome)> {
+    let sheet = SheetPatch {
+        patches,
+        elements,
+        extras,
+        ascii_only,
+        size: 0,
+    };
+    block_on(patch_into_paced(
+        open,
+        output,
+        &sheet,
+        strings,
+        &Pace::unlimited(),
+    ))
+}
+
+/// What a worksheet part gets, and how big it is inflated, which counts towards a save's progress
+/// for each pass after the first.
+pub struct SheetPatch<'a> {
+    pub patches: &'a BTreeMap<(u32, u32), CellPatch>,
+    pub elements: &'a [NewElement],
+    pub extras: &'a SheetExtras,
+    pub ascii_only: bool,
+    pub size: u64,
+}
+
+/// `patch_into`, stopping between rows at `pace`'s points.
+pub async fn patch_into_paced<R: Read, W: Write>(
+    mut open: impl FnMut() -> io::Result<R>,
+    mut output: impl FnMut() -> W,
+    sheet: &SheetPatch<'_>,
+    strings: &mut StringTable,
+    pace: &Pace,
+) -> io::Result<(W, Outcome)> {
+    let SheetPatch {
+        patches,
+        elements,
+        extras,
+        ascii_only,
+        size,
+    } = *sheet;
     let has_direct = patches.values().any(|patch| {
         matches!(
             patch.change,
@@ -1941,7 +1991,10 @@ pub fn patch_into<R: Read, W: Write>(
         }
     }
     // Two rounds learn everything there is to learn, so a third can only be a bug.
-    for _ in 0..3 {
+    for round in 0..3 {
+        if round > 0 {
+            pace.expect(size);
+        }
         strings.references = references;
         let mut patcher = Patcher {
             patches,
@@ -1973,7 +2026,7 @@ pub fn patch_into<R: Read, W: Write>(
             applied_elsewhere: FxHashSet::default(),
         };
         let mut out = output();
-        match patcher.run(open()?, &mut out)? {
+        match patcher.run(open()?, &mut out, pace).await? {
             Pass::Finished => return Ok((out, std::mem::take(&mut patcher.outcome))),
             Pass::Again(next) => facts = next,
         }
@@ -1984,13 +2037,36 @@ pub fn patch_into<R: Read, W: Write>(
 /// Patches a worksheet part. Returns nothing if the part comes out the same, which only a sheet
 /// whose new results all match what it stores can do, and then it was read without being packed.
 pub fn patch_sheet<R: Read>(
-    mut open: impl FnMut() -> io::Result<R>,
+    open: impl FnMut() -> io::Result<R>,
     patches: &BTreeMap<(u32, u32), CellPatch>,
     elements: &[NewElement],
     extras: &SheetExtras,
     strings: &mut StringTable,
     ascii_only: bool,
 ) -> io::Result<(Option<Packed>, Outcome)> {
+    let sheet = SheetPatch {
+        patches,
+        elements,
+        extras,
+        ascii_only,
+        size: 0,
+    };
+    block_on(patch_sheet_paced(open, &sheet, strings, &Pace::unlimited()))
+}
+
+/// `patch_sheet`, stopping between rows at `pace`'s points.
+pub async fn patch_sheet_paced<R: Read>(
+    mut open: impl FnMut() -> io::Result<R>,
+    sheet: &SheetPatch<'_>,
+    strings: &mut StringTable,
+    pace: &Pace,
+) -> io::Result<(Option<Packed>, Outcome)> {
+    let SheetPatch {
+        patches,
+        elements,
+        extras,
+        ..
+    } = *sheet;
     let only_results = elements.is_empty()
         && extras.is_empty()
         && patches.values().all(|patch| {
@@ -2000,28 +2076,14 @@ pub fn patch_sheet<R: Read>(
             ) && patch.style.is_none()
         });
     if only_results {
-        let (_, probe) = patch_into(
-            &mut open,
-            io::sink,
-            patches,
-            elements,
-            extras,
-            strings,
-            ascii_only,
-        )?;
+        let (_, probe) = patch_into_paced(&mut open, io::sink, sheet, strings, pace).await?;
         if !probe.changed {
             return Ok((None, probe));
         }
+        pace.expect(sheet.size);
     }
-    let (packer, outcome) = patch_into(
-        &mut open,
-        Packer::default,
-        patches,
-        elements,
-        extras,
-        strings,
-        ascii_only,
-    )?;
+    let (packer, outcome) =
+        patch_into_paced(&mut open, Packer::default, sheet, strings, pace).await?;
     Ok((Some(packer.finish()?), outcome))
 }
 

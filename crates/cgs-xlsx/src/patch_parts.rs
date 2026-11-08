@@ -388,6 +388,23 @@ pub fn append_strings<R: Read>(
     ascii_only: bool,
     out: &mut dyn Write,
 ) -> io::Result<()> {
+    crate::pace::block_on(append_strings_paced(
+        reader,
+        strings,
+        ascii_only,
+        out,
+        &crate::pace::Pace::unlimited(),
+    ))
+}
+
+/// `append_strings`, stopping between tags at `pace`'s points.
+pub async fn append_strings_paced<R: Read>(
+    reader: R,
+    strings: &StringTable,
+    ascii_only: bool,
+    out: &mut dyn Write,
+    pace: &crate::pace::Pace,
+) -> io::Result<()> {
     let mut scanner = Scanner::new(reader);
     let mut depth = 0;
     let mut name = String::new();
@@ -397,7 +414,11 @@ pub fn append_strings<R: Read>(
             .and_then(parse_u32)
             .map(|count| (u64::from(count) + by).to_string())
     };
-    while let Some(kind) = scanner.next()? {
+    loop {
+        pace.point().await;
+        let Some(kind) = scanner.next()? else {
+            break;
+        };
         let token = scanner.token();
         match kind {
             Kind::Start | Kind::Empty if depth == 0 => {

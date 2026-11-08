@@ -1091,6 +1091,14 @@ export interface SaveReport {
   keptContent: { what: string; parts: number }[];
 }
 
+/** How far a save has come, for the status bar. */
+export interface SaveProgress {
+  /** Writing the file, then reading it back to check it. */
+  stage: 'writing' | 'checking';
+  /** From 0 to 1. */
+  fraction: number;
+}
+
 /** A checked save, ready to replace the file. */
 export interface SavedFile {
   blob: Blob;
@@ -1472,8 +1480,12 @@ export interface EngineApi {
   openRecovered(id: string, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
   discardRecovered(id: string): Promise<void>;
   hasChanges(): Promise<boolean>;
-  /** Writes the workbook to a checked blob, and leaves the file on disk alone. */
-  save(): Promise<SavedFile>;
+  /**
+   * Writes the workbook to a checked blob, and leaves the file on disk alone. It runs in slices,
+   * so tiles and reads are served meanwhile, and anything that would change the workbook waits
+   * until it ends.
+   */
+  save(onProgress?: (progress: SaveProgress) => void): Promise<SavedFile>;
   /** The save now stands in `source`, which the workbook reads from from now on. */
   commitSaved(source: FileSource): Promise<void>;
   prioritize(sheet: number): void;

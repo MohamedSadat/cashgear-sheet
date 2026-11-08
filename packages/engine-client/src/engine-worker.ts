@@ -24,6 +24,7 @@ import type {
   FoundCell,
   RowFit,
   Recoverable,
+  SaveProgress,
   SaveReport,
 } from './types';
 
@@ -31,6 +32,10 @@ import type {
 const SLICE_MS = 10;
 /** How long one slice of calculation holds up other messages. */
 const CALC_SLICE_MS = 8;
+/** How long one slice of a save holds up tiles and reads. */
+const SAVE_SLICE_MS = 8;
+/** How often a save reports its progress. */
+const SAVE_REPORT_MS = 100;
 /** How long reads must be quiet before the first edit's work starts, as it can't be divided. */
 const QUIET_MS = 500;
 /** How often reading reports its progress. */
@@ -61,6 +66,17 @@ let lastCalcStatus = '';
 let recoverables: Recoverable[] | undefined;
 /** Cells a CSV brought, which a recovery has to put back before any edit. */
 let loadedCsv: string | undefined;
+/**
+ * A save being written in slices. Tiles and reads go on meanwhile, and everything that would
+ * change the workbook waits for it (see `guarded`), so what is saved is what was there when it
+ * began.
+ */
+let saving: Promise<unknown> | undefined;
+
+/** Waits until no save is being written. */
+async function afterSave() {
+  while (saving) await saving.catch(() => undefined);
+}
 
 function ensureEngine() {
   engine ??= initWasm({ module_or_path: new URL('./pkg/cgs_wasm_bg.wasm', import.meta.url) }).then(
@@ -487,7 +503,8 @@ async function pump(
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       if (mine !== generation) return;
-      if (performance.now() - lastRead < QUIET_MS) continue;
+      // The first edit's work can't be divided, so it waits for reads to go quiet and for a save.
+      if (saving || performance.now() - lastRead < QUIET_MS) continue;
       if (!wasm.prepare_step()) break;
     }
     if (mine === generation) {
@@ -499,6 +516,61 @@ async function pump(
   } catch (error) {
     if (mine !== generation) return;
     onEvent({ type: 'error', message: message(friendly(error)) });
+  }
+}
+
+/**
+ * Writes the workbook to a blob a slice at a time, then reads it back to check it, also in
+ * slices. Between slices the event loop serves tiles and reads.
+ */
+async function writeSave(
+  wasm: Engine,
+  onProgress?: (progress: SaveProgress) => void,
+): Promise<{ blob: Blob; report: SaveReport }> {
+  let reported = 0;
+  const progress = (stage: SaveProgress['stage'], force = false) => {
+    const now = performance.now();
+    if (!onProgress || (!force && now - reported < SAVE_REPORT_MS)) return;
+    reported = now;
+    const [done, total] = wasm.save_progress();
+    onProgress({ stage, fraction: total > 0 ? Math.min(1, done / total) : 0 });
+  };
+  // Blobs live outside WASM's memory, and the browser can move large ones to its disk.
+  const parts: Blob[] = [];
+  try {
+    await finishCalculation(wasm);
+    wasm.save_begin();
+    progress('writing', true);
+    let report: SaveReport | undefined;
+    while (!report) {
+      const done = wasm.save_step(SAVE_SLICE_MS, (chunk: Uint8Array) =>
+        parts.push(new Blob([chunk as BlobPart])),
+      );
+      if (done) report = JSON.parse(done) as SaveReport;
+      else {
+        progress('writing');
+        await nextTask();
+      }
+    }
+    const blob = new Blob(parts, { type: WORKBOOK_TYPE });
+    const { read, size } = reader({ kind: 'blob', blob });
+    wasm.verify_begin(read, size);
+    progress('checking', true);
+    while (!wasm.verify_step(SAVE_SLICE_MS)) {
+      progress('checking');
+      await nextTask();
+    }
+    return { blob, report };
+  } catch (error) {
+    // A module that trapped can't be asked anything.
+    if (!trapped) {
+      try {
+        wasm.save_cancel();
+      } catch {
+        // It is broken, and `friendly` below says so.
+      }
+    }
+    throw friendly(error);
   }
 }
 
@@ -806,21 +878,16 @@ const api: EngineApi = {
   async hasChanges() {
     return (await ensureEngine()).has_changes();
   },
-  async save() {
+  async save(onProgress) {
     const wasm = await ensureEngine();
-    // Blobs live outside WASM's memory, and the browser can move large ones to its disk.
-    const parts: Blob[] = [];
+    const job = writeSave(wasm, onProgress);
+    saving = job;
     try {
-      await finishCalculation(wasm);
-      const report = JSON.parse(
-        wasm.save((chunk: Uint8Array) => parts.push(new Blob([chunk as BlobPart]))),
-      ) as SaveReport;
-      const blob = new Blob(parts, { type: WORKBOOK_TYPE });
-      const { read, size } = reader({ kind: 'blob', blob });
-      wasm.verify_saved(read, size);
-      return { blob, report };
-    } catch (error) {
-      throw friendly(error);
+      return await job;
+    } finally {
+      if (saving === job) saving = undefined;
+      // Calculation turned away during the save carries on.
+      if (!trapped) afterChange(wasm);
     }
   },
   async commitSaved(saved) {
@@ -881,6 +948,23 @@ const api: EngineApi = {
  * and whatever a call throws is put in words a person can use. A trap can come in any call,
  * including a calculation slice or a tile, and wasm-bindgen then fails every later call.
  */
+/** What changes the workbook, or replaces it, and so waits for a save being written. */
+const WAITS_FOR_SAVE = new Set([
+  'open',
+  'openRecovered',
+  'close',
+  'protectSource',
+  'command',
+  'mergeDiscards',
+  'setManualCalc',
+  'calculateNow',
+  'calculateSheet',
+  'loadCsv',
+  'addMedia',
+  'save',
+  'commitSaved',
+]);
+
 function guarded<T extends object>(target: T): T {
   const wrapped: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(target)) {
@@ -888,7 +972,9 @@ function guarded<T extends object>(target: T): T {
       wrapped[name] = value;
       continue;
     }
+    const waits = WAITS_FOR_SAVE.has(name);
     wrapped[name] = async (...args: unknown[]) => {
+      if (waits) await afterSave();
       if (trapped) throw new Error(OUT_OF_MEMORY);
       try {
         return await (value as (...args: unknown[]) => unknown).apply(target, args);

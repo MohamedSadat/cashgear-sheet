@@ -7,6 +7,7 @@ import {
   type SheetLayout,
   type TileAddress,
   type TilePalette,
+  type TileRequest,
 } from '@cgs/engine-client';
 import { actionFor, startsTyping, type GridAction } from '../shortcuts';
 import {
@@ -312,6 +313,11 @@ export class GridController {
         rightToLeft: this.rtl,
       },
     };
+  }
+
+  /** What drawing the tile at this cell (counted from 0) asks for, for the bench. */
+  tileRequest(firstRow: number, firstCol: number): TileRequest {
+    return { sheet: this.sheet, firstRow, firstCol, ...this.tileStyle() };
   }
 
   private applyStyle() {

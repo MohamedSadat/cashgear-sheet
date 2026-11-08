@@ -24,6 +24,7 @@ import type {
   Question,
   Recoverable,
   SavedFile,
+  SaveProgress,
   TileImage,
   TilePalette,
   TileRequest,
@@ -97,8 +98,8 @@ export interface EngineClient {
   openRecovered(id: string, onEvent: (event: LoadEvent) => void): Promise<BookSummary>;
   discardRecovered(id: string): Promise<void>;
   hasChanges(): Promise<boolean>;
-  /** Writes the workbook to a checked blob, and leaves the file on disk alone. */
-  save(): Promise<SavedFile>;
+  /** Writes the workbook to a checked blob, and leaves the file on disk alone. See `EngineApi`. */
+  save(onProgress?: (progress: SaveProgress) => void): Promise<SavedFile>;
   /** The save now stands in `source`, which the workbook reads from from now on. */
   commitSaved(source: FileSource): Promise<void>;
   /** Reads this sheet next, if it isn't read yet. */
@@ -284,7 +285,7 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     openRecovered: (id, onEvent) => engine.openRecovered(id, proxy(onEvent)),
     discardRecovered: (id) => engine.discardRecovered(id),
     hasChanges: () => engine.hasChanges(),
-    save: () => engine.save(),
+    save: (onProgress) => engine.save(onProgress ? proxy(onProgress) : undefined),
     commitSaved: (source) => engine.commitSaved(source),
     prioritize: (sheet) => engine.prioritize(sheet),
     async layout(sheet) {

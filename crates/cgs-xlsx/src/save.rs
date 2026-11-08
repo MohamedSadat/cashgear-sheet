@@ -11,25 +11,27 @@ use flate2::read::DeflateDecoder;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
+use crate::pace::{block_on, Pace};
 use crate::package::{ByteSource, Package, PartStream};
 use crate::patch_parts::{
     add_external_relationship, add_override, add_relationship, add_relationship_with_id,
-    append_strings, count_strings, new_strings_part, read_table_part, remove_overrides,
+    append_strings_paced, count_strings, new_strings_part, read_table_part, remove_overrides,
     remove_relationship_ids, remove_relationships, set_full_calc_on_load, set_refresh_on_load,
     set_table_columns, StylesXml,
 };
 use crate::patch_sheet::{
-    patch_into, patch_sheet, ArrayKind, CellChange, CellPatch, NewElement, SheetExtras, StringTable,
+    patch_into, patch_sheet, patch_sheet_paced, ArrayKind, CellChange, CellPatch, NewElement,
+    SheetExtras, SheetPatch, StringTable,
 };
 use crate::scan::{attr_value, escape_attr, utf8_part, Kind, Scanner};
 use crate::structure::{
     all_own_edits, book_edits, own_edits, parse_tree, rewrite_chart, rewrite_comments,
-    rewrite_drawing, rewrite_pivot_cache, rewrite_pivot_table, rewrite_sheet, rewrite_table,
+    rewrite_drawing, rewrite_pivot_cache, rewrite_pivot_table, rewrite_sheet_paced, rewrite_table,
     rewrite_vml, write_tree, BookOp, Element, Masters, Node, SheetEdits,
 };
 use crate::workbook::read_relationships;
 use crate::xml::{parse_rect, parse_u32, rels_path, unescape_attr};
-use crate::zipdir::{normalize, pack, rewrite, Directory, Packed, Packer, ZipChanges};
+use crate::zipdir::{normalize, pack, rewrite_paced, Directory, Packed, Packer, ZipChanges};
 
 const STRINGS_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml";
@@ -1215,13 +1217,14 @@ struct Structure {
 }
 
 /// Rewrites every part that refers to cells whose place has changed.
-fn apply_structure(
+async fn apply_structure(
     package: &Package,
     book: &Book,
     main: &str,
     edits: &WorkbookEdits,
     overlay: &mut BTreeMap<String, Vec<u8>>,
     report: &mut SaveReport,
+    pace: &Pace,
 ) -> Result<Structure, SaveError> {
     let mut done = Structure::default();
     let ops = &edits.ops;
@@ -1294,9 +1297,22 @@ fn apply_structure(
                 let stream = package
                     .stream(part)
                     .ok_or_else(|| SaveError::Damaged(format!("no {part}")))?;
+                if let Some(info) = package.part(part) {
+                    pace.expect(info.size);
+                }
                 let mut packer = Packer::default();
-                let result = rewrite_sheet(stream, &mut packer, &sheet_edits, &mut masters)
-                    .map_err(part_error)?;
+                let result = rewrite_sheet_paced(
+                    Counted {
+                        inner: stream,
+                        pace,
+                    },
+                    &mut packer,
+                    &sheet_edits,
+                    &mut masters,
+                    pace,
+                )
+                .await
+                .map_err(part_error)?;
                 for uri in &result.left_extensions {
                     if !report.left_extensions.contains(uri) {
                         report.left_extensions.push(uri.clone());
@@ -1509,7 +1525,51 @@ pub fn save_workbook(
     edits: &WorkbookEdits,
     out: &mut dyn Write,
 ) -> Result<SavePlan, SaveError> {
+    block_on(save_workbook_paced(
+        package,
+        book,
+        edits,
+        out,
+        &Pace::unlimited(),
+    ))
+}
+
+/// A part's stream that counts what it gives towards a save's progress.
+struct Counted<'p, R> {
+    inner: R,
+    pace: &'p Pace,
+}
+
+impl<R: Read> Read for Counted<'_, R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(out)?;
+        self.pace.advance(count as u64);
+        Ok(count)
+    }
+}
+
+/// `save_workbook`, stopping between rows and between parts at `pace`'s points. Nothing else may
+/// change `package`, `book` or `edits` until it ends.
+pub async fn save_workbook_paced(
+    package: &Package,
+    book: &Book,
+    edits: &WorkbookEdits,
+    out: &mut dyn Write,
+    pace: &Pace,
+) -> Result<SavePlan, SaveError> {
     let directory = Directory::read(package.source().as_ref())?;
+    // The work to come: each sheet with changes read through once, and the file copied once.
+    pace.expect(package.source().len());
+    for &sheet in edits.cells.keys() {
+        if let Some(part) = book
+            .sheets
+            .get(sheet as usize)
+            .and_then(|info| info.part.as_deref())
+            .and_then(|part| package.part(part))
+        {
+            pace.expect(part.size);
+        }
+    }
     let mut changes = ZipChanges::default();
     let mut report = SaveReport::default();
     let mut file_sheets_after = None;
@@ -1526,7 +1586,16 @@ pub fn save_workbook(
         let structure = if edits.ops.is_empty() {
             Structure::default()
         } else {
-            apply_structure(package, book, &main, &edits, &mut overlay, &mut report)?
+            apply_structure(
+                package,
+                book,
+                &main,
+                &edits,
+                &mut overlay,
+                &mut report,
+                pace,
+            )
+            .await?
         };
         sync_table_headers(package, book, &mut edits, &mut overlay, &mut report)?;
         let table_save = if edits.tables_changed {
@@ -1686,11 +1755,24 @@ pub fn save_workbook(
                 .transpose()
                 .map_err(SaveError::read)?
                 .unwrap_or(false);
+            let size = package.part(&part).map_or(0, |info| info.size);
+            let sheet_patch = SheetPatch {
+                patches,
+                elements,
+                extras: extra,
+                ascii_only,
+                size,
+            };
             if let Some(rewritten) = structure.sheets.get(&part) {
-                let open = || Ok::<_, io::Error>(DeflateDecoder::new(&rewritten.data[..]));
-                let (packed, outcome) =
-                    patch_sheet(open, patches, elements, extra, &mut strings, ascii_only)
-                        .map_err(part_error)?;
+                let open = || {
+                    Ok::<_, io::Error>(Counted {
+                        inner: DeflateDecoder::new(&rewritten.data[..]),
+                        pace,
+                    })
+                };
+                let (packed, outcome) = patch_sheet_paced(open, &sheet_patch, &mut strings, pace)
+                    .await
+                    .map_err(part_error)?;
                 report.cells_written += outcome.cells_written;
                 report.results_left_to_excel += outcome.results_skipped;
                 let packed = match packed {
@@ -1704,11 +1786,12 @@ pub fn save_workbook(
             let open = || {
                 package
                     .stream(&part)
+                    .map(|inner| Counted { inner, pace })
                     .ok_or_else(|| io::Error::other("a part went missing"))
             };
-            let (packed, outcome) =
-                patch_sheet(open, patches, elements, extra, &mut strings, ascii_only)
-                    .map_err(part_error)?;
+            let (packed, outcome) = patch_sheet_paced(open, &sheet_patch, &mut strings, pace)
+                .await
+                .map_err(part_error)?;
             report.cells_written += outcome.cells_written;
             report.results_left_to_excel += outcome.results_skipped;
             if let Some(packed) = packed {
@@ -1814,7 +1897,8 @@ pub fn save_workbook(
                         .stream(part)
                         .ok_or_else(|| SaveError::Damaged(format!("no {part}")))?;
                     let mut packer = Packer::default();
-                    append_strings(stream, &strings, ascii_only, &mut packer)
+                    append_strings_paced(stream, &strings, ascii_only, &mut packer, pace)
+                        .await
                         .map_err(part_error)?;
                     changes
                         .replace
@@ -2061,7 +2145,8 @@ pub fn save_workbook(
         }
     }
 
-    rewrite(package.source().as_ref(), &directory, &changes, out)?;
+    pace.point_now().await;
+    rewrite_paced(package.source().as_ref(), &directory, &changes, out, pace).await?;
 
     let mut kept: BTreeMap<Kept, usize> = BTreeMap::new();
     let mut plan = SavePlan::default();
@@ -2108,13 +2193,28 @@ pub fn save_workbook(
 /// Checks a saved file against its plan, before it replaces anything. Every part's sum and length
 /// must be as planned, and each changed part must inflate to well-formed XML with that sum.
 pub fn verify_saved(saved: &dyn ByteSource, plan: &SavePlan) -> Result<(), SaveError> {
+    block_on(verify_saved_paced(saved, plan, &Pace::unlimited()))
+}
+
+/// `verify_saved`, stopping now and then at `pace`'s points. Progress counts the changed parts'
+/// inflated bytes.
+pub async fn verify_saved_paced(
+    saved: &dyn ByteSource,
+    plan: &SavePlan,
+    pace: &Pace,
+) -> Result<(), SaveError> {
     let directory = verify_directory(saved, plan)?;
-    for entry in &directory.entries {
-        let key = normalize(&entry.name);
-        if !plan.changed.contains(&key) {
-            continue;
-        }
-        check_changed_part(saved, entry)
+    let changed: Vec<&crate::zipdir::Entry> = directory
+        .entries
+        .iter()
+        .filter(|entry| plan.changed.contains(&normalize(&entry.name)))
+        .collect();
+    for entry in &changed {
+        pace.expect(entry.size);
+    }
+    for entry in changed {
+        check_changed_part(saved, entry, pace)
+            .await
             .map_err(|error| SaveError::Verify(format!("{}: {error}", entry.name)))?;
     }
     Ok(())
@@ -2161,7 +2261,11 @@ impl Read for Span<'_> {
 }
 
 /// Reads a part back: its sum must match, and XML must parse from start to end.
-fn check_changed_part(saved: &dyn ByteSource, entry: &crate::zipdir::Entry) -> Result<(), String> {
+async fn check_changed_part(
+    saved: &dyn ByteSource,
+    entry: &crate::zipdir::Entry,
+    pace: &Pace,
+) -> Result<(), String> {
     let mut head = [0; 30];
     let count = saved
         .read_at(entry.local, &mut head)
@@ -2180,12 +2284,15 @@ fn check_changed_part(saved: &dyn ByteSource, entry: &crate::zipdir::Entry) -> R
     let mut checker = Summed {
         inner: inflater,
         crc: flate2::Crc::new(),
+        pace,
     };
-    if entry.name.to_ascii_lowercase().ends_with(".bin") {
-        io::copy(&mut checker, &mut io::sink()).map_err(|error| error.to_string())?;
-    } else {
-        check_xml(&mut checker)?;
-        io::copy(&mut checker, &mut io::sink()).map_err(|error| error.to_string())?;
+    if !entry.name.to_ascii_lowercase().ends_with(".bin") {
+        check_xml(&mut checker, pace).await?;
+    }
+    // Whatever follows the XML still counts towards the sum.
+    let mut rest = vec![0; 64 * 1024];
+    while checker.read(&mut rest).map_err(|error| error.to_string())? > 0 {
+        pace.point_now().await;
     }
     if checker.crc.sum() != entry.crc {
         return Err("its contents don't match its sum".to_string());
@@ -2193,25 +2300,28 @@ fn check_changed_part(saved: &dyn ByteSource, entry: &crate::zipdir::Entry) -> R
     Ok(())
 }
 
-struct Summed<R> {
+struct Summed<'p, R> {
     inner: R,
     crc: flate2::Crc,
+    pace: &'p Pace,
 }
 
-impl<R: Read> Read for Summed<R> {
+impl<R: Read> Read for Summed<'_, R> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         let count = self.inner.read(out)?;
         self.crc.update(&out[..count]);
+        self.pace.advance(count as u64);
         Ok(count)
     }
 }
 
 /// Parses XML through to its end, with tags matched, which `quick-xml` checks for us.
-fn check_xml(reader: &mut dyn Read) -> Result<(), String> {
+async fn check_xml(reader: &mut dyn Read, pace: &Pace) -> Result<(), String> {
     let mut xml = Reader::from_reader(io::BufReader::with_capacity(128 * 1024, reader));
     let mut buf = Vec::new();
     let mut depth = 0i64;
     loop {
+        pace.point().await;
         match xml.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
             Ok(Event::Start(_)) => depth += 1,

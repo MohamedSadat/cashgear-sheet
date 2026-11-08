@@ -173,6 +173,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const [dragOver, setDragOver] = useState(false);
   const [canSave, setCanSave] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** How far a save has come, in whole percent, while one runs. */
+  const [saveProgress, setSaveProgress] = useState<{ checking: boolean; percent: number } | null>(
+    null,
+  );
   const [lastSave, setLastSave] = useState<SaveReport | null>(null);
   const [showReport, setShowReport] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -524,27 +528,44 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       savingRef.current = true;
       setSaving(true);
       setProblem(null);
+      setSaveProgress(null);
+      // The save takes its turn in the command queue: whatever was typed before Save is part of
+      // what gets saved, and edits made while it runs wait behind it, until the file has been
+      // replaced. Tiles and reads go on meanwhile.
+      const job = commands.current
+        .catch(() => undefined)
+        .then(async () => {
+          const { blob, report: saved } = await engine.save((progress) => {
+            const percent = Math.floor(progress.fraction * 100);
+            const checking = progress.stage === 'checking';
+            setSaveProgress((last) =>
+              last?.percent === percent && last.checking === checking
+                ? last
+                : { checking, percent },
+            );
+          });
+          const written = await target.write(blob);
+          await engine.commitSaved(written.source);
+          editedRef.current = false;
+          // The old file's working copy has nothing left to do, and the next edit makes a new one.
+          protectedRef.current = false;
+          releaseWorking();
+          fileRef.current = written;
+          setFileName(written.name);
+          setCanSave(false);
+          setLastSave(saved);
+          await platform.rememberFile(written);
+          refreshRecent();
+        });
+      commands.current = job;
       try {
-        // Whatever was typed before Save is part of what gets saved.
-        await commands.current.catch(() => undefined);
-        const { blob, report: saved } = await engine.save();
-        const written = await target.write(blob);
-        await engine.commitSaved(written.source);
-        editedRef.current = false;
-        // The old file's working copy has nothing left to do, and the next edit makes a new one.
-        protectedRef.current = false;
-        releaseWorking();
-        fileRef.current = written;
-        setFileName(written.name);
-        setCanSave(false);
-        setLastSave(saved);
-        await platform.rememberFile(written);
-        refreshRecent();
+        await job;
       } catch (error) {
         report(error);
       } finally {
         savingRef.current = false;
         setSaving(false);
+        setSaveProgress(null);
       }
     },
     [platform, refreshRecent, releaseWorking, report],
@@ -1092,6 +1113,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         problem: () => string | null;
         cellFormat: (row: number, col: number) => Promise<CellFormat | null>;
         saveBytes: () => Promise<Uint8Array>;
+        /** Milliseconds for one cell read, tile read or drawn tile, for the save bench. */
+        probe: (kind: 'cell' | 'block' | 'tile', row: number, col: number) => Promise<number>;
         pdf: (choice?: Partial<PrintChoice>) => Promise<{ bytes: Uint8Array; pages: number }>;
       };
     };
@@ -1132,6 +1155,16 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       saveBytes: async () => {
         const saved = await clientRef.current?.save();
         return new Uint8Array((await saved?.blob.arrayBuffer()) ?? new ArrayBuffer(0));
+      },
+      probe: async (kind, row, col) => {
+        const engine = clientRef.current;
+        const grid = controller.current;
+        if (!engine || !grid) return NaN;
+        const started = performance.now();
+        if (kind === 'cell') await engine.cellText(sheetRef.current, row, col);
+        else if (kind === 'block') await engine.viewBlock(sheetRef.current, row - 1, col - 1);
+        else (await engine.drawTile(grid.tileRequest(row - 1, col - 1))).bitmap.close();
+        return performance.now() - started;
       },
       pdf: (choice) => printPdfRef.current({ what: 'active', ignorePrintArea: false, ...choice }),
     };
@@ -1789,7 +1822,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         : reading
           ? `Reading ${percent}%`
           : saving
-            ? 'Saving…'
+            ? saveProgress?.checking
+              ? `Checking the saved file ${saveProgress.percent}%`
+              : saveProgress
+                ? `Saving ${saveProgress.percent}%`
+                : 'Saving…'
             : (editMode ?? 'Ready');
   // The same list until a tab changes: CgTabs starts measuring over each time it's given a new one.
   const tabs = useMemo(

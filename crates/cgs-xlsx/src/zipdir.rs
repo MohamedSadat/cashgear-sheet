@@ -8,6 +8,7 @@ use std::io::{self, Write};
 use flate2::write::DeflateEncoder;
 use flate2::{Compression, Crc};
 
+use crate::pace::{block_on, Pace};
 use crate::package::ByteSource;
 use crate::save::SaveError;
 
@@ -410,12 +411,13 @@ fn moved_record(entry: &Entry, local: u64) -> Vec<u8> {
 }
 
 /// Copies an entry's bytes across, after checking they look like what the directory says.
-fn copy_span(
+async fn copy_span(
     source: &dyn ByteSource,
     entry: &Entry,
     end: u64,
     out: &mut Counting<'_>,
     buffer: &mut [u8],
+    pace: &Pace,
 ) -> Result<(), SaveError> {
     let mut head = [0; 30];
     read_exact(source, entry.local, &mut head)?;
@@ -434,6 +436,8 @@ fn copy_span(
         read_exact(source, at, &mut buffer[..count])?;
         out.write(&buffer[..count])?;
         at += count as u64;
+        pace.advance(count as u64);
+        pace.point_now().await;
     }
     Ok(())
 }
@@ -446,6 +450,23 @@ pub fn rewrite(
     directory: &Directory,
     changes: &ZipChanges,
     out: &mut dyn Write,
+) -> Result<(), SaveError> {
+    block_on(rewrite_paced(
+        source,
+        directory,
+        changes,
+        out,
+        &Pace::unlimited(),
+    ))
+}
+
+/// `rewrite`, stopping between chunks and entries at `pace`'s points.
+pub async fn rewrite_paced(
+    source: &dyn ByteSource,
+    directory: &Directory,
+    changes: &ZipChanges,
+    out: &mut dyn Write,
+    pace: &Pace,
 ) -> Result<(), SaveError> {
     let mut out = Counting { out, at: 0 };
     let mut buffer = vec![0; CHUNK];
@@ -469,6 +490,8 @@ pub fn rewrite(
             let flags = u16_at(&entry.record, 8) & 0x0800;
             let time = (u16_at(&entry.record, 12), u16_at(&entry.record, 14));
             write_local(&mut out, name, flags, time, part)?;
+            pace.advance(entry.compressed);
+            pace.point_now().await;
             records[index] = Some(new_record(
                 Some(&entry.record),
                 name,
@@ -478,7 +501,7 @@ pub fn rewrite(
                 local,
             ));
         } else {
-            copy_span(source, entry, end, &mut out, &mut buffer)?;
+            copy_span(source, entry, end, &mut out, &mut buffer, pace).await?;
             records[index] = Some(moved_record(entry, local));
         }
         locals[index] = Some(local);
@@ -490,6 +513,7 @@ pub fn rewrite(
         // 1 January 1980, as Excel stamps its parts.
         let time = (0, 0x0021);
         write_local(&mut out, name.as_bytes(), flags, time, part)?;
+        pace.point_now().await;
         added.push(new_record(None, name.as_bytes(), flags, time, part, local));
     }
     let directory_at = out.at;

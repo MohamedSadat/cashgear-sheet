@@ -105,6 +105,7 @@ export type {
   LocaleData,
   Recoverable,
   SavedFile,
+  SaveProgress,
   SaveReport,
   SheetSummary,
   StoredColor,

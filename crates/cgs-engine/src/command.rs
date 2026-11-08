@@ -3552,6 +3552,9 @@ impl Engine {
         if session.loader.is_some() {
             return Err("This workbook is still being read.".to_string());
         }
+        if session.saving.is_some() {
+            return Err(crate::edit::SAVING.to_string());
+        }
         Ok(session)
     }
 
@@ -3605,6 +3608,10 @@ impl Engine {
         let Some(session) = self.session.as_mut() else {
             return Ok(false);
         };
+        // Results that change while a save is written would differ from what it writes.
+        if session.saving.is_some() {
+            return Ok(false);
+        }
         if session.manual && !session.force_calc {
             return Ok(false);
         }
