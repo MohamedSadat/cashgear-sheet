@@ -137,6 +137,15 @@ Found in Phase 10:
 - Formualizer's `for_each_range_value` visits every cell of its range. Styled blank rows can make a sheet's used range all of XFD1048576, so read values only as far as `value_bounds` says.
 - `pnpm dev:web` rebuilds the WASM when Rust changes and reloads the page, which breaks a bench run mid-book. Let it settle first.
 
+Found in Phase 11:
+
+- Excel 2016 mirrors a right-to-left sheet's cells, borders, gridlines, data bars, notes' corners, buttons and drawings, but not alignment: Latin text stays left, numbers right, and text overflows on its aligned side. Icon sets and diagonal borders aren't mirrored, and rotated text turns the other way. CopyPicture shows it; trust it over memory.
+- Arrow keys on a right-to-left sheet go the way they point, Tab and Home go by column order. To measure keys, make Excel visible, `AppActivate` its caption and use `SendKeys`.
+- The grid stays in left-to-right positions. `grid/mirror.ts` mirrors drawing, and the controller mirrors pointer x on the way in and DOM overlays on the way out. A `Proxy` over a 2D context must `Reflect.get` with the real context as receiver.
+- A tile carries only each cell's right and bottom lines, so column A's left border and row 1's top border never draw, in either direction.
+- Right-to-left goldens are cropped from the canvas's right (`expectGolden(..., { fromRight: true })`), where column A is.
+- With D: nearly full, Playwright reports "Target crashed" and spawns fail with EPERM before any link error. Check free space first.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

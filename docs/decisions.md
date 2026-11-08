@@ -571,3 +571,22 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | The direction of new sheets | Left to right, with a Default direction setting as in Excel's Options › Advanced. Page Layout › Sheet Right-to-Left flips one sheet |
 | Charts, pictures, shapes, notes and filter buttons on right-to-left sheets | Placed from the right as Excel places them, their contents not flipped, and their anchors saved unchanged |
 | How exact right-to-left page breaks must be | Phase 10's 36 generated books, set right to left, have exactly Excel's breaks and page counts. Public files holding right-to-left sheets are compared too, against Phase 10's accepted bar of about 91% |
+
+**Asked during the phase**
+
+| Question | Answer |
+| --- | --- |
+| The review of right-to-left sheets against Excel's CopyPicture in light and dark, with right-to-left PDFs beside Excel's ([review page](https://claude.ai/artifact/BHmVfsmEp5dKHifKwWShqY)). Differences listed as not about direction: the chart's cached data, Excel's green error mark, wrap widths, A4 on Letter, and column A's left border not printing | "Sign off" |
+
+**Defaults picked during the phase**
+
+| Choice | Default |
+| --- | --- |
+| What a right-to-left sheet mirrors | As Excel 2016 draws it with CopyPicture, measured on 2026-11-08: columns run from the right, with row headings on the right, the vertical scrollbar on the left and the fill handle at the selection's bottom left. Borders, gridlines, data bars, notes' corners, filter and list buttons, charts and pictures are mirrored. A cell's alignment isn't: General text goes by its first strong letter, numbers stay right, Left and Right stay where they say, and text overflows on the side it is aligned from, so Latin text in column A is cut at the sheet's edge. Icon sets stay on a cell's left with their arrows unturned, diagonal borders keep their direction, and rotated text turns the other way |
+| Where the direction lives | The sheet's own `sheetView rightToLeft`, read since Phase 2, carried in the layout to the grid and the tile worker. The grid keeps working in left-to-right positions and mirrors only where it draws and where pointer positions come in, so one code path serves both directions |
+| The keyboard | As Excel 2016 does it, measured with SendKeys: Left and Right go the way they point (Right goes towards column A), as do Ctrl and Shift with them; Tab, Shift+Tab, Enter and Home go by column order |
+| Saving the direction | `rightToLeft="1"` set or removed on the sheet's first `sheetView` only when it changes, so a view that says `rightToLeft="0"` keeps saying it. One undo step. Drawings' anchors never change |
+| The Default direction setting | File › Options…, as Excel's Options › Advanced has it, kept on the device like the theme. It sets new workbooks and new sheets; Sheet Right-to-Left on the Page Layout tab flips one sheet. A PivotTable's new sheet takes its source sheet's direction |
+| The ribbon icon for Sheet Right-to-Left | The library's `align-right` icon for now; a text direction icon is a Track U job |
+| Pages of a right-to-left sheet | Measured with ExportAsFixedFormat: pages break as they would left to right, in the same order. Each page prints against the right margin (or centred, when centring is on), with row headings on the right and columns running left. Header and footer sections stay where they are |
+| Notes' corners on paper | Not printed, in either direction, as Excel never prints them |
