@@ -146,6 +146,15 @@ Found in Phase 11:
 - Right-to-left goldens are cropped from the canvas's right (`expectGolden(..., { fromRight: true })`), where column A is.
 - With D: nearly full, Playwright reports "Target crashed" and spawns fail with EPERM before any link error. Check free space first.
 
+Found in Phase 12:
+
+- In Chrome each `memory.grow` costs about a quarter of a millisecond, and dlmalloc grows by what each request needs. `crates/cgs-wasm/src/alloc.rs` grows 64 MiB at a time; profile WASM with `node scripts/build-wasm.mjs --release --profiling` and `bench/profile-read.mjs`.
+- A save is a future that stops at `Pace` points (`crates/cgs-xlsx/src/pace.rs`). Anything that streams a whole part during a save needs a point in its loop, or it holds the worker again.
+- A headless browser takes the system's launch of an installed web app ("Handling STARTUP request") and opens no window. Open with tests run headed.
+- Chrome asks once whether an installed app may open file types, in a dialog UI Automation can press. Edge under automation answers that itself as a no, and then refuses files even from `PWA.launchFilesInApp`.
+- `bench/generate-speed-books.mjs` skips a book that exists, so a book from before a generator fix keeps the old bytes. Delete it to write it again.
+- Formualizer's `ingest_has_no_formula_plane_producer_sites` test reads its own source split on an LF-only marker, so it fails on a CRLF checkout whatever the change.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
