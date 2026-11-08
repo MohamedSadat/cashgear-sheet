@@ -57,14 +57,17 @@ export async function waitForGrid(page, theme) {
   );
 }
 
-/** The grid's picture as raw pixels, cropped to what a golden image covers. */
-export async function gridPicture(page) {
+/**
+ * The grid's picture as raw pixels, cropped to what a golden image covers: from the canvas's
+ * left, or from its right with `fromRight`, where a right-to-left sheet starts.
+ */
+export async function gridPicture(page, { fromRight = false } = {}) {
   const buffer = await page.locator('[data-testid="sheet-canvas"]').screenshot();
   const full = PNG.sync.read(buffer);
   const width = Math.min(GOLDEN_WIDTH, full.width);
   const height = Math.min(GOLDEN_HEIGHT, full.height);
   const cropped = new PNG({ width, height });
-  PNG.bitblt(full, cropped, 0, 0, width, height, 0, 0);
+  PNG.bitblt(full, cropped, fromRight ? full.width - width : 0, 0, width, height, 0, 0);
   return cropped;
 }
 
@@ -86,8 +89,8 @@ export function differenceShare(a, b) {
  * Compares the grid with a golden image in tests/e2e/goldens. `CGS_UPDATE_GOLDENS=1` writes
  * the image instead. A failure leaves what it saw in test-results for reading by eye.
  */
-export async function expectGolden(page, name, limit = 0.002) {
-  const seen = await gridPicture(page);
+export async function expectGolden(page, name, limit = 0.002, { fromRight = false } = {}) {
+  const seen = await gridPicture(page, { fromRight });
   const path = join(here, 'goldens', name + '.png');
   if (process.env.CGS_UPDATE_GOLDENS) {
     mkdirSync(dirname(path), { recursive: true });

@@ -15,6 +15,8 @@ interface GridForTests {
   pointForCell(row: number, col: number): { x: number; y: number };
   boxForCell(row: number, col: number): { x: number; y: number; width: number; height: number };
   selectArea(range: { top: number; left: number; bottom: number; right: number }): void;
+  /** Sheet Right-to-Left: column A on the right. */
+  readonly rightToLeft: boolean;
 }
 
 interface Window {

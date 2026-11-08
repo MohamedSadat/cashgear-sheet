@@ -4,7 +4,9 @@
 // public test files that hold page setup go through as well, as locked-down temporary copies
 // (read-only, macros forced off, links not updated), and their page counts are compared. They go
 // through one Excel session at a time in chunks, and the results are written after each chunk.
-// Usage: node bench/run-page-breaks.mjs [out.json] [--public] [--only=name]
+// With `--rtl` (Phase 11), the generated books are right to left, and only public sheets that are
+// right to left count.
+// Usage: node bench/run-page-breaks.mjs [out.json] [--public] [--rtl] [--only=name]
 import { execFile, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -26,6 +28,7 @@ const out = resolve(
     join(root, 'bench/results/page-breaks.json'),
 );
 const withPublic = process.argv.includes('--public');
+const rightToLeft = process.argv.includes('--rtl');
 const only = process.argv.find((arg) => arg.startsWith('--only='))?.slice(7);
 const tool = join(root, 'target/fast/pagebreaks.exe');
 const script = readFileSync(join(root, 'bench/excel-page-breaks.ps1'), 'utf8');
@@ -113,6 +116,7 @@ function compare(mine, theirs, countsOnly) {
     const ownSheet = mine.find((entry) => entry.sheet === sheet.sheet);
     if (!ownSheet) continue;
     if (countsOnly && !ownSheet.hasSetup) continue;
+    if (countsOnly && rightToLeft && !ownSheet.rightToLeft) continue;
     const pagesMatch = ownSheet.pages === sheet.pages;
     // GET.DOCUMENT also lists where the printed range starts and ends, and breaks past it, so
     // only breaks inside what prints are compared.
@@ -172,9 +176,12 @@ function save() {
   writeFileSync(out, JSON.stringify(results, null, 2));
 }
 try {
-  const folder = join(root, 'bench/results/print-books');
+  const folder = join(
+    root,
+    rightToLeft ? 'bench/results/print-books-rtl' : 'bench/results/print-books',
+  );
   mkdirSync(folder, { recursive: true });
-  for (const [name, bytes] of Object.entries(printBooks())) {
+  for (const [name, bytes] of Object.entries(printBooks({ rightToLeft }))) {
     if (only && !name.includes(only)) continue;
     const path = join(folder, name);
     writeFileSync(path, bytes);
@@ -206,7 +213,7 @@ try {
       try {
         const mine = scanned[at];
         if (!mine) continue;
-        if (!mine.some((sheet) => sheet.hasSetup)) continue;
+        if (!mine.some((sheet) => sheet.hasSetup && (!rightToLeft || sheet.rightToLeft))) continue;
         // Excel takes hours over a sheet styled to its last cell, which the engine counts in
         // millions of pages; such books are listed, not compared.
         if (mine.some((sheet) => sheet.pages > 10000)) {

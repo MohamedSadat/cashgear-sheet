@@ -29,6 +29,8 @@ struct SheetPages {
     setup: Value,
     /// The first and last row and column any page prints: [top, left, bottom, right].
     extent: [u64; 4],
+    /// Sheet Right-to-Left.
+    right_to_left: bool,
 }
 
 fn has_setup(setup: &Value) -> bool {
@@ -116,6 +118,9 @@ fn main() {
             has_setup: has_setup(&setup),
             setup,
             extent,
+            right_to_left: engine
+                .layout(index as u32)
+                .is_some_and(|layout| layout.right_to_left),
         });
     }
     println!("{}", serde_json::to_string(&out).expect("pages as JSON"));

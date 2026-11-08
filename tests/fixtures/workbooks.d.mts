@@ -11,5 +11,7 @@ export function prefixedBook(): Buffer;
 export function printBook(): Buffer;
 export function brokenBooks(): Record<string, Buffer>;
 export function readZip(bytes: Buffer): [string, Buffer][];
+export function rightToLeftCopy(bytes: Buffer): Buffer;
+export function rightToLeftBook(options?: { rightToLeft?: boolean }): Buffer;
 export const MACRO_CODE: string;
 export const XF: Record<string, number>;

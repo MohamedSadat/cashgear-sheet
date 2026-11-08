@@ -1116,3 +1116,100 @@ export function readZip(bytes) {
   }
   return parts;
 }
+
+/**
+ * A copy of a workbook this file wrote with every worksheet right to left, as Sheet Right-to-Left
+ * in Excel leaves it: `rightToLeft="1"` on each sheet's first view.
+ */
+export function rightToLeftCopy(bytes) {
+  return zip(
+    readZip(bytes).map(([name, content]) => {
+      if (!/^xl\/worksheets\/[^/]+\.xml$/.test(name)) return [name, content];
+      let xml = content.toString('utf8');
+      if (/<sheetView\b/.test(xml)) {
+        xml = xml.replace(/<sheetView\b(?![^>]*rightToLeft)/, '<sheetView rightToLeft="1"');
+      } else {
+        // Views go before the sheet's format and data, after its properties and dimension.
+        xml = xml.replace(
+          /(<sheetFormatPr\b|<cols\b|<sheetData\b)/,
+          '<sheetViews><sheetView rightToLeft="1" workbookViewId="0"/></sheetViews>$1',
+        );
+      }
+      return [name, Buffer.from(xml, 'utf8')];
+    }),
+  );
+}
+
+/**
+ * A right-to-left sheet with what Excel 2016 mirrors and what it keeps, measured with CopyPicture
+ * for Phase 11: text in both directions, numbers, alignments, overflow both ways, a left and a right
+ * border, a merge, an indent, wrapping, rotation, a diagonal, centring across a selection, an
+ * autofilter, a note, data bars, icons, a frozen row and a chart. `rightToLeft` false gives the
+ * same sheet left to right.
+ */
+export function rightToLeftBook({ rightToLeft = true } = {}) {
+  const styles = `<styleSheet xmlns="${MAIN}"><fonts count="2"><font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font><font><b/><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFCCFFCC"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="5"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thick"><color rgb="FFFF0000"/></left><right/><top/><bottom/><diagonal/></border><border><left/><right style="thick"><color rgb="FF0000FF"/></right><top/><bottom/><diagonal/></border><border diagonalDown="1"><left/><right/><top/><bottom/><diagonal style="thick"><color auto="1"/></diagonal></border><border><left style="double"><color auto="1"/></left><right/><top/><bottom style="thin"><color auto="1"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="14"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="2" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1" applyAlignment="1"><alignment horizontal="center"/></xf><xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="left" indent="2"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment textRotation="45"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="3" xfId="0" applyBorder="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="centerContinuous"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="4" xfId="0" applyFont="1" applyBorder="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/></styleSheet>`;
+  const text = (ref, value, style = 0) =>
+    `<c r="${ref}" t="inlineStr"${style ? ` s="${style}"` : ''}><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
+  const num = (ref, value, style = 0) =>
+    `<c r="${ref}"${style ? ` s="${style}"` : ''}><v>${value}</v></c>`;
+  const rows = [
+    `<row r="1">${text('A1', 'Name', 13)}${text('B1', 'Qty', 13)}${text('C1', 'Note', 13)}${text('D1', 'left', 1)}${text('E1', 'right', 2)}${text('F1', 'mid', 3)}</row>`,
+    `<row r="2">${text('A2', 'abc')}${text('B2', 'مرحبا')}${num('C2', 123)}${text('D2', 'abc مر')}${text('E2', 'مر abc')}${text('F2', '42 مر')}</row>`,
+    `<row r="3">${text('A3', 'The quick brown fox jumps over')}</row>`,
+    `<row r="4">${text('A4', 'نص طويل جداً يمتد')}${text('E4', 'right overflow text', 2)}</row>`,
+    `<row r="5">${text('B5', 'spill from B over A')}${text('D5', 'centre overflow wide text', 3)}</row>`,
+    `<row r="6">${text('B6', 'L border', 4)}${text('D6', 'R border', 5)}${num('F6', 1234.5, 7)}</row>`,
+    `<row r="7">${text('A7', 'merged', 6)}${num('B7', 0, 6)}${text('C7', 'indent', 8)}${text('D7', 'across', 12)}<c r="E7" s="12"/><c r="F7" s="12"/></row>`,
+    `<row r="8" ht="60" customHeight="1">${text('A8', 'wrap text here please', 9)}${text('B8', 'abc def', 10)}<c r="C8" s="11"/></row>`,
+    `<row r="9">${num('A9', 10)}${num('B9', 10)}<c r="C9" t="b"><v>1</v></c><c r="D9" t="e"><f>1/0</f><v>#DIV/0!</v></c></row>`,
+    `<row r="10">${num('A10', 50)}${num('B10', 50)}</row>`,
+    `<row r="11">${num('A11', 90)}${num('B11', 90)}</row>`,
+  ];
+  const sheet =
+    `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}"><dimension ref="A1:F11"/>` +
+    `<sheetViews><sheetView${rightToLeft ? ' rightToLeft="1"' : ''} tabSelected="1" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/></sheetView></sheetViews>` +
+    `<sheetFormatPr defaultRowHeight="15"/><sheetData>${rows.join('')}</sheetData>` +
+    '<autoFilter ref="A1:C2"/><mergeCells count="1"><mergeCell ref="A7:B7"/></mergeCells>' +
+    '<conditionalFormatting sqref="A9:A11"><cfRule type="dataBar" priority="1"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar></cfRule></conditionalFormatting>' +
+    '<conditionalFormatting sqref="B9:B11"><cfRule type="iconSet" priority="2"><iconSet iconSet="3Arrows"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="67"/></iconSet></cfRule></conditionalFormatting>' +
+    '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>' +
+    '<drawing r:id="rDrawing"/><legacyDrawing r:id="rVml"/></worksheet>';
+  const comments = `${HEADER}<comments xmlns="${MAIN}"><authors><author>Test</author></authors><commentList><comment ref="E9" authorId="0"><text><t>A note</t></text></comment></commentList></comments>`;
+  const vml =
+    '<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><o:shapelayout v:ext="edit"><o:idmap v:ext="edit" data="1"/></o:shapelayout><v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype><v:shape id="_x0000_s1025" type="#_x0000_t202" style="position:absolute;margin-left:300pt;margin-top:120pt;width:100pt;height:50pt;visibility:hidden" fillcolor="#ffffe1" o:insetmode="auto"><v:fill color2="#ffffe1"/><v:shadow on="t" color="black" obscured="t"/><v:path o:connecttype="none"/><v:textbox/><x:ClientData ObjectType="Note"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>5, 15, 7, 10, 7, 31, 11, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>8</x:Row><x:Column>4</x:Column></x:ClientData></v:shape></xml>';
+  const drawing = `<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="${RELS}"><xdr:twoCellAnchor><xdr:from><xdr:col>6</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>9</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>9</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Chart 1"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart r:id="rId1"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>`;
+  const types = 'application/vnd.openxmlformats-officedocument';
+  return zip([
+    [
+      '[Content_Types].xml',
+      `${HEADER}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="vml" ContentType="${types}.vmlDrawing"/><Override PartName="/xl/workbook.xml" ContentType="${types}.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="${types}.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="${types}.spreadsheetml.styles+xml"/><Override PartName="/xl/comments1.xml" ContentType="${types}.spreadsheetml.comments+xml"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="${types}.drawing+xml"/><Override PartName="/xl/charts/chart1.xml" ContentType="${types}.drawingml.chart+xml"/></Types>`,
+    ],
+    [
+      '_rels/.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    ],
+    [
+      'xl/workbook.xml',
+      `${HEADER}<workbook xmlns="${MAIN}" xmlns:r="${RELS}"><bookViews><workbookView/></bookViews><sheets><sheet name="Mirrored" sheetId="1" r:id="rId1"/></sheets><definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">Mirrored!$A$1:$C$2</definedName></definedNames><calcPr calcId="191029"/></workbook>`,
+    ],
+    [
+      'xl/_rels/workbook.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${RELS}/styles" Target="styles.xml"/></Relationships>`,
+    ],
+    ['xl/styles.xml', HEADER + styles],
+    ['xl/worksheets/sheet1.xml', sheet],
+    [
+      'xl/worksheets/_rels/sheet1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rDrawing" Type="${RELS}/drawing" Target="../drawings/drawing1.xml"/><Relationship Id="rVml" Type="${RELS}/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/><Relationship Id="rComments" Type="${RELS}/comments" Target="../comments1.xml"/></Relationships>`,
+    ],
+    ['xl/comments1.xml', comments],
+    ['xl/drawings/vmlDrawing1.vml', vml],
+    ['xl/drawings/drawing1.xml', HEADER + drawing],
+    [
+      'xl/drawings/_rels/drawing1.xml.rels',
+      `${HEADER}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${RELS}/chart" Target="../charts/chart1.xml"/></Relationships>`,
+    ],
+    ['xl/charts/chart1.xml', HEADER + chartXml('Mirrored')],
+  ]);
+}

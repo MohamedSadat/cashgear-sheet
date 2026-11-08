@@ -1,7 +1,7 @@
 // Draws a sheet's pages into a recording: the cells with the tile drawing code, in the file's own
 // colours, with title rows and columns, headings, gridlines, drawings, and the header and footer.
 // `crates/cgs-engine/src/print.rs` says where pages break; this only draws what each page shows.
-import { drawTile, TILE_COLS, TILE_ROWS } from './tile-draw';
+import { drawTile, TILE_COLS, TILE_ROWS, visualColPx } from './tile-draw';
 import { RecordingContext, type Matrix, type PdfOp, type Recording } from './recording';
 import type { SheetLayout } from './layout';
 import type { ViewBlock } from './view-block';
@@ -190,6 +190,10 @@ function edgesOf(sizes: ArrayLike<number>, axis: Axis): Float64Array {
   return edges;
 }
 
+/**
+ * Draws cells with their top left at `x`, `y`. On a right-to-left sheet `x` is still the area's
+ * left, and its first column is on the right.
+ */
 async function drawCells(
   context: RecordingContext,
   blocks: Blocks,
@@ -202,6 +206,7 @@ async function drawCells(
   x: number,
   y: number,
 ) {
+  const rtl = palette.rightToLeft === true;
   const width = colAxis.sum(cols[0], cols[1]);
   const height = rowAxis.sum(rows[0], rows[1]);
   if (!width || !height) return;
@@ -223,13 +228,15 @@ async function drawCells(
       const firstRow = tr * TILE_ROWS + 1;
       const firstCol = tc * TILE_COLS + 1;
       const block = await blocks.get(firstRow - 1, firstCol - 1);
+      const xs = edgesOf(visualColPx(block, rtl), colAxis);
+      const along = colAxis.offset(cols[0], firstCol);
       context.save();
       context.translate(
-        x + colAxis.offset(cols[0], firstCol),
+        rtl ? x + width - along - xs[xs.length - 1]! : x + along,
         y + rowAxis.offset(rows[0], firstRow),
       );
       drawTile(context as never, block, palette, units.scale, {
-        xs: edgesOf(block.colPx, colAxis),
+        xs,
         ys: edgesOf(block.rowPx, rowAxis),
         perPixelX: units.perPixelX,
         perPixelY: units.perPixelY,
@@ -240,6 +247,10 @@ async function drawCells(
   context.restore();
 }
 
+/**
+ * The row and column headings. On a right-to-left sheet the row numbers are on the right of a
+ * block `blockW` wide, and the column letters run from there to the left.
+ */
 function drawHeadings(
   context: RecordingContext,
   rowAxis: Axis,
@@ -249,7 +260,9 @@ function drawHeadings(
   headW: number,
   headH: number,
   line: number,
+  blockW: number | null,
 ) {
+  const place = (x: number, w: number) => (blockW === null ? x : blockW - x - w);
   context.save();
   context.strokeStyle = PRINT_GRIDLINE;
   context.fillStyle = '#000000';
@@ -258,24 +271,26 @@ function drawHeadings(
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   context.direction = 'ltr';
-  context.strokeRect(line / 2, line / 2, headW - line, headH - line);
+  context.strokeRect(place(0, headW) + line / 2, line / 2, headW - line, headH - line);
   let x = headW;
   for (const [first, last] of lines.cols) {
     for (let col = first; col <= last; col++) {
       const w = colAxis.size(col);
       if (!w) continue;
-      context.strokeRect(x + line / 2, line / 2, w - line, headH - line);
-      context.fillText(columnName(col), x + w / 2, headH / 2);
+      const left = place(x, w);
+      context.strokeRect(left + line / 2, line / 2, w - line, headH - line);
+      context.fillText(columnName(col), left + w / 2, headH / 2);
       x += w;
     }
   }
   let y = headH;
+  const rowLeft = place(0, headW);
   for (const [first, last] of lines.rows) {
     for (let row = first; row <= last; row++) {
       const h = rowAxis.size(row);
       if (!h) continue;
-      context.strokeRect(line / 2, y + line / 2, headW - line, h - line);
-      context.fillText(String(row), headW / 2, y + h / 2);
+      context.strokeRect(rowLeft + line / 2, y + line / 2, headW - line, h - line);
+      context.fillText(String(row), rowLeft + headW / 2, y + h / 2);
       y += h;
     }
   }
@@ -524,12 +539,20 @@ async function recordPage(
     text: '#000000',
     fontFamily: options.fontFamily,
     showGrid: info.gridlines && !info.draft,
+    rightToLeft: layout.rightToLeft,
   };
+  const rtl = layout.rightToLeft;
   const headW = info.headingSize ? colAxis.unit(info.headingSize[0]) : 0;
   const headH = info.headingSize ? rowAxis.unit(info.headingSize[1]) : 0;
   const titleW = page.titleCols ? colAxis.sum(page.titleCols[0], page.titleCols[1]) : 0;
   const titleH = page.titleRows ? rowAxis.sum(page.titleRows[0], page.titleRows[1]) : 0;
-  const cellsX = headW + titleW;
+  const pageW = colAxis.sum(page.cols[0], page.cols[1]);
+  // A right-to-left sheet prints mirrored, as Excel prints it: headings on the right, then the
+  // title columns, then the page's own columns running to the left.
+  const blockW = headW + titleW + pageW;
+  const place = (x: number, w: number) => (rtl ? blockW - x - w : x);
+  const titleX = place(headW, titleW);
+  const cellsX = place(headW + titleW, pageW);
   const cellsY = headH + titleH;
   const rowLines: [number, number][] = [...(page.titleRows ? [page.titleRows] : []), page.rows];
   const colLines: [number, number][] = [...(page.titleCols ? [page.titleCols] : []), page.cols];
@@ -544,7 +567,7 @@ async function recordPage(
       units,
       page.titleRows,
       page.titleCols,
-      headW,
+      titleX,
       headH,
     );
   }
@@ -572,7 +595,7 @@ async function recordPage(
       units,
       page.rows,
       page.titleCols,
-      headW,
+      titleX,
       cellsY,
     );
   }
@@ -589,12 +612,14 @@ async function recordPage(
     cellsY,
   );
   if (palette.showGrid) {
-    // The tiles draw each cell's right and bottom lines; the printout's top and left close it.
-    const w = titleW + colAxis.sum(page.cols[0], page.cols[1]);
+    // The tiles draw each cell's line after it and its bottom line; the printout's top and its
+    // side before the first column close it, which is its right on a right-to-left sheet.
+    const w = titleW + pageW;
     const h = titleH + rowAxis.sum(page.rows[0], page.rows[1]);
+    const left = place(headW, w);
     context.fillStyle = PRINT_GRIDLINE;
-    context.fillRect(headW, headH, w, units.scale);
-    context.fillRect(headW, headH, units.scale, h);
+    context.fillRect(left, headH, w, units.scale);
+    context.fillRect(rtl ? left + w - units.scale : left, headH, units.scale, h);
   }
   if (info.headingSize) {
     const size = ((info.font.size * 96) / 72) * units.scale;
@@ -608,20 +633,23 @@ async function recordPage(
       headW,
       headH,
       units.scale,
+      rtl ? blockW : null,
     );
   }
   if (!info.draft) {
     // Drawings stay where their cells are and keep their own size, as Excel prints them.
     const left = colPx.sum(1, page.cols[0] - 1);
     const top = rowPx.sum(1, page.rows[0] - 1);
-    const width = colAxis.sum(page.cols[0], page.cols[1]);
+    const width = pageW;
     const height = rowAxis.sum(page.rows[0], page.rows[1]);
     for (const drawing of sheet.drawings) {
       if (drawing.prints === false) continue;
-      const x = (drawing.x - left) * units.perPixelX;
-      const y = (drawing.y - top) * units.perPixelY;
       const w = drawing.width * units.scale;
       const h = drawing.height * units.scale;
+      // From the right on a right-to-left sheet, as Excel places them; never turned over.
+      const along = (drawing.x - left) * units.perPixelX;
+      const x = rtl ? width - along - w : along;
+      const y = (drawing.y - top) * units.perPixelY;
       if (x >= width || y >= height || x + w <= 0 || y + h <= 0) continue;
       context.save();
       context.beginPath();

@@ -130,6 +130,9 @@ pub struct Layout {
     pub order: PageOrder,
     /// Excel's printer units for the workbook's normal font.
     pub units: Units,
+    /// A right-to-left sheet prints against the right margin, mirrored. Its pages break where a
+    /// left-to-right one's do.
+    pub right_to_left: bool,
 }
 
 /// One page: which cells it shows and where they go on the paper.
@@ -309,6 +312,8 @@ fn pages_at(
             let x = left
                 + if layout.center.0 {
                     ((printable_w - width) / 2.0).max(0.0)
+                } else if layout.right_to_left {
+                    (printable_w - width).max(0.0)
                 } else {
                     0.0
                 };
@@ -729,6 +734,7 @@ impl Session {
                 let font = self.book.styles.normal_font();
                 Units::for_font(&font.name, font.size)
             },
+            right_to_left: info.view.right_to_left,
         })
     }
 
@@ -844,6 +850,7 @@ mod tests {
             center: (false, false),
             order: PageOrder::DownThenOver,
             units: Units::EXCEL,
+            right_to_left: false,
         }
     }
 
@@ -859,6 +866,31 @@ mod tests {
     // Excel's default row and column: 20 and 64 pixels.
     const ROW: &dyn Fn(u32) -> u32 = &|_| 20;
     const COL: &dyn Fn(u32) -> u32 = &|_| 64;
+
+    #[test]
+    fn a_right_to_left_sheet_breaks_alike_and_prints_against_the_right_margin() {
+        let ltr = paginate(&layout(vec![area(1, 1, 60, 14)]), ROW, COL);
+        let rtl = paginate(
+            &Layout {
+                right_to_left: true,
+                ..layout(vec![area(1, 1, 60, 14)])
+            },
+            ROW,
+            COL,
+        );
+        assert_eq!(ltr.row_breaks, rtl.row_breaks);
+        assert_eq!(ltr.col_breaks, rtl.col_breaks);
+        assert_eq!(ltr.pages.len(), rtl.pages.len());
+        for (left, right) in ltr.pages.iter().zip(&rtl.pages) {
+            assert_eq!((left.rows, left.cols), (right.rows, right.cols));
+            // Measured with ExportAsFixedFormat: the block's right edge is on the right margin.
+            assert!(
+                (right.x + right.width - (612.0 - 50.4)).abs() < 1e-6,
+                "{right:?}"
+            );
+            assert!((left.x - 50.4).abs() < 1e-6);
+        }
+    }
 
     #[test]
     fn a_letter_page_holds_what_excel_puts_on_it() {

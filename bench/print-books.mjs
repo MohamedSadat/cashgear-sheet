@@ -19,7 +19,7 @@ const styles = (font = 'Calibri', size = 11) =>
  * size some lines; `hiddenRows` and `hiddenCols` hide some; `xml` adds page setup elements after
  * sheetData, `pr` goes in sheetPr, and `names` are defined names for the sheet.
  */
-function book({
+function makeBook({
   rows = 150,
   cols = 20,
   start = [1, 1],
@@ -33,6 +33,7 @@ function book({
   names = '',
   font,
   extra = '',
+  rightToLeft = false,
 }) {
   const body = [];
   const last = start[0] + rows - 1;
@@ -54,7 +55,7 @@ function book({
   const sheet =
     `${HEADER}<worksheet xmlns="${MAIN}" xmlns:r="${RELS}">` +
     (pr ? `<sheetPr>${pr}</sheetPr>` : '') +
-    `<sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr${format.includes('defaultRowHeight') ? '' : ' defaultRowHeight="15"'}${format}/>` +
+    `<sheetViews><sheetView${rightToLeft ? ' rightToLeft="1"' : ''} workbookViewId="0"/></sheetViews><sheetFormatPr${format.includes('defaultRowHeight') ? '' : ' defaultRowHeight="15"'}${format}/>` +
     (colsXml.length ? `<cols>${colsXml.join('')}</cols>` : '') +
     `<sheetData>${body.join('')}</sheetData>` +
     (xml ||
@@ -90,7 +91,9 @@ const name = (kind, text) =>
   `<definedName name="_xlnm.${kind}" localSheetId="0">${text}</definedName>`;
 
 /** Every case, by file name. */
-export function printBooks() {
+/** With `rightToLeft`, every sheet is right to left, for Phase 11. */
+export function printBooks({ rightToLeft = false } = {}) {
+  const book = (options) => makeBook({ ...options, rightToLeft });
   return {
     'letter-portrait.xlsx': book({}),
     'a4-portrait.xlsx': book({ xml: setup('paperSize="9" orientation="portrait"') }),
