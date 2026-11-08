@@ -18,3 +18,5 @@ serde_json = "1"
 cgs-xlsx = { path = "../cgs-xlsx" }
 js-sys = "=0.3.106"
 wasm-bindgen.workspace = true
+# The engine's allocator, with memory grown in large steps (see `src/alloc.rs`).
+dlmalloc = "0.2"

@@ -1182,7 +1182,7 @@ impl CalcEngine for FormualizerEngine {
         text: &str,
         shape: FormulaShape,
     ) -> Result<()> {
-        let name = self.sheet_name(sheet)?.to_string();
+        self.sheet_name(sheet)?;
         let extent = &mut self.extents[sheet as usize];
         extent.0 = extent.0.max(row);
         extent.1 = extent.1.max(col);
@@ -1220,7 +1220,10 @@ impl CalcEngine for FormualizerEngine {
                 staged
             }
         };
+        // The name is lent to the engine rather than copied, as this runs for every formula.
+        let name = std::mem::take(&mut self.sheets[sheet as usize]);
         self.engine().stage_formula_text(&name, row, col, staged);
+        self.sheets[sheet as usize] = name;
         Ok(())
     }
 
@@ -2000,6 +2003,11 @@ impl FormualizerEngine {
 
 /// Whether a formula reads its own row of a table, which the engine turns into cells.
 fn uses_this_row(text: &str) -> bool {
+    // Most formulas have neither mark, and this runs for every formula a file holds.
+    let bytes = text.as_bytes();
+    if !bytes.iter().any(|&b| b == b'[' || b == b'#') {
+        return false;
+    }
     text.contains("[@") || text.to_ascii_lowercase().contains("#this row")
 }
 

@@ -1,6 +1,8 @@
 //! The only JS-facing API. It runs in the engine worker, on web and on desktop.
 #![cfg(target_arch = "wasm32")]
 
+mod alloc;
+
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::rc::Rc;
