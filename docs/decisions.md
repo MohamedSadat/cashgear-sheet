@@ -590,3 +590,14 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | The ribbon icon for Sheet Right-to-Left | The library's `align-right` icon for now; a text direction icon is a Track U job |
 | Pages of a right-to-left sheet | Measured with ExportAsFixedFormat: pages break as they would left to right, in the same order. Each page prints against the right margin (or centred, when centring is on), with row headings on the right and columns running left. Header and footer sections stay where they are |
 | Notes' corners on paper | Not printed, in either direction, as Excel never prints them |
+
+## 2026-11-08: Phase 12
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| How a save stops holding the engine | In slices: the writer yields between rows and parts in the engine worker, tiles and reads are served between slices, and the status bar shows progress. There stays one copy of the cells. A copy-on-write snapshot wasn't chosen |
+| Edits made during a save | Queued behind it in the command queue, landing after the save with the right answers. They aren't refused |
+| A book estimated past the ceiling before reading | Refused at once with the existing "too large to open here" message only when the estimate is clearly past the ceiling. Books near it open as before, and the 3 GB status bar warning still applies. No warning before reading |
+| How Open with is checked for the installed web app | Automated: a test installs the web app in Chrome and in Edge, then opens an `.xlsx` through the shell command the browser registered for it, as Phase 9 did with the desktop's ProgID. A real Open with in Explorer stays yours to try |
