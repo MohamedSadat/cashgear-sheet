@@ -3,7 +3,8 @@
 // side-by-side page to review by eye. The app's PDFs must pass `qpdf --check` and read back their
 // text, Arabic included. Generated workbooks and fixtures only.
 // Needs the app served at E2E_BASE_URL, such as `pnpm dev:web` or `pnpm preview`.
-// Usage: node bench/run-pdf-review.mjs [out-folder] [--no-excel]
+// With `--rtl`, Phase 11's right-to-left books go through instead.
+// Usage: node bench/run-pdf-review.mjs [out-folder] [--no-excel] [--rtl]
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -14,9 +15,10 @@ import { pdfText } from './pdf-text.mjs';
 import { renderPdf } from './pdf-render.mjs';
 import { printBooks } from './print-books.mjs';
 
+const rightToLeft = process.argv.includes('--rtl');
 const folder = resolve(
   process.argv.slice(2).find((arg) => !arg.startsWith('--')) ??
-    join(root, 'bench/results/pdf-review'),
+    join(root, rightToLeft ? 'bench/results/pdf-review-rtl' : 'bench/results/pdf-review'),
 );
 const withExcel = !process.argv.includes('--no-excel');
 const base = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:5173';
@@ -30,11 +32,15 @@ const generated = join(folder, 'books');
 mkdirSync(generated, { recursive: true });
 const picks = ['letter-portrait.xlsx', 'titles-both.xlsx', 'everything.xlsx', 'headings.xlsx'];
 const books = [
-  join(fixtures, 'print.xlsx'),
-  join(fixtures, 'formatting.xlsx'),
-  join(fixtures, 'arabic.xlsx'),
-  join(fixtures, 'pivot.xlsx'),
-  ...Object.entries(printBooks())
+  ...(rightToLeft
+    ? [join(fixtures, 'rtl-print.xlsx'), join(fixtures, 'rtl.xlsx')]
+    : [
+        join(fixtures, 'print.xlsx'),
+        join(fixtures, 'formatting.xlsx'),
+        join(fixtures, 'arabic.xlsx'),
+        join(fixtures, 'pivot.xlsx'),
+      ]),
+  ...Object.entries(printBooks({ rightToLeft }))
     .filter(([name]) => picks.includes(name))
     .map(([name, bytes]) => {
       const path = join(generated, name);

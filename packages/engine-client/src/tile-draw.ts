@@ -385,7 +385,8 @@ class Painter {
       } else if (!over && mark.kind === MARK_ICON) {
         const size = Math.min(height - 2 * pixel, Math.round(16 * this.scale));
         drawIcon(context, mark.icon, left + 2 * pixel, top + (height - size) / 2, size);
-      } else if (over && (mark.kind === MARK_NOTE || mark.kind === MARK_THREAD)) {
+      } else if (over && (mark.kind === MARK_NOTE || mark.kind === MARK_THREAD) && !this.edges) {
+        // Notes' corners show on screen only: Excel never prints them.
         const size = 5 * pixel;
         context.fillStyle = mark.kind === MARK_NOTE ? '#d00000' : '#7b45b8';
         // In the cell's top corner after its text: its left on a right-to-left sheet.

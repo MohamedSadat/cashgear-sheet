@@ -370,6 +370,16 @@ Object.assign(MOVES, {
     { kind: 'freeze', sheet: 0, rows: 0, cols: 0 },
   ],
   'no gridlines or headings': [{ kind: 'viewFlags', sheet: 0, grid: false, headings: false }],
+  'sheet right to left': [{ kind: 'viewFlags', sheet: 0, rightToLeft: true }],
+  'sheet right to left, then back': [
+    { kind: 'viewFlags', sheet: 0, rightToLeft: true },
+    { kind: 'viewFlags', sheet: 0, rightToLeft: false },
+  ],
+  'right to left with panes frozen': [
+    { kind: 'viewFlags', sheet: 0, rightToLeft: true },
+    { kind: 'freeze', sheet: 0, rows: 2, cols: 1 },
+  ],
+  'a new right-to-left sheet': [{ kind: 'insertSheet', position: 1, rightToLeft: true }],
   'cells inserted down': [{ kind: 'shiftCells', sheet: 0, area: cells(40, 2, 41, 3), down: true }],
   'cells inserted across': [
     { kind: 'shiftCells', sheet: 0, area: cells(40, 2, 41, 3), down: false },
@@ -951,6 +961,8 @@ const MOVED = {
   'defaults.xlsx': 'xlsx',
   'macro.xlsm': 'xlsm',
   'print.xlsx': 'xlsx',
+  'rtl.xlsx': 'xlsx',
+  'rtl-print.xlsx': 'xlsx',
 };
 
 try {
