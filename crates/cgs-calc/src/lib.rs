@@ -4,6 +4,7 @@
 mod file_formula;
 pub mod formualizer;
 mod intersect;
+pub mod pivot_data;
 
 mod clock;
 

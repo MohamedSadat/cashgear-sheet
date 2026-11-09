@@ -58,6 +58,8 @@ pub struct FormualizerEngine {
     workbook: Workbook,
     /// The conventions `TEXT` follows, which the shell sets from the user's language.
     locale: Arc<RwLock<Locale>>,
+    /// The pivot tables GETPIVOTDATA reads, which the engine sets after laying them out.
+    pivots: crate::pivot_data::PivotIndex,
     sheets: Vec<String>,
     /// Sheets that have been deleted, whose indexes stay taken so that an undo can bring them back.
     gone: Vec<bool>,
@@ -196,7 +198,11 @@ fn text_function(
         .map_err(|()| ExcelError::new(ExcelErrorKind::Value))
 }
 
-fn new_workbook(date1904: bool, locale: &Arc<RwLock<Locale>>) -> Workbook {
+fn new_workbook(
+    date1904: bool,
+    locale: &Arc<RwLock<Locale>>,
+    pivots: &crate::pivot_data::PivotIndex,
+) -> Workbook {
     let mut workbook = Workbook::new_with_config(config(date1904));
     let locale = Arc::clone(locale);
     let handler = move |args: &[LiteralValue]| text_function(args, date1904, &locale);
@@ -210,6 +216,23 @@ fn new_workbook(date1904: bool, locale: &Arc<RwLock<Locale>>) -> Workbook {
     };
     // It can only fail on a clash of names, and this is the first thing on a new workbook.
     let _ = workbook.register_custom_function("TEXT", options, Arc::new(handler));
+    // GETPIVOTDATA reads the pivot tables as last laid out, so it runs on every recalculation.
+    let pivots = Arc::clone(pivots);
+    let pivot_data = move |args: &[LiteralValue]| crate::pivot_data::get_pivot_data(args, &pivots);
+    let options = CustomFnOptions {
+        min_args: 2,
+        max_args: None,
+        volatile: true,
+        thread_safe: true,
+        deterministic: false,
+        allow_override_builtin: true,
+    };
+    let _ = workbook.register_custom_function_with_references(
+        "GETPIVOTDATA",
+        options,
+        &[1],
+        Arc::new(pivot_data),
+    );
     workbook
 }
 
@@ -370,9 +393,11 @@ fn reads_another_workbook(text: &str) -> bool {
 impl FormualizerEngine {
     pub fn new() -> Self {
         let locale = Arc::new(RwLock::new(Locale::en_us()));
+        let pivots = crate::pivot_data::PivotIndex::default();
         Self {
-            workbook: new_workbook(false, &locale),
+            workbook: new_workbook(false, &locale, &pivots),
             locale,
+            pivots,
             sheets: Vec::new(),
             gone: Vec::new(),
             names: Vec::new(),
@@ -418,6 +443,21 @@ impl FormualizerEngine {
             changed = true;
         }
         changed.then(|| text.into_owned())
+    }
+
+    /// The pivot tables as GETPIVOTDATA reads them.
+    pub fn pivots(&self) -> Vec<crate::pivot_data::PivotLookup> {
+        self.pivots
+            .read()
+            .map(|tables| tables.clone())
+            .unwrap_or_default()
+    }
+
+    /// The pivot tables GETPIVOTDATA reads from now on.
+    pub fn set_pivots(&mut self, tables: Vec<crate::pivot_data::PivotLookup>) {
+        if let Ok(mut current) = self.pivots.write() {
+            *current = tables;
+        }
     }
 
     /// Sets the conventions `TEXT` follows for built-in date and number forms.
@@ -957,7 +997,7 @@ fn borrow_value(value: &CalcValue) -> Option<LoadValue<'_>> {
 
 impl CalcEngine for FormualizerEngine {
     fn begin_load(&mut self, book: &BookInfo) -> Result<()> {
-        self.workbook = new_workbook(book.date1904, &self.locale);
+        self.workbook = new_workbook(book.date1904, &self.locale, &self.pivots);
         self.sheets = book.sheets.clone();
         self.gone = vec![false; book.sheets.len()];
         self.names = book.names.clone();
