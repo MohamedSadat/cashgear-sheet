@@ -14,6 +14,7 @@ pub mod command;
 pub mod duplicates;
 pub mod dv;
 pub mod edit;
+mod erp;
 pub mod errors;
 mod fill;
 pub mod filter;
@@ -124,6 +125,13 @@ struct Session {
     cache: tile::TileCache,
     phase: LoadPhase,
     last_progress: (u64, u64),
+    /// Tables bound to ERP records, which the identity guard keeps whole.
+    bindings: cgs_bind::Bindings,
+    /// Undo, redo and rollback replay only what the guard let through, so they skip it.
+    unguarded: bool,
+    /// Whether commands are checked against bound tables before they run. Only tests turn it
+    /// off, to show the content rule refuses the same edits on its own.
+    erp_precheck: bool,
 }
 
 /// The engine a worker holds.
@@ -135,6 +143,8 @@ pub struct Engine {
     /// have more, so only WASM checks unless told to.
     check_size: bool,
     session: Option<Session>,
+    /// ERP record pages on their way into a binding, kept apart from the workbook they go into.
+    erp: Option<erp::ErpStaging>,
 }
 
 impl Default for Engine {
@@ -255,6 +265,7 @@ impl Engine {
             today: 45_000.0,
             check_size: cfg!(target_arch = "wasm32"),
             session: None,
+            erp: None,
         }
     }
 
@@ -304,6 +315,9 @@ impl Engine {
             cache: tile::TileCache::default(),
             phase: LoadPhase::Reading,
             last_progress: (0, 0),
+            bindings: cgs_bind::Bindings::default(),
+            unguarded: false,
+            erp_precheck: true,
         });
         Ok(())
     }

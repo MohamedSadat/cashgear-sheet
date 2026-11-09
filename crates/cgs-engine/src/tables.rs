@@ -1162,7 +1162,7 @@ impl Session {
             .calc
             .tables()
             .iter()
-            .filter(|table| table.sheet == sheet)
+            .filter(|table| table.sheet == sheet && !self.is_bound_table(&table.name))
         {
             let t = info.range;
             // A fill writes into the table and beside it at once; what's beside it counts.

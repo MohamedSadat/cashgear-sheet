@@ -7,6 +7,7 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cgs-bind.workspace = true
 cgs-calc = { path = "../cgs-calc" }
 cgs-model.workspace = true
 cgs-numfmt = { path = "../cgs-numfmt" }

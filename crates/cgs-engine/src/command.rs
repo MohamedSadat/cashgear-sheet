@@ -1217,6 +1217,8 @@ impl Session {
                 return Err("That cell is off the sheet.".to_string());
             }
         }
+        // ERP records keep their keys: every cell write passes the identity guard.
+        self.guard_cells(&edits)?;
         let mut inputs = Vec::with_capacity(edits.len());
         let mut before_styles = Vec::with_capacity(edits.len());
         for edit in &edits {
@@ -1570,6 +1572,9 @@ impl Session {
                 right: (edit.at + edit.count - 1).min(edit.axis.max()),
             },
         };
+        if back.is_none() {
+            self.guard_axis(sheet, &edit)?;
+        }
         if back.is_none() && self.array_blocks(sheet, area, &edit) {
             return Err("You can't change part of an array.".to_string());
         }
@@ -1743,6 +1748,7 @@ impl Session {
                 Ok(Op::Names(names))
             }
             Op::Tables(tables) => {
+                self.guard_calc_tables(&tables)?;
                 let before = self.calc.tables().to_vec();
                 self.calc.restore_tables(&tables).map_err(|error| error.0)?;
                 for table in &tables {
@@ -1866,6 +1872,7 @@ impl Session {
                 records,
             } => Ok(self.apply_book_pivots(tables, caches, records)),
             Op::BookTables(tables) => {
+                self.guard_book_tables(&tables)?;
                 for table in tables.iter().chain(self.book.tables.iter()) {
                     self.dirty.sheets.insert(table.sheet);
                 }
@@ -1912,6 +1919,7 @@ impl Session {
                 Ok(Op::RemoveSheet { sheet })
             }
             Op::RemoveSheet { sheet } => {
+                self.guard_sheet(sheet)?;
                 let position = self
                     .book
                     .tab_order()
@@ -2174,9 +2182,22 @@ impl Session {
             } => Ok(self.apply_view(sheet, view, freeze)),
             Op::PageSetup { sheet, page } => self.apply_page(sheet, *page),
             Op::Many(list) => {
+                let log = self.edits.ops.len();
                 let mut undo = Vec::with_capacity(list.len());
                 for op in list {
-                    undo.push(self.apply_op(op)?);
+                    match self.apply_op(op) {
+                        Ok(inverse) => undo.push(inverse),
+                        Err(problem) => {
+                            // What went in comes out again, so a refusal changes nothing.
+                            self.unguarded(|session| {
+                                while let Some(inverse) = undo.pop() {
+                                    let _ = session.apply_op(inverse);
+                                }
+                            });
+                            self.edits.ops.truncate(log);
+                            return Err(problem);
+                        }
+                    }
                 }
                 undo.reverse();
                 Ok(Op::Many(undo))
@@ -2513,9 +2534,11 @@ impl Session {
                 }
                 Ok(None) => break,
                 Err(problem) => {
-                    while let Some(inverse) = undo.pop() {
-                        let _ = self.apply_op(inverse);
-                    }
+                    self.unguarded(|session| {
+                        while let Some(inverse) = undo.pop() {
+                            let _ = session.apply_op(inverse);
+                        }
+                    });
                     self.edits.ops.truncate(log_before);
                     self.sync_book_tables();
                     return Err(problem);
@@ -2589,7 +2612,7 @@ impl Session {
         };
         self.history.bytes -= step.bytes;
         let op = std::mem::replace(&mut step.op, Op::Many(Vec::new()));
-        let inverse = self.apply_op(op)?;
+        let inverse = self.unguarded(|session| session.apply_op(op))?;
         self.sync_book_tables();
         self.touched_rows.clear();
         step.bytes = inverse.bytes();
@@ -2619,7 +2642,7 @@ impl Session {
         let op = std::mem::replace(&mut step.op, Op::Many(Vec::new()));
         step.log_before = self.edits.ops.len();
         step.log_file = self.history.file;
-        let inverse = self.apply_op(op)?;
+        let inverse = self.unguarded(|session| session.apply_op(op))?;
         self.sync_book_tables();
         self.touched_rows.clear();
         step.bytes = inverse.bytes();
@@ -3282,6 +3305,9 @@ impl Session {
             return Err(format!("This workbook can't be edited here: {reason}"));
         }
         if let Some(refused) = self.protection_refusal(&command) {
+            return Err(refused.to_string());
+        }
+        if let Some(refused) = self.binding_refusal(&command) {
             return Err(refused.to_string());
         }
         match command {
