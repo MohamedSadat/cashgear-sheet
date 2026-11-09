@@ -115,6 +115,21 @@ try {
         if ($check.Ignore) { $ignored += $rules[$n] }
       }
       $cell.errors = ($found -join ',')
+      # Each character's look, as `Characters` reads it: b, i, ^ for superscript, _ for subscript.
+      $looks = @()
+      $count = [int]$range.Characters().Count
+      if ($ask.chars -and $count -le 200) {
+        for ($at = 1; $at -le $count; $at++) {
+          $font = $range.Characters($at, 1).Font
+          $code = ''
+          if ($font.Bold) { $code += 'b' }
+          if ($font.Italic) { $code += 'i' }
+          if ($font.Superscript) { $code += '^' }
+          if ($font.Subscript) { $code += '_' }
+          $looks += $code
+        }
+      }
+      $cell.chars = ($looks -join '|')
       $cell.ignored = ($ignored -join ',')
       $comment = $range.Comment
       if ($null -ne $comment) {

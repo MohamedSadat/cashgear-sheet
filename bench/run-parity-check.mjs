@@ -246,6 +246,42 @@ const CASES = {
       { sheet: 'Sheet1', cell: 'A5', errors: '', ignored: '' },
     ],
   },
+  'rich text typed with runs, pasted and moved, as Excel reads each character': {
+    source: 'blank',
+    commands: [
+      {
+        kind: 'richInput',
+        sheet: 0,
+        row: 1,
+        col: 1,
+        text: 'H2O is wet',
+        runs: [
+          { start: 0 },
+          { start: 1, font: { vertAlign: 'subscript' } },
+          { start: 2 },
+          { start: 7, font: { bold: true, italic: true } },
+        ],
+      },
+      {
+        kind: 'richInput',
+        sheet: 0,
+        row: 2,
+        col: 1,
+        text: 'x2',
+        runs: [{ start: 0 }, { start: 1, font: { vertAlign: 'superscript' } }],
+      },
+      { kind: 'paste', fromSheet: 0, from: cell(1, 1), sheet: 0, to: cell(4, 3) },
+      { kind: 'move', fromSheet: 0, from: cell(2, 1), sheet: 0, row: 6, col: 2 },
+      { kind: 'format', sheet: 0, areas: [cell(8, 1)], change: { vertAlign: 'superscript' } },
+      { kind: 'input', sheet: 0, row: 8, col: 1, text: 'up' },
+    ],
+    excelCells: [
+      { sheet: 'Sheet1', cell: 'A1', chars: '|_||||||bi|bi|bi' },
+      { sheet: 'Sheet1', cell: 'C4', chars: '|_||||||bi|bi|bi' },
+      { sheet: 'Sheet1', cell: 'B6', chars: '|^' },
+      { sheet: 'Sheet1', cell: 'A8', chars: '^|^' },
+    ],
+  },
   'protection taken off again': {
     source: 'blank',
     commands: [
@@ -318,10 +354,9 @@ try {
     writeFileSync(
       probe,
       JSON.stringify({
-        cells: [...(spec.cells ?? []), ...(spec.excelCells ?? [])].map(({ sheet, cell }) => ({
-          sheet,
-          cell,
-        })),
+        cells: [...(spec.cells ?? []), ...(spec.excelCells ?? [])].map(
+          ({ sheet, cell, chars }) => ({ sheet, cell, chars: chars !== undefined }),
+        ),
         unprotect: (spec.unprotect ?? []).map(({ sheet, password }) => ({ sheet, password })),
       }),
     );

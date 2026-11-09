@@ -1,7 +1,7 @@
 // Phase 13's Excel parity polish through the UI, each as Excel 2016 measured over COM does it:
 // hiding and showing sheets with the zoom saved per sheet, sheet and workbook protection,
 // notes in their box beside the cell with Remove Hyperlink, sorting and filtering by colour, and
-// error checking with circular references.
+// error checking with circular references, and rich text edited in the cell.
 import { expect, test, type Page } from '@playwright/test';
 import { readZip } from '../fixtures/workbooks.mjs';
 import { FONT_OVERRIDE, waitForGrid } from './helpers.mjs';
@@ -463,5 +463,45 @@ test.describe('error checking', () => {
     await expect(page.getByTestId('circular-status')).toHaveText('Circular References: A1');
     await typeIn(page, 'B1', '7');
     await expect(page.getByTestId('circular-status')).toHaveCount(0);
+  });
+});
+
+test.describe('rich text in the cell', () => {
+  test('characters selected while editing take a font of their own, and keep it when copied', async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await goTo(page, 'A1');
+    await page.keyboard.type('Bold plain');
+    // F2 edits in the cell, where Shift and the arrows select characters.
+    await page.keyboard.press('F2');
+    await page.keyboard.press('Home');
+    for (let at = 0; at < 4; at++) await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Control+b');
+    const rich = page.getByTestId('cell-editor-rich');
+    await expect(rich).toBeVisible();
+    await expect(rich.locator('span').first()).toHaveText('Bold');
+    await expect(rich.locator('span').first()).toHaveCSS('font-weight', '700');
+    await page.keyboard.press('Enter');
+    await shows(page, 1, 1).toBe('Bold plain');
+    const strings = await savedPart(page, 'xl/sharedStrings.xml');
+    expect(strings).toContain(
+      '<si><r><rPr><b/></rPr><t xml:space="preserve">Bold</t></r><r><t xml:space="preserve"> plain</t></r></si>',
+    );
+    // Edited again, the cell opens with its runs.
+    await goTo(page, 'A1');
+    await page.keyboard.press('F2');
+    await expect(rich.locator('span')).toHaveCount(2);
+    await page.keyboard.press('Escape');
+    // Copied and pasted, the copy is rich too.
+    await goTo(page, 'A1');
+    await page.keyboard.press('Control+c');
+    await goTo(page, 'C3');
+    await page.keyboard.press('Control+v');
+    await shows(page, 3, 3).toBe('Bold plain');
+    // Its runs went with it: the saved strings hold the bold run twice.
+    const copied = await savedPart(page, 'xl/sharedStrings.xml');
+    expect(copied.match(/<rPr><b\/><\/rPr><t xml:space="preserve">Bold<\/t>/g)).toHaveLength(2);
   });
 });
