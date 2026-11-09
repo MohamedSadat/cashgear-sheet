@@ -1311,54 +1311,14 @@ impl CalcEngine for FormualizerEngine {
         self.adopt()?;
         self.slice.reset();
         self.idle = false;
-        let mut previous = Vec::with_capacity(edits.len());
-        for edit in edits {
-            let name = self.sheet_name(edit.at.sheet)?.to_string();
-            let (row, col) = (edit.at.row, edit.at.col);
-            previous.push(CellEdit {
-                at: edit.at,
-                input: self.cell_input(edit.at),
-            });
-            self.linked.remove(&edit.at);
-            self.this_row.remove(&edit.at);
-            self.array_anchors.retain(|(at, _, _)| *at != edit.at);
-            let extent = &mut self.extents[edit.at.sheet as usize];
-            extent.0 = extent.0.max(row);
-            extent.1 = extent.1.max(col);
-            match &edit.input {
-                CellInput::Value(value) => {
-                    self.workbook
-                        .set_value(&name, row, col, to_literal(value))
-                        .map_err(err)?;
-                }
-                CellInput::Clear => {
-                    self.workbook
-                        .set_value(&name, row, col, LiteralValue::Empty)
-                        .map_err(err)?;
-                }
-                CellInput::Formula { text, shape, .. } => {
-                    let staged = format!("={text}");
-                    if uses_this_row(text) {
-                        self.this_row.insert(edit.at, text.clone());
-                    }
-                    // An array that was here takes what it spilled with it first.
-                    if *shape != FormulaShape::Normal {
-                        self.workbook
-                            .set_value(&name, row, col, LiteralValue::Empty)
-                            .map_err(err)?;
-                    }
-                    self.workbook
-                        .set_formula(&name, row, col, &staged)
-                        .map_err(err)?;
-                    if *shape != FormulaShape::Normal {
-                        self.array_anchors.push((edit.at, staged, *shape));
-                        self.declare_array(&name, edit.at, *shape);
-                    }
-                }
-                CellInput::Spill { .. } => {}
-            }
-        }
-        Ok(previous)
+        // Formualizer sizes a sheet's columns as rows arrive, rebuilding each column whenever a
+        // write goes past its last row, so writing a block row by row costs the square of its
+        // rows (10,000 rows of 14 cells took 17 s). Each sheet's farthest value goes in first, so
+        // the columns are sized once. Only a cell no other edit here writes moves, so the batch
+        // means the same. Reading each cell's pre-image grows with the batch too, so `write_cells`
+        // skips the read where the cell is known to be empty.
+        let first = farthest_values(edits);
+        self.write_cells(edits, &first)
     }
 
     fn structural(&mut self, op: &StructuralOp) -> Result<StructuralUndo> {
@@ -2094,5 +2054,123 @@ mod tests {
         ] {
             assert!(!reads_another_workbook(local), "{local}");
         }
+    }
+}
+
+/// Batches past this many edits write each sheet's farthest value first (`set_cells`).
+const SIZE_FIRST_FROM: usize = 64;
+
+/// For each sheet in a large batch, the value edit in its last row, if no other edit writes the
+/// same cell. Writing those first sizes the sheets' columns once.
+fn farthest_values(edits: &[CellEdit]) -> Vec<usize> {
+    if edits.len() < SIZE_FIRST_FROM {
+        return Vec::new();
+    }
+    let mut farthest: HashMap<u32, usize> = HashMap::new();
+    for (index, edit) in edits.iter().enumerate() {
+        if !matches!(edit.input, CellInput::Value(_) | CellInput::Clear) {
+            continue;
+        }
+        let best = farthest.entry(edit.at.sheet).or_insert(index);
+        if edit.at.row > edits[*best].at.row {
+            *best = index;
+        }
+    }
+    farthest
+        .into_values()
+        .filter(|&index| {
+            let at = edits[index].at;
+            edits.iter().filter(|edit| edit.at == at).count() == 1
+        })
+        .collect()
+}
+
+impl FormualizerEngine {
+    /// Writes `first` and then the rest, giving each edit's pre-image in the edits' order.
+    fn write_cells(&mut self, edits: &[CellEdit], first: &[usize]) -> Result<Vec<CellEdit>> {
+        // In a large batch, a cell past where its sheet's cells reached before the batch, in no
+        // spill and not written earlier in the batch, was empty: Formualizer's read of it costs
+        // more the more the batch has written (10,000 rows of 14 cells spent 2.4 s reading).
+        let reach =
+            (edits.len() >= SIZE_FIRST_FROM).then(|| (self.extents.clone(), self.spill_areas()));
+        let mut written: HashSet<CellRef> = HashSet::new();
+        let mut previous: Vec<Option<CellEdit>> = vec![None; edits.len()];
+        let order = first
+            .iter()
+            .copied()
+            .chain((0..edits.len()).filter(|index| !first.contains(index)));
+        for index in order {
+            let edit = &edits[index];
+            let empty = reach.as_ref().is_some_and(|(extents, spills)| {
+                let (rows, cols) = extents
+                    .get(edit.at.sheet as usize)
+                    .copied()
+                    .unwrap_or((0, 0));
+                (edit.at.row > rows || edit.at.col > cols)
+                    && !written.contains(&edit.at)
+                    && !spills.iter().any(|spill| {
+                        spill.sheet == edit.at.sheet
+                            && spill.rect.contains(edit.at.row, edit.at.col)
+                    })
+            });
+            previous[index] = Some(self.set_cell(edit, empty)?);
+            if reach.is_some() {
+                written.insert(edit.at);
+            }
+        }
+        Ok(previous.into_iter().flatten().collect())
+    }
+
+    /// Writes one edit, giving what the cell held before; `empty` when that's known already.
+    fn set_cell(&mut self, edit: &CellEdit, empty: bool) -> Result<CellEdit> {
+        let name = self.sheet_name(edit.at.sheet)?.to_string();
+        let (row, col) = (edit.at.row, edit.at.col);
+        let before = CellEdit {
+            at: edit.at,
+            input: if empty {
+                CellInput::Clear
+            } else {
+                self.cell_input(edit.at)
+            },
+        };
+        self.linked.remove(&edit.at);
+        self.this_row.remove(&edit.at);
+        self.array_anchors.retain(|(at, _, _)| *at != edit.at);
+        let extent = &mut self.extents[edit.at.sheet as usize];
+        extent.0 = extent.0.max(row);
+        extent.1 = extent.1.max(col);
+        match &edit.input {
+            CellInput::Value(value) => {
+                self.workbook
+                    .set_value(&name, row, col, to_literal(value))
+                    .map_err(err)?;
+            }
+            CellInput::Clear => {
+                self.workbook
+                    .set_value(&name, row, col, LiteralValue::Empty)
+                    .map_err(err)?;
+            }
+            CellInput::Formula { text, shape, .. } => {
+                let staged = format!("={text}");
+                if uses_this_row(text) {
+                    self.this_row.insert(edit.at, text.clone());
+                }
+                // An array that was here takes what it spilled with it first.
+                if *shape != FormulaShape::Normal {
+                    self.workbook
+                        .set_value(&name, row, col, LiteralValue::Empty)
+                        .map_err(err)?;
+                }
+                self.workbook
+                    .set_formula(&name, row, col, &staged)
+                    .map_err(err)?;
+                if *shape != FormulaShape::Normal {
+                    self.array_anchors.push((edit.at, staged, *shape));
+                    self.declare_array(&name, edit.at, *shape);
+                }
+            }
+            CellInput::Spill { .. } => {}
+        }
+        Ok(before)
     }
 }

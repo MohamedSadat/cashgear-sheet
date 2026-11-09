@@ -773,3 +773,33 @@ fn random_sorts_filters_undo_and_redo_keep_every_key_with_its_record() {
         "{sorts} {undos} {refusals}"
     );
 }
+
+/// Where binding's time goes, natively: `cargo test --release -p cgs-engine --test erp
+/// bind_steps -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bind_steps() {
+    for n in [1000usize, 10_000] {
+        let records = records(n, 5);
+        let mut engine = blank();
+        let started = std::time::Instant::now();
+        engine.erp_begin(&schema(10_000)).unwrap();
+        for page in pages(&records, 1000, n) {
+            engine.erp_page(&page).unwrap();
+        }
+        let staged = started.elapsed();
+        engine.erp_bind(SESSION).unwrap();
+        let bound = started.elapsed();
+        let fits = engine.col_fits(0, 1, FIELDS.len() as u32);
+        let fitted = started.elapsed();
+        settle(&mut engine);
+        eprintln!(
+            "{n}: stage {:?}, bind {:?}, col fits {:?} ({} bytes), settle {:?}",
+            staged,
+            bound - staged,
+            fitted - bound,
+            fits.len(),
+            started.elapsed() - fitted
+        );
+    }
+}

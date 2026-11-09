@@ -1566,3 +1566,85 @@ fn a_sheet_named_like_the_engines_first_sheet_keeps_its_cells() {
     let engine = calculated(&book, &[sheet]);
     assert_eq!(at(&engine, 0, 1, 2), CalcValue::Text("xy".to_string()));
 }
+
+/// A large batch writes its farthest value first and skips reading cells known to be empty, for
+/// speed; its pre-images and its result must be what writing it in order gives.
+#[test]
+fn a_large_batch_gives_exact_pre_images() {
+    for (name, mut engine) in engines() {
+        let cells = vec![
+            (2, 2, num(5.0)),
+            (3, 1, text("kept")),
+            (4, 4, formula("B2*2", 10.0)),
+        ];
+        load(engine.as_mut(), &info(), &[cells, Vec::new()]);
+        while engine.prepare_step().unwrap() {}
+        let at = |row: u32, col: u32| CellRef { sheet: 0, row, col };
+        let mut edits = Vec::new();
+        // A cell with something in it, and one inside the sheet's reach that is empty.
+        edits.push(CellEdit {
+            at: at(2, 2),
+            input: num(7.0),
+        });
+        edits.push(CellEdit {
+            at: at(1, 1),
+            input: text("a1"),
+        });
+        // Far cells, row by row, one written twice.
+        for row in 10..=60 {
+            for col in 1..=3 {
+                edits.push(CellEdit {
+                    at: at(row, col),
+                    input: num(f64::from(row * 10 + col)),
+                });
+            }
+        }
+        edits.push(CellEdit {
+            at: at(20, 2),
+            input: text("again"),
+        });
+        edits.push(CellEdit {
+            at: at(60, 3),
+            input: CellInput::Clear,
+        });
+        let before = engine.set_cells(&edits).unwrap();
+        assert_eq!(before.len(), edits.len(), "{name}");
+        for (edit, pre) in edits.iter().zip(&before) {
+            assert_eq!(edit.at, pre.at, "{name}: pre-images in the edits' order");
+        }
+        assert_eq!(before[0].input, num(5.0), "{name}");
+        assert_eq!(before[1].input, CellInput::Clear, "{name}");
+        assert_eq!(
+            before[2].input,
+            CellInput::Clear,
+            "{name}: a far cell was empty"
+        );
+        let again = edits.len() - 2;
+        assert_eq!(
+            before[again].input,
+            num(202.0),
+            "{name}: the second write sees the first"
+        );
+        assert_eq!(before[again + 1].input, num(603.0), "{name}");
+        settle(engine.as_mut());
+        let shown = grid(engine.as_ref(), 0).0;
+        assert_eq!(
+            shown[&(20, 2)],
+            CalcValue::Text("again".to_string()),
+            "{name}"
+        );
+        assert_eq!(shown[&(40, 3)], CalcValue::Number(403.0), "{name}");
+        assert_eq!(engine.cell_input(at(60, 3)), CellInput::Clear, "{name}");
+        assert_eq!(engine.cell_input(at(59, 3)), num(593.0), "{name}");
+        assert_eq!(
+            shown[&(4, 4)],
+            CalcValue::Number(14.0),
+            "{name}: formulas see the batch"
+        );
+        assert_eq!(
+            shown[&(3, 1)],
+            CalcValue::Text("kept".to_string()),
+            "{name}"
+        );
+    }
+}
