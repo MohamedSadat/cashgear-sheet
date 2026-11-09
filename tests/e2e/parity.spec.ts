@@ -287,6 +287,8 @@ test.describe('notes and links', () => {
     // Show All Notes shows every note, without saving that, as in Excel.
     await goTo(page, 'D6');
     await reviewButton(page, 'New Note');
+    await expect(editor).toBeFocused();
+    await expect(editor).toHaveValue('Ann Lee:\n');
     await page.keyboard.type('second');
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('note-box-6-4')).toHaveCount(0);
