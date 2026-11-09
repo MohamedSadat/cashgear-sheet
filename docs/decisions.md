@@ -616,3 +616,13 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | WASM's allocator | Rust's own dlmalloc (MIT or Apache-2.0), with memory grown 64 MiB at a time instead of by each request: Chrome's `memory.grow` cost a sixth of the time reading took. Memory is never given back, as before; near the ceiling it grows by exactly what is asked |
 | Formualizer | Fork commit `b534673d`: building a sheet's staged formulas takes that sheet's part of the staged index out whole, instead of copying every sheet's entries to put back on failure |
 | The speed books | Written again where they had no `[Content_Types].xml`, which Excel needs. Their cells are the same |
+
+## 2026-11-09: Phase 13
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Which candidates, and in what order | All ten, in this order: 1 hiding and showing sheets, and zoom saved per sheet; 2 sheet and workbook protection, with Format Cells' Protection tab; 3 notes edited in a box beside the cell, Show/Hide and Show All, Remove Hyperlink, and a user name setting; 4 sort and filter by colour and by icon; 5 green error triangles, Error Checking, and a circular reference warning that names the cells; 6 rich text runs edited in the cell, superscript and subscript drawn, and runs kept when pasted or moved; 7 New and Modify Cell Style, with the file's own named styles in the gallery; 8 key tips; 9 pivot grouping made here, Drill Down, Show Report Filter Pages and GETPIVOTDATA from a click; 10 chart trendlines and a Picture Format tab |
+| Passwords for sheet and workbook protection | Excel's own hash: new passwords are written as Excel 2016 writes them (SHA-512 with a salt and a spin count of 100,000), and unprotecting checks that hash and the legacy 16-bit one, so a file protected in Excel unprotects here with its password and the other way round |
+| Keys for key tips | Tap Alt, then letters: pressing and releasing Alt alone shows the badges, and the letters after it are plain keys, so F and E work in browsers too. Alt+letter chords work as well, except F, E and D in a browser, which stay the browser's. The desktop app takes every chord |
