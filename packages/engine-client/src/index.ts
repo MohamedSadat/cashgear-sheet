@@ -41,6 +41,9 @@ export { imageUrls, pageSvg } from './svg-pages';
 export type {
   Answers,
   Applied,
+  ErpBinding,
+  ErpPageInfo,
+  ErpRefreshSummary,
   HeaderFooterTexts,
   HfRun,
   HfSections,

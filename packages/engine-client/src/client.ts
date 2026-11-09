@@ -15,6 +15,9 @@ import type {
   PivotInfo,
   EngineApi,
   EngineInfo,
+  ErpBinding,
+  ErpPageInfo,
+  ErpRefreshSummary,
   FileSource,
   FindQuery,
   FormatLists,
@@ -116,6 +119,17 @@ export interface EngineClient {
   /** `row` and `col` are 1-based. */
   cellText(sheet: number, row: number, col: number): Promise<CellText>;
   memoryBytes(): Promise<number>;
+  /** Starts staging ERP record pages for a new binding. See `EngineApi`. */
+  erpBegin(schema: string): Promise<void>;
+  erpBeginRefresh(): Promise<void>;
+  /** Hands a Query page's bytes to the engine, transferring them. */
+  erpPage(bytes: Uint8Array): Promise<ErpPageInfo>;
+  erpCancel(): Promise<void>;
+  erpBind(session: string): Promise<ErpBinding>;
+  erpRefresh(): Promise<ErpRefreshSummary>;
+  erpSettle(): Promise<void>;
+  binding(): Promise<ErpBinding | null>;
+  bindingIds(): Promise<number[]>;
   drawTile(request: TileRequest): Promise<TileImage>;
   dispose(): void;
 }
@@ -299,6 +313,15 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     addMedia: (bytes) => engine.addMedia(transfer(bytes, [bytes.buffer as ArrayBuffer])),
     cellText: (sheet, row, col) => engine.cellText(sheet, row, col),
     memoryBytes: () => engine.memoryBytes(),
+    erpBegin: (schema) => engine.erpBegin(schema),
+    erpBeginRefresh: () => engine.erpBeginRefresh(),
+    erpPage: (bytes) => engine.erpPage(transfer(bytes, [bytes.buffer as ArrayBuffer])),
+    erpCancel: () => engine.erpCancel(),
+    erpBind: (session) => engine.erpBind(session),
+    erpRefresh: () => engine.erpRefresh(),
+    erpSettle: () => engine.erpSettle(),
+    binding: () => engine.binding(),
+    bindingIds: () => engine.bindingIds(),
     async drawTile(request) {
       lastPalette = request.palette;
       await connected;

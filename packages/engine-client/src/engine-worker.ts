@@ -16,6 +16,9 @@ import type {
   PivotInfo,
   EngineApi,
   EngineTilePort,
+  ErpBinding,
+  ErpPageInfo,
+  ErpRefreshSummary,
   FileSource,
   LoadEvent,
   CellFormat,
@@ -66,6 +69,8 @@ let lastCalcStatus = '';
 let recoverables: Recoverable[] | undefined;
 /** Cells a CSV brought, which a recovery has to put back before any edit. */
 let loadedCsv: string | undefined;
+/** The open workbook holds ERP data, which no working copy or journal may keep yet. */
+let erpBound = false;
 /**
  * A save being written in slices. Tiles and reads go on meanwhile, and everything that would
  * change the workbook waits for it (see `guarded`), so what is saved is what was there when it
@@ -622,6 +627,7 @@ const api: EngineApi = {
   },
   async open(next, onEvent, name) {
     loadedCsv = undefined;
+    erpBound = false;
     opened = false;
     const wasm = await ensureEngine();
     const mine = ++generation;
@@ -656,6 +662,7 @@ const api: EngineApi = {
   },
   async protectSource(given) {
     const wasm = await ensureEngine();
+    if (erpBound) return false;
     if (given) {
       const { read, size } = reader(given);
       wasm.use_source(read, size);
@@ -941,6 +948,42 @@ const api: EngineApi = {
     await ensureEngine();
     return memory?.buffer.byteLength ?? 0;
   },
+  async erpBegin(schema) {
+    (await ensureEngine()).erp_begin(schema);
+  },
+  async erpBeginRefresh() {
+    (await ensureEngine()).erp_begin_refresh();
+  },
+  async erpPage(bytes) {
+    return JSON.parse((await ensureEngine()).erp_page(bytes)) as ErpPageInfo;
+  },
+  async erpCancel() {
+    (await ensureEngine()).erp_cancel();
+  },
+  async erpBind(session) {
+    const wasm = await ensureEngine();
+    const binding = JSON.parse(wasm.erp_bind(session)) as ErpBinding;
+    // ERP data stays off the device until Phase 18's capped recovery draft: no working copy,
+    // so no journal.
+    erpBound = true;
+    afterChange(wasm);
+    return binding;
+  },
+  async erpRefresh() {
+    const wasm = await ensureEngine();
+    const summary = JSON.parse(wasm.erp_refresh()) as ErpRefreshSummary;
+    afterChange(wasm);
+    return summary;
+  },
+  async erpSettle() {
+    (await ensureEngine()).erp_settle();
+  },
+  async binding() {
+    return JSON.parse((await ensureEngine()).binding_json()) as ErpBinding | null;
+  },
+  async bindingIds() {
+    return Array.from((await ensureEngine()).binding_ids());
+  },
 };
 
 /**
@@ -961,6 +1004,8 @@ const WAITS_FOR_SAVE = new Set([
   'calculateSheet',
   'loadCsv',
   'addMedia',
+  'erpBind',
+  'erpRefresh',
   'save',
   'commitSaved',
 ]);

@@ -1688,6 +1688,77 @@ export interface EngineApi {
   cellText(sheet: number, row: number, col: number): Promise<CellText>;
   /** The size of WASM's memory, for the speed checks. */
   memoryBytes(): Promise<number>;
+  /** Starts staging ERP record pages for a new binding, against the entity's schema as JSON. */
+  erpBegin(schema: string): Promise<void>;
+  /** Starts staging a refresh of the open workbook's ERP records. */
+  erpBeginRefresh(): Promise<void>;
+  /** Reads one Query page from its bytes, which are transferred: no record is built here. */
+  erpPage(bytes: Uint8Array): Promise<ErpPageInfo>;
+  /** Drops whatever ERP records were staged. */
+  erpCancel(): Promise<void>;
+  /** Binds the staged records into the open, new workbook. `session` is Redeem's answer as
+   * JSON, without its token. */
+  erpBind(session: string): Promise<ErpBinding>;
+  /** Replaces the bound records with the staged refresh. */
+  erpRefresh(): Promise<ErpRefreshSummary>;
+  /** Leaves nothing to undo from setting ERP data up. */
+  erpSettle(): Promise<void>;
+  /** The open workbook's ERP binding, or null. */
+  binding(): Promise<ErpBinding | null>;
+  /** The bound records' ERP ids, ascending, for a refresh. */
+  bindingIds(): Promise<number[]>;
+}
+
+/** What one ERP record page added to the staging. */
+export interface ErpPageInfo {
+  /** Records on this page. */
+  records: number;
+  /** Records staged so far. */
+  staged: number;
+  /** The next page's `afterId`, or null after the last. */
+  nextAfterId: number | null;
+  /** Records that match the whole query. */
+  total: number;
+}
+
+/** A bound ERP table, as the ribbon, the status badge and Connection Info show it. */
+export interface ErpBinding {
+  entity: string;
+  /** The entity's name in the session's language, such as "Vendors". */
+  label: string;
+  company: string;
+  userId: string;
+  userName: string;
+  language: 'en' | 'ar';
+  entityRoute: string;
+  schemaVersion: string;
+  table: string;
+  sheet: number;
+  /** The table's heading row, last row and columns now, 1-based. */
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+  records: number;
+  /** Records the last refresh didn't find in the ERP. */
+  missing: number;
+  /** When the ERP read the records, ISO 8601. */
+  asOf: string;
+  maxRecords: number;
+  maxPageSize: number;
+  fields: { name: string; label: string; editable: boolean; editReason?: string }[];
+}
+
+/** What a refresh changed. */
+export interface ErpRefreshSummary {
+  /** Records the ERP sent back. */
+  updated: number;
+  /** Records whose cells changed. */
+  changed: number;
+  /** Records whose key the ERP changed. */
+  renamed: number;
+  /** Records no longer in the ERP. */
+  missing: number;
 }
 
 /** The engine worker, as the tile worker sees it over their `MessageChannel`. */

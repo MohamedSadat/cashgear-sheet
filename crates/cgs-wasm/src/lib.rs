@@ -592,6 +592,59 @@ impl Engine {
     pub fn edit_text(&mut self, sheet: u32, row: u32, col: u32) -> String {
         self.0.edit_text(sheet, row, col)
     }
+
+    /// Starts staging ERP record pages for a new binding, against the entity's schema as JSON.
+    pub fn erp_begin(&mut self, schema: &str) -> Result<(), JsError> {
+        self.0
+            .erp_begin(schema)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Starts staging a refresh of the open workbook's ERP records.
+    pub fn erp_begin_refresh(&mut self) -> Result<(), JsError> {
+        self.0
+            .erp_begin_refresh()
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Reads one Query page from its bytes, transferred, so no record is built in JavaScript.
+    /// Answers how many records it held and what comes next, as JSON.
+    pub fn erp_page(&mut self, bytes: &[u8]) -> Result<String, JsError> {
+        self.0.erp_page(bytes).map_err(|error| JsError::new(&error))
+    }
+
+    /// Drops whatever ERP records were staged.
+    pub fn erp_cancel(&mut self) {
+        self.0.erp_cancel();
+    }
+
+    /// Binds the staged records into the open, new workbook. `session` is Redeem's answer
+    /// without its token. Answers the binding, as `binding_json` does.
+    pub fn erp_bind(&mut self, session: &str) -> Result<String, JsError> {
+        self.0
+            .erp_bind(session)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Replaces the bound records with the staged refresh. Answers what changed, as JSON.
+    pub fn erp_refresh(&mut self) -> Result<String, JsError> {
+        self.0.erp_refresh().map_err(|error| JsError::new(&error))
+    }
+
+    /// Leaves nothing to undo from setting ERP data up, such as its fitted column widths.
+    pub fn erp_settle(&mut self) {
+        self.0.erp_settle();
+    }
+
+    /// The open workbook's ERP binding as JSON, or `null`.
+    pub fn binding_json(&self) -> String {
+        self.0.binding_json()
+    }
+
+    /// The bound records' ERP ids, ascending.
+    pub fn binding_ids(&self) -> Vec<f64> {
+        self.0.binding_ids()
+    }
 }
 
 impl Default for Engine {
