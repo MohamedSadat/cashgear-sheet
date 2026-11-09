@@ -874,6 +874,7 @@ Cash Gear ERP's vendors open in the sheet from a launch link, as a bound table t
 - Unit tests: 273 in Vitest (19 new) and 678 in Rust (31 new). Clippy is clean natively and for WASM; `cargo fmt`, typecheck, lint and format checks are clean.
 - Saving: `pnpm test:save`, 11 fixtures: an unedited save is identical in all 11, 49 of 49 entries checked after edits match, and 3,786 of 3,786 cells match, as in Phase 13.
 - `bench/run-edit-fuzz.mjs`: 906 of 1,000 steps match Excel, **0 diverged**, 76 not reached; 166 of 166 saves open with no repair and match Excel's own result, as in Phase 13.
+- `bench/run-excel-matrix.mjs`: 116 edits on each of 11 fixtures, **1,276 of 1,276 saved files open with no repair**, all 12 broken controls are refused, 22 of 22 scenarios and 22 of 22 generated books are clean, the 9 feature checks (charts, pivot tables and macros kept after rows go in, pivot refreshes) pass, and 4 of 4 large books open clean, as in Phase 13.
 - The full e2e suite: **300 of 300** in Chrome and Edge (Phase 13's 288 and the 12 new).
 - `pnpm desktop:build` and `pnpm desktop:smoke`: the desktop app builds, and its smoke run passes in WebView2 157 (goldens within tolerance, overwrite and Save As, recent files, the theme kept).
 - Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.6.0 everywhere and its changelog notes. Release WASM: 4,571,267 bytes gzipped, of the 5,000,000 budget.
