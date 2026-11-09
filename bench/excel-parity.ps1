@@ -104,6 +104,10 @@ try {
         formula = [string]$range.Formula
         links = [int]$range.Hyperlinks.Count
         underline = [int]$range.Font.Underline
+        style = [string]$range.Style.Name
+        bold = [bool]$range.Font.Bold
+        italic = [bool]$range.Font.Italic
+        number = [string]$range.NumberFormat
         note = $null
       }
       # Error checking: the rules Excel finds the cell breaks, and those `ignoredErrors` turns off.
@@ -160,7 +164,23 @@ try {
       else { $still = [bool]$book.ProtectStructure }
       $unprotected += , [ordered]@{ sheet = [string]$try.sheet; password = [string]$try.password; unprotected = ($ok -and -not $still) }
     }
-    $result.book = [ordered]@{ structure = $structure; unprotected = $unprotected }
+    # Named styles: what each includes, as the Style dialog shows it.
+    $styles = @()
+    foreach ($name in @($spec.styles)) {
+      if ($null -eq $name) { continue }
+      $style = $book.Styles.Item([string]$name)
+      $styles += , [ordered]@{
+        name = [string]$name
+        builtIn = [bool]$style.BuiltIn
+        number = [bool]$style.IncludeNumber
+        font = [bool]$style.IncludeFont
+        fill = [bool]$style.IncludePatterns
+        border = [bool]$style.IncludeBorder
+        bold = [bool]$style.Font.Bold
+        italic = [bool]$style.Font.Italic
+      }
+    }
+    $result.book = [ordered]@{ structure = $structure; unprotected = $unprotected; styles = $styles }
     $book.Close($false)
   } catch {
     $result.error = $_.Exception.Message

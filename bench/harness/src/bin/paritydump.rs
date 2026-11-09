@@ -118,9 +118,19 @@ fn main() -> Result<(), String> {
             Some(cgs_model::Underline::Single) => 2,
             Some(_) => -1,
         };
+        let font = book.styles.fonts.get(xf.font as usize);
+        let style = book
+            .styles
+            .named
+            .iter()
+            .find(|named| named.xf == xf.style)
+            .map_or("Normal", |named| named.name.as_str());
         cells.push(json!({
             "sheet": sheet,
             "cell": cell,
+            "style": style,
+            "bold": font.is_some_and(|font| font.bold),
+            "italic": font.is_some_and(|font| font.italic),
             "locked": xf.locked,
             "hidden": xf.formula_hidden,
             "note": note,

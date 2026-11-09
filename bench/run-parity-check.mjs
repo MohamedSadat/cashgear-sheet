@@ -282,6 +282,68 @@ const CASES = {
       { sheet: 'Sheet1', cell: 'A8', chars: '^|^' },
     ],
   },
+  'cell styles applied, made by example and modified, linked as Excel links them': {
+    source: 'blank',
+    commands: [
+      { kind: 'cellStyle', sheet: 0, areas: [cell(2, 2)], name: 'Good' },
+      { kind: 'cellStyle', sheet: 0, areas: [cell(3, 2)], name: 'Heading 1' },
+      {
+        kind: 'format',
+        sheet: 0,
+        areas: [cell(2, 4)],
+        change: {
+          bold: true,
+          fontColor: { kind: 'rgb', rgb: 'FF0000' },
+          fill: { pattern: 'solid', color: { kind: 'rgb', rgb: 'FFFF00' } },
+          numberFormat: '0.00',
+        },
+      },
+      { kind: 'input', sheet: 0, row: 2, col: 4, text: '1.5' },
+      {
+        kind: 'newCellStyle',
+        name: 'Mine',
+        sheet: 0,
+        row: 2,
+        col: 4,
+        includes: {
+          number: false,
+          alignment: false,
+          font: true,
+          border: false,
+          fill: true,
+          protection: false,
+        },
+      },
+      { kind: 'input', sheet: 0, row: 4, col: 4, text: '0.25' },
+      { kind: 'format', sheet: 0, areas: [cell(4, 4)], change: { numberFormat: '0%' } },
+      { kind: 'cellStyle', sheet: 0, areas: [cell(4, 4)], name: 'Mine' },
+      { kind: 'modifyCellStyle', name: 'Mine', change: { italic: true } },
+      { kind: 'cellStyle', sheet: 0, areas: [cell(5, 4)], name: 'Mine' },
+    ],
+    cells: [
+      { sheet: 'Sheet1', cell: 'B2', style: 'Good' },
+      { sheet: 'Sheet1', cell: 'B3', style: 'Heading 1', bold: true },
+      { sheet: 'Sheet1', cell: 'D2', style: 'Normal', bold: true, italic: false },
+      { sheet: 'Sheet1', cell: 'D4', style: 'Mine', bold: true, italic: true },
+      { sheet: 'Sheet1', cell: 'D5', style: 'Mine', bold: true, italic: true },
+    ],
+    excelCells: [
+      { sheet: 'Sheet1', cell: 'D2', number: '0.00' },
+      { sheet: 'Sheet1', cell: 'D4', number: '0%' },
+    ],
+    styles: {
+      Mine: {
+        builtIn: false,
+        number: false,
+        font: true,
+        fill: true,
+        border: false,
+        bold: true,
+        italic: true,
+      },
+      Good: { builtIn: true, number: false, font: true, fill: true },
+    },
+  },
   'protection taken off again': {
     source: 'blank',
     commands: [
@@ -358,6 +420,7 @@ try {
           ({ sheet, cell, chars }) => ({ sheet, cell, chars: chars !== undefined }),
         ),
         unprotect: (spec.unprotect ?? []).map(({ sheet, password }) => ({ sheet, password })),
+        styles: Object.keys(spec.styles ?? {}),
       }),
     );
     const run = spawnSync(
@@ -377,6 +440,10 @@ try {
     excel.cells = [excel.cells ?? []].flat();
     if (process.env.PARITY_DEBUG) console.log(JSON.stringify(excel));
     const problems = excel.error ? [excel.error] : judge(excel, spec);
+    for (const [style, fields] of Object.entries(spec.styles ?? {})) {
+      const got = [excel.book?.styles ?? []].flat().find((one) => one.name === style);
+      if (!matches(got, fields)) problems.push(`style ${style}: ${JSON.stringify(got)}`);
+    }
     for (const want of spec.unprotect ?? []) {
       const got = [excel.book?.unprotected ?? []]
         .flat()
