@@ -672,3 +672,45 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Trendlines | Chart Design › Add Chart Element offers Excel's Trendline choices: None, Linear, Exponential, Linear Forecast (two periods on) and Moving Average (over two points). A new one replaces the series' trendlines, and goes on the series selected in the chart, or else the first that can have one; Excel asks which series in a dialog. Saved as Excel 2016 writes one: a dotted 1.5-point line in the series' own colour, `trendlineType`, `forward` and `period`, named in the legend as Excel names it ("Linear (Sales)", "Expon. (Sales)", "2 per. Mov. Avg. (Sales)") |
 | Drawing a trendline | The engine fits it by least squares (on `ln y` for exponential, `ln x` for logarithmic, both for power, normal equations for polynomial), as Excel's LINEST and LOGEST do, and the chart draws it as a line over the series' points. A forecast's periods past the last point aren't drawn here yet, nor the equation or R² labels; a file's own trendlines and their labels are kept and saved as they were |
 | Picture Format | A tab of its own while a picture is selected, as in Excel: Reset Picture (back to the picture's own pixels at 96 to the inch, as Excel's original size), Alt Text, Bring Forward and Send Backward with Bring to Front and Send to Back, Rotate (Right 90°, Left 90°, Flip Vertical, Flip Horizontal), and Height and Width, the other side following as Lock aspect ratio has it. Saved as Excel writes them: `a:xfrm rot`, `flipH` and `flipV`, `cNvPr descr`, and the anchors' order for what's in front. Crop, corrections, colour, effects and picture styles aren't here |
+
+## 2026-11-09: Planning the ERP integration
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| How the sheet gets ERP access, given the ERP's only credential is a long-lived API key and COOP stops `postMessage` from the ERP tab | A one-time launch ticket in the URL fragment, redeemed for a short-lived, revocable sheet session scoped to the sheet's routes. The API key never leaves the ERP |
+| How a commit detects concurrent ERP edits, given `Vendors` has no concurrency column | `RowVersion` added to `Vendors` in every tenant database before deploy, as about 60 ERP entities already have it. Strict: any change since loading is a conflict, and Refresh rebases non-overlapping edits visibly before you commit |
+| Who builds the ERP side (Track E) | Claude, in `D:\CashGear\Projects\CashGear` (UnifiedAPI and the `ERPClient_React` button), with tests on SQLite and LocalDB only, never the live database. You run the database scripts and deploy. That repo's git workflow is agreed when Track E starts |
+| Where ERP data may live outside the ERP | A capped crash-recovery draft in OPFS on the device only, cleared on commit, discard or close. Save and Save As write a plain workbook with no ids, versions or connection data |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Record identity | The record's business key in a read-only cell of a bound table (Vendors: `VendorAccount`), so it travels with every sort. The ERP's id (`RecId`), versions and originals are kept by `cgs-bind` in the engine, keyed by that key, and never in cells |
+| Read-only columns | Their own guard, not sheet protection: Excel's protection refuses sorting a range with locked cells. A content rule on the real edit list: an edit touching a key, read-only or header cell must move whole rows (sort and its undo pass; paste, fill, move, replace, Remove Duplicates and left-to-right sort don't). Table shape, growth and calculated columns are locked for bound tables |
+| Text fields | Taken as text on every input path, so leading zeros survive |
+| Formulas in ERP fields | Allowed, flagged, and left out of commits until converted to values |
+| Undo | Refresh, Commit and Resolve clear it, as Excel's data refresh does |
+| Where ERP data opens | A new workbook per launch |
+| Vendors fields for the MVP | Edit allows name, tax file, mobile, address, pay method and vendor group; Blocked and Currency need AdvEdit; bank account and debit limit stay read-only (bulk bank-account edits are a payment-fraud risk); `Token` is never sent |
+| Limits | 10,000 records per sheet in pages of 1,000; commits of up to 500 records, all or nothing |
+| Sessions | Tickets last 120 s; sessions 30 minutes idle and 10 hours at most |
+| Languages | The ERP tab, dialogs and messages in English and Arabic, chosen by the ERP user's language; Arabic sheets open right-to-left; the rest of the app stays English until its Arabic UI phase |
+| Platform | Web only for the MVP; the desktop gets `connect-src` in Phase 19 and a deep link later |
+| Azure Blob | Not used in the MVP |
+| Releases | One minor release per phase, `v1.5.0` to `v1.10.0`, with the ERP button hidden per company until Phase 18 |
+
+**Evidence read for the choices above (nothing built)**
+
+| Item | Finding |
+| --- | --- |
+| Sort | Copies each row's inputs into its new place (`sort.rs:416-444`), so only cells travel with a record |
+| Cell changes | All go through `Session::apply_cells` (`command.rs:1201-1300`), which can't tell typing from sort or undo. Tables change through `Op::Tables`, structure through `calc.structural` |
+| Protection | Engine-side and Excel-strict (`protect.rs:232-418`). Paste checks the area as sent, which the paste then grows: to be checked in Phase 16 |
+| Web hosting | COOP `same-origin` and COEP `require-corp`, so the ERP can't reach the sheet's window, and CORS `fetch` works unchanged |
+| ERP API | `CashGear.UnifiedAPI`, net10.0, module-first RPC routes, `{message, correlationId, errors[]}`, `AllowAnyOrigin` CORS |
+| ERP Vendors | Primary key `(Company, VendorAccount)`, identity `RecId`, no RowVersion; UnifiedAPI only reads them; the Blazor host's `UpdateEx` is last-write-wins |
+| ERP auth and tenancy | ASP.NET Identity plus a long-lived per-user, per-company API key; a database per tenant (Kit and Dot share one) plus a `Company` column, from the `CompanyId` claim |
+| ERP gaps | No idempotency, no master-data audit, no rate limiting; an 8-hour vendor cache with no backplane; the development configuration points at a live shared SQL Server |

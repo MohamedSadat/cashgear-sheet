@@ -1,4 +1,4 @@
-> Approved on 2026-11-01, with Phases 10 to 13 added on 2026-11-07 after `v1.0.0`. This file is the plan; progress lives in `PROGRESS.md` and decisions in `decisions.md`.
+> Approved on 2026-11-01, with Phases 10 to 13 added on 2026-11-07 after `v1.0.0`, and Phases 14 to 19 (editing Cash Gear ERP data) on 2026-11-09. This file is the plan; progress lives in `PROGRESS.md` and decisions in `decisions.md`. The ERP integration's full design is in `ERP_SHEET_INTEGRATION_PLAN.md`.
 
 # CashGear Sheet: Implementation Plan
 
@@ -25,6 +25,7 @@ It follows the pattern of CashGear Video (`cashgear-moviepro`) in layout, WASM b
 | Licences | No GPL, AGPL or LGPL in anything shipped | `cargo deny` and an npm licence check fail CI |
 | Name | CashGear Sheet, crate prefix `cgs-` | Matches the sibling apps |
 | After v1 | Print and PDF, RTL sheets, large books, then Excel parity polish (Phases 10 to 13), each a minor release | Chosen on 2026-11-07. What wasn't chosen is under "Later" |
+| ERP data | Phases 14 to 19: ERP-connected worksheets that open, edit, validate and commit Cash Gear ERP records, Vendors first. Normal workbooks are unchanged, and no connection data reaches a saved file | Chosen on 2026-11-09. Design in `ERP_SHEET_INTEGRATION_PLAN.md`; the ERP side is Track E |
 
 Default targets until Phase 0 confirms them: Windows 10/11 x64 first, macOS second; Chrome and Edge first, Safari and Firefox best-effort. Grid limits match Excel: 1,048,576 rows by 16,384 columns. All numeric exit thresholds below are proposals, confirmed in each phase's questions.
 
@@ -58,12 +59,14 @@ cashgear-sheet/
     cgs-xlsx/       package store, reader, span-patching writer
     cgs-pivot/      pivot refresh (Phase 8)
     cgs-engine/     ties it together; viewport snapshots, calculation scheduling
+    cgs-bind/       bound ERP tables: keys, versions, originals, guard, changeset (Phase 15)
     cgs-wasm/       the only JS-facing API
     cgs-native/     desktop only: file I/O, read protocol, file association
   apps/web/                  Vite PWA
   apps/desktop/src-tauri/    Tauri 2 shell (left out of default-members)
   packages/ui/               React shell and canvas grid, on @cashgear/ui
   packages/engine-client/    workers, comlink client, tile cache
+  packages/erp-connector/    ERP contract, session and HTTP; no React (Phase 14)
   scripts/                   build-wasm.mjs, fetch-test-workbooks
   bench/, tests/, docs/
 ```
@@ -126,6 +129,33 @@ This runs in that repo, independently of the phases, and can start alongside Pha
 - [ ] Commit pushed and its hash reported. Track U doesn't edit this repo, so it never writes alongside a running phase; the next phase here bumps the pin.
 
 Later gaps go here too when phases find them, such as scatter charts in `CgChart`.
+
+## Track E: the ERP side, in `D:\CashGear\Projects\CashGear`
+
+This runs in the ERP repo alongside Phases 14 to 19, in the stages each phase names. It's built here by Claude, and you run its database scripts and deploy it. Its git workflow is agreed when it starts. Details are in `ERP_SHEET_INTEGRATION_PLAN.md` (D.3, F and I.4).
+
+**Build:**
+- New UnifiedAPI routes: `api/system/SheetLaunch/CreateTicket`, `api/sheet/Session/{Redeem, Renew, End}` and `api/payable/VendorSheet/{Schema, Query, Commit, CommitStatus}`.
+- A `SheetSession` authentication scheme, read from `X-Sheet-Session`.
+- `ISheetEntityConnector`, with the Vendors connector.
+- `SheetCommitService`: one transaction per batch, strict RowVersion, idempotency by `(Company, CommitId)`, audit per field.
+- Database scripts, including `Vendors.RowVersion` in every tenant database before either host deploys the model change.
+- An "Edit in Cash Gear Sheet" button on `ERPClient_React`'s Vendors list, hidden per company until Phase 18.
+
+**Rules:**
+- Follow the ERP's own conventions: module-first RPC routes, class-level role policies, `{message, correlationId, errors[]}`, `CallerPrivileges`, and a SystemLog row inside the transaction.
+- Never return raw entities.
+- Tests run on SQLite and opt-in LocalDB only, never the live shared SQL Server that UnifiedAPI's development configuration points at.
+
+**Stages:**
+
+| Stage | Alongside | Work |
+| --- | --- | --- |
+| E0 | Phase 14 | Contract review against the code |
+| E1 | Phase 15 | Tickets, sessions, Schema and Query, the hidden button |
+| E2 | Phase 17 | Commit with dry run, RowVersion, idempotency, audit |
+| E3 | Phase 18 | Renew, End and CommitStatus; the button turned on per company |
+| E4 | Phase 19 | CORS narrowed, rate limits |
 
 ## Phases
 
@@ -353,6 +383,116 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 - [ ] Each chosen candidate has an e2e test in Chrome and Edge, and an Excel COM check wherever COM can judge it.
 - [ ] The matrix opens every saved file with no repair, the rules check passes, and the fuzz has 0 diverged.
 
+### Phases 14 to 19: editing Cash Gear ERP data
+
+Users open ERP records (Vendors first) as a bound table in a new workbook. They edit with ordinary spreadsheet tools, validate, review and commit, and the ERP stays the authority.
+
+The design, the data contracts, the security model and each phase's full tasks and tests are in `ERP_SHEET_INTEGRATION_PLAN.md`. The answers given on 2026-11-09 are in `decisions.md`.
+
+The sheet acts only on a valid launch ticket, and the ERP's button stays hidden per company until Phase 18, so each phase's release exposes nothing half-built.
+
+### Phase 14: ERP contract and mock (tag `v1.5.0`)
+**Goal:** a typed contract both sides build against, proven by a test suite before any code depends on it.
+
+**Questions:** The Vendors field list and which fields need AdvEdit? Which test tenant Track E uses? The ERP repo's git workflow for Track E?
+
+**Tasks:**
+- `packages/erp-connector` with the contract's types and response guards.
+- `docs/erp-contract.md` with routes, C# DTOs and the RowVersion rollout plan.
+- A Node mock ERP in `tests/erp-mock`.
+- A contract suite that runs against any base URL.
+- Track E0.
+
+**Exit**
+- [ ] The contract suite passes on the mock in CI.
+- [ ] You sign off the contract and the rollout plan.
+
+### Phase 15: Read-only ERP slice (tag `v1.6.0`)
+**Goal:** ERP vendors open from the ERP, and can be sorted, filtered and refreshed, with every bound cell read-only, proving the handoff, CORS, COEP and the identity guard early.
+
+**Questions:** Column order and labels? The 10,000-record cap? The load panel's wording?
+
+**Tasks:**
+- `erpLaunch()`, which reads and strips `#launch=`.
+- Session and paging in the connector.
+- `cgs-bind` with typed `bindRecords` over transferred bytes, and the identity guard (whole-row rule, table and structural guards, no growth or calculated columns).
+- The ERP Data tab with Refresh and Connection Info, and the status badge.
+- The mock on a second origin in Playwright.
+- Track E1.
+
+**Exit**
+- [ ] Rust property tests: random sorts, filters, undo and redo over 1,000 records keep every key with its own record, and every refused path is tested.
+- [ ] e2e in Chrome and Edge: open, sort, filter and refresh against the mock; replayed and expired tickets are refused; the fragment leaves no trace; Save As holds no ids or versions.
+- [ ] Binding meets its targets, and the contract suite passes against UnifiedAPI on LocalDB.
+
+### Phase 16: Editing and change tracking (tag `v1.7.0`)
+**Goal:** editable fields with field-level tracking and visible states, with nothing leaving the sheet yet.
+
+**Questions:** The state colours, from a mock-up? Formulas flagged and left out until converted to values?
+
+**Tasks:**
+- The editable-cell guard rule.
+- Text coercion on every input path.
+- The paste-area protection check.
+- `changeset` over cell inputs, and local rules.
+- State flags in tiles, drawn in light, dark and right-to-left, never printed.
+- Lookup dropdowns without validation rules.
+- Hover details, Discard Changes and Next Error.
+
+**Exit**
+- [ ] A Rust property test over typing, paste, fill, move, replace, sort, filter, undo and redo: keys stay with their records, read-only cells never change, and the changeset equals an oracle diff.
+- [ ] Bound-sheet input and tiles within 10% of unbound, and normal-sheet benches, the matrix, save checks and fuzz unchanged.
+
+### Phase 17: Validate, review and commit (tag `v1.8.0`)
+**Goal:** changes reach the ERP safely and atomically.
+
+**Questions:** The 500-record batch limit? The confirmation's wording?
+
+**Tasks:**
+- Validate (local rules, then the server's dry run), with errors on cells.
+- The Review dialog on `CgGrid`.
+- Commit with a `commitId`, edits frozen while it runs, and the result applied.
+- 400 and 409 states.
+- Track E2.
+
+**Exit**
+- [ ] e2e: a commit leaves the mock equal to the oracle; 400 and 409 write nothing; a dropped response and a retry write exactly once.
+- [ ] The contract suite passes against UnifiedAPI on LocalDB, conflicts and idempotency included.
+
+### Phase 18: Conflicts, refresh, sessions and recovery (tag `v1.9.0`)
+**Goal:** concurrency, long sessions and crashes are handled, and the button is turned on.
+
+**Questions:** Session lifetimes (30 minutes idle and 10 hours proposed)? The recovery cap? Review of the Arabic strings?
+
+**Tasks:**
+- The three-way refresh.
+- Resolve Conflicts.
+- Renew, Reconnect over BroadcastChannel, and `CommitStatus`.
+- A capped recovery draft that reopens disconnected.
+- The en/ar catalogue, with Arabic sheets right-to-left.
+- Track E3.
+
+**Exit**
+- [ ] A property test of the merge.
+- [ ] e2e: concurrent edits conflict and resolve; 401 during a commit writes nothing twice; a recovered draft never commits by itself.
+
+### Phase 19: ERP hardening (tag `v1.10.0`)
+**Goal:** production readiness against the real API.
+
+**Questions:** Which test tenant, deployed by you? The desktop deep link now, or later?
+
+**Tasks:**
+- The contract suite and e2e against UnifiedAPI on a test tenant, never the live database.
+- `bench/erp-speed.mjs`.
+- Full regression and a security review.
+- The desktop's `connect-src` and the deep-link design.
+- Docs.
+- Track E4.
+
+**Exit**
+- [ ] The performance targets in `ERP_SHEET_INTEGRATION_PLAN.md` B.6 are met, and every standing check is green.
+- [ ] You sign off after trying it on the test tenant.
+
 ## Later
 Not chosen on 2026-11-07, and kept for a later plan:
 - `.xls`, `.xlsb` and `.ods` import.
@@ -372,6 +512,8 @@ Macros are preserved on save but never run.
 - **Phase 10:** Excel's page breaks depend on the printer driver and font metrics, so matching them may need the reference machine's default printer fixed. Embedding fonts and shaping Arabic in PDF without a licence the gates refuse.
 - **Phase 11:** every pointer and keyboard path assumes left to right, and the canvas's `direction` state already caused one Phase 2 bug.
 - **Phase 12:** a save in slices must never write cells that an edit changed partway through it.
+- **Phases 15 and 16:** a cell write that avoids `apply_cells`, `Op::Tables` and structural edits would slip past the bound-table guard; every caller is listed and tested.
+- **Phases 17 and 18:** a wrong refresh merge would let a stale draft through the ERP's version check, and the shared `VendorModel`'s RowVersion must reach every tenant database before either ERP host deploys it.
 
 Phase 1 measured the engine facts above on 2026-11-02.
 

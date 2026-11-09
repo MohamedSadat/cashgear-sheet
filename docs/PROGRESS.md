@@ -20,7 +20,15 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 10: Print and PDF export | Done 2026-11-08, with your sign-off on the PDF review and about 91% of public page counts accepted | `v1.1.0` |
 | Phase 11: RTL sheets | Done 2026-11-08, with your sign-off on the right-to-left review | `v1.2.0` |
 | Phase 12: Large books | Done 2026-11-09: Open with in Edge starts the app, and the file reaching it is checked in Chrome | `v1.3.0` |
-| Phase 13: Excel parity polish | Not started | `v1.4.0` |
+| Phase 13: Excel parity polish | Done 2026-11-09 | `v1.4.0` |
+| Planning the ERP integration | Done 2026-11-09: Phases 14 to 19 and Track E added to `PLAN.md`, designed in `ERP_SHEET_INTEGRATION_PLAN.md` | |
+| Phase 14: ERP contract and mock | Not started | `v1.5.0` |
+| Phase 15: Read-only ERP slice | Not started | `v1.6.0` |
+| Phase 16: Editing and change tracking | Not started | `v1.7.0` |
+| Phase 17: Validate, review and commit | Not started | `v1.8.0` |
+| Phase 18: Conflicts, refresh, sessions and recovery | Not started | `v1.9.0` |
+| Phase 19: ERP hardening | Not started | `v1.10.0` |
+| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | Not started | |
 
 ## Planning
 
@@ -768,3 +776,8 @@ Each candidate began with a COM probe of what Excel 2016 does and writes; the de
 - Rich text: Paste Special's other choices paste plain text.
 - Key tips: menus opened by a tip don't show tips of their own.
 - Outside this phase: nothing new.
+
+## Planning the ERP integration
+
+- The plan was approved on 2026-11-09 and saved as `docs/ERP_SHEET_INTEGRATION_PLAN.md`, with Phases 14 to 19 and Track E added to `docs/PLAN.md`. Answers and defaults are in `docs/decisions.md`.
+- It was drawn from reading this repo's crates, engine client, UI and hosting, and the ERP's `CashGearERP.sln` and `ERPClient_React`, read-only. Nothing was built or run, and nothing in the ERP repo changed. Section A of the plan lists what was found, with file references.
