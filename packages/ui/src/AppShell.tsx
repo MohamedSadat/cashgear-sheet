@@ -105,6 +105,7 @@ import {
 import { RULE_LABELS } from './errors/error-text';
 import { cellName } from './grid/geometry';
 import { PROTECTED_MESSAGE, useProtectTools } from './sheets/useProtectTools';
+import type { SessionInfo } from '@cgs/erp-connector';
 import { isErpRefusal, READ_ONLY_MESSAGE } from './erp/messages';
 import { useErpTools } from './erp/useErpTools';
 
@@ -258,6 +259,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   formatRef.current = format;
   const protectMessageRef = useRef<(message: string) => void>(() => undefined);
   const erpBoundAtRef = useRef<(sheet: number, row: number, col: number) => boolean>(() => false);
+  const erpBindRef = useRef<(session: SessionInfo, label: string) => Promise<ErpBinding>>(() =>
+    Promise.reject(new Error('Not ready.')),
+  );
   const refusedRef = useRef<(error: unknown) => void>(() => undefined);
   /**
    * A protected sheet that keeps locked cells, or every cell, from being selected moves the
@@ -1112,6 +1116,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     sheet,
   });
   erpSyncRef.current = erpTools.sync;
+  erpBindRef.current = erpTools.bindStaged;
   erpBoundAtRef.current = erpTools.boundAt;
   // A double-click on a pivot table's value shows its details, as in Excel.
   doubleCellRef.current = (row, col) => {
@@ -1381,6 +1386,15 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         binding: () => Promise<ErpBinding | null>;
         /** An area's shown text, as Copy gives it: tabs between cells, lines between rows. */
         shownText: (area: CellArea) => Promise<string>;
+        /**
+         * The bind bench: stages Query pages' bytes and binds them as a launch does, without the
+         * network. Times each step in milliseconds.
+         */
+        bindPages: (
+          schema: string,
+          pages: Uint8Array[],
+          session: string,
+        ) => Promise<{ stageMs: number; bindMs: number; records: number }>;
       };
     };
     hooks.cgsTest = {
@@ -1435,6 +1449,22 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       binding: async () => (await clientRef.current?.binding()) ?? null,
       shownText: async (area) =>
         (await clientRef.current?.copyText(sheetRef.current, area))?.text ?? '',
+      bindPages: async (schema, pages, session) => {
+        const engine = clientRef.current;
+        if (!engine) throw new Error('The engine isn’t running.');
+        const started = performance.now();
+        await engine.erpBegin(schema);
+        for (const page of pages) await engine.erpPage(page);
+        const staged = performance.now();
+        const info = JSON.parse(session) as SessionInfo;
+        const label = (JSON.parse(schema) as { label: { en: string; ar: string } }).label;
+        const bound = await erpBindRef.current(info, label[info.language]);
+        return {
+          stageMs: staged - started,
+          bindMs: performance.now() - staged,
+          records: bound.records,
+        };
+      },
     };
   }, [openFile, runCommand, writeTo]);
 

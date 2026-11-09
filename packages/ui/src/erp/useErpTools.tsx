@@ -13,6 +13,7 @@ import {
   type ErpLaunch,
   type ErpSession,
   type RecordSink,
+  type SessionInfo,
 } from '@cgs/erp-connector';
 import {
   badgeText,
@@ -57,6 +58,8 @@ export interface ErpTools {
   sync: () => void;
   /** Whether a cell is in the bound table, where typing is refused at the first key. */
   boundAt: (sheet: number, row: number, col: number) => boolean;
+  /** For the bind bench: binds records already staged in the engine, as opening does. */
+  bindStaged: (session: SessionInfo, label: string) => Promise<ErpBinding>;
 }
 
 function sinkOf(engine: EngineClient): RecordSink {
@@ -93,46 +96,14 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
   const abortRef = useRef<AbortController | null>(null);
   const [apiBase, setApiBase] = useState('');
 
-  const open = useCallback(async (launch: ErpLaunch) => {
-    const h = hostRef.current;
-    const engine = h.engine();
-    if (!engine) return;
-    launchRef.current = launch;
-    setApiBase(launch.apiBase);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    let noun: string | null = sessionRef.current ? nounOf(sessionRef.current.info.entity) : null;
-    setPanel({ phase: 'connecting', noun });
-    try {
-      const opened = await openRecords({
-        http: new ErpHttp({ baseUrl: launch.apiBase }),
-        ticket: launch.ticket,
-        session: sessionRef.current ?? undefined,
-        onSession: (session) => {
-          sessionRef.current = session;
-          noun = nounOf(session.info.entity);
-          setPanel({ phase: 'connecting', noun });
-        },
-        sink: sinkOf(engine),
-        signal: controller.signal,
-        onProgress: (progress) => {
-          if (progress.stage !== 'loading') return;
-          setPanel({
-            phase: 'loading',
-            noun: noun ?? 'records',
-            loaded: progress.loaded,
-            total: progress.total,
-          });
-        },
-      });
-      const { session, schema } = opened;
-      noun = schema.label.en.toLowerCase();
-      setPanel({ phase: 'binding', noun, total: opened.loaded });
-      const label = schema.label[session.info.language];
-      await h.openBlank(
-        `${workbookTitle(label, session.company)}.xlsx`,
-        session.info.language === 'ar',
-      );
+  /**
+   * Binds what the engine has staged into a new workbook named for the data and company, fits its
+   * columns and leaves nothing to undo. The last step of opening, and what the bind bench times.
+   */
+  const bindStaged = useCallback(
+    async (session: SessionInfo, label: string): Promise<ErpBinding> => {
+      const h = hostRef.current;
+      await h.openBlank(`${workbookTitle(label, session.company)}.xlsx`, session.language === 'ar');
       const bound = await h.queue((e) => e.erpBind(JSON.stringify(session)));
       // Fitted to their values and headings, with room for each heading's filter button.
       await h
@@ -145,19 +116,63 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
         .catch(() => null);
       await h.queue((e) => e.erpSettle());
       await h.afterBind();
-      setExpired(session.state === 'expired');
-      session.onState((state) => setExpired(state === 'expired'));
-      setBinding(bound);
-      setPanel(null);
-    } catch (error) {
-      const failure = asErpError(error);
-      if (failure.kind === 'ticket' || failure.kind === 'session') sessionRef.current = null;
-      const { text, retry } = failureText(failure.kind, failure.message, noun ?? 'this data');
-      setPanel({ phase: 'failed', noun, text, retry });
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-    }
-  }, []);
+      return bound;
+    },
+    [],
+  );
+
+  const open = useCallback(
+    async (launch: ErpLaunch) => {
+      const h = hostRef.current;
+      const engine = h.engine();
+      if (!engine) return;
+      launchRef.current = launch;
+      setApiBase(launch.apiBase);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      let noun: string | null = sessionRef.current ? nounOf(sessionRef.current.info.entity) : null;
+      setPanel({ phase: 'connecting', noun });
+      try {
+        const opened = await openRecords({
+          http: new ErpHttp({ baseUrl: launch.apiBase }),
+          ticket: launch.ticket,
+          session: sessionRef.current ?? undefined,
+          onSession: (session) => {
+            sessionRef.current = session;
+            noun = nounOf(session.info.entity);
+            setPanel({ phase: 'connecting', noun });
+          },
+          sink: sinkOf(engine),
+          signal: controller.signal,
+          onProgress: (progress) => {
+            if (progress.stage !== 'loading') return;
+            setPanel({
+              phase: 'loading',
+              noun: noun ?? 'records',
+              loaded: progress.loaded,
+              total: progress.total,
+            });
+          },
+        });
+        const { session, schema } = opened;
+        noun = schema.label.en.toLowerCase();
+        setPanel({ phase: 'binding', noun, total: opened.loaded });
+        const bound = await bindStaged(session.info, schema.label[session.info.language]);
+        setExpired(session.state === 'expired');
+        session.onState((state) => setExpired(state === 'expired'));
+        setBinding(bound);
+        setPanel(null);
+      } catch (error) {
+        const failure = asErpError(error);
+        if (failure.kind === 'ticket' || failure.kind === 'session') sessionRef.current = null;
+        const { text, retry } = failureText(failure.kind, failure.message, noun ?? 'this data');
+        setPanel({ phase: 'failed', noun, text, retry });
+      } finally {
+        if (abortRef.current === controller) abortRef.current = null;
+      }
+    },
+    [bindStaged],
+  );
 
   const launch = useCallback((given: ErpLaunch) => void open(given), [open]);
 
@@ -399,5 +414,5 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
     </>
   );
 
-  return { binding, tabs, badge, overlays, launch, sync, boundAt };
+  return { binding, tabs, badge, overlays, launch, sync, boundAt, bindStaged };
 }
