@@ -4,6 +4,37 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.6.0] - 2026-11-09
+
+Cash Gear ERP's vendors open in the sheet, read-only: the first end-to-end slice of editing ERP
+data, proving the handoff, cross-origin requests and the guard that keeps each record whole before
+any editing exists. Normal workbooks are unchanged, and the ERP's button stays hidden for every
+company until Phase 18.
+
+- **Opening from the ERP:** "Edit in Cash Gear Sheet" on the ERP's Vendors list opens a new tab
+  with a one-time ticket in the link's fragment, which the sheet reads and removes from the address
+  bar and history before anything else runs. A load panel shows progress with Cancel, and says
+  plainly when a link has expired or was already used, when the ERP can't be reached (with Try
+  again), or when the list is over the 10,000-vendor cap.
+- **A bound table:** the vendors open in a new workbook, "Vendors – Kit", as one table with the
+  ERP's own headings and column order, typed values (leading zeros kept, decimals at their scale,
+  dates as dates), filter buttons, a frozen heading row and fitted columns. Arabic users get Arabic
+  headings and a right-to-left sheet.
+- **Sorting and filtering, with every record kept whole:** every bound cell is read-only in this
+  version. A guard in the engine checks every change to cells, the table and the sheet's shape:
+  sorting and its undo pass, while typing, paste, fill, moves, Replace, Remove Duplicates, inserting
+  or deleting rows in the table, and reshaping it are refused with a clear message. Formatting is
+  never limited.
+- **The ERP Data tab:** Refresh replaces the records with what the ERP has now, found by id
+  wherever a sort moved them, and Connection Info says where the data came from. The status bar
+  and the window's title name the data, the record count, the user and the company.
+- **Nothing ERP in saved files:** Save As writes an ordinary workbook. Record ids, versions and the
+  connection stay in the engine's memory, and a bound workbook keeps no recovery copy on the device
+  yet.
+- **The ERP side (Track E1):** UnifiedAPI gained launch tickets, sheet sessions in their own
+  authentication scheme, and the Vendors schema and query; the contract suite passes against it on
+  LocalDB.
+
 ## [1.5.0] - 2026-11-09
 
 The ERP contract: the first step towards editing Cash Gear ERP records, Vendors first, in the

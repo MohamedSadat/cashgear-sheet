@@ -23,12 +23,12 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 13: Excel parity polish | Done 2026-11-09 | `v1.4.0` |
 | Planning the ERP integration | Done 2026-11-09: Phases 14 to 19 and Track E added to `PLAN.md`, designed in `ERP_SHEET_INTEGRATION_PLAN.md` | |
 | Phase 14: ERP contract and mock | Done 2026-11-09, with your sign-off on the contract and the rollout plan | `v1.5.0` |
-| Phase 15: Read-only ERP slice | Not started | `v1.6.0` |
+| Phase 15: Read-only ERP slice | Done 2026-11-09 | `v1.6.0` |
 | Phase 16: Editing and change tracking | Not started | `v1.7.0` |
 | Phase 17: Validate, review and commit | Not started | `v1.8.0` |
 | Phase 18: Conflicts, refresh, sessions and recovery | Not started | `v1.9.0` |
 | Phase 19: ERP hardening | Not started | `v1.10.0` |
-| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only | |
+| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only. E1 done 2026-11-09: tickets, sessions, Schema and Query in UnifiedAPI, and the hidden button in `ERPClient_React` | |
 
 ## Planning
 
@@ -835,3 +835,56 @@ Also: three cross-origin cases (preflight for the sheet's Origin with `X-Sheet-S
 - The Blazor host lets Edit change Blocked, where the sheet asks AdvEdit, and its cache sees a sheet commit within 8 hours. Both are the ERP's own rules, left as they are.
 - `ERPClient_React`'s git workflow wasn't answered; it is among Phase 15's questions, since E1 is the first to change that repository.
 - Outside this phase: nothing new.
+
+## Phase 15: Read-only ERP slice
+
+Cash Gear ERP's vendors open in the sheet from a launch link, as a bound table that sorts, filters and refreshes, with every bound cell read-only. Done on 2026-11-09, with Track E1 in the ERP repos. Answers and defaults are in `docs/decisions.md` (2026-11-09, Phase 15): the ERP's own column order and labels with lookups as codes, refusing a list over 10,000, the load panel's wording, `ERPClient_React` on `main` and pushed, the button opening exactly the list's rows, a server setting that keeps the button hidden per company, and the binding targets carried to Phase 19.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Rust property tests: random sorts, filters, undo and redo over 1,000 records keep every key with its own record, and every refused path is tested | Pass | `crates/cgs-engine/tests/erp.rs`. `random_sorts_filters_undo_and_redo_keep_every_key_with_its_record` runs 120 seeded steps over 1,000 records of 14 fields (sorts on up to three random keys either way, group filters and clearing them, undo, redo, and refused edits among them), and after every step checks that each row's key holds exactly its own record's values and the binding's id for it. `every_path_that_would_break_a_record_is_refused` refuses typing in a key, a value and a heading, typing into several areas, array input, Clear, fill, paste, Paste Values, cut and paste out of and into the table, external paste, Replace and Replace All, Convert to Number, rows and columns inserted or deleted inside the table, ShiftCells, merges, header off, totals on, a totals function, rename, resize, Convert to Range, an overlapping table, deleting the sheet, Remove Duplicates, left-to-right sorts and sorts of part of the table: each with its message, and nothing changed. `the_guards_inside_the_engine_refuse_on_their_own` replays 26 of them with the command checks off, and the content rule, table and shape guards refuse every one. `formatting_moving_the_table_and_typing_beside_it_are_allowed` shows formatting, Paste Formats, table styles, typing beside the table (no growth, no calculated column) and moving the table by inserting rows above it all pass. 9 tests, and 20 more in `cgs-bind` |
+| e2e in Chrome and Edge: open, sort, filter and refresh against the mock; replayed and expired tickets are refused; the fragment leaves no trace; Save As holds no ids or versions | Pass | `tests/e2e/erp.spec.ts`, 6 tests, **12 of 12** in Chrome and Edge, against the mock on its own origin (127.0.0.1:4180, the sheet on :4173 under the preview's COOP and COEP). 2,174 active vendors open in English and are checked row by row against the mock after a Sort Z to A from the Data tab, a filter, and a Refresh that finds an ERP-side change by id. Arabic opens right to left with Arabic headings. Typing, Delete and refused commands show their messages. A replayed and an expired link are refused with the approved wording. The address is `/` with no fragment, and history holds no launch entry. Save As writes no `customXml`, ids, versions, routes or user ids |
+| Binding meets its targets, and the contract suite passes against UnifiedAPI on LocalDB | Contract: Pass. Binding: targets missed, accepted by you and carried to Phase 19 | **Contract:** against a real UnifiedAPI process on LocalDB (`CashGearSheet_CGService` and `CashGearSheet_ASTDataTest`, every connection string printed and checked as LocalDB before anything ran), with `ERP_TEST_STAGE=E1` and all five keys: **24 passed, 34 skipped, 0 failed** (tickets 9 of 9 that run off the mock, Status among them; sessions' lifetimes and scope; schema 4 of 4; query 6 of 6, the five-field search among them; CORS 3 of 3). The skipped are Commit (E2), End (E3), and the cases that need the mock's clock or failure injection, which UnifiedAPI's own tests cover. **Binding** (`bench/measure-erp-bind.mjs`, release build in Chrome, 20 fields, median of 5, from the pages' bytes to the grid's first paint): **1,000 records in 697 ms** (target 300 ms) and **10,000 in 2,562 ms** (target 1,500 ms). For 1,000: staging 68 ms, opening the workbook 75, binding 215, fitting 180, showing 40 and painting 115. You accepted these for Phase 15, and Phase 19 keeps B.6's targets (decisions, 2026-11-09, Phase 15) |
+
+**Found and fixed on the way**
+
+- Writing a block of cells was quadratic in its rows: Formualizer regrows every column when a write passes a sheet's last row, and its read of a cell slows as a batch fills a column. 10,000 records took 29 s in Chrome (14.8 s natively). `set_cells` now writes each sheet's farthest value first and skips reading cells known to be empty: 2.6 s in Chrome (0.6 s natively), and loading a CSV gains the same. A contract test checks that a large batch's pre-images stay exact.
+- A refused part of `Op::Many` left what went before it applied, with no undo step. It now takes that back, for every command.
+- AutoFit leaves a heading's filter button out, as Excel's does, which clipped ERP headings; ERP data fits with room for it.
+
+**Delivered**
+
+- `crates/cgs-bind`: bindings, the schema, record pages read from bytes, typed values, versions as 8 bytes, refresh by id, and the guard's content rule. Serde only.
+- `cgs-engine`: `erp_begin`, `erp_page`, `erp_bind`, `erp_refresh`, `erp_settle`, `binding_json` and `binding_ids`; the guard in `apply_cells`, `Op::Tables`, `Op::BookTables`, `apply_axis` and sheet removal, with command checks before them; no growth or calculated columns for bound tables.
+- `cgs-wasm` and `@cgs/engine-client`: the same, with record pages transferred as bytes, and no working copy or journal for a bound workbook.
+- `@cgs/erp-connector`: `readErpLaunch` and `erpApiBase`, `ErpHttp`, `ErpSession`, `openRecords` and `refreshRecords`, with 15 tests against the mock.
+- `@cgs/ui`: `useErpTools` with the load panel, the ERP Data tab (Refresh, Connection Info), the status badge, the window's title, and refusals in a message box and at the first key. The web platform reads and strips `#launch=` before the app renders.
+- The contract: the Status route and its per-company switch, Query's search over what the Vendors list searches, and the ERP's column order and labels, in the doc, the mock and the suite, with `ERP_TEST_STAGE` for a server part way through Track E.
+- `tests/e2e/erp.spec.ts`, with the mock as Playwright's second web server, and `bench/measure-erp-bind.mjs`.
+
+**Track E1.** Built by a fork of this session in the ERP repos, and checked here.
+- `D:\CashGear\Projects\CashGear` (`main`, pushed `6d95cfc4..076933fc`): the contract's DTOs (`4858b81f`); `Create_SheetSessions.sql` and `Add_VendorsRowVersion.sql` as the contract gives them (`75cae54f`); `SheetLaunchController` (Status, CreateTicket), `SheetSessionController` (Redeem), the `SheetSession` scheme with per-request key and company checks, `VendorSheetController` (Schema, Query) with `VendorSheetConnector`, company-strict privileges, the `SheetOrigins` CORS policy, and a middleware for the headers and error body (`7133ee1c`); and `CashGear.UnifiedAPI.Tests`, 47 passing on SQLite and 5 more on LocalDB (`076933fc`). `VendorModel` is unchanged: Query reads `Vendors.RowVersion` with its own SQL.
+- `D:\CashGear\Projects\ERPClient_React` (`main`, pushed `d3d797f..a68819d`): the "Edit in Cash Gear Sheet" button, shown only when Status says so (an error or a 404 hides it), and off past 10,000 vendors. 199 tests pass, 13 of them new. Your uncommitted changes there were left out and untouched.
+- `CashGear.UnifiedAPI.Tests/SheetContractRun.md` has the steps to run the contract suite against UnifiedAPI on LocalDB.
+
+**What else was checked**
+
+- Unit tests: 273 in Vitest (19 new) and 678 in Rust (31 new). Clippy is clean natively and for WASM; `cargo fmt`, typecheck, lint and format checks are clean.
+- Saving: `pnpm test:save`, 11 fixtures: an unedited save is identical in all 11, 49 of 49 entries checked after edits match, and 3,786 of 3,786 cells match, as in Phase 13.
+- `bench/run-edit-fuzz.mjs`: 906 of 1,000 steps match Excel, **0 diverged**, 76 not reached; 166 of 166 saves open with no repair and match Excel's own result, as in Phase 13.
+- The full e2e suite: **300 of 300** in Chrome and Edge (Phase 13's 288 and the 12 new).
+- `pnpm desktop:build` and `pnpm desktop:smoke`: the desktop app builds, and its smoke run passes in WebView2 157 (goldens within tolerance, overwrite and Save As, recent files, the theme kept).
+- Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.6.0 everywhere and its changelog notes. Release WASM: 4,571,267 bytes gzipped, of the 5,000,000 budget.
+
+**Known gaps**
+
+- Binding misses B.6's targets (0.70 s and 2.56 s, against 0.3 s and 1.5 s); Phase 19 carries them.
+- Green number-stored-as-text triangles show on bound mobiles and tax files; hiding them on bound text fields is a Phase 16 task.
+- The load panel, ribbon and messages are English for Arabic sessions until Phase 18's catalogue. Headings and lookups follow the ERP user's language.
+- Sessions aren't renewed yet (Renew is Track E3, in Phase 18), so a session ends 30 minutes after opening. Refresh then says the session has ended, and so does the badge.
+- A bound workbook keeps no recovery copy until Phase 18's capped draft.
+- The ERP's button stays hidden for every company: `SheetLaunch:Companies` is empty until Phase 18. Before a company is listed, `Create_SheetSessions.sql` must run in CGService and `Add_VendorsRowVersion.sql` in that company's database. UnifiedAPI with E1 can be deployed before that.
+- The icon set has no refresh or information icon, so Refresh uses the circular arrow and Connection Info the link.
+- Outside this phase: two `CashGear.Operation.Tests` cases fail in the ERP repo (`ShipOrderPartnerListTests`, `no such column: s.DueDate`), from its commit `129d0dcb` of 2026-11-04, not from Track E1.

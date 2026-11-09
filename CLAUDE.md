@@ -173,6 +173,19 @@ Found in Phase 14:
 - The mock's `/__mock/fault` `match` is a regular expression over the path: `VendorSheet/Commit` matches CommitStatus too, so anchor it with `$`.
 - A workspace package with no dependencies gets no importer in `pnpm-lock.yaml`, and `--frozen-lockfile` still passes.
 
+Found in Phase 15:
+
+- A bound ERP table is guarded in layers: `binding_refusal` before commands, for each refusal's message, then the content rule in `apply_cells`, the table checks in `Op::Tables` and `Op::BookTables`, the shape check in `apply_axis` and sheet removal. A new path that writes cells, tables or the sheet's shape must go through one of them; `tests/erp.rs` replays every refusal with the command checks off (`set_erp_precheck(false)`).
+- Undo, redo and every rollback run inside `Session::unguarded`. A refused part of `Op::Many` takes back what went before it.
+- ERP record pages reach the engine as bytes (`erp_page`) and are staged on `Engine`, not the session, so they survive opening the new workbook they bind into.
+- Playwright starts the mock ERP on 4180 with `--sheet-url http://127.0.0.1:4173` and reuses one already running: a hand-started mock with another `--sheet-url` sends launches to the wrong page. Stop it first.
+- `cgsTest.shownText` (the engine's `copyText`) includes rows a filter hides; read a row's height to see whether it shows.
+- The dev server's WASM is unoptimised and takes seconds to bind 2,000 records. Time binding with `bench/measure-erp-bind.mjs` on `pnpm build`.
+- The browser pane refuses `127.0.0.1`; open the dev server and the mock as `localhost`, which the mock's origins allow.
+- Bash heredocs here turn `\t` and `\u…` inside a script's strings into the characters themselves. Write scripts with the Write tool, or build such strings with `chr()`.
+- Against a hand-started mock with only `ERP_TEST_KEY_EDITOR`, set `ERP_TEST_SKIP_KEYS=V-1005`, or the 413 case picks the locked vendor.
+- `[Timestamp]` isn't on `VendorModel`: UnifiedAPI reads `Vendors.RowVersion` with its own SQL until every tenant database is scripted. `CashGear.UnifiedAPI.Tests/SheetContractRun.md` runs the contract suite against UnifiedAPI on LocalDB, after printing and checking every connection string.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
