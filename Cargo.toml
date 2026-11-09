@@ -4,6 +4,7 @@ members = ["crates/*", "apps/desktop/src-tauri", "bench/harness", "bench/size-pr
 # Plain `cargo build` skips the Tauri shell; `--workspace` includes it.
 default-members = [
   "crates/cgs-model",
+  "crates/cgs-bind",
   "crates/cgs-calc",
   "crates/cgs-numfmt",
   "crates/cgs-refs",
@@ -26,6 +27,7 @@ rust-version = "1.99.1"
 wasm-bindgen = "=0.2.129"
 serde = { version = "1", features = ["derive"] }
 cgs-model = { path = "crates/cgs-model" }
+cgs-bind = { path = "crates/cgs-bind" }
 cgs-engine = { path = "crates/cgs-engine" }
 cgs-native = { path = "crates/cgs-native" }
 

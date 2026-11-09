@@ -612,6 +612,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cgs-bind"
+version = "1.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cgs-calc"
 version = "1.5.0"
 dependencies = [
@@ -644,6 +652,7 @@ name = "cgs-engine"
 version = "1.5.0"
 dependencies = [
  "base64 0.23.1",
+ "cgs-bind",
  "cgs-calc",
  "cgs-model",
  "cgs-numfmt",
