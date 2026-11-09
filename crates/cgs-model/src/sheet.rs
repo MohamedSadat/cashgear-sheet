@@ -492,6 +492,11 @@ pub struct Drawing {
     pub hidden: bool,
     /// `clientData fPrintsWithSheet`: whether it prints.
     pub prints: bool,
+    /// A picture's turn, in 60,000ths of a degree clockwise, as `a:xfrm rot` has it.
+    pub rotation: i32,
+    /// A picture flipped left to right, or upside down.
+    pub flip_h: bool,
+    pub flip_v: bool,
 }
 
 impl Drawing {
@@ -507,6 +512,9 @@ impl Drawing {
             description: String::new(),
             hidden: false,
             prints: true,
+            rotation: 0,
+            flip_h: false,
+            flip_v: false,
         }
     }
 }

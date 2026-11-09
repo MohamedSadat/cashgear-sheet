@@ -165,8 +165,18 @@ fn new_anchor(prefixes: &(String, String), drawing: &Drawing, rel: &str) -> Stri
                 Anchor::OneCell { width, height, .. } | Anchor::Absolute { width, height, .. } => (width, height),
                 Anchor::TwoCell { .. } => (0, 0),
             };
+            let mut turn = String::new();
+            if drawing.rotation != 0 {
+                turn.push_str(&format!(" rot=\"{}\"", drawing.rotation));
+            }
+            if drawing.flip_h {
+                turn.push_str(" flipH=\"1\"");
+            }
+            if drawing.flip_v {
+                turn.push_str(" flipV=\"1\"");
+            }
             format!(
-                "<{x}pic><{x}nvPicPr><{x}cNvPr id=\"{}\" name=\"{name}\"{descr}/><{x}cNvPicPr><{a}picLocks noChangeAspect=\"1\"/></{x}cNvPicPr></{x}nvPicPr><{x}blipFill><{a}blip xmlns:r=\"{R}\" r:embed=\"{rel}\"/><{a}stretch><{a}fillRect/></{a}stretch></{x}blipFill><{x}spPr><{a}xfrm><{a}off x=\"0\" y=\"0\"/><{a}ext cx=\"{width}\" cy=\"{height}\"/></{a}xfrm><{a}prstGeom prst=\"rect\"><{a}avLst/></{a}prstGeom></{x}spPr></{x}pic>",
+                "<{x}pic><{x}nvPicPr><{x}cNvPr id=\"{}\" name=\"{name}\"{descr}/><{x}cNvPicPr><{a}picLocks noChangeAspect=\"1\"/></{x}cNvPicPr></{x}nvPicPr><{x}blipFill><{a}blip xmlns:r=\"{R}\" r:embed=\"{rel}\"/><{a}stretch><{a}fillRect/></{a}stretch></{x}blipFill><{x}spPr><{a}xfrm{turn}><{a}off x=\"0\" y=\"0\"/><{a}ext cx=\"{width}\" cy=\"{height}\"/></{a}xfrm><{a}prstGeom prst=\"rect\"><{a}avLst/></{a}prstGeom></{x}spPr></{x}pic>",
                 drawing.id
             )
         }
@@ -239,6 +249,61 @@ fn set_size(element: &mut Element, name: &[u8], (a, b): (&str, &str), (x, y): (i
 
 /// Puts the model's corners and size into an anchor the file had, or into each anchor of an
 /// `mc:AlternateContent` block.
+/// A picture's alternative text, turn and flips, written where they changed.
+fn set_picture(element: &mut Element, drawing: &Drawing) {
+    for inner in element.elements_mut() {
+        match inner.local() {
+            b"AlternateContent" | b"Choice" => set_picture(inner, drawing),
+            b"pic" => {
+                for part in inner.elements_mut() {
+                    match part.local() {
+                        b"nvPicPr" => {
+                            for props in part.elements_mut() {
+                                if props.local() == b"cNvPr"
+                                    && props.attr_text(b"descr").unwrap_or_default()
+                                        != drawing.description
+                                {
+                                    let descr = (!drawing.description.is_empty())
+                                        .then_some(drawing.description.as_str());
+                                    props.set_attr("descr", descr);
+                                }
+                            }
+                        }
+                        b"spPr" => {
+                            for xfrm in part.elements_mut() {
+                                if xfrm.local() != b"xfrm" {
+                                    continue;
+                                }
+                                let rotation: i32 = xfrm
+                                    .attr_text(b"rot")
+                                    .and_then(|t| t.parse().ok())
+                                    .unwrap_or(0);
+                                if rotation != drawing.rotation {
+                                    let text = drawing.rotation.to_string();
+                                    let value = (drawing.rotation != 0).then_some(text.as_str());
+                                    xfrm.set_attr("rot", value);
+                                }
+                                let flag = |on: bool| on.then_some("1");
+                                let on = |text: Option<String>| {
+                                    matches!(text.as_deref(), Some("1" | "true"))
+                                };
+                                if on(xfrm.attr_text(b"flipH")) != drawing.flip_h {
+                                    xfrm.set_attr("flipH", flag(drawing.flip_h));
+                                }
+                                if on(xfrm.attr_text(b"flipV")) != drawing.flip_v {
+                                    xfrm.set_attr("flipV", flag(drawing.flip_v));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn place_anchor(element: &mut Element, anchor: &Anchor) {
     if element.local() == b"AlternateContent" {
         for branch in element.elements_mut() {
@@ -441,6 +506,9 @@ pub fn save_drawings(
             {
                 Some(Node::Element(mut element)) => {
                     place_anchor(&mut element, &drawing.anchor);
+                    if drawing.kind == DrawingKind::Picture {
+                        set_picture(&mut element, drawing);
+                    }
                     children.push(Node::Element(element));
                 }
                 _ => {

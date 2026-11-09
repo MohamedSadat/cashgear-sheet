@@ -411,6 +411,8 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
     let mut id = 0u32;
     let mut description = String::new();
     let (mut hidden, mut prints) = (false, true);
+    // A picture's turn and flips, from its `a:xfrm`.
+    let (mut rotation, mut flip_h, mut flip_v) = (0i32, false, false);
     // Anchors and `mc:AlternateContent` blocks at the top, counted as the writer counts them. A
     // block's choice is the drawing; its fallback is the same drawing for older programs.
     let mut anchors = 0u32;
@@ -494,6 +496,12 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                             drawing.source = Some(anchors);
                             drawing.hidden = hidden;
                             drawing.prints = prints;
+                            if drawing.kind == DrawingKind::Picture {
+                                drawing.rotation = rotation;
+                                drawing.flip_h = flip_h;
+                                drawing.flip_v = flip_v;
+                            }
+                            (rotation, flip_h, flip_v) = (0, false, false);
                             out.push(DrawingRead {
                                 drawing,
                                 chart_rel: chart_rel.take(),
@@ -584,6 +592,13 @@ pub fn read_drawing_parts(xml: &[u8]) -> Vec<DrawingRead> {
                 // the real one is drawn from VML, and that one still prints.
                 hidden = alternate == 0
                     && matches!(attr(element, b"hidden").as_deref(), Some("1" | "true"));
+            }
+            b"xfrm" if kind == Some(DrawingKind::Picture) && depth == 1 => {
+                let on = |key: &[u8]| matches!(attr(element, key).as_deref(), Some("1" | "true"));
+                rotation = attr(element, b"rot")
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0);
+                (flip_h, flip_v) = (on(b"flipH"), on(b"flipV"));
             }
             b"clientData" if anchor_kind != 0 => {
                 prints = !matches!(

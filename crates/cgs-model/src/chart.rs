@@ -559,6 +559,60 @@ pub struct PointLook {
     pub explosion: Option<u32>,
 }
 
+/// How a trendline fits its series.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrendKind {
+    Linear,
+    Exponential,
+    Logarithmic,
+    /// Of this order, 2 to 6.
+    Polynomial(u8),
+    Power,
+    /// Over this many points.
+    MovingAverage(u32),
+}
+
+impl TrendKind {
+    /// `trendlineType`'s value.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Exponential => "exp",
+            Self::Logarithmic => "log",
+            Self::Polynomial(_) => "poly",
+            Self::Power => "power",
+            Self::MovingAverage(_) => "movingAvg",
+        }
+    }
+
+    /// The name Excel gives a trendline of a series named `series`, as its legend shows it.
+    pub fn default_name(self, series: &str) -> String {
+        match self {
+            Self::Linear => format!("Linear ({series})"),
+            Self::Exponential => format!("Expon. ({series})"),
+            Self::Logarithmic => format!("Log. ({series})"),
+            Self::Polynomial(_) => format!("Poly. ({series})"),
+            Self::Power => format!("Power ({series})"),
+            Self::MovingAverage(period) => format!("{period} per. Mov. Avg. ({series})"),
+        }
+    }
+}
+
+/// `c:trendline`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trendline {
+    pub kind: TrendKind,
+    /// Its own name; Excel's default when `None`.
+    pub name: Option<String>,
+    /// Periods it runs on past the last point and before the first.
+    pub forward: f64,
+    pub backward: f64,
+    pub intercept: Option<f64>,
+    pub show_equation: bool,
+    pub show_r2: bool,
+    pub shape: ShapeLook,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Series {
     pub index: u32,
@@ -575,6 +629,7 @@ pub struct Series {
     pub smooth: Option<bool>,
     pub invert_if_negative: bool,
     pub explosion: Option<u32>,
+    pub trendlines: Vec<Trendline>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

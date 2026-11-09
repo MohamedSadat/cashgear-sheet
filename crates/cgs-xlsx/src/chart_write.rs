@@ -313,6 +313,36 @@ fn point_look(kind: &GroupKind, point: &PointLook) -> String {
 }
 
 /// A series' children, by name, as this group kind takes them.
+/// A trendline as Excel writes one, in the schema's order.
+fn trendline(trend: &Trendline) -> String {
+    let mut out = String::from("<c:trendline>");
+    if let Some(name) = &trend.name {
+        out.push_str(&format!("<c:name>{}</c:name>", text(name)));
+    }
+    out.push_str(&shape(&trend.shape));
+    out.push_str(&format!("<c:trendlineType val=\"{}\"/>", trend.kind.code()));
+    match trend.kind {
+        TrendKind::Polynomial(order) => out.push_str(&format!("<c:order val=\"{order}\"/>")),
+        TrendKind::MovingAverage(period) => out.push_str(&format!("<c:period val=\"{period}\"/>")),
+        _ => {}
+    }
+    if trend.forward != 0.0 {
+        out.push_str(&format!("<c:forward val=\"{}\"/>", number(trend.forward)));
+    }
+    if trend.backward != 0.0 {
+        out.push_str(&format!("<c:backward val=\"{}\"/>", number(trend.backward)));
+    }
+    if let Some(intercept) = trend.intercept {
+        out.push_str(&format!("<c:intercept val=\"{}\"/>", number(intercept)));
+    }
+    out.push_str(&format!(
+        "<c:dispRSqr val=\"{}\"/><c:dispEq val=\"{}\"/></c:trendline>",
+        u8::from(trend.show_r2),
+        u8::from(trend.show_equation)
+    ));
+    out
+}
+
 fn series_parts(kind: &GroupKind, series: &Series) -> Vec<(&'static str, String)> {
     let scatter = matches!(kind, GroupKind::Scatter { .. } | GroupKind::Bubble);
     let mut parts = vec![
@@ -358,6 +388,15 @@ fn series_parts(kind: &GroupKind, series: &Series) -> Vec<(&'static str, String)
         "dLbls",
         series.labels.as_ref().map(labels).unwrap_or_default(),
     ));
+    if matches!(
+        kind,
+        GroupKind::Bar { .. } | GroupKind::Line { .. } | GroupKind::Scatter { .. }
+    ) {
+        parts.push((
+            "trendline",
+            series.trendlines.iter().map(trendline).collect(),
+        ));
+    }
     let (cat, val) = if scatter {
         ("xVal", "yVal")
     } else {

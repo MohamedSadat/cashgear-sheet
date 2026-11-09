@@ -365,6 +365,27 @@ pub(crate) fn labels_of(element: &Element) -> DataLabels {
     }
 }
 
+fn trendline_of(element: &Element) -> Trendline {
+    let kind = match val(element, b"trendlineType").as_deref() {
+        Some("exp") => TrendKind::Exponential,
+        Some("log") => TrendKind::Logarithmic,
+        Some("poly") => TrendKind::Polynomial(number(element, b"order").unwrap_or(2)),
+        Some("power") => TrendKind::Power,
+        Some("movingAvg") => TrendKind::MovingAverage(number(element, b"period").unwrap_or(2)),
+        _ => TrendKind::Linear,
+    };
+    Trendline {
+        kind,
+        name: child(element, b"name").map(Element::text),
+        forward: number(element, b"forward").unwrap_or(0.0),
+        backward: number(element, b"backward").unwrap_or(0.0),
+        intercept: number(element, b"intercept"),
+        show_equation: flag(element, b"dispEq").unwrap_or(false),
+        show_r2: flag(element, b"dispRSqr").unwrap_or(false),
+        shape: shape_of(element),
+    }
+}
+
 fn series_of(element: &Element) -> Series {
     let mut series = Series {
         index: number(element, b"idx").unwrap_or(0),
@@ -382,6 +403,7 @@ fn series_of(element: &Element) -> Series {
         match inner.local() {
             b"cat" | b"xVal" => series.categories = Some(source_of(inner)),
             b"val" | b"yVal" => series.values = Some(source_of(inner)),
+            b"trendline" => series.trendlines.push(trendline_of(inner)),
             b"dPt" => series.points.push(PointLook {
                 index: number(inner, b"idx").unwrap_or(0),
                 shape: shape_of(inner),
