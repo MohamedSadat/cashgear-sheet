@@ -891,6 +891,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const sheetFormatRef = useRef<SheetFormat | null>(null);
   const throughRef = useRef<EditingHost | null>(null);
   const formatActionRef = useRef<(action: GridAction) => void>(() => undefined);
+  // Generate GetPivotData, which the pivot tools keep, and what a double-click on a value does.
+  const pivotGenerateRef = useRef(true);
+  const doubleCellRef = useRef<(row: number, col: number) => boolean>(() => false);
   const host = useRef<EditingHost | null>(null);
   host.current = {
     engine: () => clientRef.current,
@@ -936,6 +939,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     insertSheet: () => insertSheet(false),
     calculate,
     completionKey: (event) => completionRef.current?.key(event) ?? false,
+    generatesPivotData: () => pivotGenerateRef.current,
     fitColumns: (index, first, last) => {
       const job = commands.current
         .catch(() => undefined)
@@ -980,6 +984,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       insertSheet: () => host.current!.insertSheet(),
       calculate: (kind) => host.current!.calculate(kind),
       completionKey: (event) => host.current!.completionKey(event),
+      generatesPivotData: () => host.current!.generatesPivotData?.() ?? true,
       fitColumns: (index, first, last) => host.current!.fitColumns(index, first, last),
       formatAction: (action) => host.current!.formatAction(action),
     };
@@ -1032,7 +1037,23 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     },
     placeButtons: () => dataTools.placeButtons(),
     fitColumns: (index, first, last) => throughRef.current?.fitColumns(index, first, last),
+    showAdded: async (index, area) => {
+      const summary = await clientRef.current?.bookSummary();
+      if (summary) applySummary(summary);
+      await goToSheet(index);
+      if (area) controller.current?.selectArea(fromArea(area));
+    },
   });
+  pivotGenerateRef.current = pivotTools.state.generate;
+  // A double-click on a pivot table's value shows its details, as in Excel.
+  doubleCellRef.current = (row, col) => {
+    // Inside a pivot table, a double-click isn't an edit: on a value it shows the details.
+    const area = pivotTools.state.info?.area;
+    if (!area || row + 1 < area.top || row + 1 > area.bottom) return false;
+    if (col + 1 < area.left || col + 1 > area.right) return false;
+    pivotTools.actions.showDetails(row, col);
+    return true;
+  };
   pivotRefreshRef.current = pivotTools.refresh;
   pivotButtonsRef.current = pivotTools.buttons;
   const chartScreen = useMemo(
@@ -1378,6 +1399,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       onJump: editing.jump,
       onEditClick: editing.editClick,
       onEditDrag: editing.editDrag,
+      onDoubleCell: (row, col) => doubleCellRef.current(row, col),
       onFill: editing.fill,
       onViewport: (index, range) => clientRef.current?.setViewport(index, toArea(range)),
       onSelectEnd: sheetFormat.selectionDone,

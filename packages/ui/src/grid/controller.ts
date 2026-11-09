@@ -87,6 +87,8 @@ export interface GridEvents {
   onResizeHint?: (hint: ResizeHint | null) => void;
   /** A filter's or a list's button in a cell was clicked. 0-based, with its box in client pixels. */
   onCellButton?: (button: CellButton, box: ClientBox) => void;
+  /** A cell was double-clicked. Returns whether that was dealt with, so editing doesn't start. */
+  onDoubleCell?: (row: number, col: number) => boolean;
   /** A cell was clicked, without Shift or Ctrl. 0-based. For following a link. */
   onCellClick?: (row: number, col: number) => void;
   /** The pointer rests on another cell, or none. 0-based. For notes and links. */
@@ -1608,7 +1610,11 @@ export class GridController {
       return;
     }
     const view = this.view();
-    if (x >= view.x && y >= view.y && !this.editing) this.events.onAction?.('edit');
+    if (x >= view.x && y >= view.y && !this.editing) {
+      const cell = this.cellAt(x, y);
+      if (cell && this.events.onDoubleCell?.(cell.row, cell.col)) return;
+      this.events.onAction?.('edit');
+    }
   };
 
   private readonly onPointerDown = (event: PointerEvent) => {

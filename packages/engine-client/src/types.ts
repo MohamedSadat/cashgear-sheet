@@ -191,6 +191,13 @@ export interface PivotFieldInfo {
   blankRow: boolean;
   multiple: boolean;
   grouped: boolean;
+  /** How it is grouped: by date or number on itself or as a part, by hand, or the base of one. */
+  groupKind: 'dates' | 'numbers' | 'items' | 'base' | null;
+  /** It holds only dates, so Group Field groups it by period. */
+  dates: boolean;
+  /** Where its numbers or dates run from and to, for the Grouping dialog. */
+  low: number | null;
+  high: number | null;
 }
 
 /** What a cell of a pivot table is. */
@@ -389,6 +396,20 @@ export type Command =
       col: number;
       includes: StyleIncludes;
     }
+  /** Group Field or Group Selection on a pivot table. */
+  | {
+      kind: 'groupPivot';
+      pivot: PivotRef;
+      field: number;
+      group:
+        | { kind: 'dates'; parts: string[]; start?: number; end?: number }
+        | { kind: 'numbers'; start?: number; end?: number; by: number }
+        | { kind: 'items'; items: number[] };
+    }
+  | { kind: 'ungroupPivot'; pivot: PivotRef; field: number }
+  /** Show Details on a pivot table's value: its records on a new sheet. 1-based. */
+  | { kind: 'pivotDetails'; sheet: number; row: number; col: number }
+  | { kind: 'pivotFilterPages'; pivot: PivotRef; field: number }
   /** Modify Cell Style: the style takes the change, and its cells follow. */
   | { kind: 'modifyCellStyle'; name: string; change: FormatChange; includes?: StyleIncludes }
   | {
@@ -803,6 +824,7 @@ export type Question =
   | { kind: 'notes'; sheet: number }
   | { kind: 'cellStyles' }
   | { kind: 'styleFormat'; name: string }
+  | { kind: 'pivotDataFormula'; sheet: number; row: number; col: number; from: number }
   | { kind: 'tableStyles'; options?: Omit<TableOptions, 'style' | 'filterButton'> }
   | { kind: 'pageSetup'; sheet: number }
   | { kind: 'pages'; sheet: number; request?: PrintRequest };
@@ -836,6 +858,7 @@ export interface Answers {
   }[];
   cellStyles: { group: string; styles: CellStyleInfo[] }[];
   styleFormat: { format: CellFormat; includes: StyleIncludes } | null;
+  pivotDataFormula: string | null;
   tableStyles: TableStyleInfo[];
   pageSetup: PageSetupInfo;
   pages: PagesInfo;

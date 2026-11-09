@@ -351,6 +351,20 @@ export class EditSession {
     });
   }
 
+  /** Puts this text in place of the reference last picked, which it stands for from now on. */
+  replacePick(text: string) {
+    const { picked } = this.current;
+    if (!this.current.active || !picked) return;
+    const next =
+      this.current.text.slice(0, picked.start) + text + this.current.text.slice(picked.end);
+    this.set({
+      ...this.current,
+      text: next,
+      caret: picked.start + text.length,
+      picked: { ...picked, end: picked.start + text.length },
+    });
+  }
+
   /** Puts a function's name in, in place of what has been typed of it. */
   complete(name: string) {
     const { text, caret } = this.current;

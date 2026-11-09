@@ -18,6 +18,10 @@ const field = (index: number, name: string, numeric: boolean) => ({
   blankRow: false,
   multiple: false,
   grouped: false,
+  groupKind: null,
+  dates: false,
+  low: null,
+  high: null,
 });
 
 const info = {

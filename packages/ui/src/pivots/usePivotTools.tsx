@@ -23,6 +23,7 @@ import type {
 } from '@cgs/engine-client';
 import type { CellButton, ClientBox, GridController, GridSelection } from '../grid/controller';
 import { toArea } from '../sheet-editing';
+import { FilterPagesDialog, GroupingDialog } from './GroupDialogs';
 import {
   CreatePivotDialog,
   PivotFilterMenu,
@@ -48,12 +49,16 @@ export interface PivotToolsHost {
   placeButtons: () => void;
   /** Fits columns to what they hold, 1-based, as Excel does to a pivot table it updates. */
   fitColumns: (sheet: number, first: number, last: number) => void;
+  /** Shows the sheet a command added, with this area selected. 1-based. */
+  showAdded?: (sheet: number, area: CellArea | null) => Promise<void>;
 }
 
 export interface PivotState {
   hasBook: boolean;
   info: PivotInfo | null;
   fieldList: boolean;
+  /** Generate GetPivotData: a click on a value while typing a formula writes GETPIVOTDATA. */
+  generate: boolean;
 }
 
 export interface PivotActions {
@@ -66,12 +71,23 @@ export interface PivotActions {
   valueSettings: () => void;
   expand: (expanded: boolean) => void;
   set: (options: Extract<Command, { kind: 'pivotOptions' }>['options']) => void;
+  /** Group Selection: items picked by hand, or the Grouping dialog for dates and numbers. */
+  groupSelection: () => void;
+  /** Group Field: the Grouping dialog for the active cell's date or number field. */
+  groupField: () => void;
+  ungroup: () => void;
+  /** Show Details on the value at the active cell, or at this cell, 0-based. */
+  showDetails: (row?: number, col?: number) => void;
+  filterPages: () => void;
+  toggleGenerate: () => void;
 }
 
 type PivotDialog =
   | { kind: 'create'; sheet: number; area: CellArea }
   | { kind: 'value'; index: number }
-  | { kind: 'options' };
+  | { kind: 'options' }
+  | { kind: 'group'; field: number }
+  | { kind: 'pages' };
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -126,6 +142,7 @@ export function usePivotTools(host: PivotToolsHost) {
   hostRef.current = host;
   const [info, setInfo] = useState<PivotInfo | null>(null);
   const [fieldList, setFieldList] = useState(true);
+  const [generate, setGenerate] = useState(true);
   const [dialog, setDialog] = useState<PivotDialog | null>(null);
   const [filter, setFilter] = useState<{ fields: number[]; anchor: ClientBox } | null>(null);
   const buttons = useRef<CellButton[]>([]);
@@ -233,6 +250,72 @@ export function usePivotTools(host: PivotToolsHost) {
       set: (options) => {
         if (pivot) send({ kind: 'pivotOptions', pivot, options });
       },
+      groupSelection: () => {
+        const cell = info?.cell;
+        const selection = hostRef.current.selection();
+        const engine = hostRef.current.engine();
+        if (!pivot || !info || cell?.role !== 'item' || !selection || !engine) return;
+        const field = info.fields[cell.field];
+        if (field?.dates || (field?.numeric && !field.grouped)) {
+          setDialog({ kind: 'group', field: cell.field });
+          return;
+        }
+        // Every label of the field in the selection, as Excel groups them.
+        const area = toArea(selection.range);
+        const cells: Promise<PivotInfo | null>[] = [];
+        for (let row = area.top; row <= area.bottom && cells.length < 500; row++) {
+          for (let col = area.left; col <= area.right && cells.length < 500; col++) {
+            cells.push(engine.pivotInfo(hostRef.current.sheet(), row, col));
+          }
+        }
+        void Promise.all(cells).then((list) => {
+          const items = new Set<number>();
+          for (const entry of list) {
+            const at = entry?.cell;
+            if (at?.role === 'item' && at.field === cell.field && !at.subtotal) items.add(at.item);
+          }
+          send({
+            kind: 'groupPivot',
+            pivot,
+            field: cell.field,
+            group: { kind: 'items', items: [...items] },
+          });
+        });
+      },
+      groupField: () => {
+        const cell = info?.cell;
+        if (cell?.role === 'item') setDialog({ kind: 'group', field: cell.field });
+      },
+      ungroup: () => {
+        const cell = info?.cell;
+        if (pivot && cell?.role === 'item')
+          send({ kind: 'ungroupPivot', pivot, field: cell.field });
+      },
+      showDetails: (atRow, atCol) => {
+        const selection = hostRef.current.selection();
+        const engine = hostRef.current.engine();
+        if (!selection || !engine) return;
+        const row = (atRow ?? selection.row) + 1;
+        const col = (atCol ?? selection.col) + 1;
+        const sheet = hostRef.current.sheet();
+        hostRef.current.notice(null);
+        void engine
+          .pivotInfo(sheet, row, col)
+          .then((here) => {
+            if (here?.cell.role !== 'data') return null;
+            return hostRef.current.run({ kind: 'pivotDetails', sheet, row, col });
+          })
+          .then((applied) => {
+            if (!applied) return;
+            const at = applied.selection;
+            if (at) void hostRef.current.showAdded?.(at.sheet, at);
+          })
+          .catch((error) => hostRef.current.notice(errorText(error)));
+      },
+      filterPages: () => {
+        if (info?.pages.length) setDialog({ kind: 'pages' });
+      },
+      toggleGenerate: () => setGenerate((on) => !on),
     }),
     [info, pivot, send],
   );
@@ -283,6 +366,18 @@ export function usePivotTools(host: PivotToolsHost) {
     if (cell.role === 'item') {
       const entry = info.fields[cell.field];
       items.push(
+        {
+          key: 'pivot-group',
+          text: 'Group…',
+          beginGroup: true,
+          command: actions.groupSelection,
+        },
+        {
+          key: 'pivot-ungroup',
+          text: 'Ungroup…',
+          disabled: !entry?.grouped,
+          command: actions.ungroup,
+        },
         {
           key: 'pivot-sort',
           text: 'Sort',
@@ -418,6 +513,13 @@ export function usePivotTools(host: PivotToolsHost) {
             command: () => setDialog({ kind: 'value', index }),
           },
         );
+        if (cell.role === 'data') {
+          items.push({
+            key: 'pivot-details',
+            text: 'Show Details',
+            command: () => actions.showDetails(),
+          });
+        }
       }
     }
     items.push(
@@ -515,6 +617,32 @@ export function usePivotTools(host: PivotToolsHost) {
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog?.kind === 'group' && info && pivot && info.fields[dialog.field] && (
+        <GroupingDialog
+          field={info.fields[dialog.field]!}
+          onGroup={(group) => send({ kind: 'groupPivot', pivot, field: dialog.field, group })}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'pages' && info && pivot && (
+        <FilterPagesDialog
+          fields={info.pages.map((p) => ({
+            field: p.field,
+            caption: info.fields[p.field]?.caption ?? '',
+          }))}
+          onShow={(field) => {
+            hostRef.current.notice(null);
+            void hostRef.current
+              .run({ kind: 'pivotFilterPages', pivot, field })
+              .then((applied) => {
+                const at = applied.selection;
+                if (at) void hostRef.current.showAdded?.(at.sheet, at);
+              })
+              .catch((error) => hostRef.current.notice(errorText(error)));
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {filter && info && (
         <PivotFilterMenu
           info={info}
@@ -528,8 +656,8 @@ export function usePivotTools(host: PivotToolsHost) {
   );
 
   const state = useMemo<PivotState>(
-    () => ({ hasBook: host.hasBook, info, fieldList }),
-    [host.hasBook, info, fieldList],
+    () => ({ hasBook: host.hasBook, info, fieldList, generate }),
+    [host.hasBook, info, fieldList, generate],
   );
 
   return {

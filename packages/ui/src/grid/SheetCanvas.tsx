@@ -30,6 +30,7 @@ export function SheetCanvas({ client, palette, colors, events, onController }: S
       onJump: (rows, cols, extend) => latest.current.events.onJump?.(rows, cols, extend),
       onEditClick: (row, col) => latest.current.events.onEditClick?.(row, col) ?? false,
       onEditDrag: (row, col) => latest.current.events.onEditDrag?.(row, col),
+      onDoubleCell: (row, col) => latest.current.events.onDoubleCell?.(row, col) ?? false,
       onFill: (from, to) => latest.current.events.onFill?.(from, to),
       onViewport: (sheet, range) => latest.current.events.onViewport?.(sheet, range),
       onSelectEnd: () => latest.current.events.onSelectEnd?.(),

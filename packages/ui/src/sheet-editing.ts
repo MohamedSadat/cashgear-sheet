@@ -33,6 +33,8 @@ export interface EditingHost {
   editorElement(): HTMLElement | null;
   insertSheet(): void;
   calculate(kind: 'now' | 'sheet' | 'all'): void;
+  /** Whether a click on a pivot table's value writes GETPIVOTDATA, as Excel's option has it. */
+  generatesPivotData?(): boolean;
   /** Autocomplete, which has first refusal on some keys. */
   completionKey(event: KeyboardEvent<HTMLElement>): boolean;
   /** Fits columns to what they hold, through the same queue as commands. */
@@ -335,8 +337,32 @@ export class SheetEditing {
     }
     this.pointStart = { row, col };
     this.session.pick(row, col, row, col, this.prefix(state));
+    this.pivotData(state.sheet, row, col);
     return true;
   };
+
+  /** A click on a pivot table's value writes GETPIVOTDATA in place of the reference, as in Excel. */
+  private pivotData(from: number, row: number, col: number) {
+    const grid = this.host.grid();
+    const engine = this.host.engine();
+    if (!grid || !engine || this.host.generatesPivotData?.() === false) return;
+    const sheet = grid.currentSheet();
+    void engine
+      .query({ kind: 'pivotDataFormula', sheet, row: row + 1, col: col + 1, from })
+      .then((formula) => {
+        const picked = this.session.snapshot().picked;
+        if (!formula || !picked) return;
+        if (
+          picked.row !== row ||
+          picked.col !== col ||
+          picked.endRow !== row ||
+          picked.endCol !== col
+        )
+          return;
+        this.session.replacePick(formula);
+      })
+      .catch(() => undefined);
+  }
 
   readonly editDrag = (row: number, col: number) => {
     const state = this.session.snapshot();

@@ -631,3 +631,144 @@ test.describe('key tips', () => {
     await expect(page.getByRole('menuitem', { name: 'Options…' })).toBeVisible();
   });
 });
+
+test.describe('pivot tables', () => {
+  /** Excel's probe book: 20 sales over 2016, with a pivot table at G3 laid out as asked. */
+  async function dated(page: Page, layout: object) {
+    await page.evaluate(async (layout) => {
+      const run = window.cgsTest.command;
+      const regions = ['East', 'West', 'North'];
+      const products = ['Apple', 'Pear', 'Plum', 'Fig'];
+      const rows = [['Region', 'Product', 'Date', 'Sales']];
+      for (let i = 0; i < 20; i++) {
+        rows.push([
+          regions[i % 3]!,
+          products[i % 4]!,
+          `${(i % 12) + 1}/${(i % 27) + 1}/2016`,
+          String(10 * (i + 1) + 5),
+        ]);
+      }
+      for (let r = 0; r < rows.length; r++) {
+        for (let c = 0; c < 4; c++) {
+          await run({ kind: 'input', sheet: 0, row: r + 1, col: c + 1, text: rows[r]![c]! });
+        }
+      }
+      await run({
+        kind: 'createPivot',
+        sheet: 0,
+        area: { top: 1, left: 1, bottom: 21, right: 4 },
+        to: { kind: 'existing', sheet: 0, row: 3, col: 7 },
+      });
+      await run({ kind: 'pivotLayout', pivot: { sheet: 0, name: 'PivotTable1' }, layout });
+      await window.cgsTest.settled();
+    }, layout);
+  }
+  const labels = (page: Page, top: number, bottom: number) =>
+    page.evaluate(
+      async ({ top, bottom }) => {
+        const out: string[] = [];
+        for (let row = top; row <= bottom; row++) out.push(await window.cgsTest.cellText(row, 7));
+        return out;
+      },
+      { top, bottom },
+    );
+  const analyze = async (page: Page) => {
+    const tab = ribbon(page).getByRole('tab', { name: 'PivotTable Analyze' });
+    await expect(tab).toBeVisible();
+    await tab.click();
+  };
+  const select = (page: Page, top: number, left: number, bottom = top, right = left) =>
+    page.evaluate((area) => window.cgsTest.grid()!.selectArea(area), {
+      top: top - 1,
+      left: left - 1,
+      bottom: bottom - 1,
+      right: right - 1,
+    });
+
+  test('Group Field groups dates by period, Group Selection groups items, and Ungroup undoes them', async ({
+    page,
+  }) => {
+    await dated(page, { rows: [2], values: [{ field: 3 }] });
+    await select(page, 4, 7);
+    await analyze(page);
+    await ribbon(page).getByRole('button', { name: 'Group Field' }).click();
+    const dialog = page.getByTestId('grouping-dialog');
+    await expect(page.getByTestId('group-start')).toHaveValue('1/1/2016');
+    await expect(page.getByTestId('group-end')).toHaveValue('12/13/2016');
+    await expect(page.getByTestId('group-by-months')).toBeChecked();
+    await page.getByTestId('group-by-quarters').check();
+    await page.getByTestId('group-by-years').check();
+    await page.getByTestId('grouping-ok').click();
+    await expect(dialog).toHaveCount(0);
+    // As Excel 2016 lays it out.
+    await expect
+      .poll(() => labels(page, 3, 8))
+      .toEqual(['Row Labels', '2016', 'Qtr1', 'Jan', 'Feb', 'Mar']);
+    await select(page, 4, 7);
+    await ribbon(page).getByRole('button', { name: 'Ungroup' }).click();
+    await expect.poll(() => labels(page, 4, 4)).toEqual(['1/1/2016']);
+    // Apple and Fig, picked by hand.
+    await page.evaluate(() =>
+      window.cgsTest.command({
+        kind: 'pivotLayout',
+        pivot: { sheet: 0, name: 'PivotTable1' },
+        layout: { rows: [1], values: [{ field: 3 }] },
+      }),
+    );
+    await expect.poll(() => labels(page, 4, 5)).toEqual(['Apple', 'Fig']);
+    await select(page, 4, 7, 5, 7);
+    await analyze(page);
+    await ribbon(page).getByRole('button', { name: 'Group Selection' }).click();
+    await expect
+      .poll(() => labels(page, 3, 8))
+      .toEqual(['Row Labels', 'Group1', 'Apple', 'Fig', 'Pear', 'Pear']);
+    const cache = await savedPart(page, /pivotCacheDefinition\d+\.xml$/);
+    expect(cache).toContain('<cacheField name="Product2" numFmtId="0" databaseField="0">');
+  });
+
+  test('a click writes GETPIVOTDATA, a double-click shows details, and filter pages copy the table', async ({
+    page,
+  }) => {
+    await dated(page, { rows: [0], cols: [1], values: [{ field: 3 }] });
+    await shows(page, 5, 8).toBe('150');
+    // Typing a formula, a click on a value writes GETPIVOTDATA, as Excel's option has it.
+    await goTo(page, 'A30');
+    await page.keyboard.type('=');
+    const point = await page.evaluate(() => window.cgsTest.grid()!.pointForCell(4, 7));
+    const bounds = (await canvas(page).boundingBox())!;
+    await page.mouse.click(bounds.x + point.x, bounds.y + point.y);
+    await expect(page.getByTestId('cell-editor')).toHaveValue(
+      '=GETPIVOTDATA("Sales",$G$3,"Region","East","Product","Apple")',
+    );
+    await page.keyboard.press('Enter');
+    await shows(page, 30, 1).toBe('150');
+    // A double-click on the value lists its records on a new sheet, left of this one.
+    await select(page, 5, 8);
+    await analyze(page);
+    const value = await page.evaluate(() => window.cgsTest.grid()!.pointForCell(4, 7));
+    await page.mouse.dblclick(bounds.x + value.x, bounds.y + value.y);
+    await expect(tab(page, 1)).toHaveText('Sheet2');
+    await shows(page, 1, 1).toBe('Region');
+    await shows(page, 3, 4).toBe('135');
+    await shows(page, 4, 1).toBe('');
+    // Show Report Filter Pages: a sheet per region, before the pivot table's.
+    await tab(page, 0).click();
+    await page.evaluate(() =>
+      window.cgsTest.command({
+        kind: 'pivotLayout',
+        pivot: { sheet: 0, name: 'PivotTable1' },
+        layout: { pages: [0], rows: [1], values: [{ field: 3 }] },
+      }),
+    );
+    await select(page, 5, 7);
+    await analyze(page);
+    await ribbon(page).getByRole('button', { name: 'Options: more options' }).click();
+    await page.getByRole('menuitem', { name: 'Show Report Filter Pages…' }).click();
+    await expect(page.getByTestId('filter-pages-field')).toHaveValue('0');
+    await page.getByTestId('filter-pages-ok').click();
+    await expect(tab(page, 4)).toHaveText('East');
+    await expect
+      .poll(() => page.getByTestId('sheet-tabs').getByRole('tab').allTextContents())
+      .toEqual(['Sheet2', 'East', 'North', 'West', 'Sheet1']);
+  });
+});
