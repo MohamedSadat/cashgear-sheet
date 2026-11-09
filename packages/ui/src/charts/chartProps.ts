@@ -321,6 +321,46 @@ export function chartProps(
     }
   });
 
+  // Trendlines, drawn as Excel draws them: a line over the series' points, in its legend too.
+  view.series.forEach((entry) => {
+    const group = view.groups[entry.group] ?? view.groups[0]!;
+    for (const trend of entry.trendlines ?? []) {
+      const line = {
+        name: trend.name,
+        missingValueMode: 'gap' as const,
+        tooltipEnabled: false,
+        valueAxisName: axisOf(group),
+        color: trend.line?.color ?? undefined,
+        lineColor: trend.line?.color ?? undefined,
+        lineWidth: trend.line?.width ?? 2,
+        dashStyle: (trend.line?.dash ?? 'solid') as CgChartDashStyle,
+        lineStyle: 'straight' as const,
+        showMarkers: false,
+      };
+      if (group.kind === 'scatter') {
+        const points: ChartItem[] = trend.values
+          .map((y, i) => ({ i, x: entry.x?.[i] ?? i + 1, y }))
+          .filter((point) => point.y !== null)
+          .sort((a, b) => (a.x ?? 0) - (b.x ?? 0));
+        series.push({
+          ...line,
+          type: 'scatter',
+          data: points,
+          argument: (item) => item.x ?? null,
+          value: (item) => item.y ?? null,
+          showLine: true,
+        });
+      } else {
+        series.push({
+          ...line,
+          type: 'line',
+          argument: (item) => item.i,
+          value: (item) => trend.values[item.i] ?? null,
+        });
+      }
+    }
+  });
+
   const categoryAxis = view.categoryAxis;
   const primaryBars = view.groups.find((g) => g.kind === 'bar' && g.axis === 0);
   const secondaryBars = view.groups.find((g) => g.kind === 'bar' && g.axis === 1);

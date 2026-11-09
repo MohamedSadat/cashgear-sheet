@@ -16,6 +16,7 @@ export const TAB_TIPS: Readonly<Record<string, string>> = {
   'pivot-design': 'JY',
   'chart-design': 'JC',
   'chart-format': 'JA',
+  'picture-format': 'JP',
 };
 
 /** The Home tab's commands, by name. */

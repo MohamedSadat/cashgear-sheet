@@ -26,6 +26,7 @@ const axis = (id: number, position: ChartAxisView['position'], value: boolean): 
 });
 
 const series = (name: string, index: number, values: number[], group = 0): ChartSeriesView => ({
+  trendlines: [],
   name,
   group,
   values,

@@ -772,3 +772,97 @@ test.describe('pivot tables', () => {
       .toEqual(['Sheet2', 'East', 'North', 'West', 'Sheet1']);
   });
 });
+
+test.describe('trendlines and Picture Format', () => {
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8DwnwEIGBkZGBgYAAAoBAMBr2kkTgAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  test('Add Chart Element › Trendline draws the fit and saves it as Excel 2016 writes it', async ({
+    page,
+  }) => {
+    await page.evaluate(async () => {
+      const rows = [
+        ['Month', 'Sales'],
+        ['M1', '12'],
+        ['M2', '15'],
+        ['M3', '21'],
+        ['M4', '26'],
+        ['M5', '35'],
+        ['M6', '44'],
+      ];
+      for (let r = 0; r < rows.length; r++) {
+        for (let c = 0; c < 2; c++) {
+          await window.cgsTest.command({
+            kind: 'input',
+            sheet: 0,
+            row: r + 1,
+            col: c + 1,
+            text: rows[r]![c]!,
+          });
+        }
+      }
+      await window.cgsTest.command({
+        kind: 'insertChart',
+        sheet: 0,
+        area: { top: 1, left: 1, bottom: 7, right: 2 },
+        chart: 'columnClustered',
+        x: 260,
+        y: 40,
+      });
+      await window.cgsTest.settled();
+    });
+    const chart = page.locator('[data-testid="chart"]').first();
+    await expect(chart.locator('svg').first()).toBeVisible();
+    await chart.click();
+    await ribbon(page).getByRole('tab', { name: 'Chart Design', exact: true }).click();
+    await ribbon(page).getByRole('button', { name: 'Add Chart Element' }).click();
+    await page.getByRole('menuitem', { name: 'Trendline: Linear Forecast' }).click();
+    await expect
+      .poll(async () => (await page.evaluate(() => window.cgsTest.chart(0)))?.series[0]?.trendlines)
+      .toMatchObject([{ name: 'Linear (Sales)' }]);
+    const view = await page.evaluate(() => window.cgsTest.chart(0));
+    expect(view!.series[0]!.trendlines[0]!.values[0]).toBeCloseTo(9.428571, 5);
+    const saved = await savedPart(page, /charts\/chart\d+\.xml$/);
+    expect(saved).toContain('<c:trendlineType val="linear"/><c:forward val="2"/>');
+    expect(saved).toContain('<a:prstDash val="sysDot"/>');
+  });
+
+  test('Picture Format turns, sizes and resets a picture, and gives it alt text', async ({
+    page,
+  }) => {
+    await ribbon(page).getByRole('tab', { name: 'Insert', exact: true }).click();
+    const chooser = page.waitForEvent('filechooser');
+    await ribbon(page).getByRole('button', { name: 'Pictures' }).click();
+    await (await chooser).setFiles({ name: 'dot.png', mimeType: 'image/png', buffer: PNG });
+    const picture = page.locator('[data-testid="picture"]').first();
+    await expect(picture.locator('img')).toBeVisible();
+    await picture.click();
+    await ribbon(page).getByRole('tab', { name: 'Picture Format', exact: true }).click();
+    // Sized to an inch tall, the width follows.
+    await ribbon(page)
+      .getByRole('button', { name: /^Height:/ })
+      .click();
+    await page.getByRole('menuitem', { name: '1"', exact: true }).click();
+    const first = () => page.evaluate(async () => (await window.cgsTest.drawings())[0]);
+    await expect.poll(first).toMatchObject({ width: 96, height: 96 });
+    await ribbon(page).getByRole('button', { name: 'Rotate' }).click();
+    await page.getByRole('menuitem', { name: 'Rotate Right 90°' }).click();
+    await expect.poll(first).toMatchObject({ rotation: 90 });
+    await expect(picture.locator('img')).toHaveCSS('transform', /matrix/);
+    await ribbon(page).getByRole('button', { name: 'Rotate' }).click();
+    await page.getByRole('menuitem', { name: 'Flip Horizontal' }).click();
+    await expect.poll(first).toMatchObject({ flipH: true });
+    await ribbon(page).getByRole('button', { name: 'Alt Text' }).click();
+    await page.getByTestId('alt-text').fill('Logo');
+    await page.getByTestId('alt-text-ok').click();
+    await expect.poll(first).toMatchObject({ description: 'Logo' });
+    // Reset Picture: back to its own 2 by 2 pixels.
+    await ribbon(page).getByRole('button', { name: 'Reset Picture' }).click();
+    await expect.poll(first).toMatchObject({ width: 2, height: 2 });
+    const saved = await savedPart(page, /drawings\/drawing\d+\.xml$/);
+    expect(saved).toContain('descr="Logo"');
+    expect(saved).toContain('<a:xfrm rot="5400000" flipH="1">');
+  });
+});

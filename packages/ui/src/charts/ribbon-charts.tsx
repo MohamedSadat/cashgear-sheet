@@ -104,6 +104,24 @@ const PALETTES = [
 ];
 
 /** Chart Design and Format, while a chart is chosen. */
+/**
+ * The series Add Chart Element's trendline goes on: the one selected, else the first that can
+ * have one. Null when none can, as for pie charts.
+ */
+function trendSeries(view: ChartState['view'], element?: ChartState['element']): number | null {
+  if (!view) return null;
+  const can = view.series.filter((entry) => {
+    const kind = view.groups[entry.group]?.kind;
+    return kind === 'bar' || kind === 'line' || kind === 'scatter';
+  });
+  if (!can.length) return null;
+  const picked =
+    element?.kind === 'series' || element?.kind === 'point' || element?.kind === 'dataLabels'
+      ? element.index
+      : null;
+  return can.find((entry) => entry.index === picked)?.index ?? can[0]!.index;
+}
+
 export function chartTabs(state: ChartState, actions: ChartActions): CgRibbonTab[] {
   const view = state.view;
   const chart = state.drawing?.kind === 'chart' && Boolean(view);
@@ -268,6 +286,27 @@ export function chartTabs(state: ChartState, actions: ChartActions): CgRibbonTab
                           position: position === 'none' ? undefined : position,
                         }),
                     })),
+                    ...(trendSeries(view) === null
+                      ? []
+                      : (
+                          [
+                            ['none', 'None'],
+                            ['linear', 'Linear'],
+                            ['exponential', 'Exponential'],
+                            ['forecast', 'Linear Forecast'],
+                            ['movingAverage', 'Moving Average'],
+                          ] as const
+                        ).map(([trend, text], at) => ({
+                          name: 'chart-trendline-' + trend,
+                          text: 'Trendline: ' + text,
+                          beginGroup: at === 0,
+                          onClick: () =>
+                            actions.edit({
+                              kind: 'trendline',
+                              index: trendSeries(view, state.element) ?? 0,
+                              ...(trend === 'none' ? {} : { trend }),
+                            }),
+                        }))),
                   ],
                 },
                 {
@@ -515,6 +554,144 @@ export function chartTabs(state: ChartState, actions: ChartActions): CgRibbonTab
             },
           ]
         : [],
+    },
+    {
+      key: 'picture-format',
+      text: 'Picture Format',
+      visible: state.drawing?.kind === 'picture',
+      groups:
+        state.drawing?.kind === 'picture'
+          ? [
+              {
+                key: 'picture-adjust',
+                text: 'Adjust',
+                icon: 'image-edit',
+                items: [
+                  {
+                    name: 'picture-reset',
+                    text: 'Reset Picture',
+                    icon: 'image-edit',
+                    size: 'large',
+                    disabled: !state.hasBook,
+                    onClick: actions.resetPicture,
+                  },
+                ],
+              },
+              {
+                key: 'picture-accessibility',
+                text: 'Accessibility',
+                icon: 'comment',
+                items: [
+                  {
+                    name: 'picture-alt-text',
+                    text: 'Alt Text',
+                    icon: 'comment',
+                    size: 'large',
+                    disabled: !state.hasBook,
+                    onClick: actions.altText,
+                  },
+                ],
+              },
+              {
+                key: 'picture-arrange',
+                text: 'Arrange',
+                icon: 'rotate',
+                items: [
+                  {
+                    name: 'picture-forward',
+                    text: 'Bring Forward',
+                    disabled: !state.hasBook,
+                    onClick: () => actions.picture({ order: 'forward' }),
+                    children: [
+                      {
+                        name: 'picture-forward-one',
+                        text: 'Bring Forward',
+                        onClick: () => actions.picture({ order: 'forward' }),
+                      },
+                      {
+                        name: 'picture-front',
+                        text: 'Bring to Front',
+                        onClick: () => actions.picture({ order: 'front' }),
+                      },
+                    ],
+                  },
+                  {
+                    name: 'picture-backward',
+                    text: 'Send Backward',
+                    disabled: !state.hasBook,
+                    onClick: () => actions.picture({ order: 'backward' }),
+                    children: [
+                      {
+                        name: 'picture-backward-one',
+                        text: 'Send Backward',
+                        onClick: () => actions.picture({ order: 'backward' }),
+                      },
+                      {
+                        name: 'picture-back',
+                        text: 'Send to Back',
+                        onClick: () => actions.picture({ order: 'back' }),
+                      },
+                    ],
+                  },
+                  {
+                    name: 'picture-rotate',
+                    text: 'Rotate',
+                    icon: 'rotate',
+                    disabled: !state.hasBook,
+                    children: [
+                      {
+                        name: 'picture-rotate-right',
+                        text: 'Rotate Right 90°',
+                        onClick: () => actions.picture({ rotate: 90 }),
+                      },
+                      {
+                        name: 'picture-rotate-left',
+                        text: 'Rotate Left 90°',
+                        onClick: () => actions.picture({ rotate: -90 }),
+                      },
+                      {
+                        name: 'picture-flip-vertical',
+                        text: 'Flip Vertical',
+                        onClick: () => actions.picture({ flip: 'vertical' }),
+                      },
+                      {
+                        name: 'picture-flip-horizontal',
+                        text: 'Flip Horizontal',
+                        onClick: () => actions.picture({ flip: 'horizontal' }),
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                key: 'picture-size',
+                text: 'Size',
+                icon: 'crop',
+                items: [
+                  {
+                    name: 'picture-height',
+                    text: 'Height: ' + inches(state.drawing?.height),
+                    disabled: !state.hasBook,
+                    children: [0.5, 1, 1.5, 2, 3, 4].map((value) => ({
+                      name: 'picture-height-' + value,
+                      text: value + '"',
+                      onClick: () => actions.resizePicture(null, value),
+                    })),
+                  },
+                  {
+                    name: 'picture-width',
+                    text: 'Width: ' + inches(state.drawing?.width),
+                    disabled: !state.hasBook,
+                    children: [0.5, 1, 1.5, 2, 3, 4].map((value) => ({
+                      name: 'picture-width-' + value,
+                      text: value + '"',
+                      onClick: () => actions.resizePicture(value, null),
+                    })),
+                  },
+                ],
+              },
+            ]
+          : [],
     },
   ];
 }

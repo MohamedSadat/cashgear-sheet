@@ -2,6 +2,7 @@
 // a chart's elements is chosen, the ribbon's Insert, Chart Design and Format commands, and the
 // dialogs. Everything goes to the engine as a command through the shell's queue.
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { CgButton, CgWindow } from '@cashgear/ui';
 import type { CgColorPickerThemeColor, CgContextMenuItem } from '@cashgear/ui';
 import type {
   Applied,
@@ -66,6 +67,13 @@ export interface ChartActions {
   formatSelection(): void;
   /** Width and height in inches. */
   resize(width: number | null, height: number | null): void;
+  /** A picture's width or height in inches, the other following as Lock aspect ratio has it. */
+  resizePicture(width: number | null, height: number | null): void;
+  /** The Picture Format tab: turn, flip, or order among the drawings. */
+  picture(change: Extract<Command, { kind: 'pictureFormat' }>['change']): void;
+  /** Reset Picture: the picture's own size. */
+  resetPicture(): void;
+  altText(): void;
   deleteDrawing(): void;
 }
 
@@ -100,6 +108,8 @@ async function pictureBytes(
 export function useChartTools(host: ChartToolsHost) {
   const hostRef = useRef(host);
   hostRef.current = host;
+  // Alt Text: the picture it's for, and the description being written.
+  const [altText, setAltText] = useState<{ index: number; text: string } | null>(null);
   const [drawings, setDrawings] = useState<DrawingBox[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [element, setElement] = useState<EngineElement | null>(null);
@@ -283,6 +293,61 @@ export function useChartTools(host: ChartToolsHost) {
           height: height === null ? box.height : Math.max(8, Math.round(height * 96)),
         });
       },
+      resizePicture: (width, height) => {
+        const index = selectedRef.current;
+        const box = drawings.find((d) => d.index === index);
+        if (index === null || !box || box.width <= 0 || box.height <= 0) return;
+        const ratio = box.height / box.width;
+        const w = width !== null ? width * 96 : (height! * 96) / ratio;
+        const h = height !== null ? height * 96 : width! * 96 * ratio;
+        place(index, {
+          x: box.x,
+          y: box.y,
+          width: Math.max(8, Math.round(w)),
+          height: Math.max(8, Math.round(h)),
+        });
+      },
+      picture: (change) => {
+        const index = selectedRef.current;
+        if (index === null) return;
+        hostRef.current.notice(null);
+        hostRef.current
+          .run({ kind: 'pictureFormat', sheet: hostRef.current.sheet(), index, change })
+          .catch((error) => hostRef.current.notice(errorText(error)));
+      },
+      resetPicture: () => {
+        const index = selectedRef.current;
+        const box = drawings.find((d) => d.index === index);
+        const engine = hostRef.current.engine();
+        if (index === null || !box?.image || !engine) return;
+        // Excel's original size: the picture's own pixels, at 96 to the inch.
+        void engine
+          .media(box.image)
+          .then(async (bytes) => {
+            const ext = box.image!.split('.').pop()?.toLowerCase() ?? 'png';
+            const type = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+            const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type }));
+            try {
+              const image = new Image();
+              image.src = url;
+              await image.decode();
+              place(index, {
+                x: box.x,
+                y: box.y,
+                width: image.naturalWidth,
+                height: image.naturalHeight,
+              });
+            } finally {
+              URL.revokeObjectURL(url);
+            }
+          })
+          .catch((error) => hostRef.current.notice(errorText(error)));
+      },
+      altText: () => {
+        const index = selectedRef.current;
+        const box = drawings.find((d) => d.index === index);
+        if (index !== null && box) setAltText({ index, text: box.description ?? '' });
+      },
       deleteDrawing: () => {
         if (selectedRef.current !== null) remove(selectedRef.current);
       },
@@ -348,6 +413,54 @@ export function useChartTools(host: ChartToolsHost) {
 
   const overlays = (
     <>
+      {altText && (
+        <CgWindow
+          open
+          onOpenChange={(next) => {
+            if (!next) setAltText(null);
+          }}
+          headerText="Alt Text"
+          width={340}
+          allowDrag
+          data-testid="alt-text-dialog"
+          renderBody={() => (
+            <div className="cgs-dialog-column">
+              <span>How would you describe this picture to someone who can’t see it?</span>
+              <textarea
+                data-testid="alt-text"
+                aria-label="Description"
+                rows={4}
+                value={altText.text}
+                autoFocus
+                onChange={(event) => setAltText({ ...altText, text: event.target.value })}
+              />
+            </div>
+          )}
+          renderFooter={() => (
+            <div className="cgs-dialog-actions">
+              <CgButton
+                intent="primary"
+                data-testid="alt-text-ok"
+                onClick={() => {
+                  const { index, text } = altText;
+                  setAltText(null);
+                  void hostRef.current
+                    .run({
+                      kind: 'pictureFormat',
+                      sheet: hostRef.current.sheet(),
+                      index,
+                      change: { description: text },
+                    })
+                    .catch((error) => hostRef.current.notice(errorText(error)));
+                }}
+              >
+                OK
+              </CgButton>
+              <CgButton onClick={() => setAltText(null)}>Cancel</CgButton>
+            </div>
+          )}
+        />
+      )}
       <ChartTypeDialog
         open={dialog?.kind === 'insert' || dialog?.kind === 'type'}
         mode={dialog?.kind === 'insert' ? 'insert' : 'change'}

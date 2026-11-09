@@ -410,6 +410,18 @@ export type Command =
   /** Show Details on a pivot table's value: its records on a new sheet. 1-based. */
   | { kind: 'pivotDetails'; sheet: number; row: number; col: number }
   | { kind: 'pivotFilterPages'; pivot: PivotRef; field: number }
+  /** The Picture Format tab: turn, flip, alternative text, and order among the drawings. */
+  | {
+      kind: 'pictureFormat';
+      sheet: number;
+      index: number;
+      change: {
+        rotate?: number;
+        flip?: 'horizontal' | 'vertical';
+        description?: string;
+        order?: 'front' | 'back' | 'forward' | 'backward';
+      };
+    }
   /** Modify Cell Style: the style takes the change, and its cells follow. */
   | { kind: 'modifyCellStyle'; name: string; change: FormatChange; includes?: StyleIncludes }
   | {
@@ -1304,6 +1316,10 @@ export interface DrawingBox {
   description?: string;
   /** False when it is hidden or set not to print. */
   prints?: boolean;
+  /** A picture's turn in degrees, clockwise, and its flips. */
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
 }
 
 /** What Insert's chart buttons and Change Chart Type make. */
@@ -1360,6 +1376,12 @@ export interface ChartColor {
 export type ChartEdit =
   | { kind: 'type'; chart: ChartType }
   | { kind: 'seriesType'; index: number; chart: ChartType; secondary?: boolean }
+  /** Add Chart Element › Trendline for one series, or none to take its trendlines away. */
+  | {
+      kind: 'trendline';
+      index: number;
+      trend?: 'linear' | 'exponential' | 'forecast' | 'movingAverage';
+    }
   | { kind: 'title'; text?: string }
   | { kind: 'axisTitle'; id: number; text?: string }
   | { kind: 'legend'; position?: 'right' | 'left' | 'top' | 'bottom' | 'topRight' }
@@ -1460,6 +1482,8 @@ export interface ChartAxisView {
 }
 
 export interface ChartSeriesView {
+  /** Its trendlines: each one's name and fitted value at each point. */
+  trendlines: { name: string; values: (number | null)[]; line: ChartLineView | null }[];
   name: string;
   group: number;
   values: (number | null)[];

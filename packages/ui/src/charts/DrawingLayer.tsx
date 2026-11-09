@@ -190,6 +190,13 @@ export const DrawingContent = memo(function DrawingContent({
         className="cgs-drawing-picture"
         src={picture}
         alt={box.description ?? box.name}
+        style={
+          box.rotation || box.flipH || box.flipV
+            ? {
+                transform: `rotate(${box.rotation ?? 0}deg) scale(${box.flipH ? -1 : 1}, ${box.flipV ? -1 : 1})`,
+              }
+            : undefined
+        }
         draggable={false}
         onError={() => setBroken(true)}
       />
