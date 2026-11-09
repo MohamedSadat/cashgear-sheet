@@ -26,6 +26,9 @@ function list(values: string[], dates: Day[] = [], blanks = false): FilterList {
     blanks,
     blanksChecked: blanks,
     filtered: 'none',
+    fills: [],
+    fonts: [],
+    icons: [],
   };
 }
 
@@ -93,6 +96,9 @@ describe('the values filter', () => {
       blanks: true,
       blanksChecked: false,
       filtered: 'values',
+      fills: [],
+      fonts: [],
+      icons: [],
     };
     const ticks = initialTicks(answer);
     expect([...ticks.values]).toEqual(['a']);

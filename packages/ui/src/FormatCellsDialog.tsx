@@ -282,6 +282,8 @@ export function FormatCellsDialog(props: FormatCellsProps) {
   const [fillChanged, setFillChanged] = useState(false);
 
   // Border: what's been touched here, as lines.
+  const [locked, setLocked] = useState(format.locked);
+  const [formulaHidden, setFormulaHidden] = useState(format.formulaHidden);
   const [lineStyle, setLineStyle] = useState('thin');
   const [lineColor, setLineColor] = useState<CgColorPickerValue>({ kind: 'automatic' });
   const [edges, setEdges] = useState<Partial<Record<Edge, FormatLine>>>({});
@@ -351,6 +353,8 @@ export function FormatCellsDialog(props: FormatCellsProps) {
     if (strike !== format.strike) change.strike = strike;
     if (underline !== format.underline) change.underline = underline;
     if (fontColorChanged) change.fontColor = pickedColor(fontColor);
+    if (locked !== format.locked) change.locked = locked;
+    if (formulaHidden !== format.formulaHidden) change.formulaHidden = formulaHidden;
     if (fillChanged) {
       const color: FormatColor = pickedColor(fillColor);
       const none = fillColor.kind === 'none';
@@ -854,12 +858,41 @@ export function FormatCellsDialog(props: FormatCellsProps) {
     </div>
   );
 
+  // Excel 2016's own words under its two boxes.
+  const protectionTab = (
+    <div className="cgs-dialog-column" data-testid="format-protection">
+      <label className="cgs-dialog-check">
+        <input
+          type="checkbox"
+          data-testid="format-locked"
+          checked={locked}
+          onChange={(event) => setLocked(event.target.checked)}
+        />
+        Locked
+      </label>
+      <label className="cgs-dialog-check">
+        <input
+          type="checkbox"
+          data-testid="format-hidden"
+          checked={formulaHidden}
+          onChange={(event) => setFormulaHidden(event.target.checked)}
+        />
+        Hidden
+      </label>
+      <p className="cgs-dialog-message">
+        Locking cells or hiding formulas has no effect until you protect the worksheet (Review tab,
+        Changes group, Protect Sheet button).
+      </p>
+    </div>
+  );
+
   const tabs = [
     { key: 'number', text: 'Number', content: numberTab },
     { key: 'alignment', text: 'Alignment', content: alignmentTab },
     { key: 'font', text: 'Font', content: fontTab },
     { key: 'border', text: 'Border', content: borderTab },
     { key: 'fill', text: 'Fill', content: fillTab },
+    { key: 'protection', text: 'Protection', content: protectionTab },
   ];
 
   return (

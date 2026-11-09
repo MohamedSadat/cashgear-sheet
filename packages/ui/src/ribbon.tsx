@@ -11,7 +11,7 @@ import {
   type CgColorPickerValue,
   type CgRibbonTab,
 } from '@cashgear/ui';
-import type { CellFormat, FormatChange, FormatLists } from '@cgs/engine-client';
+import type { CellFormat, FormatChange, FormatLists, ProtectAllow } from '@cgs/engine-client';
 import { RIBBON_FORMATS, ribbonFormatName } from './number-formats';
 import { pickedColor, type SheetFormat } from './sheet-format';
 import type { SheetEditing } from './sheet-editing';
@@ -24,7 +24,7 @@ import {
   type DataState,
 } from './data/ribbon-data';
 
-export type FormatTab = 'number' | 'alignment' | 'font' | 'border' | 'fill';
+export type FormatTab = 'number' | 'alignment' | 'font' | 'border' | 'fill' | 'protection';
 
 export const FONT_NAMES = [
   'Aptos',
@@ -177,6 +177,8 @@ export interface RibbonState {
   borderColor: CgColorPickerValue;
   borderPreset: CgBorderApplyDetails | null;
   data: DataState;
+  /** What the sheet showing allows while protected, or none when it isn't. */
+  protection: ProtectAllow | null;
 }
 
 export interface RibbonActions {
@@ -190,6 +192,14 @@ export interface RibbonActions {
   renameSheet(): void;
   insertSheet(): void;
   deleteSheet(): void;
+  hideSheet(): void;
+  /** Protect Sheet, or Unprotect Sheet on a protected one. */
+  protectSheet(): void;
+  /** Lock Cell: Format Cells' Locked box for the selection. */
+  lockCell(): void;
+  unhideSheet(): void;
+  /** Some sheet is hidden, and not very hidden. */
+  canUnhide: boolean;
   calculate(kind: 'now' | 'sheet' | 'all'): void;
   setManual(manual: boolean): void;
   setView(flags: { grid?: boolean; headings?: boolean }): void;
@@ -218,6 +228,15 @@ const swatch = (value: CgColorPickerValue) => ('color' in value ? value.color : 
 export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgRibbonTab[] {
   const { format: sheet, editing } = actions;
   const off = !state.hasBook;
+  // A protected sheet greys what it doesn't allow, as Excel does.
+  const guard = state.protection;
+  const formatOff = off || Boolean(guard && !guard.formatCells);
+  const cellsOff =
+    off ||
+    Boolean(
+      guard &&
+      !(guard.insertRows || guard.insertColumns || guard.deleteRows || guard.deleteColumns),
+    );
   const shown = state.format;
   const theme = themeColors(state.lists);
   const fontName = shown?.fontName ?? '';
@@ -339,7 +358,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Increase Font Size',
               icon: 'font-size-increase',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ fontStep: 1 }),
             },
             {
@@ -347,7 +366,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Decrease Font Size',
               icon: 'font-size-decrease',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ fontStep: -1 }),
             },
             {
@@ -356,7 +375,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               icon: 'text-bold',
               hideText: true,
               beginRow: true,
-              disabled: off,
+              disabled: formatOff,
               checked: Boolean(shown?.bold),
               onCheckedChange: sheet.toggleBold,
             },
@@ -365,7 +384,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Italic',
               icon: 'text-italic',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               checked: Boolean(shown?.italic),
               onCheckedChange: sheet.toggleItalic,
             },
@@ -374,7 +393,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Underline',
               icon: 'text-underline',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.toggleUnderline('single'),
               children: [
                 {
@@ -397,7 +416,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               icon: 'border-bottom',
               hideText: true,
               beginGroup: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => {
                 if (state.borderPreset) actions.applyBorders(state.borderPreset);
                 else
@@ -424,7 +443,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Fill Color',
               hideText: true,
               beginGroup: true,
-              disabled: off,
+              disabled: formatOff,
               icon: <CgIcon name="fill-color" accentColor={swatch(state.fillColor)} />,
               onClick: () => {
                 sheet.format({ fill: fillOf(state.fillColor) });
@@ -447,7 +466,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               name: 'font-color',
               text: 'Font Color',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               icon: <CgIcon name="text-color" accentColor={swatch(state.fontColor)} />,
               onClick: () => sheet.format({ fontColor: pickedColor(state.fontColor) }),
               renderFlyout: ({ close }) => (
@@ -479,7 +498,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Top Align',
               icon: 'align-top',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               checked: vertical === 'top',
               onCheckedChange: () => sheet.format({ vertical: 'top' }),
             },
@@ -488,7 +507,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Middle Align',
               icon: 'align-middle',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               checked: vertical === 'center',
               onCheckedChange: () => sheet.format({ vertical: 'center' }),
             },
@@ -497,7 +516,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Bottom Align',
               icon: 'align-bottom',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               checked: vertical === 'bottom',
               onCheckedChange: () => sheet.format({ vertical: 'bottom' }),
             },
@@ -507,7 +526,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               icon: 'text-rotate',
               hideText: true,
               beginGroup: true,
-              disabled: off,
+              disabled: formatOff,
               children: [
                 {
                   name: 'rotate-ccw',
@@ -546,7 +565,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Wrap Text',
               icon: 'text-wrap',
               beginGroup: true,
-              disabled: off,
+              disabled: formatOff,
               checked: Boolean(shown?.wrap),
               onCheckedChange: sheet.toggleWrap,
             },
@@ -556,7 +575,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               icon: 'align-left',
               hideText: true,
               beginRow: true,
-              disabled: off,
+              disabled: formatOff,
               checked: horizontal === 'left',
               onCheckedChange: () => sheet.toggleHorizontal('left'),
             },
@@ -565,7 +584,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Center',
               icon: 'align-center',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               checked: horizontal === 'center',
               onCheckedChange: () => sheet.toggleHorizontal('center'),
             },
@@ -574,7 +593,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Align Right',
               icon: 'align-right',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               checked: horizontal === 'right',
               onCheckedChange: () => sheet.toggleHorizontal('right'),
             },
@@ -584,7 +603,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               icon: 'indent-decrease',
               hideText: true,
               beginGroup: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ indentStep: -1 }),
             },
             {
@@ -592,7 +611,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Increase Indent',
               icon: 'indent-increase',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ indentStep: 1 }),
             },
             {
@@ -600,7 +619,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Merge & Center',
               icon: 'cells-merge',
               beginGroup: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => {
                 if (shown?.merged) sheet.unmerge();
                 else actions.mergeCells('center');
@@ -675,7 +694,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               icon: 'number-currency',
               hideText: true,
               beginRow: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ numberFormatId: 44 }),
             },
             {
@@ -683,7 +702,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Percent Style',
               icon: 'number-percent',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ numberFormatId: percent(9) }),
             },
             {
@@ -691,7 +710,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Comma Style',
               icon: 'number-thousands',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ numberFormatId: 43 }),
             },
             {
@@ -700,7 +719,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               icon: 'decimal-increase',
               hideText: true,
               beginGroup: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ decimals: 1 }),
             },
             {
@@ -708,7 +727,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Decrease Decimal',
               icon: 'decimal-decrease',
               hideText: true,
-              disabled: off,
+              disabled: formatOff,
               onClick: () => sheet.format({ decimals: -1 }),
             },
           ],
@@ -725,7 +744,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Insert',
               icon: 'row-insert',
               size: 'large',
-              disabled: off,
+              disabled: cellsOff,
               children: [
                 {
                   name: 'insert-cells',
@@ -750,7 +769,7 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
               text: 'Delete',
               icon: 'row-delete',
               size: 'large',
-              disabled: off,
+              disabled: cellsOff,
               children: [
                 {
                   name: 'delete-cells',
@@ -817,6 +836,11 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
                       onClick: () => sheet.setHidden('col', true),
                     },
                     {
+                      name: 'hide-sheet',
+                      text: 'Hide Sheet',
+                      onClick: actions.hideSheet,
+                    },
+                    {
                       name: 'unhide-rows',
                       text: 'Unhide Rows',
                       onClick: () => sheet.setHidden('row', false),
@@ -825,6 +849,12 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
                       name: 'unhide-cols',
                       text: 'Unhide Columns',
                       onClick: () => sheet.setHidden('col', false),
+                    },
+                    {
+                      name: 'unhide-sheet',
+                      text: 'Unhide Sheet…',
+                      disabled: !actions.canUnhide,
+                      onClick: actions.unhideSheet,
                     },
                   ],
                 },
@@ -835,9 +865,21 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
                   onClick: actions.renameSheet,
                 },
                 {
+                  name: 'protect-sheet-menu',
+                  text: state.protection ? 'Unprotect Sheet…' : 'Protect Sheet…',
+                  beginGroup: true,
+                  onClick: actions.protectSheet,
+                },
+                {
+                  name: 'lock-cell',
+                  text: 'Lock Cell',
+                  checked: shown?.locked ?? true,
+                  disabled: Boolean(state.protection),
+                  onClick: actions.lockCell,
+                },
+                {
                   name: 'format-cells',
                   text: 'Format Cells…',
-                  beginGroup: true,
                   onClick: () => actions.openFormat('number'),
                 },
               ],
@@ -881,6 +923,16 @@ export function buildRibbonTabs(state: RibbonState, actions: RibbonActions): CgR
                   onClick: () => sheet.format({ clear: true }),
                 },
                 { name: 'clear-contents', text: 'Clear Contents', onClick: actions.clearContents },
+                {
+                  name: 'clear-links',
+                  text: 'Clear Hyperlinks',
+                  onClick: actions.data.clearLinks,
+                },
+                {
+                  name: 'remove-links',
+                  text: 'Remove Hyperlinks',
+                  onClick: actions.data.removeLink,
+                },
               ],
             },
             {

@@ -293,6 +293,20 @@ export type Command =
   | { kind: 'insertSheet'; position: number; name?: string; rightToLeft?: boolean }
   | { kind: 'deleteSheet'; sheet: number }
   | { kind: 'renameSheet'; sheet: number; name: string }
+  | { kind: 'sheetState'; sheet: number; hidden: boolean }
+  | { kind: 'zoom'; sheet: number; zoom: number }
+  | { kind: 'activeSheet'; sheet: number }
+  | {
+      kind: 'protectSheet';
+      sheet: number;
+      allow?: Partial<ProtectAllow>;
+      password?: string;
+      /** 16 random bytes, base64. */
+      salt?: string;
+    }
+  | { kind: 'unprotectSheet'; sheet: number; password?: string }
+  | { kind: 'protectWorkbook'; structure?: boolean; password?: string; salt?: string }
+  | { kind: 'unprotectWorkbook'; password?: string }
   | {
       kind: 'format';
       sheet: number;
@@ -421,7 +435,20 @@ export type Command =
       to: { kind: 'newSheet' } | { kind: 'existing'; sheet: number; row: number; col: number };
     }
   | { kind: 'deletePivot'; pivot: PivotRef }
-  | { kind: 'setLink'; sheet: number; area: CellArea; link?: LinkSpec }
+  | {
+      kind: 'setLink';
+      sheet: number;
+      area: CellArea;
+      link?: LinkSpec;
+      /** With no link: Remove Hyperlink, which takes the link's look off too. */
+      plain?: boolean;
+    }
+  | { kind: 'noteVisible'; sheet: number; row: number; col: number; visible: boolean }
+  /** Error checking's rules that are on, as bits; 0 turns background checking off. */
+  | { kind: 'errorRules'; rules: number }
+  | { kind: 'ignoreError'; sheet: number; row: number; col: number }
+  | { kind: 'convertToNumber'; sheet: number; areas: CellArea[] }
+  | { kind: 'includeCells'; sheet: number; row: number; col: number }
   | { kind: 'setValidation'; sheet: number; areas: CellArea[]; rule?: ValidationRule }
   | { kind: 'circleInvalid'; sheet: number; on: boolean }
   | { kind: 'addCf'; sheet: number; areas: CellArea[]; rule: CfRuleSpec }
@@ -453,7 +480,9 @@ export type SortOn =
   | { kind: 'value' }
   /** Cells with this fill first (`RRGGBB`), or with no fill. */
   | { kind: 'cellColor'; color?: string | null }
-  | { kind: 'fontColor'; color?: string | null };
+  | { kind: 'fontColor'; color?: string | null }
+  /** Cells showing this conditional format icon first: its set and place from 0. */
+  | { kind: 'icon'; set: string; id: number };
 
 export interface SortKey {
   /** The sheet's column, 1-based, or its row for a sort left to right. */
@@ -620,7 +649,9 @@ export type FilterCriteria =
   | { kind: 'top10'; top?: boolean; percent?: boolean; value: number }
   /** `aboveAverage`, `belowAverage`, `today`, `thisMonth` and the rest of Excel's names. */
   | { kind: 'dynamic'; name: string }
-  | { kind: 'color'; cell?: boolean; color?: string | null };
+  | { kind: 'color'; cell?: boolean; color?: string | null }
+  /** Cells showing a conditional format's icon, or with no `id` cells showing none. */
+  | { kind: 'icon'; set: string; id?: number };
 
 /** A filter on a sheet, from `filters`: the sheet's own or a table's. */
 export interface FilterInfo {
@@ -640,6 +671,12 @@ export interface FilterList {
   blanks: boolean;
   blanksChecked: boolean;
   filtered: 'none' | 'values' | 'custom' | 'top10' | 'dynamic' | 'color' | 'icon' | 'other';
+  /** The fills the column shows, `RRGGBB` or null for none, when it shows more than one. */
+  fills: (string | null)[];
+  /** Its text colours, when more than one. */
+  fonts: string[];
+  /** Its conditional format icons, and an empty set for cells with none. */
+  icons: { set: string; id: number | null }[];
 }
 
 /** A table, from `tableAt` or `tables`. */
@@ -670,6 +707,10 @@ export interface DefinedNameInfo {
 export interface NoteInfo {
   author?: string;
   text?: string;
+  /** Show/Hide Note: the box shows all the time. */
+  visible?: boolean;
+  /** Where its box is: see `Note::anchor` in cgs-model. */
+  anchor?: number[];
   /** A threaded comment from newer Excel, shown and kept only. */
   threaded?: boolean;
 }
@@ -724,6 +765,18 @@ export type Question =
   | { kind: 'validationAt'; sheet: number; row: number; col: number }
   | { kind: 'invalidCells'; sheet: number }
   | { kind: 'names' }
+  | {
+      kind: 'nextSelectable';
+      sheet: number;
+      row: number;
+      col: number;
+      rows?: number;
+      cols?: number;
+    }
+  | { kind: 'columnLooks'; sheet: number; col: number; top: number; bottom: number }
+  | { kind: 'circular' }
+  | { kind: 'cellErrors'; sheet: number; row: number; col: number }
+  | { kind: 'nextError'; sheet: number; row: number; col: number; back?: boolean }
   | { kind: 'noteAt'; sheet: number; row: number; col: number }
   | { kind: 'linkAt'; sheet: number; row: number; col: number }
   | { kind: 'notes'; sheet: number }
@@ -742,9 +795,22 @@ export interface Answers {
   validationAt: ValidationInfo | null;
   invalidCells: [number, number][];
   names: DefinedNameInfo[];
+  nextSelectable: [number, number] | null;
+  columnLooks: Pick<FilterList, 'fills' | 'fonts' | 'icons'> | null;
+  /** The cells on loops, as `[sheet, row, col]`, or null when the book is too big to check. */
+  circular: [number, number, number][] | null;
+  cellErrors: { rule: string; value?: string; from?: 'above' | 'left' }[];
+  nextError: [number, number] | null;
   noteAt: NoteInfo | null;
   linkAt: LinkInfo | null;
-  notes: { row: number; col: number; author: string; text: string }[];
+  notes: {
+    row: number;
+    col: number;
+    author: string;
+    text: string;
+    visible: boolean;
+    anchor: number[];
+  }[];
   cellStyles: { group: string; styles: CellStyleInfo[] }[];
   tableStyles: TableStyleInfo[];
   pageSetup: PageSetupInfo;
@@ -966,6 +1032,9 @@ export interface FormatChange {
   rotation?: number;
   readingOrder?: number;
   border?: BorderChange;
+  /** Format Cells' Protection tab. */
+  locked?: boolean;
+  formulaHidden?: boolean;
 }
 
 /** A colour as a cell has it, with how it looks here. */
@@ -999,6 +1068,9 @@ export interface CellFormat {
   numberFormat: string;
   numberFormatId: number;
   merged: boolean;
+  /** Format Cells' Protection tab. */
+  locked: boolean;
+  formulaHidden: boolean;
   border: {
     top: StoredLine;
     bottom: StoredLine;
@@ -1105,12 +1177,33 @@ export interface SavedFile {
   report: SaveReport;
 }
 
+/** What Protect Sheet lets people do. See `AllowSpec` in `crates/cgs-engine/src/protect.rs`. */
+export interface ProtectAllow {
+  selectLocked: boolean;
+  selectUnlocked: boolean;
+  formatCells: boolean;
+  formatColumns: boolean;
+  formatRows: boolean;
+  insertColumns: boolean;
+  insertRows: boolean;
+  insertHyperlinks: boolean;
+  deleteColumns: boolean;
+  deleteRows: boolean;
+  sort: boolean;
+  autoFilter: boolean;
+  pivotTables: boolean;
+  editObjects: boolean;
+  editScenarios: boolean;
+}
+
 export interface SheetSummary {
   name: string;
   state: 'visible' | 'hidden' | 'veryHidden';
   kind: 'worksheet' | 'chart' | 'other';
   loaded: boolean;
   deleted: boolean;
+  /** What a protected sheet allows, and whether it has a password; none when unprotected. */
+  protection: (ProtectAllow & { password: boolean }) | null;
 }
 
 export interface BookSummary {
@@ -1118,6 +1211,9 @@ export interface BookSummary {
   sheets: SheetSummary[];
   /** Sheets by index, in the order their tabs show. */
   order: number[];
+  /** Protect Workbook's structure. */
+  structureLocked: boolean;
+  structurePassword: boolean;
 }
 
 export type LoadEvent =

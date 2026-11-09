@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { CgButton, CgWindow } from '@cashgear/ui';
+import { drawIcon, ICON_SETS } from '@cgs/engine-client';
 import type {
   Applied,
   CellArea,
@@ -10,6 +11,7 @@ import type {
   EngineClient,
   FilterCriteria,
   FilterList,
+  SortKey,
 } from '@cgs/engine-client';
 import { columnName } from '../grid/geometry';
 
@@ -486,6 +488,14 @@ export function FilterMenu(props: FilterMenuProps) {
   const [addToFilter, setAddToFilter] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [sub, setSub] = useState<{ left: number; top: number } | null>(null);
+  // Sort by Color's or Filter by Color's list of the column's colours and icons.
+  const [colorSub, setColorSub] = useState<{
+    which: 'sort' | 'filter';
+    left: number;
+    top: number;
+  } | null>(null);
+  const sortColorRow = useRef<HTMLDivElement>(null);
+  const filterColorRow = useRef<HTMLDivElement>(null);
   const [hot, setHot] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [message, setMessage] = useState('');
@@ -566,6 +576,32 @@ export function FilterMenu(props: FilterMenuProps) {
       keys: [{ index: col, descending }],
       header: false,
     });
+
+  /** Sort by Color: cells of this colour or icon on top, the rest as they were. */
+  const sortBy = (by: SortKey['by']) =>
+    apply({
+      kind: 'sort',
+      sheet,
+      area: { ...area, top: area.top + 1 },
+      keys: [{ index: col, by }],
+      header: false,
+    });
+
+  const colors = list ? list.fills.length + list.fonts.length + list.icons.length > 0 : false;
+
+  const openColorSub = (which: 'sort' | 'filter') => {
+    const row = (which === 'sort' ? sortColorRow : filterColorRow).current?.getBoundingClientRect();
+    if (!row || !list || !colors) return;
+    setSub(null);
+    const count = list.fills.length + list.fonts.length + list.icons.length + 3;
+    const height = count * ITEM_HEIGHT + 8;
+    const right = row.right + MENU_WIDTH > window.innerWidth;
+    setColorSub({
+      which,
+      left: right ? row.left - MENU_WIDTH : row.right,
+      top: Math.max(4, Math.min(row.top, window.innerHeight - height - 4)),
+    });
+  };
 
   const setFilter = (criteria?: FilterCriteria) =>
     apply({ kind: 'setFilter', sheet, ...tableField, col, ...(criteria ? { criteria } : {}) });
@@ -668,6 +704,7 @@ export function FilterMenu(props: FilterMenuProps) {
       onMouseEnter={() => {
         setHot(key);
         if (key !== 'kind' && !key.startsWith('pick-')) setSub(null);
+        if (key !== 'sortColor' && key !== 'filterColor') setColorSub(null);
       }}
       onMouseLeave={() => setHot((current) => (current === key ? null : current))}
       style={{
@@ -728,7 +765,16 @@ export function FilterMenu(props: FilterMenuProps) {
     >
       {item('asc', ascLabel, () => void sort(false), { testid: 'filter-sort-asc' })}
       {item('desc', descLabel, () => void sort(true), { testid: 'filter-sort-desc' })}
-      {item('sortColor', 'Sort by Color', null, { more: true })}
+      <div
+        ref={sortColorRow}
+        onMouseEnter={() => openColorSub('sort')}
+        style={{ flex: '0 0 auto' }}
+      >
+        {item('sortColor', 'Sort by Color', colors ? () => openColorSub('sort') : null, {
+          testid: 'filter-sort-color',
+          more: true,
+        })}
+      </div>
       {separator('s1')}
       {item(
         'clear',
@@ -736,7 +782,41 @@ export function FilterMenu(props: FilterMenuProps) {
         list && list.filtered !== 'none' ? () => void setFilter() : null,
         { testid: 'filter-clear' },
       )}
-      {item('filterColor', 'Filter by Color', null, { more: true })}
+      <div
+        ref={filterColorRow}
+        onMouseEnter={() => openColorSub('filter')}
+        style={{ flex: '0 0 auto' }}
+      >
+        {item('filterColor', 'Filter by Color', colors ? () => openColorSub('filter') : null, {
+          testid: 'filter-by-color',
+          checked: list?.filtered === 'color' || list?.filtered === 'icon',
+          more: true,
+        })}
+      </div>
+      {colorSub && list && (
+        <ColorList
+          list={list}
+          which={colorSub.which}
+          left={colorSub.left}
+          top={colorSub.top}
+          style={panelStyle}
+          onFill={(color) =>
+            colorSub.which === 'sort'
+              ? void sortBy({ kind: 'cellColor', color: color ?? undefined })
+              : void setFilter({ kind: 'color', cell: true, color: color ?? undefined })
+          }
+          onFont={(color) =>
+            colorSub.which === 'sort'
+              ? void sortBy({ kind: 'fontColor', color })
+              : void setFilter({ kind: 'color', cell: false, color })
+          }
+          onIcon={(set, id) =>
+            colorSub.which === 'sort'
+              ? set && id !== null && void sortBy({ kind: 'icon', set, id })
+              : void setFilter({ kind: 'icon', set: set || '3Arrows', id: id ?? undefined })
+          }
+        />
+      )}
       <div ref={kindRow} onMouseEnter={openSub} style={{ flex: '0 0 auto' }}>
         {item('kind', KIND_LABEL[kind], list ? () => (sub ? setSub(null) : openSub()) : null, {
           testid: 'filter-kind',
@@ -1260,5 +1340,143 @@ function Top10Dialog(props: {
         </div>
       )}
     />
+  );
+}
+
+/** A conditional format icon, drawn as the grid draws it. */
+function IconSwatch({ set, id }: { set: string; id: number }) {
+  return (
+    <canvas
+      width={32}
+      height={32}
+      style={{ inlineSize: 16, blockSize: 16 }}
+      ref={(canvas) => {
+        const context = canvas?.getContext('2d');
+        if (!context) return;
+        context.clearRect(0, 0, 32, 32);
+        drawIcon(context, Math.max(0, ICON_SETS.indexOf(set)) * 8 + id, 2, 2, 28);
+      }}
+    />
+  );
+}
+
+interface ColorListProps {
+  list: FilterList;
+  which: 'sort' | 'filter';
+  left: number;
+  top: number;
+  style: CSSProperties;
+  onFill: (color: string | null) => void;
+  onFont: (color: string) => void;
+  onIcon: (set: string, id: number | null) => void;
+}
+
+/** Sort by Color's and Filter by Color's list: the column's fills, text colours and icons. */
+function ColorList(props: ColorListProps) {
+  const { list, which } = props;
+  const verb = which === 'sort' ? 'Sort' : 'Filter';
+  const heading = (text: string) => (
+    <div
+      role="presentation"
+      style={{ padding: '4px 8px', fontWeight: 600, color: 'var(--cg-disabled-text)' }}
+    >
+      {text}
+    </div>
+  );
+  const row = (key: string, testid: string, swatch: ReactNode, label: string, run: () => void) => (
+    <button
+      key={key}
+      type="button"
+      role="menuitem"
+      data-testid={testid}
+      title={label}
+      onClick={run}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        inlineSize: '100%',
+        minBlockSize: ITEM_HEIGHT,
+        padding: '0 8px 0 24px',
+        font: 'inherit',
+        color: 'inherit',
+        textAlign: 'start',
+        background: 'none',
+        border: 0,
+        cursor: 'default',
+      }}
+      onMouseEnter={(event) => (event.currentTarget.style.background = 'var(--cg-hover)')}
+      onMouseLeave={(event) => (event.currentTarget.style.background = 'none')}
+    >
+      {swatch}
+      <span>{label}</span>
+    </button>
+  );
+  const box = (color: string | null, text = false) => (
+    <span
+      aria-hidden="true"
+      style={{
+        inlineSize: text ? 'auto' : 60,
+        blockSize: 16,
+        padding: text ? '0 4px' : 0,
+        background: text ? 'transparent' : color ? '#' + color : 'transparent',
+        color: text && color ? '#' + color : undefined,
+        border: '1px solid #a6a6a6',
+        fontWeight: 600,
+      }}
+    >
+      {text ? 'Aa' : ''}
+    </span>
+  );
+  return (
+    <div
+      role="menu"
+      data-testid={`filter-${which}-colors`}
+      style={{
+        ...props.style,
+        position: 'fixed',
+        left: props.left,
+        top: props.top,
+        zIndex: 1001,
+        inlineSize: MENU_WIDTH,
+        maxBlockSize: window.innerHeight - 8,
+        overflowY: 'auto',
+        padding: '3px 0',
+        boxSizing: 'border-box',
+      }}
+    >
+      {list.fills.length > 0 && heading(`${verb} by Cell Color`)}
+      {list.fills.map((color) =>
+        row(
+          'fill-' + (color ?? 'none'),
+          'color-fill-' + (color ?? 'none'),
+          box(color),
+          color ? '#' + color : 'No Fill',
+          () => props.onFill(color),
+        ),
+      )}
+      {list.fonts.length > 0 && heading(`${verb} by Font Color`)}
+      {list.fonts.map((color) =>
+        row('font-' + color, 'color-font-' + color, box(color, true), '#' + color, () =>
+          props.onFont(color),
+        ),
+      )}
+      {list.icons.length > 0 && heading(`${verb} by Cell Icon`)}
+      {list.icons
+        .filter((icon) => which === 'filter' || icon.id !== null)
+        .map((icon) =>
+          row(
+            `icon-${icon.set}-${icon.id ?? 'none'}`,
+            `color-icon-${icon.id ?? 'none'}`,
+            icon.id === null ? (
+              <span style={{ inlineSize: 16 }} />
+            ) : (
+              <IconSwatch set={icon.set} id={icon.id} />
+            ),
+            icon.id === null ? 'No Cell Icon' : `${icon.set} ${icon.id + 1}`,
+            () => props.onIcon(icon.set, icon.id),
+          ),
+        )}
+    </div>
   );
 }

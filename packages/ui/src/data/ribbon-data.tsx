@@ -23,6 +23,10 @@ export interface DataState {
   filterOn: boolean;
   circled: boolean;
   hasNote: boolean;
+  /** The active cell's note shows all the time. */
+  noteShown: boolean;
+  /** Show All Notes, which is the app's view and not saved, as in Excel. */
+  allNotesShown: boolean;
   hasLink: boolean;
 }
 
@@ -50,6 +54,11 @@ export interface DataActions {
   editNote(): void;
   deleteNote(): void;
   nextNote(back: boolean): void;
+  /** Show/Hide Note. */
+  toggleNote(): void;
+  showAllNotes(): void;
+  /** Clear Hyperlinks: the links go, and the cells keep their look. */
+  clearLinks(): void;
   tableOptions(options: TableOptions): void;
   renameTable(name: string): void;
   resizeTable(): void;
@@ -516,6 +525,22 @@ export function dataTabs(state: DataState, data: DataActions): CgRibbonTab[] {
               icon: 'chevron-down',
               disabled: off,
               onClick: () => data.nextNote(false),
+            },
+            {
+              name: 'note-show',
+              text: 'Show/Hide Note',
+              icon: 'comment',
+              checked: state.noteShown,
+              disabled: off || !state.hasNote,
+              onClick: data.toggleNote,
+            },
+            {
+              name: 'note-show-all',
+              text: 'Show All Notes',
+              icon: 'comment',
+              checked: state.allNotesShown,
+              disabled: off,
+              onClick: data.showAllNotes,
             },
           ],
         },

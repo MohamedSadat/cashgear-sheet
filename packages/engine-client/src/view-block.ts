@@ -16,6 +16,8 @@ export const MARK_ICON = 2;
 export const MARK_NOTE = 3;
 export const MARK_INVALID = 4;
 export const MARK_THREAD = 5;
+/** Error checking's green triangle, in the cell's top corner before its text. */
+export const MARK_ERROR = 6;
 export const BAR_GRADIENT = 1;
 export const BAR_BORDER = 2;
 export const BAR_AXIS = 4;
@@ -49,6 +51,8 @@ export const CELL_OCCUPIED = 1 << 7;
 export const FONT_BOLD = 1;
 export const FONT_ITALIC = 2;
 export const FONT_STRIKE = 4;
+export const FONT_SUPERSCRIPT = 8;
+export const FONT_SUBSCRIPT = 16;
 
 export const LAYOUT_WRAP = 1;
 export const LAYOUT_SHRINK = 2;

@@ -214,6 +214,7 @@ export class GridController {
   private layout: SheetLayout | null = null;
   private drawings: DrawingBox[] = [];
   private drawingListener: ((sheet: number, frames: DrawingFrame[]) => void) | null = null;
+  private frameListeners = new Set<() => void>();
   private frames: DrawingFrame[] = [];
   private merges: Uint32Array = new Uint32Array();
   private rows = new Axis(MAX_ROWS, defaultRowHeightFallback);
@@ -1008,6 +1009,7 @@ export class GridController {
     cache.want(wanted);
 
     this.drawingListener?.(this.sheet, this.frames);
+    for (const listener of this.frameListeners) listener();
     this.drawHeaders();
     this.drawPaneLines();
     if (this.resizing) {
@@ -1100,6 +1102,18 @@ export class GridController {
   setDrawingListener(listener: ((sheet: number, frames: DrawingFrame[]) => void) | null) {
     this.drawingListener = listener;
     this.schedule();
+  }
+
+  /**
+   * Calls back after each frame, for what is placed over cells, such as notes' boxes. Gives what
+   * stops it.
+   */
+  onFrame(listener: () => void): () => void {
+    this.frameListeners.add(listener);
+    this.schedule();
+    return () => {
+      this.frameListeners.delete(listener);
+    };
   }
 
   /** Scrolls as a wheel over the canvas would, for a wheel over a chart or picture. */

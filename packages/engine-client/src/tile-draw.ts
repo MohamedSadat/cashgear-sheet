@@ -12,6 +12,7 @@ import {
   MARK_INVALID,
   MARK_NOTE,
   MARK_THREAD,
+  MARK_ERROR,
   ALIGN_CENTER,
   ALIGN_CENTER_CONTINUOUS,
   ALIGN_DISTRIBUTED,
@@ -29,6 +30,8 @@ import {
   FONT_BOLD,
   FONT_ITALIC,
   FONT_STRIKE,
+  FONT_SUBSCRIPT,
+  FONT_SUPERSCRIPT,
   KIND_GENERAL,
   KIND_MASK,
   KIND_NUMBER,
@@ -156,6 +159,8 @@ interface FontMetrics {
   ascent: number;
   descent: number;
   px: number;
+  /** How far superscript text rises, or subscript text falls, from the line's baseline. */
+  shift: number;
 }
 
 interface RichPiece {
@@ -267,7 +272,13 @@ class Painter {
     const key = index * 1024 + Math.round(shrink * 1000);
     let metrics = this.fonts.get(key);
     if (!metrics) {
-      const px = ((style.size * 96) / 72) * this.scale * shrink;
+      const full = ((style.size * 96) / 72) * this.scale * shrink;
+      // Superscript and subscript in two thirds of the size, raised a third or lowered a
+      // seventh of it, as Excel draws them.
+      const raised = style.fontFlags & FONT_SUPERSCRIPT;
+      const lowered = style.fontFlags & FONT_SUBSCRIPT;
+      const px = raised || lowered ? full * 0.66 : full;
+      const shift = raised ? -full * 0.33 : lowered ? full * 0.14 : 0;
       const css =
         (style.fontFlags & FONT_ITALIC ? 'italic ' : '') +
         (style.fontFlags & FONT_BOLD ? 'bold ' : '') +
@@ -280,8 +291,9 @@ class Painter {
       metrics = {
         css,
         px,
-        ascent: measured.fontBoundingBoxAscent ?? px * 0.8,
-        descent: measured.fontBoundingBoxDescent ?? px * 0.2,
+        ascent: (measured.fontBoundingBoxAscent ?? px * 0.8) - Math.min(0, shift),
+        descent: (measured.fontBoundingBoxDescent ?? px * 0.2) + Math.max(0, shift),
+        shift,
       };
       this.fonts.set(key, metrics);
     }
@@ -392,6 +404,18 @@ class Painter {
         // In the cell's top corner after its text: its left on a right-to-left sheet.
         const corner = this.rtl ? left : left + width;
         const inward = this.rtl ? size : -size;
+        context.beginPath();
+        context.moveTo(corner + inward, top);
+        context.lineTo(corner, top);
+        context.lineTo(corner, top + size);
+        context.closePath();
+        context.fill();
+      } else if (over && mark.kind === MARK_ERROR && !this.edges) {
+        // Excel's green triangle, which never prints either.
+        const size = 5 * pixel;
+        context.fillStyle = '#008a00';
+        const corner = this.rtl ? left + width : left;
+        const inward = this.rtl ? -size : size;
         context.beginPath();
         context.moveTo(corner + inward, top);
         context.lineTo(corner, top);
@@ -740,7 +764,7 @@ class Painter {
     y?: number,
   ) {
     const { context, palette, scale } = this;
-    const baseline = y ?? this.baseline(style, metrics, top, bottom);
+    const baseline = (y ?? this.baseline(style, metrics, top, bottom)) + metrics.shift;
     context.fillStyle = hasAlpha(color) ? cssColor(color) : palette.text;
     // Set every time: `restore` puts back whatever direction its `save` saw.
     context.direction = flags & CELL_RTL ? 'rtl' : 'ltr';

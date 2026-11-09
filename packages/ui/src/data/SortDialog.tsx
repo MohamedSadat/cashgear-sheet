@@ -48,7 +48,7 @@ export function parseListEntries(text: string): string[] {
     .filter((entry) => entry !== '');
 }
 
-export type SortOnKind = 'value' | 'cellColor' | 'fontColor';
+export type SortOnKind = 'value' | 'cellColor' | 'fontColor' | 'icon';
 
 /** One row of the dialog. */
 export interface SortLevel {
@@ -59,6 +59,8 @@ export interface SortLevel {
   descending: boolean;
   /** `RRGGBB`, or null for no fill or the automatic font colour. */
   color: string | null;
+  /** Cell Icon's icon: its set's name and place from 0. */
+  icon?: { set: string; id: number } | null;
   list: string[] | null;
 }
 
@@ -81,6 +83,9 @@ export function levelKey(level: SortLevel & { index: number }): SortKey {
   if (level.on === 'value') {
     key.by = { kind: 'value' };
     if (level.list) key.list = [...level.list];
+  } else if (level.on === 'icon') {
+    const icon = level.icon ?? { set: '3Arrows', id: 0 };
+    key.by = { kind: 'icon', set: icon.set, id: icon.id };
   } else {
     key.by = { kind: level.on, color: level.color };
   }
@@ -109,7 +114,12 @@ export function sortCommand(settings: SortSettings): { command: Command } | { er
           'All sort criteria must have a column specified. Check the selected sort criteria and try again.',
       };
     }
-    const what = level.on === 'value' ? 'value' : `${level.on}:${level.color ?? ''}`;
+    const what =
+      level.on === 'value'
+        ? 'value'
+        : level.on === 'icon'
+          ? `icon:${level.icon?.set}:${level.icon?.id}`
+          : `${level.on}:${level.color ?? ''}`;
     const twice = `${level.index}|${what}`;
     if (seen.has(twice)) {
       const by =
@@ -117,7 +127,9 @@ export function sortCommand(settings: SortSettings): { command: Command } | { er
           ? 'values'
           : level.on === 'cellColor'
             ? 'the same cell color'
-            : 'the same font color';
+            : level.on === 'icon'
+              ? 'the same cell icon'
+              : 'the same font color';
       return {
         error: `${settings.label(level.index)} is being sorted by ${by} more than once. Delete the duplicate sort criteria and try again.`,
       };
@@ -175,6 +187,8 @@ export function SortDialog(props: SortDialogProps) {
   const [headings, setHeadings] = useState<Map<number, string>>(new Map());
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  // Each column's conditional format icons, for Cell Icon, as Excel lists those the column has.
+  const [icons, setIcons] = useState<Map<number, { set: string; id: number }[]>>(new Map());
   const [options, setOptions] = useState<{ caseSensitive: boolean; byColumns: boolean } | null>(
     null,
   );
@@ -226,9 +240,40 @@ export function SortDialog(props: SortDialogProps) {
   const [first, end] = byColumns ? [area.top, area.bottom] : [area.left, area.right];
   for (let line = first; line <= end; line++) lines.push(line);
 
+  const iconsOf = (line: number) => {
+    const engine = props.engine();
+    if (!engine || icons.has(line) || byColumns) return;
+    void engine
+      .query({
+        kind: 'columnLooks',
+        sheet: props.sheet,
+        col: line,
+        top: area.top + (headers ? 1 : 0),
+        bottom: area.bottom,
+      })
+      .then((looks) => {
+        const found = (looks?.icons ?? []).flatMap((icon) =>
+          icon.id === null ? [] : [{ set: icon.set, id: icon.id }],
+        );
+        setIcons((known) => new Map(known).set(line, found));
+        setLevels((all) =>
+          all.map((level) =>
+            level.on === 'icon' && level.index === line && !level.icon
+              ? { ...level, icon: found[0] ?? null }
+              : level,
+          ),
+        );
+      })
+      .catch(() => undefined);
+  };
+
   const change = (at: number, patch: Partial<SortLevel>) => {
     setLevels((all) => all.map((level, i) => (i === at ? { ...level, ...patch } : level)));
     setMessage('');
+    const level = { ...levels[at], ...patch };
+    if (level.on === 'icon' && level.index !== null && level.index !== undefined) {
+      iconsOf(level.index);
+    }
   };
 
   const addLevel = () => {
@@ -370,8 +415,39 @@ export function SortDialog(props: SortDialogProps) {
           <option value="value">Values</option>
           <option value="cellColor">Cell Color</option>
           <option value="fontColor">Font Color</option>
+          <option value="icon">Cell Icon</option>
         </select>
-        {colour ? (
+        {level.on === 'icon' ? (
+          <div className="cgs-dialog-row" style={{ flexWrap: 'nowrap', alignItems: 'center' }}>
+            <select
+              data-testid={`sort-icon-${at}`}
+              aria-label="Icon"
+              value={level.icon ? `${level.icon.set}|${level.icon.id}` : ''}
+              onFocus={() => setCurrent(at)}
+              onChange={(event) => {
+                const [set, id] = event.target.value.split('|');
+                change(at, { icon: { set: set ?? '', id: Number(id) } });
+              }}
+            >
+              {!level.icon && <option value="" />}
+              {(level.index !== null ? (icons.get(level.index) ?? []) : []).map((icon) => (
+                <option key={`${icon.set}|${icon.id}`} value={`${icon.set}|${icon.id}`}>
+                  {`${icon.set} ${icon.id + 1}`}
+                </option>
+              ))}
+            </select>
+            <select
+              data-testid={`sort-order-${at}`}
+              aria-label="Order"
+              value={level.descending ? 'bottom' : 'top'}
+              onFocus={() => setCurrent(at)}
+              onChange={(event) => change(at, { descending: event.target.value === 'bottom' })}
+            >
+              <option value="top">On Top</option>
+              <option value="bottom">On Bottom</option>
+            </select>
+          </div>
+        ) : colour ? (
           <div className="cgs-dialog-row" style={{ flexWrap: 'nowrap', alignItems: 'center' }}>
             <CgDropDownButton
               data-testid={`sort-color-${at}`}

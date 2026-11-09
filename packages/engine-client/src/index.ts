@@ -1,6 +1,7 @@
 export { createEngineClient, decodeChanges, ENGINE_STOPPED, type EngineClient } from './client';
 export { decodeLayout, type SheetLayout } from './layout';
 export { localeData } from './locale';
+export { drawIcon, ICON_SETS } from './icons';
 export { TileCache, type TileAddress, type TileStyle } from './tile-cache';
 export { devicePx, TILE_COLS, TILE_ROWS } from './tile-draw';
 export {
@@ -75,6 +76,7 @@ export type {
   ValidationOp,
   ValidationRule,
   BookSummary,
+  ProtectAllow,
   BorderChange,
   CalcStatus,
   CellArea,

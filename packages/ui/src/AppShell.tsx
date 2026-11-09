@@ -88,6 +88,19 @@ import { readGridColors, readPalette, type ThemeController, type ThemePreference
 import { AboutDialog, UpdateDialog } from './release/ReleaseDialogs';
 import { useUpdates } from './release/useUpdates';
 import { readDefaultDirection, writeDefaultDirection, type Direction } from './direction';
+import { UnhideDialog } from './sheets/UnhideDialog';
+import { noteAuthor, readUserName, writeUserName } from './user-name';
+import {
+  readErrorSettings,
+  ruleBits,
+  useErrorTools,
+  writeErrorSettings,
+  RULE_BITS,
+  type ErrorSettings,
+} from './errors/useErrorTools';
+import { RULE_LABELS } from './errors/error-text';
+import { cellName } from './grid/geometry';
+import { PROTECTED_MESSAGE, useProtectTools } from './sheets/useProtectTools';
 
 const themeChoices = [
   { name: 'system', text: 'System' },
@@ -120,6 +133,30 @@ const noCell: CellDetail = { name: '', edit: '' };
  * never shrinks. Past this much the status bar says so, while there is still room to save.
  */
 const MEMORY_WARNING_BYTES = 3 * 1024 ** 3;
+/** Commands after which Circular References is looked at again. */
+const FORMULA_CHANGES = new Set<string>([
+  'input',
+  'arrayInput',
+  'clear',
+  'fill',
+  'paste',
+  'pasteExternal',
+  'move',
+  'axis',
+  'shiftCells',
+  'deleteSheet',
+  'renameSheet',
+  'replaceAll',
+  'replaceOne',
+  'includeCells',
+  'undo',
+  'redo',
+]);
+/** Excel 2016's words when a formula closes a loop. */
+const CIRCULAR_WARNING =
+  'There are one or more circular references where a formula refers to its own cell either ' +
+  'directly or indirectly. This might cause them to calculate incorrectly.' +
+  '\n\nTry removing or changing these references, or moving the formulas to different cells.';
 const memoryNotice = (bytes: number) =>
   `This workbook uses ${(bytes / 1024 ** 3).toFixed(1)} of the 4 GB the engine can have: ` +
   'save your work before adding much more.';
@@ -131,7 +168,8 @@ type ShellDialog =
   | { kind: 'size'; axis: 'row' | 'col'; value: string }
   | { kind: 'shift'; remove: boolean; choice: 'side' | 'down' | 'row' | 'col' }
   | { kind: 'merge'; answer: (accepted: boolean) => void }
-  | { kind: 'options'; direction: Direction }
+  | { kind: 'options'; direction: Direction; userName: string; errors: ErrorSettings }
+  | { kind: 'unhide' }
   | { kind: 'close'; answer: (close: boolean) => void };
 
 /** How the sheet showing is set up, for the View tab. */
@@ -210,6 +248,36 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const [resizeHint, setResizeHint] = useState<ResizeHint | null>(null);
   const formatRef = useRef<CellFormat | null>(null);
   formatRef.current = format;
+  const protectMessageRef = useRef<(message: string) => void>(() => undefined);
+  const refusedRef = useRef<(error: unknown) => void>(() => undefined);
+  /**
+   * A protected sheet that keeps locked cells, or every cell, from being selected moves the
+   * selection on to one it allows, the way it was going, or back where it was.
+   */
+  const keepSelectableRef = useRef<(before: GridSelection | null, after: GridSelection) => void>(
+    () => undefined,
+  );
+  keepSelectableRef.current = (before, after) => {
+    const guarded = bookRef.current?.sheets[sheetRef.current]?.protection;
+    const engine = clientRef.current;
+    if (!guarded || (guarded.selectLocked && guarded.selectUnlocked) || !engine) return;
+    const sheet = sheetRef.current;
+    const step = (to: number, from: number | undefined) =>
+      from === undefined || Math.abs(to - from) !== 1 ? 0 : to - from;
+    const rows = step(after.row, before?.row);
+    const cols = rows ? 0 : step(after.col, before?.col);
+    void engine
+      .query({ kind: 'nextSelectable', sheet, row: after.row + 1, col: after.col + 1, rows, cols })
+      .then((target) => {
+        const grid = controller.current;
+        if (!grid || sheetRef.current !== sheet) return;
+        if (target && target[0] === after.row + 1 && target[1] === after.col + 1) return;
+        const to = target ? { row: target[0] - 1, col: target[1] - 1 } : before;
+        if (!to) return;
+        grid.selectArea({ top: to.row, left: to.col, bottom: to.row, right: to.col });
+      })
+      .catch(() => undefined);
+  };
   const contextMenu = useRef<CgContextMenuActions<GridRegion | 'tab' | 'drawing'> | null>(null);
   const fileRef = useRef<OpenedFile | null>(null);
   /** Commands run in order, as the first has to make the source safe before any of them. */
@@ -223,6 +291,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const selectionRef = useRef<GridSelection | null>(null);
   // The data tools' refresh and message, which come later than what calls them.
   const dataRefreshRef = useRef<() => void>(() => undefined);
+  const errorRefreshRef = useRef<() => void>(() => undefined);
+  /** Circular References, as the status bar names its first cell, and the cells it knows. */
+  const [circular, setCircular] = useState<[number, number, number][]>([]);
+  const circularRef = useRef<[number, number, number][]>([]);
   const pivotRefreshRef = useRef<() => void>(() => undefined);
   const pivotButtonsRef = useRef<() => CellButton[]>(() => []);
   const dataNoticeRef = useRef<(message: string | null) => void>(() => undefined);
@@ -346,27 +418,61 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   useEffect(refreshRecent, [refreshRecent]);
 
   /** Shows a sheet whose cells are all readable. */
-  const showSheet = useCallback(async (engine: EngineClient, index: number) => {
-    const [layout, drawings] = await Promise.all([engine.layout(index), engine.drawings(index)]);
-    if (sheetRef.current !== index) return;
-    shownSheet.current = index;
-    controller.current?.showSheet(index, layout, drawings);
-    chartDrawingsRef.current?.(drawings);
-    printRefreshRef.current();
-    setFlags({
-      frozen: layout.frozenRows > 0 || layout.frozenCols > 0,
-      showGrid: layout.showGrid,
-      showHeadings: layout.showHeaders,
-      rightToLeft: layout.rightToLeft,
-    });
-    // A layout that changed under a ribbon box being typed in leaves the keyboard there.
-    const active = document.activeElement;
-    const typing =
-      active instanceof HTMLInputElement ||
-      active instanceof HTMLTextAreaElement ||
-      active instanceof HTMLSelectElement;
-    if (!typing && !editingRef.current?.session.snapshot().active) controller.current?.focus();
+  /**
+   * What the view says, which a save keeps but undo doesn't: the zoom and the sheet showing. Each
+   * goes through the command queue, so it lands in order with edits and saves, and calls queued
+   * while one waits are folded into it.
+   */
+  const viewQueued = useRef<Map<string, Command> | null>(null);
+  const rulesSent = useRef<EngineClient | null>(null);
+  const viewCommand = useCallback((command: Command) => {
+    const key = command.kind === 'zoom' ? 'zoom:' + command.sheet : command.kind;
+    if (viewQueued.current) {
+      viewQueued.current.set(key, command);
+      return;
+    }
+    const pending = new Map<string, Command>([[key, command]]);
+    viewQueued.current = pending;
+    commands.current = commands.current
+      .catch(() => undefined)
+      .then(async () => {
+        viewQueued.current = null;
+        const engine = clientRef.current;
+        if (!engine) return;
+        for (const next of pending.values()) await engine.command(next).catch(() => undefined);
+      });
   }, []);
+
+  const showSheet = useCallback(
+    async (engine: EngineClient, index: number) => {
+      const [layout, drawings] = await Promise.all([engine.layout(index), engine.drawings(index)]);
+      if (sheetRef.current !== index) return;
+      if (shownSheet.current !== index) viewCommand({ kind: 'activeSheet', sheet: index });
+      // Each engine starts with Excel's rules; the device's settings go to it once.
+      if (rulesSent.current !== engine) {
+        rulesSent.current = engine;
+        viewCommand({ kind: 'errorRules', rules: ruleBits(readErrorSettings()) });
+      }
+      shownSheet.current = index;
+      controller.current?.showSheet(index, layout, drawings);
+      chartDrawingsRef.current?.(drawings);
+      printRefreshRef.current();
+      setFlags({
+        frozen: layout.frozenRows > 0 || layout.frozenCols > 0,
+        showGrid: layout.showGrid,
+        showHeadings: layout.showHeaders,
+        rightToLeft: layout.rightToLeft,
+      });
+      // A layout that changed under a ribbon box being typed in leaves the keyboard there.
+      const active = document.activeElement;
+      const typing =
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLSelectElement;
+      if (!typing && !editingRef.current?.session.snapshot().active) controller.current?.focus();
+    },
+    [viewCommand],
+  );
 
   const onLoadEvent = useCallback(
     (token: number, engine: EngineClient, event: LoadEvent) => {
@@ -605,6 +711,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     if (!engine || !selection) return;
     const token = ++cellToken.current;
     dataRefreshRef.current();
+    errorRefreshRef.current();
     pivotRefreshRef.current();
     setCell((previous) => ({ ...previous, name: selection.name }));
     engine
@@ -677,13 +784,33 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
             command.kind === 'insertSheet' ||
             command.kind === 'deleteSheet' ||
             command.kind === 'renameSheet' ||
+            command.kind === 'sheetState' ||
+            command.kind === 'protectSheet' ||
+            command.kind === 'unprotectSheet' ||
+            command.kind === 'protectWorkbook' ||
+            command.kind === 'unprotectWorkbook' ||
             command.kind === 'undo' ||
             command.kind === 'redo'
           ) {
             summary = await engine.bookSummary();
             applySummary(summary);
           }
-          if (summary && command.kind === 'insertSheet') {
+          const shows = (index: number) => {
+            const entry = summary?.sheets[index];
+            return Boolean(entry && !entry.deleted && entry.state === 'visible');
+          };
+          if (summary && command.kind === 'sheetState') {
+            // The engine says which sheet shows now, as Excel picks it.
+            await goToSheet(summary.active);
+          } else if (
+            summary &&
+            (command.kind === 'undo' || command.kind === 'redo') &&
+            summary.active !== sheetRef.current &&
+            shows(summary.active)
+          ) {
+            // Undoing or redoing Hide or Unhide goes where the engine says, as the step did.
+            await goToSheet(summary.active);
+          } else if (summary && command.kind === 'insertSheet') {
             const at = Math.min(command.position, summary.order.length - 1);
             await goToSheet(summary.order[at] ?? 0);
           } else if (summary?.sheets[sheetRef.current]?.deleted) {
@@ -703,6 +830,24 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
             }
           }
           refreshCell();
+          // Circular References, after anything that can change what formulas read.
+          if (FORMULA_CHANGES.has(command.kind)) {
+            const loops = (await engine.query({ kind: 'circular' })) ?? [];
+            const known = circularRef.current;
+            circularRef.current = loops;
+            setCircular(loops);
+            // A formula typed that closes a loop gets Excel's warning, once.
+            const typed =
+              command.kind === 'input' &&
+              command.text.startsWith('=') &&
+              loops.some(
+                ([s, r, c]) => s === command.sheet && r === command.row && c === command.col,
+              ) &&
+              !known.some(
+                ([s, r, c]) => s === command.sheet && r === command.row && c === command.col,
+              );
+            if (typed) protectMessageRef.current(CIRCULAR_WARNING);
+          }
           return applied;
         });
       commands.current = job;
@@ -720,7 +865,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         kind: 'insertSheet',
         position: at < 0 ? order.length : at + (after ? 1 : 0),
         rightToLeft: readDefaultDirection() === 'rtl',
-      }).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+      }).catch((error) => refusedRef.current(error));
     },
     [runCommand],
   );
@@ -753,6 +898,14 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       return (
         loadedRef.current.has(sheetRef.current) && shown?.kind === 'worksheet' && !savingRef.current
       );
+    },
+    mayEdit: (index) => {
+      // A locked cell on a protected sheet refuses at the first key, as in Excel. The active
+      // cell's format is what the ribbon shows; the engine refuses anything else.
+      const guarded = bookRef.current?.sheets[index]?.protection;
+      if (!guarded || formatRef.current?.locked === false) return true;
+      protectMessageRef.current(PROTECTED_MESSAGE);
+      return false;
     },
     activeText: () => cellRef.current.edit,
     sheetName: (index) => bookRef.current?.sheets[index]?.name ?? '',
@@ -811,6 +964,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       run: (command) => host.current!.run(command),
       settled: () => host.current!.settled(),
       canEdit: () => host.current!.canEdit(),
+      mayEdit: (sheet, row, col) => host.current!.mayEdit(sheet, row, col),
       activeText: () => host.current!.activeText(),
       sheetName: (index) => host.current!.sheetName(index),
       sheetIndex: (name) => host.current!.sheetIndex(name),
@@ -847,6 +1001,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       cancel: () => editing.cancel(),
     }),
     extraButtons: () => pivotButtonsRef.current(),
+    userName: () => noteAuthor(),
   });
   const pivotTools = usePivotTools({
     engine: () => clientRef.current,
@@ -1194,6 +1349,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       onSelection: (selection: GridSelection) => {
         const before = selectionRef.current;
         selectionRef.current = selection;
+        keepSelectableRef.current(before, selection);
         // A sheet shown again says its selection again; only a real move leaves a chosen chart.
         const moved =
           !before ||
@@ -1204,7 +1360,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         printSelectionRef.current(selection);
         refreshCell();
       },
-      onZoom: setZoom,
+      onZoom: (next: number) => {
+        setZoom(next);
+        const shown = shownSheet.current;
+        if (shown >= 0) viewCommand({ kind: 'zoom', sheet: shown, zoom: next });
+      },
       onError: report,
       onType: editing.type,
       onAction: editing.action,
@@ -1274,14 +1434,74 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
 
   // Sheets still being read hold on to the source, which a save is about to replace.
   const saveReady = Boolean(book) && !saving && load.phase !== 'reading';
+  // What protection refuses, Excel says in a message box; anything else goes in the status bar.
+  refusedRef.current = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === PROTECTED_MESSAGE || message.startsWith('Workbook is protected')) {
+      protectMessageRef.current(message);
+    } else {
+      setNotice(message);
+    }
+  };
   const send = useCallback(
     (command: Command) => {
       setNotice(null);
-      runCommand(command).catch((error) =>
-        setNotice(error instanceof Error ? error.message : String(error)),
-      );
+      runCommand(command).catch((error) => refusedRef.current(error));
     },
     [runCommand],
+  );
+  const focusGrid = useCallback(() => controller.current?.focus(), []);
+  const errorTools = useErrorTools({
+    engine: () => clientRef.current,
+    grid: () => controller.current,
+    sheet: () => sheetRef.current,
+    selection: () => selectionRef.current,
+    run: runCommand,
+    notice: setNotice,
+    editInBar: () => void editingRef.current?.edit('bar'),
+    goTo: (row, col) =>
+      controller.current?.selectArea({
+        top: row - 1,
+        left: col - 1,
+        bottom: row - 1,
+        right: col - 1,
+      }),
+    openOptions: () =>
+      setDialog({
+        kind: 'options',
+        direction: readDefaultDirection(),
+        userName: readUserName(),
+        errors: readErrorSettings(),
+      }),
+  });
+  errorRefreshRef.current = errorTools.refresh;
+  /** "Sheet2!A1", or "A1" on the sheet showing, as Excel's status bar names a loop's cell. */
+  const circularLabel = ([index, row, col]: [number, number, number]) => {
+    const name = cellName(row - 1, col - 1);
+    return index === sheetRef.current ? name : `${bookRef.current?.sheets[index]?.name}!${name}`;
+  };
+  const protectTools = useProtectTools({
+    book,
+    sheet,
+    hasBook: Boolean(book),
+    run: runCommand,
+    focusGrid,
+  });
+  protectMessageRef.current = protectTools.showMessage;
+  const hideSheet = useCallback(
+    () => send({ kind: 'sheetState', sheet: sheetRef.current, hidden: true }),
+    [send],
+  );
+  /** Hidden sheets Unhide can bring back, in tab order. Very hidden ones aren't among them. */
+  const hiddenSheets = useMemo(
+    () =>
+      (book?.order ?? []).flatMap((index) => {
+        const entry = book?.sheets[index];
+        return entry && !entry.deleted && entry.state === 'hidden'
+          ? [{ index, name: entry.name }]
+          : [];
+      }),
+    [book],
   );
   const openRename = useCallback(() => {
     const entry = bookRef.current?.sheets[sheetRef.current];
@@ -1349,7 +1569,13 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           {
             key: 'options',
             text: 'Options…',
-            onActivate: () => setDialog({ kind: 'options', direction: readDefaultDirection() }),
+            onActivate: () =>
+              setDialog({
+                kind: 'options',
+                direction: readDefaultDirection(),
+                userName: readUserName(),
+                errors: readErrorSettings(),
+              }),
           },
           {
             key: 'about',
@@ -1457,6 +1683,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       renameSheet: openRename,
       insertSheet: () => insertSheet(false),
       deleteSheet: () => send({ kind: 'deleteSheet', sheet: sheetRef.current }),
+      hideSheet,
+      unhideSheet: () => setDialog({ kind: 'unhide' }),
+      canUnhide: hiddenSheets.length > 0,
       calculate,
       setManual: (manual) => void clientRef.current?.setManualCalc(manual).catch(report),
       setView: (next) => send({ kind: 'viewFlags', sheet: sheetRef.current, ...next }),
@@ -1474,6 +1703,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       mergeCells,
       clearAll,
       clearContents,
+      protectSheet: protectTools.toggleSheet,
+      lockCell: () => sheetFormat.format({ locked: !(formatRef.current?.locked ?? true) }),
       data: dataTools.actions,
     }),
     [
@@ -1484,6 +1715,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       clearContents,
       editing,
       goToBox,
+      hiddenSheets.length,
+      hideSheet,
       insertSheet,
       mergeCells,
       openRename,
@@ -1517,11 +1750,13 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           borderColor,
           borderPreset,
           data: dataTools.state,
+          protection: protectTools.protection,
         },
         ribbonActions,
       ),
     [
       dataTools.state,
+      protectTools.protection,
       book,
       borderColor,
       borderPreset,
@@ -1565,10 +1800,21 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         ),
         ...pivotTabs(pivotTools.state, pivotTools.actions),
         ...chartTabs(chartTools.state, chartTools.actions),
-      ].flatMap((tab) =>
-        // Page Layout comes after Insert, as in Excel.
-        tab.key === 'insert' ? [tab, pageLayoutTab(printTools.state, printTools.actions)] : [tab],
-      ),
+      ]
+        .map((tab) =>
+          tab.key === 'review'
+            ? { ...tab, groups: [...tab.groups, protectTools.group] }
+            : tab.key === 'formulas'
+              ? {
+                  ...tab,
+                  groups: [...tab.groups, errorTools.group],
+                }
+              : tab,
+        )
+        .flatMap((tab) =>
+          // Page Layout comes after Insert, as in Excel.
+          tab.key === 'insert' ? [tab, pageLayoutTab(printTools.state, printTools.actions)] : [tab],
+        ),
     [
       builtTabs,
       chartTools.state,
@@ -1577,6 +1823,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       pivotTools.actions,
       printTools.state,
       printTools.actions,
+      protectTools.group,
+      errorTools.group,
     ],
   );
 
@@ -1717,6 +1965,37 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       { key: 'delete', text: 'Delete…', command: () => openShift(true) },
       { key: 'clear', text: 'Clear Contents', command: clearContents },
       {
+        key: 'note-edit',
+        text: dataTools.state.hasNote ? 'Edit Note' : 'Insert Note',
+        beginGroup: true,
+        command: dataTools.actions.editNote,
+      },
+      ...(dataTools.state.hasNote
+        ? [
+            { key: 'note-delete', text: 'Delete Note', command: dataTools.actions.deleteNote },
+            {
+              key: 'note-show',
+              text: dataTools.state.noteShown ? 'Hide Note' : 'Show/Hide Note',
+              command: dataTools.actions.toggleNote,
+            },
+          ]
+        : []),
+      {
+        key: 'link',
+        text: dataTools.state.hasLink ? 'Edit Hyperlink…' : 'Link…',
+        beginGroup: true,
+        command: dataTools.actions.hyperlink,
+      },
+      ...(dataTools.state.hasLink
+        ? [
+            {
+              key: 'link-remove',
+              text: 'Remove Hyperlink',
+              command: dataTools.actions.removeLink,
+            },
+          ]
+        : []),
+      {
         key: 'format-cells',
         text: 'Format Cells…',
         beginGroup: true,
@@ -1767,19 +2046,71 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       },
     ];
     return items;
-  }, [clearContents, editing, format?.merged, mergeCells, openShift, openSize, sheetFormat]);
+  }, [
+    clearContents,
+    dataTools.actions,
+    dataTools.state.hasLink,
+    dataTools.state.hasNote,
+    dataTools.state.noteShown,
+    editing,
+    format?.merged,
+    mergeCells,
+    openShift,
+    openSize,
+    sheetFormat,
+  ]);
 
   const tabItems = useMemo<ReadonlyArray<CgContextMenuItem<GridRegion | 'tab' | 'drawing'>>>(
     () => [
-      { key: 'tab-insert', text: 'Insert Sheet', command: () => insertSheet(false) },
+      // A locked structure greys what would change the sheets, as in Excel.
+      {
+        key: 'tab-insert',
+        text: 'Insert Sheet',
+        disabled: protectTools.structureLocked,
+        command: () => insertSheet(false),
+      },
       {
         key: 'tab-delete',
         text: 'Delete Sheet',
+        disabled: protectTools.structureLocked,
         command: () => send({ kind: 'deleteSheet', sheet: sheetRef.current }),
       },
-      { key: 'tab-rename', text: 'Rename…', command: openRename },
+      {
+        key: 'tab-rename',
+        text: 'Rename…',
+        disabled: protectTools.structureLocked,
+        command: openRename,
+      },
+      {
+        key: 'tab-protect',
+        text: protectTools.protection ? 'Unprotect Sheet…' : 'Protect Sheet…',
+        beginGroup: true,
+        command: protectTools.toggleSheet,
+      },
+      {
+        key: 'tab-hide',
+        text: 'Hide',
+        beginGroup: true,
+        disabled: protectTools.structureLocked,
+        command: hideSheet,
+      },
+      {
+        key: 'tab-unhide',
+        text: 'Unhide…',
+        disabled: hiddenSheets.length === 0 || protectTools.structureLocked,
+        command: () => setDialog({ kind: 'unhide' }),
+      },
     ],
-    [insertSheet, openRename, send],
+    [
+      hiddenSheets.length,
+      hideSheet,
+      insertSheet,
+      openRename,
+      protectTools.protection,
+      protectTools.structureLocked,
+      protectTools.toggleSheet,
+      send,
+    ],
   );
 
   useEffect(() => {
@@ -2023,8 +2354,13 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           if (!tab) return;
           event.preventDefault();
           const index = Number(tab.dataset.testid?.replace('sheet-tab-', ''));
-          if (index !== sheetRef.current) chooseSheet(String(index));
-          void contextMenu.current?.showAt(event.clientX, event.clientY, 'tab');
+          const { clientX, clientY } = event;
+          const show = () => void contextMenu.current?.showAt(clientX, clientY, 'tab');
+          if (index === sheetRef.current) return show();
+          // As in Excel, the tab becomes active first. Showing it takes the keyboard, which
+          // would close a menu already open.
+          editingRef.current?.beforeSheetChange();
+          void goToSheet(index).then(show, report);
         }}
       >
         {tabs.length > 0 && (
@@ -2046,6 +2382,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
             aria-label="Insert a sheet"
             title="Insert a sheet"
             data-testid="add-sheet"
+            disabled={protectTools.structureLocked}
             onClick={() => insertSheet(true)}
           >
             +
@@ -2074,6 +2411,18 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
               />
             ),
           },
+          ...(circular.length
+            ? [
+                {
+                  key: 'circular',
+                  content: (
+                    <span data-testid="circular-status">
+                      {'Circular References: ' + circularLabel(circular[0]!)}
+                    </span>
+                  ),
+                },
+              ]
+            : []),
           ...(calc.calculating
             ? [
                 {
@@ -2238,6 +2587,19 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       {pivotTools.overlays}
       {chartTools.overlays}
       {printTools.overlays}
+      {protectTools.overlays}
+      {errorTools.overlays}
+      {dialog?.kind === 'unhide' && (
+        <UnhideDialog
+          open
+          sheets={hiddenSheets}
+          onUnhide={(index) => send({ kind: 'sheetState', sheet: index, hidden: false })}
+          onClose={() => {
+            setDialog(null);
+            controller.current?.focus();
+          }}
+        />
+      )}
       {dialog?.kind === 'find' && (
         <FindDialog
           open
@@ -2304,11 +2666,65 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           actionLabel="OK"
           data-testid="options-dialog"
           onClosed={(accepted) => {
-            if (accepted) writeDefaultDirection(dialog.direction);
+            if (accepted) {
+              writeDefaultDirection(dialog.direction);
+              writeUserName(dialog.userName);
+              writeErrorSettings(dialog.errors);
+              viewCommand({ kind: 'errorRules', rules: ruleBits(dialog.errors) });
+            }
             setDialog(null);
             controller.current?.focus();
           }}
         >
+          <label className="cgs-dialog-field">
+            <strong>User name</strong>
+            <input
+              data-testid="options-user-name"
+              value={dialog.userName}
+              maxLength={52}
+              onChange={(event) => setDialog({ ...dialog, userName: event.target.value })}
+            />
+            <span>New notes say you wrote them.</span>
+          </label>
+          <div className="cgs-dialog-column" data-testid="options-error-checking">
+            <strong>Error checking</strong>
+            <label className="cgs-dialog-check">
+              <input
+                type="checkbox"
+                data-testid="options-background-checking"
+                checked={dialog.errors.background}
+                onChange={(event) =>
+                  setDialog({
+                    ...dialog,
+                    errors: { ...dialog.errors, background: event.target.checked },
+                  })
+                }
+              />
+              Enable background error checking
+            </label>
+            {RULE_LABELS.map(([rule, label]) => (
+              <label key={rule} className="cgs-dialog-check" style={{ paddingInlineStart: 20 }}>
+                <input
+                  type="checkbox"
+                  data-testid={'options-rule-' + rule}
+                  disabled={!dialog.errors.background}
+                  checked={(dialog.errors.rules & RULE_BITS[rule]) !== 0}
+                  onChange={(event) =>
+                    setDialog({
+                      ...dialog,
+                      errors: {
+                        ...dialog.errors,
+                        rules: event.target.checked
+                          ? dialog.errors.rules | RULE_BITS[rule]
+                          : dialog.errors.rules & ~RULE_BITS[rule],
+                      },
+                    })
+                  }
+                />
+                {label}
+              </label>
+            ))}
+          </div>
           <div className="cgs-dialog-column" role="radiogroup" aria-label="Default direction">
             <strong>Default direction</strong>
             {(

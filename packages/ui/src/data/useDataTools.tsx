@@ -29,6 +29,7 @@ import {
   NoteDialog,
   RemoveDuplicatesDialog,
 } from './SmallDialogs';
+import { NoteLayer, type NoteEdit, type ShownNote } from './NoteLayer';
 import { SortDialog } from './SortDialog';
 import { ValidationDialog } from './ValidationDialog';
 
@@ -54,6 +55,15 @@ export interface DataToolsHost {
   editor: () => RefusedEditor;
   /** Other buttons the grid shows beside the data tools' own, such as pivot tables'. */
   extraButtons?: () => CellButton[];
+  /** Who a new note says wrote it. */
+  userName: () => string;
+}
+
+/** Where Excel 2016 puts a new note's box: see `Note::default_anchor` in cgs-model. 1-based. */
+export function defaultNoteAnchor(row: number, col: number): number[] {
+  const r = row - 1;
+  const c = col - 1;
+  return [c + 1, 15, Math.max(0, r - 1), 10, c + 3, 31, r + 3, 9];
 }
 
 type DataDialog =
@@ -111,6 +121,12 @@ export function useDataTools(host: DataToolsHost) {
   const [filters, setFilters] = useState<FilterInfo[]>([]);
   const [circled, setCircled] = useState(false);
   const [hasNote, setHasNote] = useState(false);
+  const [noteShown, setNoteShown] = useState(false);
+  const [allNotesShown, setAllNotesShown] = useState(false);
+  const [sheetNotes, setSheetNotes] = useState<ShownNote[]>([]);
+  const [noteEdit, setNoteEdit] = useState<
+    (NoteEdit & { sheet: number; author: string; was: string | null }) | null
+  >(null);
   const [hasLink, setHasLink] = useState(false);
   const [filterMenu, setFilterMenu] = useState<{
     table: string | null;
@@ -127,6 +143,10 @@ export function useDataTools(host: DataToolsHost) {
   // A click on the button of the menu that's open closes it, rather than opening it again.
   const menuClosed = useRef({ col: -1, at: 0 });
 
+  const allNotesRef = useRef(false);
+  allNotesRef.current = allNotesShown;
+  const noteEditRef = useRef(noteEdit);
+  noteEditRef.current = noteEdit;
   const run = useCallback(async (command: Command) => hostRef.current.run(command), []);
   const send = useCallback((command: Command) => {
     hostRef.current.notice(null);
@@ -169,12 +189,15 @@ export function useDataTools(host: DataToolsHost) {
       engine.query({ kind: 'validationAt', sheet, row, col }),
       engine.query({ kind: 'noteAt', sheet, row, col }),
       engine.query({ kind: 'linkAt', sheet, row, col }),
+      engine.query({ kind: 'notes', sheet }),
     ])
-      .then(([nextFilters, nextTable, validation, note, link]) => {
+      .then(([nextFilters, nextTable, validation, note, link, notes]) => {
         if (mine !== token.current) return;
         setFilters(nextFilters);
         setTable((old) => (JSON.stringify(old) === JSON.stringify(nextTable) ? old : nextTable));
         setHasNote(Boolean(note && !note.threaded));
+        setNoteShown(Boolean(note?.visible));
+        setSheetNotes((old) => (JSON.stringify(old) === JSON.stringify(notes) ? old : notes));
         setHasLink(Boolean(link));
         filterButtons.current = nextFilters.flatMap((filter) => {
           const cols: CellButton[] = [];
@@ -236,6 +259,53 @@ export function useDataTools(host: DataToolsHost) {
     const guess = await engine.query({ kind: 'guessTable', sheet: here.sheet, area: here.area });
     return { sheet: here.sheet, area: guess.area, headers: guess.headers, here };
   }, [selected]);
+
+  /**
+   * Excel's note box beside the cell: a new note starts with its author's name, an existing one
+   * with what it says. A threaded comment's cell gets the dialog, which says it is kept as it is.
+   */
+  const openNote = useCallback((sheet: number, row: number, col: number) => {
+    const engine = hostRef.current.engine();
+    if (!engine) return;
+    void engine
+      .query({ kind: 'noteAt', sheet, row, col })
+      .then((note) => {
+        if (note?.threaded) {
+          setDialog({ kind: 'note', row, col });
+          return;
+        }
+        const author = note?.author ?? hostRef.current.userName();
+        setNoteEdit({
+          sheet,
+          row,
+          col,
+          author,
+          text: note?.text ?? `${author}:\n`,
+          was: note?.text ?? null,
+          anchor: note?.anchor ?? defaultNoteAnchor(row, col),
+        });
+      })
+      .catch((error) => hostRef.current.notice(errorText(error)));
+  }, []);
+
+  /** The box closes: what it says is the note, made or changed in one step. */
+  const finishNote = useCallback(() => {
+    const edit = noteEditRef.current;
+    // Esc closes the box, and the box losing the keyboard then closes it again.
+    noteEditRef.current = null;
+    setNoteEdit(null);
+    if (edit && edit.text !== edit.was) {
+      send({
+        kind: 'setNote',
+        sheet: edit.sheet,
+        row: edit.row,
+        col: edit.col,
+        text: edit.text,
+        author: edit.author,
+      });
+    }
+    if (edit) hostRef.current.grid()?.focus();
+  }, [send]);
 
   const actions = useMemo<DataActions>(() => {
     const withRegion = (then: (found: NonNullable<Awaited<ReturnType<typeof region>>>) => void) =>
@@ -337,8 +407,24 @@ export function useDataTools(host: DataToolsHost) {
       },
       removeLink: () => {
         const here = selected();
+        if (here) send({ kind: 'setLink', sheet: here.sheet, area: here.area, plain: true });
+      },
+      clearLinks: () => {
+        const here = selected();
         if (here) send({ kind: 'setLink', sheet: here.sheet, area: here.area });
       },
+      toggleNote: () => {
+        const here = selected();
+        if (!here) return;
+        send({
+          kind: 'noteVisible',
+          sheet: here.sheet,
+          row: here.selection.row + 1,
+          col: here.selection.col + 1,
+          visible: !noteShown,
+        });
+      },
+      showAllNotes: () => setAllNotesShown((on) => !on),
       nameManager: () => setDialog({ kind: 'names' }),
       defineName: () => setDialog({ kind: 'defineName' }),
       namesFromSelection: () => {
@@ -347,9 +433,7 @@ export function useDataTools(host: DataToolsHost) {
       },
       editNote: () => {
         const here = selected();
-        if (here) {
-          setDialog({ kind: 'note', row: here.selection.row + 1, col: here.selection.col + 1 });
-        }
+        if (here) openNote(here.sheet, here.selection.row + 1, here.selection.col + 1);
       },
       deleteNote: () => {
         const here = selected();
@@ -375,7 +459,7 @@ export function useDataTools(host: DataToolsHost) {
           if (!next) return;
           const cell = { top: next.row, left: next.col, bottom: next.row, right: next.col };
           void hostRef.current.goTo(here.sheet, cell).then(() => {
-            setDialog({ kind: 'note', row: next.row, col: next.col });
+            openNote(here.sheet, next.row, next.col);
           });
         });
       },
@@ -399,7 +483,7 @@ export function useDataTools(host: DataToolsHost) {
         if (table) setDialog({ kind: 'convert', table: table.name });
       },
     };
-  }, [region, selected, send, table]);
+  }, [noteShown, openNote, region, selected, send, table]);
 
   /** A filter's or a list's button in the grid. */
   const onCellButton = useCallback(
@@ -454,7 +538,9 @@ export function useDataTools(host: DataToolsHost) {
     ])
       .then(([note, link]) => {
         if (note?.text !== undefined) {
-          setHoverTip({ ...near, title: note.author, text: note.text });
+          // A note that shows all the time needs no tip.
+          if (note.visible || allNotesRef.current) setHoverTip(null);
+          else setHoverTip({ ...near, title: note.author, text: note.text });
         } else if (note?.threaded) {
           setHoverTip({ ...near, text: 'Threaded comment (from a newer Excel)' });
         } else if (link) {
@@ -538,6 +624,8 @@ export function useDataTools(host: DataToolsHost) {
     filterOn: filters.some((filter) => filter.table === null),
     circled,
     hasNote,
+    noteShown,
+    allNotesShown,
     hasLink,
   };
   const engine = host.engine;
@@ -783,6 +871,15 @@ export function useDataTools(host: DataToolsHost) {
   const overlays = (
     <>
       {shown}
+      <NoteLayer
+        grid={host.grid}
+        sheet={sheet}
+        notes={sheetNotes.filter((note) => allNotesShown || note.visible)}
+        editing={noteEdit && noteEdit.sheet === sheet ? noteEdit : null}
+        onEditText={(text) => setNoteEdit((edit) => (edit ? { ...edit, text } : edit))}
+        onDone={finishNote}
+        onOpen={(note) => openNote(sheet, note.row, note.col)}
+      />
       {filterMenu && (
         <FilterMenu
           engine={engine}

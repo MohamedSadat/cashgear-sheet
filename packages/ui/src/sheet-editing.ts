@@ -18,6 +18,8 @@ export interface EditingHost {
   settled(): Promise<unknown>;
   /** Whether cells can change now. */
   canEdit(): boolean;
+  /** Whether this cell may be edited, saying why not when it may not. */
+  mayEdit(sheet: number, row: number, col: number): boolean;
   /** The active cell's text, as the formula bar shows it. */
   activeText(): string;
   sheetName(index: number): string;
@@ -122,12 +124,20 @@ export class SheetEditing {
     grid.setHighlights(highlights);
   };
 
+  /** Starts the editor, unless the cell refuses it, as a locked cell on a protected sheet does. */
+  private begin(...args: Parameters<EditSession['begin']>): boolean {
+    const [sheet, row, col] = args;
+    if (!this.host.mayEdit(sheet, row, col)) return false;
+    this.session.begin(...args);
+    return true;
+  }
+
   /** A key that types went down: the editor takes focus, and so the key's character. */
   readonly type = () => {
     const grid = this.host.grid();
     if (!grid || !this.host.canEdit()) return;
     const { sheet, row, col } = grid.selection();
-    this.session.begin(sheet, row, col, '', 'enter', 'cell');
+    if (!this.begin(sheet, row, col, '', 'enter', 'cell')) return;
     this.host.focusEditor();
   };
 
@@ -137,13 +147,13 @@ export class SheetEditing {
     if (!grid || !this.host.canEdit() || this.session.snapshot().active) return;
     const { sheet, row, col } = grid.selection();
     if (place === 'bar') {
-      this.session.begin(sheet, row, col, this.host.activeText(), 'edit', 'bar');
+      if (!this.begin(sheet, row, col, this.host.activeText(), 'edit', 'bar')) return;
       return;
     }
     await this.host.settled();
     const text = await this.host.engine()?.cellText(sheet, row + 1, col + 1);
     if (this.session.snapshot().active) return;
-    this.session.begin(sheet, row, col, text?.edit ?? '', 'edit', place);
+    if (!this.begin(sheet, row, col, text?.edit ?? '', 'edit', place)) return;
     this.host.focusEditor();
   }
 
@@ -198,7 +208,7 @@ export class SheetEditing {
           state.row,
           state.col,
         );
-        this.session.begin(state.sheet, state.row, state.col, state.text, 'edit', 'cell');
+        if (!this.begin(state.sheet, state.row, state.col, state.text, 'edit', 'cell')) return;
         this.host.focusEditor();
       });
     });
@@ -577,7 +587,7 @@ export class SheetEditing {
       body = name(row, left, row, col - 1);
     }
     const text = `=SUM(${body})`;
-    this.session.begin(sheet, row, col, text, 'edit', 'cell');
+    if (!this.begin(sheet, row, col, text, 'edit', 'cell')) return;
     if (!body) this.session.replace(text, text.length - 1);
     this.host.focusEditor();
   }
@@ -586,7 +596,7 @@ export class SheetEditing {
     const grid = this.host.grid();
     if (!grid || !this.host.canEdit()) return;
     const { sheet, row, col } = grid.selection();
-    this.session.begin(sheet, row, col, text, 'edit', 'cell');
+    if (!this.begin(sheet, row, col, text, 'edit', 'cell')) return;
     this.host.focusEditor();
   }
 
