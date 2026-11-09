@@ -182,6 +182,23 @@ try {
         }
       }
     }
+    # Pictures and charts: each picture's turn, flip and alt text, each chart's first trendline.
+    $shapes = @()
+    if ($spec.drawings) {
+      foreach ($sheet in $book.Worksheets) {
+        foreach ($shape in $sheet.Shapes) {
+          $entry = [ordered]@{ sheet = [string]$sheet.Name; name = [string]$shape.Name; type = [int]$shape.Type; order = [int]$shape.ZOrderPosition; rotation = [double]$shape.Rotation; flipH = [bool]$shape.HorizontalFlip; alt = [string]$shape.AlternativeText; trend = '' }
+          if ([int]$shape.Type -eq 3) {
+            $series = $shape.Chart.SeriesCollection(1)
+            if ($series.Trendlines().Count -gt 0) {
+              $t = $series.Trendlines(1)
+              $entry.trend = [string]$t.Type + '|' + [string]$t.Forward + '|' + [string]$t.Name
+            }
+          }
+          $shapes += , $entry
+        }
+      }
+    }
     $lists = @()
     foreach ($sheet in $book.Worksheets) {
       foreach ($lo in $sheet.ListObjects) {
@@ -204,7 +221,7 @@ try {
         italic = [bool]$style.Font.Italic
       }
     }
-    $result.book = [ordered]@{ structure = $structure; unprotected = $unprotected; styles = $styles; pivots = $pivots; tables = $lists }
+    $result.book = [ordered]@{ structure = $structure; unprotected = $unprotected; styles = $styles; pivots = $pivots; tables = $lists; shapes = $shapes }
     $book.Close($false)
   } catch {
     $result.error = $_.Exception.Message

@@ -60,6 +60,15 @@ const pivotAt = (row, col) => ({
   to: { kind: 'existing', sheet: 0, row, col },
 });
 const named = (name) => ({ sheet: 0, name });
+/** A 2 by 2 PNG for Insert Pictures, written where savecheck can read it. */
+const DOT = join(tmpdir(), 'cgs-parity-dot.png');
+writeFileSync(
+  DOT,
+  Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFklEQVR4nGP8z8DwnwEIGBkZGBgYAAAoBAMBr2kkTgAAAABJRU5ErkJggg==',
+    'base64',
+  ),
+);
 
 /**
  * Each case: a source, the app's commands, what Excel must read (`expect`: per sheet name, the
@@ -468,6 +477,68 @@ const CASES = {
       { sheet: 'North', page: 'North' },
     ],
   },
+  'trendlines and Picture Format, as Excel 2016 reads them': {
+    source: 'blank',
+    commands: [
+      ...[
+        ['Month', 'Sales'],
+        ['M1', '12'],
+        ['M2', '15'],
+        ['M3', '21'],
+        ['M4', '26'],
+        ['M5', '35'],
+        ['M6', '44'],
+      ].flatMap((row, r) =>
+        row.map((text, c) => ({ kind: 'input', sheet: 0, row: r + 1, col: c + 1, text })),
+      ),
+      {
+        kind: 'insertChart',
+        sheet: 0,
+        area: { top: 1, left: 1, bottom: 7, right: 2 },
+        chart: 'columnClustered',
+        x: 260,
+        y: 20,
+      },
+      {
+        kind: 'editChart',
+        sheet: 0,
+        index: 0,
+        edit: { kind: 'trendline', index: 0, trend: 'forecast' },
+      },
+      {
+        kind: 'insertPicture',
+        sheet: 0,
+        mediaFile: DOT,
+        x: 20,
+        y: 200,
+        width: 96,
+        height: 48,
+        name: 'Logo1',
+      },
+      {
+        kind: 'insertPicture',
+        sheet: 0,
+        mediaFile: DOT,
+        x: 20,
+        y: 300,
+        width: 96,
+        height: 48,
+        name: 'Logo2',
+      },
+      {
+        kind: 'pictureFormat',
+        sheet: 0,
+        index: 1,
+        change: { rotate: 90, flip: 'horizontal', description: 'Logo' },
+      },
+      { kind: 'pictureFormat', sheet: 0, index: 1, change: { order: 'front' } },
+    ],
+    shapes: [
+      { name: 'Chart 1', type: 3, trend: '-4132|2|Linear (Sales)', order: 1 },
+      { name: 'Picture 2', rotation: 90, flipH: true, alt: 'Logo', order: 3 },
+      { name: 'Picture 3', rotation: 0, flipH: false, order: 2 },
+    ],
+  },
   'protection taken off again': {
     source: 'blank',
     commands: [
@@ -549,6 +620,7 @@ try {
         unprotect: (spec.unprotect ?? []).map(({ sheet, password }) => ({ sheet, password })),
         styles: Object.keys(spec.styles ?? {}),
         pivots: Boolean(spec.pivots),
+        drawings: Boolean(spec.shapes),
       }),
     );
     const run = spawnSync(
@@ -573,6 +645,10 @@ try {
         .flat()
         .find((one) => one.sheet === want.sheet && (!want.name || one.name === want.name));
       if (!matches(got, want)) problems.push(`pivot on ${want.sheet}: ${JSON.stringify(got)}`);
+    }
+    for (const want of spec.shapes ?? []) {
+      const got = [excel.book?.shapes ?? []].flat().find((one) => one.name === want.name);
+      if (!matches(got, want)) problems.push(`shape ${want.name}: ${JSON.stringify(got)}`);
     }
     for (const want of spec.tables ?? []) {
       const got = [excel.book?.tables ?? []].flat().find((one) => one.sheet === want.sheet);
