@@ -8,8 +8,9 @@ import {
   useSyncExternalStore,
   type KeyboardEvent,
 } from 'react';
-import type { EditSession } from './editing';
+import type { EditSession, RunStyle } from './editing';
 import { nameAtCaret } from './formula-text';
+import { RichEditor } from './RichEditor';
 
 export interface CellEditorHandle {
   /** The element to focus so that the next key lands in it, even from an input method. */
@@ -21,7 +22,9 @@ interface CellEditorProps {
   session: EditSession;
   /** Every function the engine knows, and the workbook's names. */
   names: string[];
-  onKey: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onKey: (event: KeyboardEvent<HTMLElement>) => void;
+  /** The sheet's zoom as a factor, for runs' own sizes. */
+  zoom?: number;
   /** Autocomplete is open, and takes Tab and the up and down arrows for itself. */
   completionRef: React.MutableRefObject<CompletionControl | null>;
 }
@@ -39,7 +42,7 @@ const MAX_SHOWN = 8;
  * default action sends that key here. The grid's controller keeps it placed over its cell.
  */
 export const CellEditor = forwardRef<CellEditorHandle, CellEditorProps>(function CellEditor(
-  { session, names, onKey, completionRef },
+  { session, names, onKey, completionRef, zoom = 1 },
   ref,
 ) {
   const edit = useSyncExternalStore(session.subscribe, session.snapshot);
@@ -66,6 +69,29 @@ export const CellEditor = forwardRef<CellEditorHandle, CellEditorProps>(function
   }, [edit.active, edit.place, edit.placed]);
 
   const shown = edit.active;
+  const rich = edit.active && edit.place === 'cell' && edit.rich !== null;
+
+  /** Ctrl+B, Ctrl+I and Ctrl+U on selected characters format them, as in Excel. */
+  const formatKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    const ctrl = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+    if (!ctrl || event.altKey || !['b', 'i', 'u'].includes(key)) return false;
+    const toggle = (style: RunStyle): RunStyle => {
+      const next = { ...style };
+      if (key === 'u') {
+        if (next.underline) delete next.underline;
+        else next.underline = 'single';
+      } else {
+        const name = key === 'b' ? 'bold' : 'italic';
+        if (next[name]) delete next[name];
+        else next[name] = true;
+      }
+      return next;
+    };
+    if (!session.formatSelection(toggle)) return false;
+    event.preventDefault();
+    return true;
+  };
   const word = edit.active ? nameAtCaret(edit.text, edit.caret) : null;
   const matches = useMemo(() => {
     if (!word || closedAt === edit.text) return [];
@@ -118,6 +144,7 @@ export const CellEditor = forwardRef<CellEditorHandle, CellEditorProps>(function
         spellCheck={false}
         rows={1}
         tabIndex={-1}
+        style={rich ? { display: 'none' } : undefined}
         value={edit.active ? edit.text : ''}
         onMouseDown={() => session.setPlace('cell')}
         onChange={(event) => {
@@ -126,11 +153,18 @@ export const CellEditor = forwardRef<CellEditorHandle, CellEditorProps>(function
         onSelect={(event) => {
           const element = event.currentTarget;
           if (edit.active && edit.place === 'cell') {
-            session.setText(element.value, element.selectionStart ?? 0);
+            const start = element.selectionStart ?? 0;
+            const end = element.selectionEnd ?? start;
+            const backward = element.selectionDirection === 'backward';
+            session.setSelection(backward ? end : start, backward ? start : end, element.value);
           }
         }}
-        onKeyDown={onKey}
+        onKeyDown={(event) => {
+          if (formatKey(event)) return;
+          onKey(event);
+        }}
       />
+      {rich && <RichEditor session={session} zoom={zoom} onKey={onKey} />}
       {matches.length > 0 && (
         <ul className="cgs-completions" role="listbox" data-testid="completions">
           {matches.map((name, index) => (

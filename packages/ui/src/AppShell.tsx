@@ -2309,6 +2309,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           names={names}
           onKey={editing.key}
           completionRef={completionRef}
+          zoom={zoom / 100}
         />
         {!book && load.phase === 'idle' && (
           <div className="cgs-welcome" data-testid="welcome">

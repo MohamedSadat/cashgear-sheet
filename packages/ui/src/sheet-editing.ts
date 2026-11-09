@@ -4,7 +4,7 @@
 // calculation takes, and a command the engine refuses comes back as an open editor and a message.
 import type { Applied, CellArea, Command, EngineClient } from '@cgs/engine-client';
 import type { KeyboardEvent } from 'react';
-import { EditSession } from './editing';
+import { EditSession, runSpans, spanRuns } from './editing';
 import { cycleAbsolute, findReferences, MAX_COL, MAX_ROW } from './formula-text';
 import type { CellRange, GridController } from './grid/controller';
 import type { GridAction } from './shortcuts';
@@ -151,9 +151,15 @@ export class SheetEditing {
       return;
     }
     await this.host.settled();
-    const text = await this.host.engine()?.cellText(sheet, row + 1, col + 1);
+    const engine = this.host.engine();
+    const [text, runs] = await Promise.all([
+      engine?.cellText(sheet, row + 1, col + 1),
+      engine?.query({ kind: 'richAt', sheet, row: row + 1, col: col + 1 }),
+    ]);
     if (this.session.snapshot().active) return;
     if (!this.begin(sheet, row, col, text?.edit ?? '', 'edit', place)) return;
+    // A rich cell is edited with its runs, as in Excel.
+    if (runs && text) this.session.setRich(runSpans(text.edit, runs));
     this.host.focusEditor();
   }
 
@@ -174,7 +180,18 @@ export class SheetEditing {
     if (!state.active || !grid) return;
     const selection = grid.selection();
     let command: Command;
-    if (scope === 'array') {
+    const rich = state.rich && !state.text.startsWith('=') ? state.rich : null;
+    if (rich && scope === 'cell' && rich.spans.some((span) => Object.keys(span.style).length)) {
+      // Text with runs of its own fonts, as the cell editor made it.
+      command = {
+        kind: 'richInput',
+        sheet: state.sheet,
+        row: state.row + 1,
+        col: state.col + 1,
+        text: state.text,
+        runs: spanRuns(rich.spans),
+      };
+    } else if (scope === 'array') {
       command = {
         kind: 'arrayInput',
         sheet: state.sheet,
@@ -226,7 +243,7 @@ export class SheetEditing {
   }
 
   /** A key in the cell editor or the formula bar. */
-  readonly key = (event: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+  readonly key = (event: KeyboardEvent<HTMLElement>) => {
     if (this.host.completionKey(event)) return;
     const state = this.session.snapshot();
     if (!state.active) return;

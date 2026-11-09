@@ -13,6 +13,7 @@ import type { CgBorderApplyDetails, CgColorPickerValue } from '@cashgear/ui';
 import type { CellRange } from './grid/controller';
 import { MAX_COLS, MAX_ROWS } from './grid/geometry';
 import { toArea, type EditingHost, type SheetEditing } from './sheet-editing';
+import type { RunStyle } from './editing';
 
 /** A colour picker's choice as a format wants it. Theme keys are the theme's own numbers. */
 export function pickedColor(value: CgColorPickerValue): FormatColor {
@@ -123,6 +124,47 @@ export class SheetFormat {
     });
   }
 
+  /** A font change on the characters selected in the cell editor, if any are. */
+  private formatCharacters(change: FormatChange): boolean {
+    const session = this.editing.session;
+    const state = session.snapshot();
+    if (!state.active || state.place !== 'cell') return false;
+    const keys = Object.keys(change) as (keyof FormatChange)[];
+    const font: (keyof FormatChange)[] = [
+      'bold',
+      'italic',
+      'strike',
+      'underline',
+      'fontName',
+      'fontSize',
+      'fontColor',
+      'vertAlign',
+    ];
+    if (!keys.length || !keys.every((key) => font.includes(key))) return false;
+    return session.formatSelection((style) => {
+      const next = { ...style };
+      const set = <K extends keyof RunStyle>(key: K, value: RunStyle[K] | undefined) => {
+        if (value === undefined || value === false) delete next[key];
+        else next[key] = value;
+      };
+      if (change.bold !== undefined) set('bold', change.bold);
+      if (change.italic !== undefined) set('italic', change.italic);
+      if (change.strike !== undefined) set('strike', change.strike);
+      if (change.underline !== undefined) {
+        set('underline', change.underline === 'none' ? undefined : change.underline);
+      }
+      if (change.fontName !== undefined) set('name', change.fontName);
+      if (change.fontSize !== undefined) set('size', change.fontSize);
+      if (change.vertAlign !== undefined) {
+        set('vertAlign', change.vertAlign === 'baseline' ? undefined : change.vertAlign);
+      }
+      const color = change.fontColor;
+      if (color && 'rgb' in color && typeof color.rgb === 'string') set('color', color.rgb);
+      if (color && color.kind === 'auto') set('color', undefined);
+      return next;
+    });
+  }
+
   /** What's typed so far goes in first, so a format applies to it too. */
   private target() {
     if (this.editing.session.snapshot().active) this.editing.commit();
@@ -132,6 +174,8 @@ export class SheetFormat {
   }
 
   format(change: FormatChange) {
+    // While text is edited, a font change goes on the selected characters, as in Excel.
+    if (this.formatCharacters(change)) return;
     const selection = this.target();
     if (!selection) return;
     this.send({

@@ -267,6 +267,7 @@ export function FormatCellsDialog(props: FormatCellsProps) {
   const [bold, setBold] = useState(format.bold);
   const [italic, setItalic] = useState(format.italic);
   const [strike, setStrike] = useState(format.strike);
+  const [vertAlign, setVertAlign] = useState(format.vertAlign ?? 'baseline');
   const [underline, setUnderline] = useState(format.underline);
   const [fontColor, setFontColor] = useState<CgColorPickerValue>(shownColor(format.fontColor));
   const [fontColorChanged, setFontColorChanged] = useState(false);
@@ -351,6 +352,7 @@ export function FormatCellsDialog(props: FormatCellsProps) {
     if (bold !== format.bold) change.bold = bold;
     if (italic !== format.italic) change.italic = italic;
     if (strike !== format.strike) change.strike = strike;
+    if (vertAlign !== (format.vertAlign ?? 'baseline')) change.vertAlign = vertAlign;
     if (underline !== format.underline) change.underline = underline;
     if (fontColorChanged) change.fontColor = pickedColor(fontColor);
     if (locked !== format.locked) change.locked = locked;
@@ -719,6 +721,17 @@ export function FormatCellsDialog(props: FormatCellsProps) {
           />
           Strikethrough
         </label>
+        {(['superscript', 'subscript'] as const).map((kind) => (
+          <label key={kind} className="cgs-dialog-check">
+            <input
+              type="checkbox"
+              data-testid={'font-dialog-' + kind}
+              checked={vertAlign === kind}
+              onChange={(event) => setVertAlign(event.target.checked ? kind : 'baseline')}
+            />
+            {kind === 'superscript' ? 'Superscript' : 'Subscript'}
+          </label>
+        ))}
       </div>
       <div
         className="cgs-dialog-preview"

@@ -446,6 +446,15 @@ export type Command =
   | { kind: 'noteVisible'; sheet: number; row: number; col: number; visible: boolean }
   /** Error checking's rules that are on, as bits; 0 turns background checking off. */
   | { kind: 'errorRules'; rules: number }
+  /** Text with runs of their own fonts, from characters counted from 0. */
+  | {
+      kind: 'richInput';
+      sheet: number;
+      row: number;
+      col: number;
+      text: string;
+      runs: { start: number; font: object }[];
+    }
   | { kind: 'ignoreError'; sheet: number; row: number; col: number }
   | { kind: 'convertToNumber'; sheet: number; areas: CellArea[] }
   | { kind: 'includeCells'; sheet: number; row: number; col: number }
@@ -775,6 +784,7 @@ export type Question =
     }
   | { kind: 'columnLooks'; sheet: number; col: number; top: number; bottom: number }
   | { kind: 'circular' }
+  | { kind: 'richAt'; sheet: number; row: number; col: number }
   | { kind: 'cellErrors'; sheet: number; row: number; col: number }
   | { kind: 'nextError'; sheet: number; row: number; col: number; back?: boolean }
   | { kind: 'noteAt'; sheet: number; row: number; col: number }
@@ -797,6 +807,7 @@ export interface Answers {
   names: DefinedNameInfo[];
   nextSelectable: [number, number] | null;
   columnLooks: Pick<FilterList, 'fills' | 'fonts' | 'icons'> | null;
+  richAt: { start: number; font: Record<string, unknown> | null }[] | null;
   /** The cells on loops, as `[sheet, row, col]`, or null when the book is too big to check. */
   circular: [number, number, number][] | null;
   cellErrors: { rule: string; value?: string; from?: 'above' | 'left' }[];
@@ -1019,6 +1030,8 @@ export interface FormatChange {
   strike?: boolean;
   underline?: 'none' | 'single' | 'double' | 'singleAccounting' | 'doubleAccounting';
   fontColor?: FormatColor;
+  /** Format Cells' Superscript and Subscript. */
+  vertAlign?: 'baseline' | 'superscript' | 'subscript';
   fill?: { pattern: string; color?: FormatColor; patternColor?: FormatColor };
   numberFormat?: string;
   numberFormatId?: number;
@@ -1057,6 +1070,7 @@ export interface CellFormat {
   strike: boolean;
   underline: NonNullable<FormatChange['underline']>;
   fontColor: StoredColor;
+  vertAlign: 'baseline' | 'superscript' | 'subscript';
   fill: { pattern: string; color: StoredColor; patternColor: StoredColor };
   horizontal: string;
   vertical: string;
