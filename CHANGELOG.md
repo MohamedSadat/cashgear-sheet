@@ -4,6 +4,29 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.5.0] - 2026-11-09
+
+The ERP contract: the first step towards editing Cash Gear ERP records, Vendors first, in the
+sheet. Nothing in the app changes yet. This release fixes what the sheet and the ERP will
+exchange, and proves it with a test suite before any code depends on it.
+
+- **The contract:** `@cgs/erp-connector` holds the type of every request and response, for
+  launching from the ERP with a one-time ticket, the short-lived sheet session, the Vendors
+  schema, paged queries, validation and commits. Each response has a hand-written guard, and every
+  error carries a code from a fixed list. `docs/erp-contract.md` gives the ERP side its routes,
+  status codes, C# DTOs and table scripts, and the order for adding RowVersion to every tenant
+  database before either ERP host depends on it.
+- **A mock ERP:** `tests/erp-mock` serves the contract from Node with no dependencies. It has two
+  companies sharing one database, seeded vendors with Arabic names, leading-zero mobiles and
+  decimals, tickets and sessions on a clock tests can move, versions that move on every write,
+  idempotent commits and failure injection. `pnpm erp:mock` starts it.
+- **The contract suite:** runs in `pnpm test` against the mock, and against UnifiedAPI with
+  `ERP_BASE_URL`. It covers single-use and expiring tickets, idle and maximum session expiry, the
+  schema and who may edit what, keyset paging, dry runs that write nothing, all-or-nothing
+  commits, 409 listing every conflict, retries that write once, a reused commit id refused,
+  another company's records kept out, read-only and AdvEdit fields refused, and 413 past the batch
+  limit.
+
 ## [1.4.0] - 2026-11-09
 
 Excel parity polish: the daily-use gaps that 1.0 left, each measured against Excel 2016 first.

@@ -22,13 +22,13 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 12: Large books | Done 2026-11-09: Open with in Edge starts the app, and the file reaching it is checked in Chrome | `v1.3.0` |
 | Phase 13: Excel parity polish | Done 2026-11-09 | `v1.4.0` |
 | Planning the ERP integration | Done 2026-11-09: Phases 14 to 19 and Track E added to `PLAN.md`, designed in `ERP_SHEET_INTEGRATION_PLAN.md` | |
-| Phase 14: ERP contract and mock | Not started | `v1.5.0` |
+| Phase 14: ERP contract and mock | Done 2026-11-09, with your sign-off on the contract and the rollout plan | `v1.5.0` |
 | Phase 15: Read-only ERP slice | Not started | `v1.6.0` |
 | Phase 16: Editing and change tracking | Not started | `v1.7.0` |
 | Phase 17: Validate, review and commit | Not started | `v1.8.0` |
 | Phase 18: Conflicts, refresh, sessions and recovery | Not started | `v1.9.0` |
 | Phase 19: ERP hardening | Not started | `v1.10.0` |
-| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | Not started | |
+| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only | |
 
 ## Planning
 
@@ -781,3 +781,57 @@ Each candidate began with a COM probe of what Excel 2016 does and writes; the de
 
 - The plan was approved on 2026-11-09 and saved as `docs/ERP_SHEET_INTEGRATION_PLAN.md`, with Phases 14 to 19 and Track E added to `docs/PLAN.md`. Answers and defaults are in `docs/decisions.md`.
 - It was drawn from reading this repo's crates, engine client, UI and hosting, and the ERP's `CashGearERP.sln` and `ERPClient_React`, read-only. Nothing was built or run, and nothing in the ERP repo changed. Section A of the plan lists what was found, with file references.
+
+## Phase 14: ERP contract and mock
+
+The contract the sheet and Cash Gear ERP build against, proven by a suite before any code depends on it. Done on 2026-11-09. Nothing in the app changed. Answers and defaults are in `docs/decisions.md` (2026-11-09, Phase 14): the Vendors field list, Kit as Track E's test tenant, Track E on the ERP repo's `main`, and the defaults Track E0's review led to.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| The contract suite passes on the mock in CI | Pass | `packages/erp-connector/src/contract.test.ts`: 55 cases in `pnpm test`, against a mock it starts on a free port. **55 of 55** locally and in CI on `main`; the tags were pushed only once CI was green. Against a mock started by hand with `ERP_BASE_URL`: 55 of 55 with `ERP_BASE_IS_MOCK=1`, and 34 passing with 21 skipped given only an editor key, as a real server with one key would run it |
+| You sign off the contract and the rollout plan | Pass | Signed off on 2026-11-09, after Track E0's changes and with the Blazor host (`assistoWebApp`) in the rollout plan |
+
+**The suite against plan G's Phase 14 cases**
+
+| Case | Where |
+| --- | --- |
+| Ticket single use and expiry | `tickets`: redeem once; expire after 120 s (mock clock); unknown tickets answered as used ones; a refused Origin doesn't use a ticket up; a ticket alone calls nothing; an API key, not a session, makes one; View is needed |
+| Session idle and maximum expiry, and End | `sessions`: 30 minutes idle and 10 hours; idle expiry, and only Renew slides it; ended at the maximum however often renewed; End; ended when the API key is revoked; an API key refused on the entity routes |
+| Schema shape | `schema`: the vendors' key, limits, fields, labels and lookups; what an editor, an AdvEdit user and a viewer may edit, and why the rest is read-only |
+| Keyset paging | `query`: pages by id to the end with every record in its wire formats, small pages agreeing with large ones, search and field filters, ids in id order, and limits refused |
+| A dry run writes nothing | `commit`: checks everything, answers with versions unchanged, leaves the records and CommitStatus untouched; it also reports field errors and conflicts as a commit does |
+| A commit is atomic | `commit`: one bad record writes none; every field error is listed before anything is written |
+| 409 lists every conflict | `commit`: two of three records changed by another session give two conflicts, with the values and version now and the clashing fields; strict even when other fields changed; an edit elsewhere in the ERP is a conflict (mock) |
+| An idempotent retry writes once | `commit`: the same commitId returns the stored body and moves the version once; a response lost after the write is found by CommitStatus and its retry writes once; one lost before it arrives is unknown and its retry writes once (mock) |
+| The same id with another payload is refused | `commit`: `commit.reused`, nothing written; commitIds are per company |
+| Another company's ids are refused | `query` never shows them though the database is shared; `commit` answers `record.notFound` and `company.mismatch` |
+| Read-only and privileged fields are refused | `commit`: read-only and unknown fields are `field.readOnly`; Blocked and Currency need AdvEdit; a viewer is refused, dry run or not; an inactive lookup item can't be chosen but can be kept; a locked record (mock) |
+| 413 over the batch limit | `commit`: 501 records answer 413, and 500 are taken |
+
+Also: three cross-origin cases (preflight for the sheet's Origin with `X-Sheet-Session`, none for another Origin, the correlation id exposed), three of the mock's own (429 and 503 with `Retry-After`, a 401 mid-session and latency, an audit row per changed field), and on every response the correlation id, `no-store`, the error body's shape and known error codes.
+
+**Proving the suite.** Each fault was put into the mock in turn, and the suite caught it: no version check failed 3 cases, a dry run that writes failed 1, no idempotency store failed 4, and other companies' ids let through failed 1. The mock was put back unchanged.
+
+**Delivered**
+- `packages/erp-connector` (`@cgs/erp-connector`, private, no dependencies): `contract.ts` with every type in plan C, the routes, headers, error codes and status codes; `validate.ts` with a hand-written guard for every response and `recordProblems` for a record's wire formats; 13 guard tests.
+- `tests/erp-mock`: `server.mjs` and `seed.mjs`, Node with no dependencies, as plan D.1 describes, and `pnpm erp:mock`.
+- `docs/erp-contract.md`: routes, the commit's checks in order, status and error codes, C# DTOs, table scripts, the RowVersion rollout plan, how to run the suite against UnifiedAPI, the mock, and Track E0's review.
+- `pnpm-workspace.yaml` needed no change: it already takes `packages/*`.
+
+**Track E0.** The contract was reviewed against `D:\CashGear\Projects\CashGear` read-only: files and `git log` only, with no build, no database and no user secrets, and nothing changed there. Then the Blazor host at `D:\CashGear\Projects\assistoWebApp` was read the same way for the rollout plan. What it changed in the contract: lookups carry `active: false`, `payMethod` is payment terms, `currency` is required, `dateTime` keeps the host's offset, Vendors have no ownership or row locks, the cache is evicted by the `Vendors` tag, CGService's scripts go in IdentitySystem, and script names follow the ERP's. Its notes for E1, E2 and E4 are in `docs/erp-contract.md`.
+
+**What else was checked**
+- Unit tests: 254 in Vitest (68 new) and 647 in Rust. Clippy is clean natively and for WASM; `cargo fmt`, typecheck, lint and format checks are clean.
+- Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.5.0 everywhere and its changelog notes.
+- `pnpm test:save`, the e2e suite and the desktop build and smoke weren't run locally, as nothing they cover changed; CI ran them on `main`.
+
+**Known gaps**
+- The suite hasn't run against UnifiedAPI, whose sheet routes don't exist yet: E1 and E2 build them, and Phases 15 and 17 run the suite on LocalDB.
+- The cases that need the mock's clock or failure injection skip against a real server; Track E's WebApplicationFactory tests cover them.
+- The mock doesn't model API-key expiry dates, a deactivated company or rate limits, except as injected failures.
+- A `dateTime` in the hour a DST change repeats can show an hour out. Those fields are read-only.
+- The Blazor host lets Edit change Blocked, where the sheet asks AdvEdit, and its cache sees a sheet commit within 8 hours. Both are the ERP's own rules, left as they are.
+- `ERPClient_React`'s git workflow wasn't answered; it is among Phase 15's questions, since E1 is the first to change that repository.
+- Outside this phase: nothing new.

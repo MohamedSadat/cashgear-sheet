@@ -165,6 +165,14 @@ Found in Phase 13:
 - Over COM, a trendline's `DataLabel.Text` is empty, so compare its fit with LINEST and LOGEST, not with its label.
 - A built-in cell style goes into the file the first time it is applied, with Excel's `builtinId`. A file with no `cellStyleXfs` gets Normal first.
 
+Found in Phase 14:
+
+- `docs/erp-contract.md` is the ERP contract, and `packages/erp-connector/src/contract.test.ts` proves a server keeps it. Change all three (the types, the mock, the doc) together, and run the suite against the mock.
+- `fetch` refuses ports on the Fetch spec's blocked list with "bad port", 4190 among them. The mock's CLI defaults to 4180.
+- Node's `fetch` sends no `Origin` unless it's set, where a browser always sends one on a cross-origin POST. The suite sets it, and Redeem refuses a request without one.
+- The mock's `/__mock/fault` `match` is a regular expression over the path: `VendorSheet/Commit` matches CommitStatus too, so anchor it with `$`.
+- A workspace package with no dependencies gets no importer in `pnpm-lock.yaml`, and `--frozen-lockfile` still passes.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
