@@ -91,7 +91,7 @@ try {
             }
             $order = if ($key.descending) { 2 } else { 1 }
             $by = if ($null -eq $key.by) { 'value' } else { [string]$key.by.kind }
-            $on = switch ($by) { 'cellColor' { 1 } 'fontColor' { 2 } default { 0 } }
+            $on = switch ($by) { 'cellColor' { 1 } 'fontColor' { 2 } 'icon' { 3 } default { 0 } }
             if ($null -ne $key.list) {
               $field = $sort.SortFields.Add($keyRange, $on, $order, ($key.list -join ','), 0)
             } else {
@@ -99,6 +99,12 @@ try {
             }
             if ($on -eq 1 -and $key.by.color) { $field.SortOnValue.Color = (Rgb-Text $key.by.color) }
             if ($on -eq 2 -and $key.by.color) { $field.SortOnValue.Color = (Rgb-Text $key.by.color) }
+            if ($on -eq 3) {
+              # XlIconSet counts sets from 1 in the order the engine lists them, and icons from 1.
+              $sets = @('3Arrows', '3ArrowsGray', '3Flags', '3TrafficLights1', '3TrafficLights2', '3Signs', '3Symbols', '3Symbols2', '4Arrows', '4ArrowsGray', '4RedToBlack', '4Rating', '4TrafficLights', '5Arrows', '5ArrowsGray', '5Rating', '5Quarters', '3Stars', '3Triangles', '5Boxes')
+              $set = [array]::IndexOf($sets, [string]$key.by.set) + 1
+              $field.SetIcon($book.IconSets.Item($set).Item([int]$key.by.id + 1))
+            }
           }
           $sort.SetRange($range)
           $sort.Header = if ($spec.header) { 1 } else { 2 }

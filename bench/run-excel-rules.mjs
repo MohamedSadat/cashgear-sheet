@@ -328,15 +328,55 @@ const CASES = [
   ['sort-notes', 'sort', [sort([{ index: 4 }])]],
 ];
 
-// Cell colour for one sort, put on before the unsorted copy is saved.
+// Colours and icons for sorts, put on before the unsorted copy is saved. Phase 13 added the
+// conditional formats' colours and icons, which Excel 2016 sorts and filters by too.
+const redText = (target) => ({
+  kind: 'format',
+  sheet: 0,
+  areas: [target],
+  change: { fontColor: { kind: 'rgb', rgb: 'FF0000' } },
+});
+const fills = [yellowFill(area(4, 2)), yellowFill(area(9, 2)), yellowFill(area(12, 2))];
+const texts = [redText(area(3, 2)), redText(area(7, 2)), redText(area(11, 2))];
+const overFive = cf(COL(2), { type: 'cellIs', op: 'greaterThan', formulas: ['5'], format: red });
+const arrows = cf(COL(2), { type: 'iconSet', set: '3Arrows' });
 const SETUP = {
-  'sort-colour': [yellowFill(area(4, 2)), yellowFill(area(9, 2)), yellowFill(area(12, 2))],
+  'sort-colour': fills,
+  'sort-font-colour': texts,
+  'sort-cf-colour': [overFive],
+  'sort-icon': [arrows],
 };
-CASES.push([
-  'sort-colour',
-  'sort',
-  [sort([{ index: 2, by: { kind: 'cellColor', color: 'FFFF00' } }, { index: 1 }])],
-]);
+CASES.push(
+  [
+    'sort-colour',
+    'sort',
+    [sort([{ index: 2, by: { kind: 'cellColor', color: 'FFFF00' } }, { index: 1 }])],
+  ],
+  [
+    'sort-font-colour',
+    'sort',
+    [sort([{ index: 2, descending: true, by: { kind: 'fontColor', color: 'FF0000' } }])],
+  ],
+  ['sort-cf-colour', 'sort', [sort([{ index: 2, by: { kind: 'cellColor', color: 'FFC7CE' } }])]],
+  ['sort-icon', 'sort', [sort([{ index: 2, by: { kind: 'icon', set: '3Arrows', id: 2 } }])]],
+  [
+    'filter-cell-colour',
+    'filter',
+    [...fills, filterOn, filter(2, { kind: 'color', cell: true, color: 'FFFF00' })],
+  ],
+  ['filter-no-fill', 'filter', [...fills, filterOn, filter(2, { kind: 'color', cell: true })]],
+  [
+    'filter-font-colour',
+    'filter',
+    [...texts, filterOn, filter(2, { kind: 'color', cell: false, color: 'FF0000' })],
+  ],
+  [
+    'filter-cf-colour',
+    'filter',
+    [overFive, filterOn, filter(2, { kind: 'color', cell: true, color: 'FFC7CE' })],
+  ],
+  ['filter-icon', 'filter', [arrows, filterOn, filter(2, { kind: 'icon', set: '3Arrows', id: 0 })]],
+);
 
 const cases = CASES.map(([name, kind, commands]) => ({
   name,
