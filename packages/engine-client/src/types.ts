@@ -52,6 +52,14 @@ export interface FitRoom {
   px: number;
 }
 
+/** How columns are fitted, past what AutoFit Column Width does. */
+export interface FitOptions {
+  /** Room beside one row's text. */
+  room?: FitRoom;
+  /** Measure only the longest few texts by font in each column, for speed. */
+  keep?: number;
+}
+
 export interface TileRequest {
   sheet: number;
   /** The tile's top-left cell, counted from 0. */
@@ -1620,7 +1628,8 @@ export interface EngineApi {
   /** Rows of a sheet from another program's file that wrap and hold no height. */
   openingRowFits(sheet: number): Promise<RowFit[]>;
   /** What to measure to fit columns. */
-  colFits(sheet: number, first: number, last: number): Promise<ColFit[]>;
+  /** What fitting columns measures: the `keep` longest texts by font in each (0 for 256). */
+  colFits(sheet: number, first: number, last: number, keep?: number): Promise<ColFit[]>;
   mergeDiscards(sheet: number, areas: CellArea[], across: boolean): Promise<boolean>;
   cellFormat(sheet: number, row: number, col: number): Promise<CellFormat | null>;
   formatLists(): Promise<FormatLists | null>;

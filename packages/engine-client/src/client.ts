@@ -20,7 +20,7 @@ import type {
   ErpRefreshSummary,
   FileSource,
   FindQuery,
-  FitRoom,
+  FitOptions,
   FormatLists,
   FoundCell,
   LoadEvent,
@@ -69,7 +69,7 @@ export interface EngineClient {
     sheet: number,
     first: number,
     last: number,
-    room?: FitRoom,
+    options?: FitOptions,
   ): Promise<Applied | null>;
   mergeDiscards(sheet: number, areas: CellArea[], across: boolean): Promise<boolean>;
   cellFormat(sheet: number, row: number, col: number): Promise<CellFormat | null>;
@@ -270,10 +270,10 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
       const fitted = await tiles.fitRows(rows, measuringPalette());
       await engine.command({ kind: 'fitRows', rows: fitted, quiet: true });
     },
-    async autoFitColumns(sheet, first, last, room) {
-      const cells = await engine.colFits(sheet, first, last);
+    async autoFitColumns(sheet, first, last, options = {}) {
+      const cells = await engine.colFits(sheet, first, last, options.keep);
       if (!cells.length) return null;
-      const cols = await tiles.fitColumns(cells, measuringPalette(), room);
+      const cols = await tiles.fitColumns(cells, measuringPalette(), options.room);
       return engine.command({ kind: 'fitCols', sheet, cols });
     },
     mergeDiscards: (sheet, areas, across) => engine.mergeDiscards(sheet, areas, across),

@@ -81,6 +81,9 @@ const nounOf = (entity: string) => entity.toLowerCase();
 /** A filter button's width at 100%, as the grid draws it (`GridController.buttonBox`). */
 const FILTER_BUTTON_PX = 17;
 
+/** The longest texts by characters measured in each column: enough for its widest, and quick. */
+const FIT_SAMPLE = 16;
+
 export function useErpTools(host: ErpToolsHost): ErpTools {
   const hostRef = useRef(host);
   hostRef.current = host;
@@ -103,19 +106,26 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
   const bindStaged = useCallback(
     async (session: SessionInfo, label: string): Promise<ErpBinding> => {
       const h = hostRef.current;
+      // Marks for bench/measure-erp-bind.mjs, which reads where binding's time goes.
+      const mark = (name: string) => performance.mark(`erp:${name}`);
+      mark('begin');
       await h.openBlank(`${workbookTitle(label, session.company)}.xlsx`, session.language === 'ar');
+      mark('opened');
       const bound = await h.queue((e) => e.erpBind(JSON.stringify(session)));
+      mark('bound');
       // Fitted to their values and headings, with room for each heading's filter button.
       await h
         .queue((e) =>
           e.autoFitColumns(bound.sheet, bound.left, bound.right, {
-            row: bound.top,
-            px: FILTER_BUTTON_PX,
+            room: { row: bound.top, px: FILTER_BUTTON_PX },
+            keep: FIT_SAMPLE,
           }),
         )
         .catch(() => null);
+      mark('fitted');
       await h.queue((e) => e.erpSettle());
       await h.afterBind();
+      mark('shown');
       return bound;
     },
     [],

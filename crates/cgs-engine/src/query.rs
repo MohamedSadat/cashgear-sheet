@@ -226,6 +226,12 @@ impl Engine {
 
     /// What to measure to fit columns, as JSON: see `ColFit` in `packages/engine-client`.
     pub fn col_fits(&mut self, sheet: u32, first: u32, last: u32) -> String {
+        self.col_fits_keeping(sheet, first, last, 0)
+    }
+
+    /// As `col_fits`, measuring only the `keep` longest texts by font in each column (0 is the
+    /// usual 256), as ERP data does for speed.
+    pub fn col_fits_keeping(&mut self, sheet: u32, first: u32, last: u32, keep: u32) -> String {
         let options_locale = self.locale.clone();
         let Some(session) = self.session.as_mut() else {
             return "[]".to_string();
@@ -234,7 +240,7 @@ impl Engine {
             locale: &options_locale,
             date1904: session.book.date1904,
         };
-        session.fit_cols_json(sheet, first, last, &options)
+        session.fit_cols_json(sheet, first, last, keep as usize, &options)
     }
 
     /// Whether merging these areas, given as JSON, would throw away anything but their first values.

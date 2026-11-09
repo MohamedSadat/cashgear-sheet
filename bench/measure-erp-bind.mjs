@@ -153,13 +153,23 @@ try {
             };
             check();
           });
-          return { ...steps, totalMs: performance.now() - started };
+          const at = (name) => performance.getEntriesByName(`erp:${name}`).at(-1)?.startTime ?? NaN;
+          return {
+            ...steps,
+            totalMs: performance.now() - started,
+            openMs: at('opened') - at('begin'),
+            engineBindMs: at('bound') - at('opened'),
+            fitMs: at('fitted') - at('bound'),
+            showMs: at('shown') - at('fitted'),
+            paintMs: performance.now() - started - steps.stageMs - steps.bindMs,
+          };
         },
         { schema, encoded, session },
       );
       const memory = await page.evaluate(() => window.cgsTest.memoryBytes());
+      const ms = (n) => n.toFixed(0);
       console.log(
-        `${size} records: ${timing.totalMs.toFixed(0)} ms (stage ${timing.stageMs.toFixed(0)}, bind and paint ${(timing.totalMs - timing.stageMs).toFixed(0)}), ${timing.records} bound`,
+        `${size} records: ${ms(timing.totalMs)} ms (stage ${ms(timing.stageMs)}, open ${ms(timing.openMs)}, bind ${ms(timing.engineBindMs)}, fit ${ms(timing.fitMs)}, show ${ms(timing.showMs)}, paint ${ms(timing.paintMs)}), ${timing.records} bound`,
       );
       if (timing.records !== size) throw new Error(`Bound ${timing.records} of ${size} records.`);
       runs.push({ ...timing, memoryBytes: memory });

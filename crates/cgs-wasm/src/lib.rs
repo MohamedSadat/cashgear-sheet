@@ -215,9 +215,10 @@ impl Engine {
         self.0.opening_row_fits(sheet)
     }
 
-    /// What to measure to fit columns, as JSON.
-    pub fn col_fits(&mut self, sheet: u32, first: u32, last: u32) -> String {
-        self.0.col_fits(sheet, first, last)
+    /// What to measure to fit columns, as JSON: the `keep` longest texts by font in each column,
+    /// or 256 when `keep` is 0.
+    pub fn col_fits(&mut self, sheet: u32, first: u32, last: u32, keep: u32) -> String {
+        self.0.col_fits_keeping(sheet, first, last, keep)
     }
 
     /// Whether merging would throw away anything. `areas` is JSON.

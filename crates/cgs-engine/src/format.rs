@@ -1402,9 +1402,11 @@ impl Session {
         sheet: u32,
         first_col: u32,
         last_col: u32,
+        keep: usize,
         options: &cgs_numfmt::Options<'_>,
     ) -> String {
-        const KEEP_PER_FONT: usize = 256;
+        // The longest texts by font in each column, by characters, which the UI measures.
+        let keep_per_font = if keep == 0 { 256 } else { keep };
         let mut out = String::from("[");
         let mut comma = false;
         let Some(info) = self.book.sheets.get(sheet as usize) else {
@@ -1449,14 +1451,14 @@ impl Session {
                 };
                 let list = best.entry(font).or_default();
                 list.push((text.chars().count(), row));
-                if list.len() >= KEEP_PER_FONT * 2 {
+                if list.len() >= keep_per_font * 2 {
                     list.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
-                    list.truncate(KEEP_PER_FONT);
+                    list.truncate(keep_per_font);
                 }
             }
             for list in best.values_mut() {
                 list.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
-                list.truncate(KEEP_PER_FONT);
+                list.truncate(keep_per_font);
                 for &(_, row) in list.iter() {
                     let info = &self.book.sheets[sheet as usize];
                     let xf = *self.book.styles.xf(info.style_at(row, col));

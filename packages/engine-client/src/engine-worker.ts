@@ -714,8 +714,8 @@ const api: EngineApi = {
   async openingRowFits(sheet) {
     return JSON.parse((await ensureEngine()).opening_row_fits(sheet)) as RowFit[];
   },
-  async colFits(sheet, first, last) {
-    return JSON.parse((await ensureEngine()).col_fits(sheet, first, last)) as ColFit[];
+  async colFits(sheet, first, last, keep = 0) {
+    return JSON.parse((await ensureEngine()).col_fits(sheet, first, last, keep)) as ColFit[];
   },
   async mergeDiscards(sheet, areas, across) {
     return (await ensureEngine()).merge_discards(sheet, JSON.stringify(areas), across);
