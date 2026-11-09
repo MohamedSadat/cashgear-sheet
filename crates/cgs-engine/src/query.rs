@@ -309,13 +309,14 @@ impl Engine {
         let mut out = String::from("{\"fontName\":");
         json::push_string(&mut out, &font.name);
         out.push_str(&format!(
-            ",\"fontSize\":{},\"bold\":{},\"italic\":{},\"strike\":{},\"underline\":\"{}\",\"fontColor\":{}",
+            ",\"fontSize\":{},\"bold\":{},\"italic\":{},\"strike\":{},\"underline\":\"{}\",\"fontColor\":{},\"vertAlign\":\"{}\"",
             font.size,
             font.bold,
             font.italic,
             font.strike,
             crate::format::underline_name(font.underline),
-            color(font.color)
+            color(font.color),
+            font.vert_align.name().unwrap_or("baseline")
         ));
         out.push_str(&format!(
             ",\"fill\":{{\"pattern\":\"{}\",\"color\":{},\"patternColor\":{}}}",

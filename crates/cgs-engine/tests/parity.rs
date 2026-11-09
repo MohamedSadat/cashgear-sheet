@@ -1066,7 +1066,10 @@ fn rich_text_typed_in_the_cell_saves_its_runs() {
     let runs = engine
         .query(r#"{"kind":"richAt","sheet":0,"row":2,"col":1}"#)
         .unwrap();
-    assert!(runs.contains(r#""start":1"#) && runs.contains(r#""vertAlign":"subscript""#), "{runs}");
+    assert!(
+        runs.contains(r#""start":1"#) && runs.contains(r#""vertAlign":"subscript""#),
+        "{runs}"
+    );
     // Pasted, the copy is rich too.
     run(
         &mut engine,

@@ -135,6 +135,8 @@ pub struct FormatChange {
     pub locked: Option<bool>,
     /// Hidden cells show no formula once the sheet is protected.
     pub formula_hidden: Option<bool>,
+    /// Format Cells' Superscript and Subscript: `superscript`, `subscript` or `baseline`.
+    pub vert_align: Option<String>,
 }
 
 impl FormatChange {
@@ -385,6 +387,12 @@ impl Session {
         }
         if let Some(color) = &change.font_color {
             font_edits.color = Some(color.attributes());
+        }
+        if let Some(vert) = &change.vert_align {
+            let next = cgs_model::VertAlign::parse(vert);
+            if next != font.vert_align {
+                font_edits.vert_align = Some(next.name().map(str::to_string));
+            }
         }
         let new_font = (font_edits != FontEdits::default())
             .then(|| self.styles_xml().edit_font(xf.font, &font_edits))

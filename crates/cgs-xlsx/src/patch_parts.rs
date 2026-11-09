@@ -648,6 +648,8 @@ pub struct FontEdits {
     pub underline: Option<Option<String>>,
     /// `<color>`'s attributes, starting with a space, or nothing for automatic.
     pub color: Option<Option<String>>,
+    /// `superscript` or `subscript`, or nothing for the baseline.
+    pub vert_align: Option<Option<String>>,
 }
 
 /// What changes in a border. Each line is its style and `<color>`'s attributes, or nothing for none.
@@ -1002,6 +1004,13 @@ impl StylesXml {
                         format!("<u val=\"{kind}\"/>")
                     }
                 }),
+            );
+        }
+        if let Some(vert) = &edits.vert_align {
+            put(
+                "vertAlign",
+                vert.as_ref()
+                    .map(|vert| format!("<vertAlign val=\"{vert}\"/>")),
             );
         }
         if let Some(size) = edits.size {
