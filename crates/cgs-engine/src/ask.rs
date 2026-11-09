@@ -78,6 +78,8 @@ enum Question {
     Notes { sheet: u32 },
     /// The Cell Styles gallery.
     CellStyles,
+    /// A named style's format and what it includes, for Modify Cell Style.
+    StyleFormat { name: String },
     /// What conditional formats make of each cell of an area, for checking against Excel: its
     /// fill and font colours, whether bold, and its icon.
     CfLook { sheet: u32, area: Area },
@@ -270,7 +272,8 @@ impl Session {
             Question::NoteAt { sheet, row, col } => self.note_json(sheet, row, col),
             Question::LinkAt { sheet, row, col } => self.link_json(sheet, row, col),
             Question::Notes { sheet } => self.notes_list(sheet),
-            Question::CellStyles => crate::cell_styles::cell_styles_json(),
+            Question::CellStyles => self.cell_styles_json(),
+            Question::StyleFormat { name } => self.style_format_json(&name),
             Question::CfLook { sheet, area } => self.cf_look_json(sheet, area),
             Question::TableStyles { options } => {
                 self.table_styles_json(&options.unwrap_or_default())

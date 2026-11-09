@@ -119,7 +119,35 @@ fn parse_xf(element: &BytesStart<'_>) -> Xf {
         alignment: Alignment::default(),
         locked: true,
         formula_hidden: false,
+        style: attr_u32(element, b"xfId").unwrap_or(0),
     }
+}
+
+/// A `cellStyleXfs` entry, whose `apply…` flags say what the style includes.
+fn parse_style_xf(element: &BytesStart<'_>) -> cgs_model::StyleXf {
+    let includes = |name: &[u8]| attr_bool(element, name).unwrap_or(true);
+    cgs_model::StyleXf {
+        xf: Xf {
+            style: 0,
+            ..parse_xf(element)
+        },
+        includes: cgs_model::StyleIncludes {
+            number: includes(b"applyNumberFormat"),
+            alignment: includes(b"applyAlignment"),
+            font: includes(b"applyFont"),
+            border: includes(b"applyBorder"),
+            fill: includes(b"applyFill"),
+            protection: includes(b"applyProtection"),
+        },
+    }
+}
+
+fn parse_named_style(element: &BytesStart<'_>) -> Option<cgs_model::NamedStyle> {
+    Some(cgs_model::NamedStyle {
+        name: attr(element, b"name")?,
+        xf: attr_u32(element, b"xfId").unwrap_or(0),
+        builtin: attr_u32(element, b"builtinId"),
+    })
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -129,6 +157,8 @@ enum Section {
     Fills,
     Borders,
     CellXfs,
+    StyleXfs,
+    CellStyles,
     Skipped,
 }
 
@@ -170,10 +200,19 @@ pub fn read_styles(xml: &[u8]) -> StyleTable {
                     (_, b"fills") => section = Section::Fills,
                     (_, b"borders") => section = Section::Borders,
                     (_, b"cellXfs") => section = Section::CellXfs,
+                    (_, b"cellStyleXfs") => {
+                        section = Section::StyleXfs;
+                        table.style_xfs.clear();
+                    }
+                    (_, b"cellStyles") => {
+                        section = Section::CellStyles;
+                        table.named.clear();
+                    }
                     // A nested section holds fonts and fills that aren't the table's.
-                    (_, b"dxfs" | b"cellStyleXfs" | b"cellStyles" | b"extLst") => {
+                    (_, b"dxfs" | b"extLst") => {
                         section = Section::Skipped;
                     }
+                    (Section::StyleXfs, b"xf") => table.style_xfs.push(parse_style_xf(element)),
                     (Section::Fonts, b"font") => font = Font::default(),
                     (Section::Fills, b"fill") => {
                         fill = Fill::default();
@@ -231,6 +270,10 @@ pub fn read_styles(xml: &[u8]) -> StyleTable {
                         start_side(kind, element, &mut border);
                     }
                     (Section::CellXfs, b"xf") => table.xfs.push(parse_xf(element)),
+                    (Section::StyleXfs, b"xf") => table.style_xfs.push(parse_style_xf(element)),
+                    (Section::CellStyles, b"cellStyle") => {
+                        table.named.extend(parse_named_style(element));
+                    }
                     (_, b"numFmt") => {
                         if let (Some(id), Some(code)) =
                             (attr_u32(element, b"numFmtId"), attr(element, b"formatCode"))

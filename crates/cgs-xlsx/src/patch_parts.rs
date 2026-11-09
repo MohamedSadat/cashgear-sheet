@@ -9,6 +9,7 @@ use crate::scan::{
     splice, utf8_declaration, Kind, Scanner,
 };
 use crate::xml::{parse_u32, unescape_attr, unescape_x};
+use cgs_model::StyleIncludes;
 
 /// `CT_Workbook`'s children in the order the schema wants them.
 const WORKBOOK_ORDER: &[&str] = &[
@@ -634,7 +635,19 @@ pub struct XfChanges {
     pub alignment_edits: Vec<(&'static str, Option<String>)>,
     /// The format's `<protection>`: whether it's locked and whether its formula is hidden.
     pub protection: Option<(bool, bool)>,
+    /// `xfId`: the named style the format is linked to.
+    pub style: Option<u32>,
 }
+
+/// The `apply…` attributes, in Excel's order, with what each one is for.
+const APPLY: [&str; 6] = [
+    "applyNumberFormat",
+    "applyFont",
+    "applyFill",
+    "applyBorder",
+    "applyAlignment",
+    "applyProtection",
+];
 
 /// What changes in a font. The rest of it stays, including what we don't read.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1303,6 +1316,111 @@ impl StylesXml {
     /// Adds a cell format copied from `base`, with these differences. Everything else it holds
     /// stays, including alignment, protection and what we don't know. Returns its index.
     pub fn add_xf(&mut self, base: u32, changes: XfChanges) -> u32 {
+        let xml = self.derived_xf(base, &changes);
+        self.append_new("cellXfs", "xf", &xml)
+    }
+
+    /// Changes the cell format at `index` in place, so every cell that has it changes.
+    pub fn edit_xf(&mut self, index: u32, changes: &XfChanges) {
+        let xml = self.derived_xf(index, changes);
+        self.replace_entry("cellXfs", "xf", index, &xml);
+    }
+
+    /// The XML of one entry in a list, such as a cell format.
+    pub fn entry_xml(&self, list: &str, entry: &str, index: u32) -> Option<String> {
+        self.entries(list.as_bytes(), entry.as_bytes())
+            .get(index as usize)
+            .map(|xml| String::from_utf8_lossy(xml).into_owned())
+    }
+
+    /// Puts an entry in place of the one at `index`, so whatever refers to it changes with it.
+    pub fn replace_entry(&mut self, list: &str, entry: &str, index: u32, xml: &str) -> bool {
+        let located = tokens(&self.bytes);
+        let Some((from, to)) = self
+            .find_list(&located, list.as_bytes(), entry.as_bytes())
+            .and_then(|found| found.entries.get(index as usize).copied())
+        else {
+            return false;
+        };
+        if self.bytes[from..to] == *xml.as_bytes() {
+            return true;
+        }
+        self.bytes = splice(&self.bytes, &[(from, to, xml.as_bytes().to_vec())]);
+        self.changed = true;
+        true
+    }
+
+    /// A named style's format made from a cell format: its parts, with no link and no `apply…`
+    /// flags but `="0"` on each part the style leaves out, as Excel writes them.
+    pub fn style_xf_from(&self, cell_xf: u32, includes: StyleIncludes) -> Option<String> {
+        let xml = self.entry_xml("cellXfs", "xf", cell_xf)?;
+        let tag_end = xml.find('>').map_or(xml.len(), |at| at + 1);
+        let left_out = [
+            !includes.number,
+            !includes.font,
+            !includes.fill,
+            !includes.border,
+            !includes.alignment,
+            !includes.protection,
+        ];
+        let mut edits: Vec<(&str, Option<&str>)> = vec![("xfId", None)];
+        edits.extend(
+            APPLY
+                .iter()
+                .zip(left_out)
+                .map(|(name, out)| (*name, out.then_some("0"))),
+        );
+        let tag = edit_tag(&xml.as_bytes()[..tag_end], &edits);
+        Some(format!(
+            "{}{}",
+            String::from_utf8_lossy(&tag),
+            &xml[tag_end..]
+        ))
+    }
+
+    /// A cell format with a named style's look and a link to it, for cells to start from.
+    pub fn cell_xf_from_style(&mut self, style: u32) -> Option<u32> {
+        let xml = self.entry_xml("cellStyleXfs", "xf", style)?;
+        let tag_end = xml.find('>').map_or(xml.len(), |at| at + 1);
+        let id = style.to_string();
+        let mut edits: Vec<(&str, Option<&str>)> = APPLY.iter().map(|name| (*name, None)).collect();
+        edits.push(("xfId", Some(&id)));
+        let tag = edit_tag(&xml.as_bytes()[..tag_end], &edits);
+        let xml = format!("{}{}", String::from_utf8_lossy(&tag), &xml[tag_end..]);
+        Some(self.append_new("cellXfs", "xf", &xml))
+    }
+
+    /// Gives a file with no named styles the Normal style that cell formats link to by default.
+    pub fn ensure_normal_style(&mut self) {
+        let prefix = self.root();
+        if self.entry_xml("cellStyleXfs", "xf", 0).is_none() {
+            self.add_style_xf(&format!(
+                "<{prefix}xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>"
+            ));
+        }
+        if self.entry_xml("cellStyles", "cellStyle", 0).is_none() {
+            self.add_cell_style("Normal", 0, Some(0));
+        }
+    }
+
+    /// Adds a named style's format, and returns its index.
+    pub fn add_style_xf(&mut self, xml: &str) -> u32 {
+        self.append("cellStyleXfs", "xf", xml)
+    }
+
+    /// Adds a named style to `cellStyles`, with Excel's number for a built-in one.
+    pub fn add_cell_style(&mut self, name: &str, xf: u32, builtin: Option<u32>) -> u32 {
+        let prefix = self.root();
+        let builtin = builtin.map_or(String::new(), |id| format!(" builtinId=\"{id}\""));
+        let xml = format!(
+            "<{prefix}cellStyle name=\"{}\" xfId=\"{xf}\"{builtin}/>",
+            escape_attr(name)
+        );
+        self.append("cellStyles", "cellStyle", &xml)
+    }
+
+    /// The new XML of the cell format at `base` with these changes.
+    fn derived_xf(&self, base: u32, changes: &XfChanges) -> String {
         let list = tokens(&self.bytes);
         let name = self.root();
         let found = self.find_list(&list, b"cellXfs", b"xf");
@@ -1338,15 +1456,20 @@ impl StylesXml {
             edits.push((*apply, Some("1")));
         }
         // A style list the file doesn't have can't be referred to, by this new format at least.
-        let has_style_list = self
-            .find_list(&list, b"cellStyleXfs", b"xf")
-            .is_some_and(|found| {
-                attr_value(&template[..tag_end], b"xfId")
-                    .and_then(parse_u32)
-                    .is_some_and(|index| (index as usize) < found.entries.len())
-            });
-        if !has_style_list {
-            edits.push(("xfId", None));
+        let style_id = changes.style.map(|id| id.to_string());
+        if let Some(id) = &style_id {
+            edits.push(("xfId", Some(id.as_str())));
+        } else {
+            let has_style_list =
+                self.find_list(&list, b"cellStyleXfs", b"xf")
+                    .is_some_and(|found| {
+                        attr_value(&template[..tag_end], b"xfId")
+                            .and_then(parse_u32)
+                            .is_some_and(|index| (index as usize) < found.entries.len())
+                    });
+            if !has_style_list {
+                edits.push(("xfId", None));
+            }
         }
         if changes.alignment.is_some() || !changes.alignment_edits.is_empty() {
             edits.push(("applyAlignment", Some("1")));
@@ -1386,7 +1509,7 @@ impl StylesXml {
         if let Some((locked, hidden)) = changes.protection {
             xml = with_protection(&xml, &name, locked, hidden);
         }
-        self.append_new("cellXfs", "xf", &xml)
+        xml
     }
 }
 

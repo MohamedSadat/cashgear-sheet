@@ -278,87 +278,7 @@ impl Engine {
             Some(merge) => info.style_at(merge.top, merge.left),
             None => info.style_at(row, col),
         };
-        let xf = table.xf(index);
-        let font = table.font(xf);
-        let fill = table.fill(xf);
-        let border = table.border(xf);
-        let code = table
-            .num_fmts
-            .get(&xf.num_fmt)
-            .cloned()
-            .or_else(|| cgs_numfmt::builtin_code(xf.num_fmt).map(str::to_string))
-            .unwrap_or_else(|| "General".to_string());
-        let color = |color: cgs_model::Color| -> String {
-            let hex = table
-                .colors
-                .resolve(color, None)
-                .map(|rgb| format!("#{rgb:06x}"));
-            match (color.kind, hex) {
-                (cgs_model::ColorKind::Theme(theme), Some(hex)) => format!(
-                    "{{\"kind\":\"theme\",\"theme\":{theme},\"tint\":{},\"color\":\"{hex}\"}}",
-                    color.tint
-                ),
-                (_, Some(hex)) => format!("{{\"kind\":\"rgb\",\"color\":\"{hex}\"}}"),
-                _ => "{\"kind\":\"auto\"}".to_string(),
-            }
-        };
-        let line = |line: cgs_model::Line| -> String {
-            let style = crate::format::line_style_name(line.style);
-            format!("{{\"style\":\"{style}\",\"color\":{}}}", color(line.color))
-        };
-        let mut out = String::from("{\"fontName\":");
-        json::push_string(&mut out, &font.name);
-        out.push_str(&format!(
-            ",\"fontSize\":{},\"bold\":{},\"italic\":{},\"strike\":{},\"underline\":\"{}\",\"fontColor\":{},\"vertAlign\":\"{}\"",
-            font.size,
-            font.bold,
-            font.italic,
-            font.strike,
-            crate::format::underline_name(font.underline),
-            color(font.color),
-            font.vert_align.name().unwrap_or("baseline")
-        ));
-        out.push_str(&format!(
-            ",\"fill\":{{\"pattern\":\"{}\",\"color\":{},\"patternColor\":{}}}",
-            crate::format::pattern_name(fill.pattern),
-            match fill.pattern {
-                cgs_model::Pattern::Solid => color(fill.fg),
-                _ => color(fill.bg),
-            },
-            color(fill.fg)
-        ));
-        let alignment = xf.alignment;
-        out.push_str(&format!(
-            ",\"horizontal\":\"{}\",\"vertical\":\"{}\",\"wrap\":{},\"shrink\":{},\"indent\":{},\"rotation\":{},\"readingOrder\":{}",
-            crate::format::horizontal_name(alignment.horizontal),
-            crate::format::vertical_name(alignment.vertical),
-            alignment.wrap,
-            alignment.shrink,
-            alignment.indent,
-            alignment.rotation,
-            match alignment.reading_order {
-                cgs_model::ReadingOrder::Context => 0,
-                cgs_model::ReadingOrder::LeftToRight => 1,
-                cgs_model::ReadingOrder::RightToLeft => 2,
-            }
-        ));
-        out.push_str(",\"numberFormat\":");
-        json::push_string(&mut out, &code);
-        out.push_str(&format!(
-            ",\"numberFormatId\":{},\"merged\":{},\"locked\":{},\"formulaHidden\":{},\"border\":{{\"top\":{},\"bottom\":{},\"left\":{},\"right\":{},\"diagonal\":{},\"diagonalUp\":{},\"diagonalDown\":{}}}}}",
-            xf.num_fmt,
-            info.merge_at(row, col).is_some(),
-            xf.locked,
-            xf.formula_hidden,
-            line(border.top),
-            line(border.bottom),
-            line(border.left),
-            line(border.right),
-            line(border.diagonal),
-            border.diagonal_up,
-            border.diagonal_down,
-        ));
-        out
+        format_json(book, table.xf(index), info.merge_at(row, col).is_some())
     }
 
     /// The workbook's theme colours and the codes of its own number formats, as JSON.
@@ -473,5 +393,97 @@ pub fn applied_json(selection: Option<(u32, Area)>, replaced: u32, state: &UndoS
     out.push_str(",\"lost\":");
     out.push_str(if state.lost { "true" } else { "false" });
     out.push('}');
+    out
+}
+
+/// A cell format as the ribbon and Format Cells read it.
+pub(crate) fn format_json(book: &cgs_model::Book, xf: &cgs_model::Xf, merged: bool) -> String {
+    let table = &book.styles;
+    let font = table.font(xf);
+    let fill = table.fill(xf);
+    let border = table.border(xf);
+    let code = table
+        .num_fmts
+        .get(&xf.num_fmt)
+        .cloned()
+        .or_else(|| cgs_numfmt::builtin_code(xf.num_fmt).map(str::to_string))
+        .unwrap_or_else(|| "General".to_string());
+    let color = |color: cgs_model::Color| -> String {
+        let hex = table
+            .colors
+            .resolve(color, None)
+            .map(|rgb| format!("#{rgb:06x}"));
+        match (color.kind, hex) {
+            (cgs_model::ColorKind::Theme(theme), Some(hex)) => format!(
+                "{{\"kind\":\"theme\",\"theme\":{theme},\"tint\":{},\"color\":\"{hex}\"}}",
+                color.tint
+            ),
+            (_, Some(hex)) => format!("{{\"kind\":\"rgb\",\"color\":\"{hex}\"}}"),
+            _ => "{\"kind\":\"auto\"}".to_string(),
+        }
+    };
+    let line = |line: cgs_model::Line| -> String {
+        let style = crate::format::line_style_name(line.style);
+        format!("{{\"style\":\"{style}\",\"color\":{}}}", color(line.color))
+    };
+    let mut out = String::from("{\"fontName\":");
+    json::push_string(&mut out, &font.name);
+    out.push_str(&format!(
+            ",\"fontSize\":{},\"bold\":{},\"italic\":{},\"strike\":{},\"underline\":\"{}\",\"fontColor\":{},\"vertAlign\":\"{}\"",
+            font.size,
+            font.bold,
+            font.italic,
+            font.strike,
+            crate::format::underline_name(font.underline),
+            color(font.color),
+            font.vert_align.name().unwrap_or("baseline")
+        ));
+    out.push_str(&format!(
+        ",\"fill\":{{\"pattern\":\"{}\",\"color\":{},\"patternColor\":{}}}",
+        crate::format::pattern_name(fill.pattern),
+        match fill.pattern {
+            cgs_model::Pattern::Solid => color(fill.fg),
+            _ => color(fill.bg),
+        },
+        color(fill.fg)
+    ));
+    let alignment = xf.alignment;
+    out.push_str(&format!(
+            ",\"horizontal\":\"{}\",\"vertical\":\"{}\",\"wrap\":{},\"shrink\":{},\"indent\":{},\"rotation\":{},\"readingOrder\":{}",
+            crate::format::horizontal_name(alignment.horizontal),
+            crate::format::vertical_name(alignment.vertical),
+            alignment.wrap,
+            alignment.shrink,
+            alignment.indent,
+            alignment.rotation,
+            match alignment.reading_order {
+                cgs_model::ReadingOrder::Context => 0,
+                cgs_model::ReadingOrder::LeftToRight => 1,
+                cgs_model::ReadingOrder::RightToLeft => 2,
+            }
+        ));
+    out.push_str(",\"style\":");
+    let style = table
+        .named
+        .iter()
+        .find(|named| named.xf == xf.style)
+        .map_or("Normal", |named| named.name.as_str());
+    json::push_string(&mut out, style);
+    out.push_str(",\"numberFormat\":");
+    json::push_string(&mut out, &code);
+    out.push_str(&format!(
+            ",\"numberFormatId\":{},\"merged\":{},\"locked\":{},\"formulaHidden\":{},\"border\":{{\"top\":{},\"bottom\":{},\"left\":{},\"right\":{},\"diagonal\":{},\"diagonalUp\":{},\"diagonalDown\":{}}}}}",
+            xf.num_fmt,
+            merged,
+            xf.locked,
+            xf.formula_hidden,
+            line(border.top),
+            line(border.bottom),
+            line(border.left),
+            line(border.right),
+            line(border.diagonal),
+            border.diagonal_up,
+            border.diagonal_down,
+        ));
     out
 }

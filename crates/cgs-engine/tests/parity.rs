@@ -1100,3 +1100,84 @@ fn rich_text_typed_in_the_cell_saves_its_runs() {
     );
     assert_eq!(again.display_text(0, 3, 1), "H2O is wet");
 }
+
+fn style_of(engine: &Engine, row: u32, col: u32) -> serde_json::Value {
+    serde_json::from_str(&engine.cell_format_json(0, row, col)).unwrap()
+}
+
+#[test]
+fn cell_styles_link_their_cells_and_save_as_excel_2016_writes_them() {
+    let mut engine = opened(three());
+    // A built-in style goes into the file with Excel's number the first time it's used.
+    run(
+        &mut engine,
+        r#"{"kind":"cellStyle","sheet":0,"areas":[{"top":2,"left":2,"bottom":2,"right":2}],"name":"Good"}"#,
+    );
+    // By example: D2's look, with only its font and fill included.
+    run(
+        &mut engine,
+        r#"{"kind":"format","sheet":0,"areas":[{"top":2,"left":4,"bottom":2,"right":4}],"change":{"bold":true,"fontColor":{"kind":"rgb","rgb":"FF0000"},"fill":{"pattern":"solid","color":{"kind":"rgb","rgb":"FFFF00"}},"numberFormat":"0.00"}}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"newCellStyle","name":"Mine","sheet":0,"row":2,"col":4,"includes":{"number":false,"alignment":false,"font":true,"border":false,"fill":true,"protection":false}}"#,
+    );
+    assert!(engine
+        .apply_json(r#"{"kind":"newCellStyle","name":"mine","sheet":0,"row":2,"col":4,"includes":{"number":true,"alignment":true,"font":true,"border":true,"fill":true,"protection":true}}"#)
+        .is_err());
+    run(
+        &mut engine,
+        r#"{"kind":"format","sheet":0,"areas":[{"top":4,"left":4,"bottom":4,"right":4}],"change":{"numberFormat":"0%"}}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"cellStyle","sheet":0,"areas":[{"top":4,"left":4,"bottom":4,"right":4}],"name":"Mine"}"#,
+    );
+    let out = saved(&mut engine);
+    let styles = part(&out, "xl/styles.xml");
+    assert!(
+        styles.contains(r#"<cellStyle name="Good" xfId="1" builtinId="26"/>"#),
+        "{styles}"
+    );
+    assert!(
+        styles.contains(r#"<cellStyle name="Mine" xfId="2"/>"#),
+        "{styles}"
+    );
+    assert!(
+        styles.contains(
+            r#"applyNumberFormat="0" applyBorder="0" applyAlignment="0" applyProtection="0"/></cellStyleXfs>"#
+        ),
+        "{styles}"
+    );
+    let mut again = opened(out);
+    let good = style_of(&again, 2, 2);
+    assert_eq!(good["style"], "Good");
+    assert_eq!(good["fontColor"]["color"], "#006100");
+    // The style left the number out, so D4 keeps its own.
+    let mine = style_of(&again, 4, 4);
+    assert_eq!(mine["style"], "Mine");
+    assert_eq!(mine["bold"], true);
+    assert_eq!(mine["numberFormat"], "0%");
+    assert_eq!(mine["fill"]["color"]["color"], "#ffff00");
+    let gallery: serde_json::Value =
+        serde_json::from_str(&again.query(r#"{"kind":"cellStyles"}"#).unwrap()).unwrap();
+    assert_eq!(gallery[0]["group"], "Custom");
+    assert_eq!(gallery[0]["styles"][0]["name"], "Mine");
+    assert_eq!(gallery[0]["styles"][0]["fill"], "#FFFF00");
+
+    // Modified, the style changes in place and its cells follow, as Excel did.
+    run(
+        &mut again,
+        r#"{"kind":"modifyCellStyle","name":"Mine","change":{"italic":true}}"#,
+    );
+    let mine = style_of(&again, 4, 4);
+    assert_eq!(mine["italic"], true);
+    assert_eq!(mine["bold"], true);
+    assert_eq!(mine["numberFormat"], "0%");
+    // D2 isn't linked to Mine: it was only the example.
+    assert_eq!(style_of(&again, 2, 4)["italic"], false);
+    let out = saved(&mut again);
+    let reopened = opened(out);
+    assert_eq!(style_of(&reopened, 4, 4)["italic"], true);
+    assert_eq!(style_of(&reopened, 4, 4)["style"], "Mine");
+}

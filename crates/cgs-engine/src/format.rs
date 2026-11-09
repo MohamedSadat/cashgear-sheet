@@ -137,12 +137,17 @@ pub struct FormatChange {
     pub formula_hidden: Option<bool>,
     /// Format Cells' Superscript and Subscript: `superscript`, `subscript` or `baseline`.
     pub vert_align: Option<String>,
+    /// A named style, as its place in `cellStyleXfs`: the cells take the parts it includes and
+    /// a link to it.
+    #[serde(skip)]
+    pub named_style: Option<u32>,
 }
 
 impl FormatChange {
     /// Whether this can change how tall a row must be.
     fn changes_heights(&self) -> bool {
         self.clear
+            || self.named_style.is_some()
             || self.font_name.is_some()
             || self.font_size.is_some()
             || self.font_step.is_some()
@@ -365,8 +370,12 @@ impl Session {
         style
     }
 
-    fn make_style(&mut self, editor: &StyleEditor, base: u32, place: u8) -> u32 {
+    pub(crate) fn make_style(&mut self, editor: &StyleEditor, base: u32, place: u8) -> u32 {
         let change = &editor.change;
+        if let Some(index) = change.named_style {
+            let changes = self.style_changes(index, base);
+            return self.styles_xml().add_xf(base, changes);
+        }
         let xf = *self.book.styles.xf(base);
         let font = self.book.styles.font(&xf).clone();
         let mut font_edits = FontEdits::default();
@@ -565,6 +574,7 @@ impl Session {
                 alignment: None,
                 alignment_edits,
                 protection,
+                style: None,
             },
         )
     }

@@ -417,11 +417,26 @@ pub enum Command {
         #[serde(default, rename = "byColumns")]
         by_columns: bool,
     },
-    /// One of Excel's built-in cell styles, by name.
+    /// A cell style, Excel's or the book's own, by name.
     CellStyle {
         sheet: u32,
         areas: Vec<Area>,
         name: String,
+    },
+    /// New Cell Style: a style with the look of a cell, by example.
+    NewCellStyle {
+        name: String,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        includes: crate::cell_styles::IncludesSpec,
+    },
+    /// Modify Cell Style: a style takes a format change, and its cells follow.
+    ModifyCellStyle {
+        name: String,
+        change: Box<crate::format::FormatChange>,
+        #[serde(default)]
+        includes: Option<crate::cell_styles::IncludesSpec>,
     },
     /// Takes out rows whose `columns` show what an earlier row does.
     RemoveDuplicates {
@@ -3781,6 +3796,18 @@ impl Session {
                 criteria,
             } => self.set_filter_command(sheet, &table, col, criteria, locale),
             Command::CellStyle { sheet, areas, name } => self.apply_cell_style(sheet, areas, &name),
+            Command::NewCellStyle {
+                name,
+                sheet,
+                row,
+                col,
+                includes,
+            } => self.new_cell_style(&name, sheet, row, col, includes.into()),
+            Command::ModifyCellStyle {
+                name,
+                change,
+                includes,
+            } => self.modify_cell_style(&name, *change, includes.map(Into::into)),
             Command::RemoveDuplicates {
                 sheet,
                 area,

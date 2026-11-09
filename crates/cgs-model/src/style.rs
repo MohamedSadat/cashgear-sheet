@@ -310,6 +310,49 @@ pub struct Xf {
     pub locked: bool,
     /// `protection hidden`: the formula bar shows nothing once the sheet is protected.
     pub formula_hidden: bool,
+    /// `xfId`: the named style the format is linked to, as an index into `style_xfs`.
+    pub style: u32,
+}
+
+/// What a named style sets on the cells it's given: Style Includes in Excel's Style dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StyleIncludes {
+    pub number: bool,
+    pub alignment: bool,
+    pub font: bool,
+    pub border: bool,
+    pub fill: bool,
+    pub protection: bool,
+}
+
+impl Default for StyleIncludes {
+    fn default() -> Self {
+        Self {
+            number: true,
+            alignment: true,
+            font: true,
+            border: true,
+            fill: true,
+            protection: true,
+        }
+    }
+}
+
+/// One `cellStyleXfs` entry: a named style's format, and what it includes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct StyleXf {
+    pub xf: Xf,
+    pub includes: StyleIncludes,
+}
+
+/// One `cellStyles` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedStyle {
+    pub name: String,
+    /// Its format, as an index into `style_xfs`.
+    pub xf: u32,
+    /// Excel's number for a built-in style, such as 26 for Good.
+    pub builtin: Option<u32>,
 }
 
 impl Default for Xf {
@@ -322,6 +365,7 @@ impl Default for Xf {
             alignment: Alignment::default(),
             locked: true,
             formula_hidden: false,
+            style: 0,
         }
     }
 }
@@ -341,6 +385,10 @@ pub struct StyleTable {
     pub table_styles: Vec<crate::TableStyleDef>,
     /// The style the file gives new tables, if it names one.
     pub default_table_style: Option<String>,
+    /// `cellStyleXfs`: named styles' formats.
+    pub style_xfs: Vec<StyleXf>,
+    /// `cellStyles`: the named styles, which the Cell Styles gallery lists.
+    pub named: Vec<NamedStyle>,
 }
 
 impl Default for StyleTable {
@@ -355,6 +403,12 @@ impl Default for StyleTable {
             dxfs: Vec::new(),
             table_styles: Vec::new(),
             default_table_style: None,
+            style_xfs: vec![StyleXf::default()],
+            named: vec![NamedStyle {
+                name: "Normal".to_string(),
+                xf: 0,
+                builtin: Some(0),
+            }],
         }
     }
 }

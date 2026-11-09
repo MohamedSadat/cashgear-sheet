@@ -35,8 +35,9 @@ pub use sheet::{
     SheetInfo, SheetKind, SheetShape, SheetState, SheetView, NO_CELL,
 };
 pub use style::{
-    Alignment, Border, Fill, Font, HAlign, Hatch, Line, LineStyle, Pattern, ReadingOrder, RichRun,
-    RunFont, StyleTable, Underline, VAlign, VertAlign, Xf,
+    Alignment, Border, Fill, Font, HAlign, Hatch, Line, LineStyle, NamedStyle, Pattern,
+    ReadingOrder, RichRun, RunFont, StyleIncludes, StyleTable, StyleXf, Underline, VAlign,
+    VertAlign, Xf,
 };
 pub use table::{Table, TableColumnInfo, TableStyle, TotalsFunction};
 
