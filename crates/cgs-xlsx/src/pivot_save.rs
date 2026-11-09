@@ -242,7 +242,9 @@ impl PivotSave<'_> {
                 gone_caches.push(cache.id);
             }
         }
-        // Tables: the file's patched, new ones made and linked.
+        // Tables: the file's patched, new ones made and linked. A sheet's new relationships wait
+        // in the overlay until every table on it is linked, so a second one adds to the first's.
+        let mut fresh_rels: Vec<String> = Vec::new();
         for table in &book.pivot_tables {
             let cache_part = cache_parts.get(table.cache as usize).cloned().flatten();
             let Some(cache_part) = cache_part else {
@@ -293,12 +295,18 @@ impl PivotSave<'_> {
                         // A new sheet's relationships, made earlier in this save.
                         self.overlay.insert(sheet_rels, updated);
                     } else {
-                        self.changes
-                            .add
-                            .push((sheet_rels.clone(), pack(&updated).map_err(zip_error)?));
-                        self.report.added_parts.push(sheet_rels);
+                        self.overlay.insert(sheet_rels.clone(), updated);
+                        fresh_rels.push(sheet_rels);
                     }
                 }
+            }
+        }
+        for name in fresh_rels {
+            if let Some(bytes) = self.overlay.remove(&name) {
+                self.changes
+                    .add
+                    .push((name.clone(), pack(&bytes).map_err(zip_error)?));
+                self.report.added_parts.push(name);
             }
         }
         if !gone_caches.is_empty() {

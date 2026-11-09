@@ -439,10 +439,12 @@ fn save_tables(
     book: &Book,
     edits: &mut WorkbookEdits,
     overlay: &mut BTreeMap<String, Vec<u8>>,
-    already_removed: &[String],
+    structure: &Structure,
     changes: &mut ZipChanges,
     report: &mut SaveReport,
 ) -> Result<TableSave, SaveError> {
+    let already_removed = &structure.removed;
+    let new_parts = &structure.new_parts;
     let mut save = TableSave::default();
     let mut taken: HashSet<String> = package
         .parts()
@@ -451,7 +453,13 @@ fn save_tables(
         .collect();
     for (index, info) in book.sheets.iter().enumerate() {
         let sheet = index as u32;
-        let Some(part) = info.part.as_ref().filter(|_| !info.deleted) else {
+        // A sheet added since opening has the part the save gave it.
+        let Some(part) = info
+            .part
+            .as_ref()
+            .or_else(|| new_parts.get(&sheet))
+            .filter(|_| !info.deleted)
+        else {
             continue;
         };
         let rels_name = rels_path(part);
@@ -1673,7 +1681,7 @@ pub async fn save_workbook_paced(
                 book,
                 &mut edits,
                 &mut overlay,
-                &structure.removed,
+                &structure,
                 &mut changes,
                 &mut report,
             )?
