@@ -4,7 +4,8 @@
 // It keeps one database shared by two companies (Kit and Dot), seeded vendors, tickets and
 // sessions on a clock the tests can move, versions that move on every write, idempotent commits
 // keyed by (company, commitId), and CORS with preflight. `/__mock/*` routes reset it, move its
-// clock, inject failures, revoke keys and make concurrent ERP edits.
+// clock, inject failures, revoke keys, turn the sheet off for a company and make concurrent
+// ERP edits.
 //
 //   node tests/erp-mock/server.mjs [--port 4180] [--host 127.0.0.1] [--sheet-url http://localhost:4173]
 
@@ -241,6 +242,9 @@ export class MockErp {
   reset() {
     this.offsetMs = 0;
     this.keys = new Map(Object.entries(API_KEYS).map(([key, v]) => [key, { ...v, active: true }]));
+    // The companies the sheet is turned on for, as UnifiedAPI's `SheetLaunch:Companies` lists
+    // them: every company here, so the suite and the browser tests can launch.
+    this.launchCompanies = new Set(Object.keys(COMPANIES));
     this.tickets = new Map();
     this.sessions = new Map();
     this.faults = [];
@@ -392,6 +396,7 @@ export class MockErp {
       return method;
     };
     if (is('api/system/SheetLaunch/CreateTicket', post)) return this.createTicket(ctx);
+    if (is('api/system/SheetLaunch/Status', get)) return this.launchStatus(ctx);
     if (is('api/sheet/Session/Redeem', post)) return this.redeem(ctx);
     if (is('api/sheet/Session/Renew', post)) return this.withSession(ctx, () => this.renew(ctx));
     if (is('api/sheet/Session/End', post)) return this.withSession(ctx, () => this.end(ctx));
@@ -414,7 +419,8 @@ export class MockErp {
   // -------------------------------------------------------------------------------------------
   // C.1 Launch and session
 
-  createTicket(ctx) {
+  /** The caller of an API-key route, or the API-key handler's empty-bodied 401. */
+  apiKeyCaller(ctx) {
     const key = ctx.req.headers['x-api-key'];
     const caller = typeof key === 'string' ? this.keys.get(key) : undefined;
     if (!caller || !caller.active) {
@@ -424,6 +430,27 @@ export class MockErp {
         errors: [],
       });
     }
+    return { key, caller };
+  }
+
+  /** Whether the ERP's button shows: the sheet is on for the company, and the caller may view. */
+  launchStatus(ctx) {
+    const found = this.apiKeyCaller(ctx);
+    if (found instanceof Reply) return found;
+    const entity = ctx.url.searchParams.get('entity') ?? 'vendors';
+    if (entity !== 'vendors') {
+      return this.fail(ctx, 400, 'request.invalid', null, { why: 'entity must be "vendors".' });
+    }
+    const { caller } = found;
+    return new Reply(200, {
+      enabled: this.launchCompanies.has(caller.company) && caller.privileges.includes('View'),
+    });
+  }
+
+  createTicket(ctx) {
+    const found = this.apiKeyCaller(ctx);
+    if (found instanceof Reply) return found;
+    const { key, caller } = found;
     const body = ctx.body;
     if (!isObject(body) || body.entity !== 'vendors') {
       return this.fail(ctx, 400, 'request.invalid', null, { why: 'entity must be "vendors".' });
@@ -435,7 +462,9 @@ export class MockErp {
     }
     const why = filterProblem(body.filter);
     if (why) return this.fail(ctx, 400, 'request.invalid', null, { why });
-    if (!caller.privileges.includes('View')) return this.fail(ctx, 403, 'privilege.denied', null);
+    if (!caller.privileges.includes('View') || !this.launchCompanies.has(caller.company)) {
+      return this.fail(ctx, 403, 'privilege.denied', null);
+    }
     const ticket = randomBytes(32).toString('base64url');
     const expiresAt = this.now() + LIMITS.ticketMs;
     this.tickets.set(sha256(ticket), {
@@ -587,10 +616,9 @@ export class MockErp {
     const search = typeof filter.search === 'string' ? filter.search.toLocaleLowerCase() : '';
     const matches = this.vendors(ctx.session.company).filter((row) => {
       if (wanted) return wanted.has(row.recId);
-      if (
-        search &&
-        !`${row.vendorAccount}\u0000${row.vendorName}`.toLocaleLowerCase().includes(search)
-      )
+      // The fields the ERP's Vendors list searches: account, name, group code, mobile and phone.
+      const searched = [row.vendorAccount, row.vendorName, row.vendorGroup, row.mobile, row.phone];
+      if (search && !searched.some((v) => (v ?? '').toLocaleLowerCase().includes(search)))
         return false;
       const values = wire(row);
       return Object.entries(filter).every(
@@ -793,6 +821,10 @@ export class MockErp {
         if (Array.isArray(body.privileges)) caller.privileges = body.privileges;
         return ok();
       }
+      case 'launch':
+        if (!Array.isArray(body.companies)) return bad('companies must be a list.');
+        this.launchCompanies = new Set(body.companies);
+        return ok();
       case 'edit': {
         const row = this.vendors(body.company).find((r) => r.vendorAccount === body.key);
         if (!row || !isObject(body.values)) return bad('Unknown vendor, or no values.');

@@ -11,7 +11,9 @@ the reference for Track E in `D:\CashGear\Projects\CashGear`.
 - The design is in `ERP_SHEET_INTEGRATION_PLAN.md` section C, and the answers and defaults are in
   `decisions.md` (2026-11-09, Planning the ERP integration, and Phase 14).
 
-Contract version: `vendors.1`, Phase 14 (2026-11-09).
+Contract version: `vendors.1`, Phase 14 (2026-11-09), with Phase 15's changes (2026-11-09): the
+Status route and its per-company switch, Query's search over what the ERP's Vendors list searches,
+and the columns' order and labels.
 
 ## Routes
 
@@ -20,7 +22,8 @@ Routes are module first, as the ERP's are. Every route takes and returns JSON
 
 | Route | Method | Who calls it | Authentication | Success |
 | --- | --- | --- | --- | --- |
-| `api/system/SheetLaunch/CreateTicket` | POST | `ERPClient_React`'s Vendors list | `X-API-Key`, and the Vendors unit's View | 200 `CreateTicketResponse` |
+| `api/system/SheetLaunch/Status?entity=vendors` | GET | `ERPClient_React`'s Vendors list, to show its button | `X-API-Key` | 200 `LaunchStatusResponse` |
+| `api/system/SheetLaunch/CreateTicket` | POST | `ERPClient_React`'s Vendors list | `X-API-Key`, the Vendors unit's View, and a company the sheet is on for | 200 `CreateTicketResponse` |
 | `api/sheet/Session/Redeem` | POST | The sheet, once, on launch | Anonymous; allow-listed `Origin`; rate-limited per IP | 200 `SheetSession` |
 | `api/sheet/Session/Renew` | POST | The sheet, while its user works | `X-Sheet-Session` | 200 `RenewResponse` |
 | `api/sheet/Session/End` | POST | The sheet, on close | `X-Sheet-Session` | 204 |
@@ -45,6 +48,13 @@ Routes are module first, as the ERP's are. Every route takes and returns JSON
 | CORS | Both | The sheet routes allow the sheet's origins only: `https://sheet.cashgearerp.com`, `http://localhost:4173`, `http://127.0.0.1:4173`, `http://localhost:5173` and `http://127.0.0.1:5173`. Preflight allows `GET`, `POST`, `Content-Type` and `X-Sheet-Session`, and responses expose `X-Correlation-Id`, `X-Company-Id` and `Retry-After`. No credentials |
 
 ## Launch and session
+
+**Turned on per company.** UnifiedAPI's setting `SheetLaunch:Companies` lists the companies the
+sheet is on for, and is empty until Phase 18 turns companies on (decisions, 2026-11-09, Phase 15).
+Status answers `{enabled}`: true when the key's company is listed and its user has the Vendors
+unit's View. The ERP's list shows "Edit in Cash Gear Sheet" only then, and CreateTicket refuses
+everyone else with 403 `privilege.denied`, so a direct call can't launch either. The mock lists
+every company, and `/__mock/launch` changes that.
 
 1. The ERP client calls CreateTicket with `{entity, filter, language}` and opens the returned
    `url` (`https://sheet.cashgearerp.com/erp#launch=<ticket>`) in a new tab.
@@ -99,25 +109,26 @@ Field types: `text`, `integer`, `decimal` (with `scale`), `boolean`, `date`, `da
 
 Decided on 2026-11-09 (Phase 14): the fields `UpdateEx` writes today, plus read-only context.
 
-| Field | Type | Constraints | Editable with | `VendorModel` column |
-| --- | --- | --- | --- | --- |
-| `vendorAccount` | text | 50, the key | Never | `VendorAccount` |
-| `vendorName` | text | 150, required | Edit | `VendorName` |
-| `vendorGroup` | lookup `vendorGroups` | required | Edit | `VendorGroup` → `VendorsGroup (Company, GroupId)`, whose `Active` flag gives `active` |
-| `payMethod` | lookup `paymentModes` | required | Edit | `PayMethod` → `PaymentModes (Company, PaymentId)`: payment terms with `PaymentDays`, all active |
-| `currency` | lookup `currencies` | required, as `Save` requires it | AdvEdit | `Currency` → `LedgerCurrencies (Company, Code)`, with no foreign key; an old blank `""` is sent as `null`, and can't be chosen |
-| `mobile` | text | 50 | Edit | `Mobile` |
-| `taxFile` | text | 50 | Edit | `TaxFile` |
-| `address` | text | 150 | Edit | `Address` |
-| `blocked` | boolean | required | AdvEdit | `Blocked` (0 is false, anything else true; written as 0 or 1) |
-| `bankAccount` | text | 50 | Never: bulk bank-account edits are a payment-fraud risk | `BankAccount` |
-| `debitLimit` | decimal, scale 2 | from 0 | Never | `DebitLimit`: EF's default `decimal(18,2)`, to be confirmed in `sys.columns` before E1 declares the scale |
-| `modifiedBy` | text | 50 | Never | `ModifiedBy` |
-| `modifiedDate` | dateTime | | Never | `ModifiedDate`, written as `DateTime.Now`, so sent with the host's own offset |
+| Field | Label (en, ar) | Type | Constraints | Editable with | `VendorModel` column |
+| --- | --- | --- | --- | --- | --- |
+| `vendorAccount` | Account, الحساب | text | 50, the key | Never | `VendorAccount` |
+| `vendorName` | Name, الاسم | text | 150, required | Edit | `VendorName` |
+| `vendorGroup` | Group, المجموعة | lookup `vendorGroups` | required | Edit | `VendorGroup` → `VendorsGroup (Company, GroupId)`, whose `Active` flag gives `active` |
+| `mobile` | Mobile, الجوال | text | 50 | Edit | `Mobile` |
+| `currency` | Currency, العملة | lookup `currencies` | required, as `Save` requires it | AdvEdit | `Currency` → `LedgerCurrencies (Company, Code)`, with no foreign key; an old blank `""` is sent as `null`, and can't be chosen |
+| `payMethod` | Payment method, طريقة الدفع | lookup `paymentModes` | required | Edit | `PayMethod` → `PaymentModes (Company, PaymentId)`: payment terms with `PaymentDays`, all active |
+| `address` | Address, العنوان | text | 150 | Edit | `Address` |
+| `taxFile` | Tax file, الملف الضريبي | text | 50 | Edit | `TaxFile` |
+| `blocked` | Blocked, موقوف | boolean | required | AdvEdit | `Blocked` (0 is false, anything else true; written as 0 or 1) |
+| `bankAccount` | Bank account, الحساب البنكي | text | 50 | Never: bulk bank-account edits are a payment-fraud risk | `BankAccount` |
+| `debitLimit` | Credit limit, حد الائتمان | decimal, scale 2 | from 0 | Never | `DebitLimit`: EF's default `decimal(18,2)`, to be confirmed in `sys.columns` before E1 declares the scale |
+| `modifiedBy` | Modified by, عدل بواسطة | text | 50 | Never | `ModifiedBy` |
+| `modifiedDate` | Modified, تاريخ التعديل | dateTime | | Never | `ModifiedDate`, written as `DateTime.Now`, so sent with the host's own offset |
 
 Never sent: `Token`, `SecRule`, `CreatedBy`, `CreatedDate` and the rest of `VendorModel`. `RecId`
-goes only as each record's `id`. The column order above is the mock's; Phase 15 asks for the
-sheet's.
+goes only as each record's `id`. The fields come in the order above, which is the sheet's column
+order, with the labels `ERPClient_React` uses for them (decisions, 2026-11-09, Phase 15). Lookup
+cells hold codes.
 
 ## Query
 
@@ -127,10 +138,12 @@ sheet's.
   `maxPageSize`) at a time.
 - `nextAfterId` is the last record's id when more follow, and `null` on the last page. `total`
   counts every match, whatever `afterId`.
-- `filter`: `search` matches the key or the name, ignoring case (in C#, as `VendorViewService`
-  does, to avoid Arabic collation quirks); any other property names a field
-  whose value must be equal. A filter on a field the ERP doesn't filter by is refused with
-  `request.invalid`.
+- `filter`: `search` matches what the ERP's own Vendors list searches, so the sheet opens exactly
+  the rows the list showed (decisions, 2026-11-09, Phase 15): the account, name, group code,
+  mobile or phone contains it, ignoring case (in C#, as `VendorViewService` does, to avoid Arabic
+  collation quirks). `Phone` isn't a field and is never sent. Any other property names a field
+  whose value must be equal; the list sends `blocked: false`, since it shows active vendors only.
+  A filter on a field the ERP doesn't filter by is refused with `request.invalid`.
 - `ids` (refresh): only those records, those still in the ERP and in the session's company, and
   `filter` is ignored. More than `maxRecords` ids gets 413.
 - Another company's records are never returned, though Kit and Dot share a database.
@@ -261,6 +274,8 @@ public sealed record SheetCreateTicketRequest(
     string Entity, Dictionary<string, JsonElement>? Filter, string Language);
 
 public sealed record SheetCreateTicketResponse(string Ticket, DateTimeOffset ExpiresAt, string Url);
+
+public sealed record SheetLaunchStatusResponse(bool Enabled);
 
 public sealed record SheetRedeemRequest(string Ticket);
 
@@ -560,6 +575,7 @@ ERP_BASE_URL=http://localhost:5000 ERP_TEST_KEY_EDITOR=… ERP_TEST_KEY_ADV=… 
 | `ERP_TEST_SKIP_KEYS` | Vendor accounts the suite must not write to, comma-separated |
 | `ERP_ALLOW_WRITES=1` | Needed when the server isn't on this machine, because the suite writes to the vendors it reads |
 | `ERP_BASE_IS_MOCK=1` | The server is the mock started by hand, so its clock and fault cases run too |
+| `ERP_TEST_STAGE` | The Track E stage the server has reached, `E1` to `E4` (default `E4`). E1 serves tickets, Status, Redeem, Schema and Query; E2 Commit; E3 Renew, End and CommitStatus. Cases of a later stage skip |
 
 A case whose key is missing skips. So do the cases that need the mock's clock (ticket and session
 expiry) or its failure injection (lost responses, a locked record, Retry-After); Track E covers
@@ -579,7 +595,8 @@ the suite starts its own on a free port.
   both with a `V-1001`. Kit's first vendors carry the values the wire rules must keep: Arabic and
   English names, `01001234567`, tax files `001` and `0045`, `15000.00`, empty fields, a blocked
   vendor, a locked one (`V-1005`, mock only: Vendors have no locks in the ERP), an empty currency
-  (`V-1007`) and one in an inactive group (`V-1008`).
+  (`V-1007`) and one in an inactive group (`V-1008`). `V-1003` and `V-1006` have a phone, which
+  search finds and Query never sends.
 - **Lookups** are shaped as the ERP's tables are: one description sent as both languages, payment
   terms (`CASH`, `NET30`, `NET60`), and Kit's inactive `OLD` group.
 - **Keys:** `mock-kit-editor` (Sara, View and Edit), `mock-kit-adv` (Omar, AdvEdit),
@@ -594,6 +611,7 @@ the suite starts its own on a free port.
 | `POST /__mock/fault` `{match, status?, retryAfter?, latencyMs?, drop?, times?}` | The next `times` (1 by default, 0 for every) requests whose path matches the regular expression `match`, ignoring case, wait `latencyMs`, answer `status`, or drop the connection `before` or `after` the server acts. Anchor it: `VendorSheet/Commit$`, since `VendorSheet/Commit` matches CommitStatus too |
 | `POST /__mock/edit` `{company, key, values, by}` | Another ERP user's edit, moving the version |
 | `POST /__mock/key` `{key, active?, privileges?}` | Revokes a key or changes its privileges |
+| `POST /__mock/launch` `{companies}` | The companies the sheet is on for, as `SheetLaunch:Companies` lists them; every company after a reset |
 | `GET /__mock/state?company=` | `{now, vendors, writes, commits, audit}` |
 | `GET /__mock/vendor?company=&key=` | One vendor as stored, `Token` and version included |
 

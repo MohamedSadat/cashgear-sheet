@@ -65,20 +65,21 @@ export function lookups(company) {
 }
 
 /**
- * The Vendors fields, in column order, with the privilege each needs to edit: `Edit`,
- * `AdvEdit`, or `null` for a field that is never editable (decisions, 2026-11-09, Phase 14).
+ * The Vendors fields, in the sheet's column order, with the privilege each needs to edit:
+ * `Edit`, `AdvEdit`, or `null` for a field that is never editable (decisions, 2026-11-09, Phase
+ * 14). The order and labels are the ERP's own Vendors list's (decisions, 2026-11-09, Phase 15).
  */
 export const VENDOR_FIELDS = [
   {
     name: 'vendorAccount',
-    label: label('Vendor account', 'حساب المورد'),
+    label: label('Account', 'الحساب'),
     type: 'text',
     maxLength: 50,
     needs: null,
   },
   {
     name: 'vendorName',
-    label: label('Name', 'اسم المورد'),
+    label: label('Name', 'الاسم'),
     type: 'text',
     maxLength: 150,
     required: true,
@@ -86,18 +87,17 @@ export const VENDOR_FIELDS = [
   },
   {
     name: 'vendorGroup',
-    label: label('Vendor group', 'مجموعة الموردين'),
+    label: label('Group', 'المجموعة'),
     type: 'lookup',
     lookup: 'vendorGroups',
     required: true,
     needs: 'Edit',
   },
   {
-    name: 'payMethod',
-    label: label('Payment method', 'طريقة الدفع'),
-    type: 'lookup',
-    lookup: 'paymentModes',
-    required: true,
+    name: 'mobile',
+    label: label('Mobile', 'الجوال'),
+    type: 'text',
+    maxLength: 50,
     needs: 'Edit',
   },
   {
@@ -109,17 +109,11 @@ export const VENDOR_FIELDS = [
     needs: 'AdvEdit',
   },
   {
-    name: 'mobile',
-    label: label('Mobile', 'الموبايل'),
-    type: 'text',
-    maxLength: 50,
-    needs: 'Edit',
-  },
-  {
-    name: 'taxFile',
-    label: label('Tax file', 'الملف الضريبي'),
-    type: 'text',
-    maxLength: 50,
+    name: 'payMethod',
+    label: label('Payment method', 'طريقة الدفع'),
+    type: 'lookup',
+    lookup: 'paymentModes',
+    required: true,
     needs: 'Edit',
   },
   {
@@ -127,6 +121,13 @@ export const VENDOR_FIELDS = [
     label: label('Address', 'العنوان'),
     type: 'text',
     maxLength: 150,
+    needs: 'Edit',
+  },
+  {
+    name: 'taxFile',
+    label: label('Tax file', 'الملف الضريبي'),
+    type: 'text',
+    maxLength: 50,
     needs: 'Edit',
   },
   {
@@ -145,7 +146,7 @@ export const VENDOR_FIELDS = [
   },
   {
     name: 'debitLimit',
-    label: label('Debit limit', 'حد المديونية'),
+    label: label('Credit limit', 'حد الائتمان'),
     type: 'decimal',
     scale: 2,
     min: '0',
@@ -211,6 +212,7 @@ function vendor(company, account, values) {
     payMethod: 'CASH',
     currency: 'EGP',
     mobile: null,
+    phone: null,
     taxFile: null,
     address: null,
     blocked: 0,
@@ -276,10 +278,21 @@ const KIT_FIXED = [
       debitLimit: '0.00',
     },
   ],
-  ['V-1003', { vendorName: 'Delta Supplies', blocked: 1, debitLimit: '2500.50' }],
+  [
+    'V-1003',
+    { vendorName: 'Delta Supplies', blocked: 1, debitLimit: '2500.50', phone: '0223456789' },
+  ],
   ['V-1004', { vendorName: 'شركة الدلتا', taxFile: '001', mobile: '0020123456789' }],
   ['V-1005', { vendorName: 'Locked Vendor', locked: true, secRule: 'LOCKED' }],
-  ['V-1006', { vendorName: 'Noor El Sabah', vendorGroup: 'SERVICES', payMethod: 'NET60' }],
+  [
+    'V-1006',
+    {
+      vendorName: 'Noor El Sabah',
+      vendorGroup: 'SERVICES',
+      payMethod: 'NET60',
+      phone: '0227654321',
+    },
+  ],
   ['V-1007', { vendorName: 'Empty Currency', currency: '' }],
   ['V-1008', { vendorName: 'Old Group Supplies', vendorGroup: 'OLD' }],
 ];

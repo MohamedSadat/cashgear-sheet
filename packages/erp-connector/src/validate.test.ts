@@ -12,6 +12,7 @@ import {
   readCreateTicketResponse,
   readEntitySchema,
   readErrorBody,
+  readLaunchStatus,
   readQueryResponse,
   readSheetSession,
   recordProblems,
@@ -100,6 +101,12 @@ describe('launch guards', () => {
         }),
       '$.url',
     );
+  });
+
+  it('read whether the ERP shows its button', () => {
+    expect(readLaunchStatus({ enabled: false })).toEqual({ enabled: false });
+    fails(() => readLaunchStatus({ enabled: 'yes' }), '$.enabled');
+    fails(() => readLaunchStatus({}), '$.enabled');
   });
 
   it('need a route and a language in the session', () => {

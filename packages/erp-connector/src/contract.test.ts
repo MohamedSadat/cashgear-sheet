@@ -8,8 +8,9 @@
 // (AdvEdit), ERP_TEST_KEY_VIEWER (View only), ERP_TEST_KEY_NONE (no Vendors privilege) and
 // ERP_TEST_KEY_OTHER (an editor in another company in the same database). A case whose key is
 // missing skips, and so do the cases that need the mock's clock or failure injection, unless
-// ERP_BASE_IS_MOCK=1 says the server is the mock. The suite writes to the records it reads, so
-// it refuses a server that isn't on this machine unless ERP_ALLOW_WRITES=1.
+// ERP_BASE_IS_MOCK=1 says the server is the mock. ERP_TEST_STAGE=E1 (to E4) names the Track E
+// stage a server has reached, and the cases of later stages skip. The suite writes to the
+// records it reads, so it refuses a server that isn't on this machine unless ERP_ALLOW_WRITES=1.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LIMITS, startMockErp } from '../../../tests/erp-mock/server.mjs';
@@ -36,6 +37,7 @@ import {
   readCreateTicketResponse,
   readEntitySchema,
   readErrorBody,
+  readLaunchStatus,
   readQueryResponse,
   readRenewResponse,
   readSheetSession,
@@ -65,6 +67,14 @@ const KEYS: Record<Role, string | undefined> = onMock
       other: env.ERP_TEST_KEY_OTHER,
     };
 const lacks = (...roles: Role[]) => roles.some((role) => !KEYS[role]);
+
+/**
+ * The Track E stage the server has reached: E1 serves tickets, Redeem, Status, Schema and Query;
+ * E2 Commit; E3 Renew, End and CommitStatus; E4 rate limits. The mock serves them all.
+ */
+const STAGE = onMock ? 4 : Number(/^E([1-4])$/.exec(env.ERP_TEST_STAGE ?? 'E4')?.[1]);
+if (!Number.isInteger(STAGE)) throw new Error('ERP_TEST_STAGE must be E1, E2, E3 or E4.');
+const serves = (stage: 'E2' | 'E3') => STAGE >= Number(stage.slice(1));
 /** Records the suite leaves alone: the mock's locked vendor, or `ERP_TEST_SKIP_KEYS`. */
 const SKIP = new Set(
   onMock ? ['V-1005'] : (env.ERP_TEST_SKIP_KEYS ?? '').split(',').filter(Boolean),
@@ -375,6 +385,37 @@ describe('tickets', () => {
     expect(answer.status).toBe(401);
   });
 
+  it('are made where Status says the sheet is on, and Status needs an API key', async () => {
+    const status = await send('GET', `${ROUTES.launchStatus}?entity=vendors`, {
+      apiKey: KEYS.editor,
+    });
+    expect(status.status).toBe(200);
+    expect(readLaunchStatus(status.json)).toEqual({ enabled: true });
+    const anonymous = await send('GET', `${ROUTES.launchStatus}?entity=vendors`);
+    expect(anonymous.status).toBe(401);
+    if (!lacks('none')) {
+      const none = await send('GET', `${ROUTES.launchStatus}?entity=vendors`, {
+        apiKey: KEYS.none,
+      });
+      expect(readLaunchStatus(none.json)).toEqual({ enabled: false });
+    }
+  });
+
+  it.skipIf(!onMock)('are refused where the sheet is off for the company', async () => {
+    await control('launch', { companies: ['Dot'] });
+    const status = await send('GET', `${ROUTES.launchStatus}?entity=vendors`, {
+      apiKey: KEYS.editor,
+    });
+    expect(readLaunchStatus(status.json)).toEqual({ enabled: false });
+    const answer = await send('POST', ROUTES.createTicket, {
+      apiKey: KEYS.editor,
+      body: { entity: 'vendors', filter: null, language: 'en' },
+    });
+    expect(answer.status).toBe(403);
+    expect(codes(answer)).toEqual(['privilege.denied']);
+    expect((await ticket('other')).ticket).toHaveLength(43);
+  });
+
   it.skipIf(lacks('none'))('need the Vendors View privilege', async () => {
     const answer = await send('POST', ROUTES.createTicket, {
       apiKey: KEYS.none,
@@ -434,7 +475,7 @@ describe('sessions', () => {
     expect(codes(answer)).toEqual(['session.expired']);
   });
 
-  it('end on End', async () => {
+  it.skipIf(!serves('E3'))('end on End', async () => {
     const session = await open();
     const ended = await send('POST', ROUTES.end, { session: session.token });
     expect(ended.status).toBe(204);
@@ -588,7 +629,8 @@ describe('query', () => {
     const session = await open();
     const noor = await page(session, { filter: { search: 'NOOR' }, pageSize: 1000 });
     for (const r of noor.records) {
-      expect(`${r.key} ${r.values.vendorName}`.toLowerCase()).toContain('noor');
+      const searched = [r.key, r.values.vendorName, r.values.vendorGroup, r.values.mobile];
+      expect(searched.join(' ').toLowerCase(), r.key).toContain('noor');
     }
     expect(noor.total).toBe(noor.records.length);
     const unblocked = await page(session, { filter: { blocked: false }, pageSize: 1000 });
@@ -596,6 +638,27 @@ describe('query', () => {
     if (onMock) {
       expect(noor.records.map((r) => r.key)).toEqual(['V-1001', 'V-1006']);
       expect(unblocked.total).toBeLessThan(2345);
+    }
+  });
+
+  it('searches what the ERP’s Vendors list searches: account, name, group, mobile and phone', async () => {
+    const session = await open();
+    const found = await page(session, { filter: { blocked: false }, pageSize: 200 });
+    const withMobile = found.records.find((r) => typeof r.values.mobile === 'string')!;
+    const digits = (withMobile.values.mobile as string).slice(-7);
+    const byMobile = await page(session, { filter: { search: digits }, pageSize: 1000 });
+    expect(byMobile.records.map((r) => r.id)).toContain(withMobile.id);
+    const group = withMobile.values.vendorGroup as string;
+    const byGroup = await page(session, {
+      filter: { search: group.toLowerCase(), blocked: false },
+      pageSize: 1000,
+    });
+    expect(byGroup.records.map((r) => r.id)).toContain(withMobile.id);
+    if (onMock) {
+      // V-1003's phone is never sent, but the ERP's list finds it by it.
+      const byPhone = await page(session, { filter: { search: '0223456' }, pageSize: 1000 });
+      expect(byPhone.records.map((r) => r.key)).toEqual(['V-1003']);
+      expect(byPhone.records[0]!.values).not.toHaveProperty('phone');
     }
   });
 
@@ -642,7 +705,7 @@ describe('query', () => {
   });
 });
 
-describe('commit', () => {
+describe.skipIf(!serves('E2'))('commit', () => {
   beforeEach(async () => {
     schemaVersion = (await schemaOf(await open())).schemaVersion;
   });
@@ -698,10 +761,12 @@ describe('commit', () => {
     expect(result.records[0]!.version).toBe(a!.version);
     expect(result.records[0]!.values.mobile).toBe(mobile);
     expect((await byIds(session, [a!])).get(a!.id)).toEqual(a);
-    const status = await send('GET', at(session, `CommitStatus/${commitId}`), {
-      session: session.token,
-    });
-    expect(readCommitStatus(status.json).status).toBe('unknown');
+    if (serves('E3')) {
+      const status = await send('GET', at(session, `CommitStatus/${commitId}`), {
+        session: session.token,
+      });
+      expect(readCommitStatus(status.json).status).toBe('unknown');
+    }
     if (before) expect(await mockState()).toEqual(before);
 
     const invalid = await commit(session, [change(a!, { vendorName: null })], { dryRun: true });
@@ -849,13 +914,15 @@ describe('commit', () => {
     expect(again.json).toEqual(first.json);
     const written = readCommitResponse(first.json).records[0]!;
     expect((await byIds(session, [a!])).get(a!.id)!.version).toBe(written.version);
-    const status = await send('GET', at(session, `CommitStatus/${commitId}`), {
-      session: session.token,
-    });
-    expect(readCommitStatus(status.json)).toEqual({
-      status: 'committed',
-      ...readCommitResponse(first.json),
-    });
+    if (serves('E3')) {
+      const status = await send('GET', at(session, `CommitStatus/${commitId}`), {
+        session: session.token,
+      });
+      expect(readCommitStatus(status.json)).toEqual({
+        status: 'committed',
+        ...readCommitResponse(first.json),
+      });
+    }
     if (before) expect((await mockState()).writes).toBe(before.writes + 1);
   });
 

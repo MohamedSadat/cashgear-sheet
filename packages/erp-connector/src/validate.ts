@@ -18,6 +18,7 @@ import {
   type ErrorBody,
   type FieldSchema,
   type Language,
+  type LaunchStatusResponse,
   type Localized,
   type LookupItem,
   type QueryFilter,
@@ -185,6 +186,11 @@ export function readCreateTicketResponse(value: unknown, path = '$'): CreateTick
     throw new ContractError(`${path}.url`, 'a URL ending in #launch=<ticket>', url);
   }
   return { ticket, expiresAt: dateTime(o.expiresAt, `${path}.expiresAt`), url };
+}
+
+export function readLaunchStatus(value: unknown, path = '$'): LaunchStatusResponse {
+  const o = object(value, path);
+  return { enabled: boolean(o.enabled, `${path}.enabled`) };
 }
 
 export function readSheetSession(value: unknown, path = '$'): SheetSession {

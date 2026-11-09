@@ -18,17 +18,19 @@ export type Language = 'en' | 'ar';
 export type WireValue = string | number | boolean | null;
 
 /**
- * A query's filter. `search` matches the key or the name, ignoring case; any other property is a
- * field name whose value must be equal. The ERP decides which fields it filters on.
+ * A query's filter. `search` matches what the ERP's own list of the entity searches, ignoring
+ * case (Vendors: the account, name, group code, mobile and phone); any other property is a field
+ * name whose value must be equal. The ERP decides which fields it filters on.
  */
 export type QueryFilter = Readonly<Record<string, WireValue>>;
 
 // ---------------------------------------------------------------------------------------------
 // Routes
 
-/** Routes outside the entity: the API key's ticket route, and the sheet session's. */
+/** Routes outside the entity: the API key's launch routes, and the sheet session's. */
 export const ROUTES = {
   createTicket: 'api/system/SheetLaunch/CreateTicket',
+  launchStatus: 'api/system/SheetLaunch/Status',
   redeem: 'api/sheet/Session/Redeem',
   renew: 'api/sheet/Session/Renew',
   end: 'api/sheet/Session/End',
@@ -65,6 +67,18 @@ export interface CreateTicketResponse {
   readonly expiresAt: string;
   /** The sheet's URL with the ticket in its fragment: `…/erp#launch=<ticket>`. */
   readonly url: string;
+}
+
+/**
+ * `GET api/system/SheetLaunch/Status?entity=vendors`, sent by the ERP client with its API key to
+ * decide whether its "Edit in Cash Gear Sheet" button shows.
+ */
+export interface LaunchStatusResponse {
+  /**
+   * The sheet is turned on for the key's company (UnifiedAPI's `SheetLaunch:Companies`) and the
+   * caller may view the entity. CreateTicket refuses anyone this says `false` for.
+   */
+  readonly enabled: boolean;
 }
 
 /** `POST api/sheet/Session/Redeem`, anonymous, from an allow-listed `Origin`. */
