@@ -2021,42 +2021,6 @@ impl CellSink for Collected {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::reads_another_workbook;
-
-    #[test]
-    fn tells_a_link_to_another_workbook_from_a_table_reference() {
-        for linked in [
-            "[1]Sheet1!A1",
-            "[1]Sheet1!$A$1:$B$2+1",
-            "SUM([2]Data!A1:A6)",
-            "[1]!Total",
-            "'[1]Params Tab 1'!$B$1",
-            "'C:\\files\\[book.xlsx]Sheet 1'!A1",
-            "[link-external-workbook-a.xlsx]Sheet0!A1",
-            "'[1](0)泰州市'!B8",
-            "[1]Лист1!A3",
-        ] {
-            assert!(reads_another_workbook(linked), "{linked}");
-        }
-        for local in [
-            "A1+1",
-            "Table1[Column]",
-            "SUM(Table1[[#All],[Sales]])",
-            "Table1[@Sales]*2",
-            "\"[1]Sheet1!A1\"",
-            "'Sheet [1]'&\"x\"",
-            "'It''s'!A1",
-            "[@Sales]",
-            "[Sales]*2",
-            "'My [Sheet'&\"!\"",
-        ] {
-            assert!(!reads_another_workbook(local), "{local}");
-        }
-    }
-}
-
 /// Batches past this many edits write each sheet's farthest value first (`set_cells`).
 const SIZE_FIRST_FROM: usize = 64;
 
@@ -2172,5 +2136,41 @@ impl FormualizerEngine {
             CellInput::Spill { .. } => {}
         }
         Ok(before)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_another_workbook;
+
+    #[test]
+    fn tells_a_link_to_another_workbook_from_a_table_reference() {
+        for linked in [
+            "[1]Sheet1!A1",
+            "[1]Sheet1!$A$1:$B$2+1",
+            "SUM([2]Data!A1:A6)",
+            "[1]!Total",
+            "'[1]Params Tab 1'!$B$1",
+            "'C:\\files\\[book.xlsx]Sheet 1'!A1",
+            "[link-external-workbook-a.xlsx]Sheet0!A1",
+            "'[1](0)泰州市'!B8",
+            "[1]Лист1!A3",
+        ] {
+            assert!(reads_another_workbook(linked), "{linked}");
+        }
+        for local in [
+            "A1+1",
+            "Table1[Column]",
+            "SUM(Table1[[#All],[Sales]])",
+            "Table1[@Sales]*2",
+            "\"[1]Sheet1!A1\"",
+            "'Sheet [1]'&\"x\"",
+            "'It''s'!A1",
+            "[@Sales]",
+            "[Sales]*2",
+            "'My [Sheet'&\"!\"",
+        ] {
+            assert!(!reads_another_workbook(local), "{local}");
+        }
     }
 }
