@@ -372,6 +372,7 @@ impl Session {
             C::SetNote { sheet, .. }
             | C::NoteVisible { sheet, .. }
             | C::SetDrawingBox { sheet, .. }
+            | C::PictureFormat { sheet, .. }
             | C::DeleteDrawings { sheet, .. }
             | C::InsertChart { sheet, .. }
             | C::InsertPicture { sheet, .. }

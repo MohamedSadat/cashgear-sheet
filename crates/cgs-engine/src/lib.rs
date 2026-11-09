@@ -647,6 +647,18 @@ impl Engine {
                 if model.hidden || !model.prints {
                     out.push_str(",\"prints\":false");
                 }
+                if model.rotation != 0 {
+                    out.push_str(&format!(
+                        ",\"rotation\":{}",
+                        f64::from(model.rotation) / 60_000.0
+                    ));
+                }
+                if model.flip_h {
+                    out.push_str(",\"flipH\":true");
+                }
+                if model.flip_v {
+                    out.push_str(",\"flipV\":true");
+                }
             }
             out.push('}');
         }

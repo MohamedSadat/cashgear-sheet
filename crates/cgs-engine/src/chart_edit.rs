@@ -187,6 +187,19 @@ pub struct SeriesSpec {
     pub values: String,
 }
 
+/// What the Picture Format tab changes on a drawing.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PictureChange {
+    /// Degrees to turn it by, clockwise: 90 or -90.
+    pub rotate: Option<i32>,
+    /// `horizontal` or `vertical`.
+    pub flip: Option<String>,
+    pub description: Option<String>,
+    /// `front`, `back`, `forward` or `backward`.
+    pub order: Option<String>,
+}
+
 /// A change from the Chart Design or Format tab, or the format pane.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -216,6 +229,13 @@ pub enum ChartEdit {
     Legend {
         #[serde(default)]
         position: Option<String>,
+    },
+    /// Add Chart Element › Trendline for one series: `linear`, `exponential`, `forecast` (linear,
+    /// two periods on) or `movingAverage` (over two points), or none to take them away.
+    Trendline {
+        index: u32,
+        #[serde(default)]
+        trend: Option<String>,
     },
     /// Data labels for one series, or all with none.
     DataLabels {
@@ -1279,6 +1299,62 @@ pub fn apply_edit(
                 }
             }
         }
+        ChartEdit::Trendline { index, trend: kind } => {
+            let style = chart.style;
+            let total = chart.series().count();
+            let number = chart
+                .groups
+                .iter()
+                .flat_map(|g| g.series.iter())
+                .position(|s| s.index == *index)
+                .ok_or("That series isn't in the chart.")?;
+            let group = chart
+                .groups
+                .iter_mut()
+                .find(|g| g.series.iter().any(|s| s.index == *index))
+                .ok_or("That series isn't in the chart.")?;
+            if !matches!(
+                group.kind,
+                GroupKind::Bar { .. } | GroupKind::Line { .. } | GroupKind::Scatter { .. }
+            ) {
+                return Err("A trendline can't be added to this kind of chart.".to_string());
+            }
+            let series = group
+                .series
+                .iter_mut()
+                .find(|s| s.index == *index)
+                .ok_or("That series isn't in the chart.")?;
+            let Some(kind) = kind else {
+                series.trendlines.clear();
+                return Ok(());
+            };
+            let (trend, forward) = match kind.as_str() {
+                "linear" => (TrendKind::Linear, 0.0),
+                "exponential" => (TrendKind::Exponential, 0.0),
+                "forecast" => (TrendKind::Linear, 2.0),
+                "movingAverage" => (TrendKind::MovingAverage(2), 0.0),
+                _ => return Err("That's not a kind of trendline.".to_string()),
+            };
+            // As Excel draws a new one: dotted, 1.5 points wide, in the series' own colour.
+            let color = crate::charts::auto_color(style, number, total);
+            series.trendlines = vec![Trendline {
+                kind: trend,
+                name: None,
+                forward,
+                backward: 0.0,
+                intercept: None,
+                show_equation: false,
+                show_r2: false,
+                shape: ShapeLook {
+                    fill: None,
+                    line: Some(ChartLine {
+                        fill: Some(ChartFill::Solid(color)),
+                        width: Some(19_050),
+                        dash: Some(Dash::SysDot),
+                    }),
+                },
+            }];
+        }
         ChartEdit::Gridlines { id, major, minor } => {
             let axis = chart.axis_mut(*id).ok_or("That axis isn't in the chart.")?;
             axis.major_gridlines = major.then(|| {
@@ -2042,6 +2118,53 @@ impl Session {
             .ok_or("That picture or chart isn't on the sheet any more.")?;
         drawing.anchor = placed(info, drawing.anchor, x, y, width, height);
         self.drawings_op(sheet, drawings, "move")
+    }
+
+    /// The Picture Format tab, and Arrange on charts' and pictures' tabs: a turn of 90 degrees
+    /// either way, a flip, the alternative text, or a move in front of or behind the others.
+    pub(crate) fn picture_format(
+        &mut self,
+        sheet: u32,
+        index: u32,
+        change: &PictureChange,
+    ) -> Result<Applied, String> {
+        let info = self.sheet_for_edit(sheet)?;
+        let mut drawings = info.drawings.clone();
+        let at = index as usize;
+        let drawing = drawings
+            .get_mut(at)
+            .ok_or("That picture or chart isn't on the sheet any more.")?;
+        let picture = drawing.kind == DrawingKind::Picture;
+        if (change.rotate.is_some() || change.flip.is_some()) && !picture {
+            return Err("Only a picture turns or flips here.".to_string());
+        }
+        if let Some(degrees) = change.rotate {
+            const TURN: i64 = 360 * 60_000;
+            let next = (i64::from(drawing.rotation) + i64::from(degrees) * 60_000).rem_euclid(TURN);
+            drawing.rotation = next as i32;
+        }
+        match change.flip.as_deref() {
+            Some("horizontal") => drawing.flip_h = !drawing.flip_h,
+            Some("vertical") => drawing.flip_v = !drawing.flip_v,
+            Some(_) => return Err("That's not a way to flip a picture.".to_string()),
+            None => {}
+        }
+        if let Some(text) = &change.description {
+            drawing.description = text.clone();
+        }
+        if let Some(order) = change.order.as_deref() {
+            let moved = drawings.remove(at);
+            let last = drawings.len();
+            let to = match order {
+                "front" => last,
+                "back" => 0,
+                "forward" => (at + 1).min(last),
+                "backward" => at.saturating_sub(1),
+                _ => return Err("That's not a place in front or behind.".to_string()),
+            };
+            drawings.insert(to, moved);
+        }
+        self.drawings_op(sheet, drawings, "picture format")
     }
 
     pub(crate) fn delete_drawings(

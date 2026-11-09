@@ -617,6 +617,12 @@ pub enum Command {
         edit: crate::chart_edit::ChartEdit,
     },
     /// Move Chart, to another worksheet.
+    /// The Picture Format tab: turn, flip, alternative text, and order among the drawings.
+    PictureFormat {
+        sheet: u32,
+        index: u32,
+        change: crate::chart_edit::PictureChange,
+    },
     MoveDrawing {
         sheet: u32,
         index: u32,
@@ -3768,6 +3774,11 @@ impl Session {
             } => self.insert_picture(sheet, &part, (x, y, width, height), &name),
             Command::EditChart { sheet, index, edit } => self.edit_chart(sheet, index, &edit),
             Command::MoveDrawing { sheet, index, to } => self.move_drawing_to(sheet, index, to),
+            Command::PictureFormat {
+                sheet,
+                index,
+                change,
+            } => self.picture_format(sheet, index, &change),
             Command::SetNote {
                 sheet,
                 row,

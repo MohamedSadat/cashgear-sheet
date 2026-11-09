@@ -732,9 +732,19 @@ pub struct LabelsView {
     pub look: TextView,
 }
 
+/// A trendline as drawn: its name and the fitted value at each of its series' points.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendlineView {
+    pub name: String,
+    pub values: Vec<Option<f64>>,
+    pub line: Option<LineView>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SeriesView {
+    pub trendlines: Vec<TrendlineView>,
     pub name: String,
     /// Which group it belongs to.
     pub group: usize,
@@ -1479,7 +1489,27 @@ impl Builder<'_> {
             .or(group.labels.as_ref())
             .filter(|labels| labels.shows_anything())
             .map(|labels| self.labels(chart, labels, round, &name, &values, points, categories));
+        let trend_x: Vec<Option<f64>> = match &x {
+            Some(xs) => xs.clone(),
+            None => (1..=values.len()).map(|n| Some(n as f64)).collect(),
+        };
+        let trendlines = series
+            .trendlines
+            .iter()
+            .map(|trend| TrendlineView {
+                name: trend
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| trend.kind.default_name(&name)),
+                values: fit_trend(trend.kind, &trend_x, &values),
+                line: self.line(
+                    trend.shape.line.as_ref(),
+                    Some((auto.clone(), 1.5 * PX_PER_PT)),
+                ),
+            })
+            .collect();
         SeriesView {
+            trendlines,
             name,
             group: group_index,
             values,
@@ -1725,5 +1755,147 @@ mod tests {
             auto_color(2, 6, 8),
             DmlColor::scheme("accent1").with(ColorModKind::LumMod, 60_000)
         );
+    }
+}
+
+/// Least squares: the coefficients of `1, x, x², …` up to `order` that fit the points best.
+fn least_squares(points: &[(f64, f64)], order: usize) -> Option<Vec<f64>> {
+    let size = order + 1;
+    if points.len() < size {
+        return None;
+    }
+    let mut matrix = vec![vec![0.0; size + 1]; size];
+    for &(x, y) in points {
+        let powers: Vec<f64> = (0..2 * size).map(|p| x.powi(p as i32)).collect();
+        for (row, line) in matrix.iter_mut().enumerate() {
+            for (col, cell) in line.iter_mut().take(size).enumerate() {
+                *cell += powers[row + col];
+            }
+            line[size] += y * powers[row];
+        }
+    }
+    // Gaussian elimination with the largest pivot in each column.
+    for col in 0..size {
+        let pivot = (col..size).max_by(|&a, &b| {
+            matrix[a][col]
+                .abs()
+                .partial_cmp(&matrix[b][col].abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
+        matrix.swap(col, pivot);
+        let lead = matrix[col][col];
+        if lead.abs() < 1e-12 {
+            return None;
+        }
+        let pivot_row = matrix[col].clone();
+        for (row, line) in matrix.iter_mut().enumerate() {
+            if row != col {
+                let factor = line[col] / lead;
+                for (cell, &by) in line.iter_mut().zip(&pivot_row).skip(col) {
+                    *cell -= factor * by;
+                }
+            }
+        }
+    }
+    Some(
+        (0..size)
+            .map(|row| matrix[row][size] / matrix[row][row])
+            .collect(),
+    )
+}
+
+/// A trendline's value at each point, fitted as Excel fits it: least squares over the points
+/// that have values, on `ln y` for an exponential, `ln x` for a logarithmic and both for a power
+/// trendline, and the mean of the last `period` points for a moving average.
+pub fn fit_trend(kind: TrendKind, xs: &[Option<f64>], ys: &[Option<f64>]) -> Vec<Option<f64>> {
+    let count = ys.len();
+    if let TrendKind::MovingAverage(period) = kind {
+        let period = period.max(1) as usize;
+        return (0..count)
+            .map(|at| {
+                if at + 1 < period {
+                    return None;
+                }
+                let window = &ys[at + 1 - period..=at];
+                let sum: Option<f64> = window.iter().copied().sum();
+                sum.map(|total| total / period as f64)
+            })
+            .collect();
+    }
+    let into = |x: f64, y: f64| -> Option<(f64, f64)> {
+        match kind {
+            TrendKind::Exponential => (y > 0.0).then(|| (x, y.ln())),
+            TrendKind::Logarithmic => (x > 0.0).then(|| (x.ln(), y)),
+            TrendKind::Power => (x > 0.0 && y > 0.0).then(|| (x.ln(), y.ln())),
+            _ => Some((x, y)),
+        }
+    };
+    let points: Vec<(f64, f64)> = xs
+        .iter()
+        .zip(ys)
+        .filter_map(|(x, y)| into((*x)?, (*y)?))
+        .collect();
+    let order = match kind {
+        TrendKind::Polynomial(order) => usize::from(order.clamp(2, 6)),
+        _ => 1,
+    };
+    let Some(fit) = least_squares(&points, order) else {
+        return vec![None; count];
+    };
+    let at = |x: f64| -> f64 { fit.iter().rev().fold(0.0, |sum, c| sum * x + c) };
+    xs.iter()
+        .take(count)
+        .map(|x| {
+            let x = (*x)?;
+            match kind {
+                TrendKind::Exponential => Some(at(x).exp()),
+                TrendKind::Logarithmic => (x > 0.0).then(|| at(x.ln())),
+                TrendKind::Power => (x > 0.0).then(|| at(x.ln()).exp()),
+                _ => Some(at(x)),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod trend_tests {
+    use super::*;
+
+    fn close(a: &[Option<f64>], b: &[f64]) {
+        for (x, y) in a.iter().zip(b) {
+            assert!((x.unwrap() - y).abs() < 1e-5, "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn trendlines_fit_as_excel_does() {
+        let xs: Vec<Option<f64>> = (1..=6).map(|n| Some(f64::from(n))).collect();
+        let ys = [12.0, 15.0, 21.0, 26.0, 35.0, 44.0].map(Some);
+        // Least squares: y = 6.4286x + 3.
+        let linear = fit_trend(TrendKind::Linear, &xs, &ys);
+        close(
+            &linear,
+            &[
+                9.428_571_429,
+                15.857_142_857,
+                22.285_714_286,
+                28.714_285_714,
+                35.142_857_143,
+                41.571_428_571,
+            ],
+        );
+        // On ln y: y = 9.1522e^(0.2643x).
+        let exp = fit_trend(TrendKind::Exponential, &xs, &ys);
+        close(
+            &exp,
+            &[
+                11.921_421, 15.528_489, 20.226_949, 26.347_024, 34.318_853, 44.702_72,
+            ],
+        );
+        let moving = fit_trend(TrendKind::MovingAverage(2), &xs, &ys);
+        assert_eq!(moving[0], None);
+        close(&moving[1..], &[13.5, 18.0, 23.5, 30.5, 39.5]);
+        let poly = fit_trend(TrendKind::Polynomial(2), &xs, &ys);
+        assert!(poly.iter().all(Option::is_some));
     }
 }

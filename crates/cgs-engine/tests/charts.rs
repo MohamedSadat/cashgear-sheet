@@ -342,3 +342,104 @@ fn a_chart_sheet_shows_its_chart_and_saves_an_edit() {
     let again = opened(out);
     assert_eq!(again.book().unwrap().sheets[1].drawings.len(), 1);
 }
+
+#[test]
+fn a_trendline_is_saved_as_excel_2016_writes_it_and_drawn_from_its_fit() {
+    let mut engine = with_data();
+    json(
+        &mut engine,
+        r#"{"kind":"insertChart","sheet":0,"area":{"top":1,"left":1,"bottom":4,"right":3},"chart":"columnClustered","x":300,"y":20}"#,
+    );
+    json(
+        &mut engine,
+        r#"{"kind":"editChart","sheet":0,"index":0,"edit":{"kind":"trendline","index":0,"trend":"forecast"}}"#,
+    );
+    let view: serde_json::Value = serde_json::from_str(&engine.chart_json(0, 0, SCREEN)).unwrap();
+    let trend = &view["series"][0]["trendlines"][0];
+    assert_eq!(trend["name"], "Linear (Sales)");
+    assert_eq!(trend["values"], serde_json::json!([10.0, 20.0, 30.0]));
+    assert_eq!(trend["line"]["dash"], "dot");
+    let out = saved(&mut engine);
+    let chart = text(&parts(&out), "xl/charts/chart1.xml");
+    assert!(chart.contains("<c:trendline><c:spPr><a:ln w=\"19050\"><a:solidFill><a:schemeClr val=\"accent1\"/></a:solidFill><a:prstDash val=\"sysDot\"/></a:ln></c:spPr><c:trendlineType val=\"linear\"/><c:forward val=\"2\"/><c:dispRSqr val=\"0\"/><c:dispEq val=\"0\"/></c:trendline><c:cat>"), "{chart}");
+    // A moving average in its place, then none.
+    json(
+        &mut engine,
+        r#"{"kind":"editChart","sheet":0,"index":0,"edit":{"kind":"trendline","index":0,"trend":"movingAverage"}}"#,
+    );
+    let view: serde_json::Value = serde_json::from_str(&engine.chart_json(0, 0, SCREEN)).unwrap();
+    assert_eq!(
+        view["series"][0]["trendlines"][0]["name"],
+        "2 per. Mov. Avg. (Sales)"
+    );
+    assert_eq!(
+        view["series"][0]["trendlines"][0]["values"],
+        serde_json::json!([null, 15.0, 25.0])
+    );
+    let reopened = opened(saved(&mut engine));
+    let chart = &reopened.book().unwrap().charts[0];
+    let cgs_model::ChartBody::Classic(chart) = &chart.body else {
+        panic!("a classic chart")
+    };
+    assert_eq!(
+        chart.groups[0].series[0].trendlines[0].kind,
+        cgs_model::chart::TrendKind::MovingAverage(2)
+    );
+    json(
+        &mut engine,
+        r#"{"kind":"editChart","sheet":0,"index":0,"edit":{"kind":"trendline","index":0}}"#,
+    );
+    assert!(!text(&parts(&saved(&mut engine)), "xl/charts/chart1.xml").contains("trendline"));
+}
+
+#[test]
+fn a_picture_turns_flips_takes_alt_text_and_moves_in_front_as_excel_writes_them() {
+    let mut engine = with_data();
+    let png: Vec<u8> = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0,
+        0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1F, 0x15, 0xC4, 0x89, 0, 0, 0, 13, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0, 0, 0x03, 0x01, 0x01, 0, 0xC9, 0xFE, 0x92,
+        0xEF, 0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    let part = engine.add_media(png).unwrap();
+    for (name, y) in [("one.png", 100), ("two.png", 200)] {
+        engine
+            .apply(serde_json::from_str(&format!(
+                r#"{{"kind":"insertPicture","sheet":0,"part":"{part}","x":10,"y":{y},"width":48,"height":48,"name":"{name}"}}"#
+            ))
+            .unwrap())
+            .unwrap();
+    }
+    json(
+        &mut engine,
+        r#"{"kind":"pictureFormat","sheet":0,"index":0,"change":{"rotate":90,"flip":"horizontal","description":"Logo"}}"#,
+    );
+    let out = saved(&mut engine);
+    let drawing = text(&parts(&out), "xl/drawings/drawing1.xml");
+    assert!(drawing.contains("descr=\"Logo\""), "{drawing}");
+    assert!(
+        drawing.contains("<a:xfrm rot=\"5400000\" flipH=\"1\">"),
+        "{drawing}"
+    );
+    // Turned again and moved to the front: the file's own anchor changes in place.
+    let mut again = opened(out);
+    json(
+        &mut again,
+        r#"{"kind":"pictureFormat","sheet":0,"index":0,"change":{"rotate":-90,"order":"front"}}"#,
+    );
+    let out = saved(&mut again);
+    let drawing = text(&parts(&out), "xl/drawings/drawing1.xml");
+    assert!(drawing.contains("<a:xfrm flipH=\"1\">"), "{drawing}");
+    let reopened = opened(out);
+    let drawings = &reopened.book().unwrap().sheets[0].drawings;
+    assert_eq!(drawings[1].description, "Logo");
+    assert!(drawings[1].flip_h && drawings[1].rotation == 0);
+    assert!(json_err(
+        &mut again,
+        r#"{"kind":"editChart","sheet":0,"index":0,"edit":{"kind":"trendline","index":0,"trend":"linear"}}"#
+    ));
+}
+
+fn json_err(engine: &mut Engine, text: &str) -> bool {
+    engine.apply_json(text).is_err()
+}
