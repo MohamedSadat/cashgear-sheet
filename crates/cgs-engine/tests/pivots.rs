@@ -271,3 +271,389 @@ fn a_number_field_on_an_axis_lists_its_items_in_the_cache() {
     assert!(sales.starts_with(" numFmtId=\"0\"><sharedItems"));
     assert!(sales.contains("count=\"4\"><n v=\"10\"/>"));
 }
+
+/// Excel's own probe book for grouping: 20 sales over 2016 in three regions and four products.
+fn dated() -> Engine {
+    let mut engine = open(cgs_xlsx::blank::blank_workbook().unwrap());
+    for (c, text) in ["Region", "Product", "Date", "Sales"].iter().enumerate() {
+        typed(&mut engine, 1, c as u32 + 1, text);
+    }
+    let regions = ["East", "West", "North"];
+    let products = ["Apple", "Pear", "Plum", "Fig"];
+    for i in 0..20u32 {
+        let row = i + 2;
+        typed(&mut engine, row, 1, regions[i as usize % 3]);
+        typed(&mut engine, row, 2, products[i as usize % 4]);
+        let date = format!("{}/{}/2016", i % 12 + 1, i % 27 + 1);
+        typed(&mut engine, row, 3, &date);
+        typed(&mut engine, row, 4, &(10 * (i + 1) + 5).to_string());
+    }
+    run(
+        &mut engine,
+        json!({
+            "kind": "createPivot",
+            "sheet": 0,
+            "area": { "top": 1, "left": 1, "bottom": 21, "right": 4 },
+            "to": { "kind": "existing", "sheet": 0, "row": 3, "col": 7 },
+        }),
+    )
+    .unwrap();
+    engine
+}
+
+fn labels(engine: &Engine) -> Vec<String> {
+    (3..60)
+        .map(|row| shown(engine, 0, row, 7))
+        .take_while(|text| !text.is_empty())
+        .collect()
+}
+
+fn saved_cache(engine: &mut Engine) -> String {
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    let package = cgs_xlsx::package::Package::open(Rc::new(out)).unwrap();
+    String::from_utf8(
+        package
+            .read("xl/pivotCache/pivotCacheDefinition1.xml")
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn dates_group_by_period_into_new_fields_as_excel_2016_does() {
+    let mut engine = dated();
+    let layout = json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "rows": [2], "values": [{ "field": 3 }] } });
+    run(&mut engine, layout).unwrap();
+    run(
+        &mut engine,
+        json!({ "kind": "groupPivot", "pivot": pivot(), "field": 2, "group": { "kind": "dates", "parts": ["months", "quarters", "years"] } }),
+    )
+    .unwrap();
+    // As Excel 2016 lays it out over COM.
+    assert_eq!(
+        labels(&engine),
+        [
+            "Row Labels",
+            "2016",
+            "Qtr1",
+            "Jan",
+            "Feb",
+            "Mar",
+            "Qtr2",
+            "Apr",
+            "May",
+            "Jun",
+            "Qtr3",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Qtr4",
+            "Oct",
+            "Nov",
+            "Dec",
+            "Grand Total"
+        ]
+    );
+    let cache = saved_cache(&mut engine);
+    assert!(cache.contains("<fieldGroup par=\"6\"/>"), "{cache}");
+    assert!(cache.contains("<cacheField name=\"Months (Date)\" numFmtId=\"0\" databaseField=\"0\"><fieldGroup base=\"2\"><rangePr groupBy=\"months\" startDate=\"2016-01-01T00:00:00\" endDate=\"2016-12-13T00:00:00\"/><groupItems count=\"14\"><s v=\"&lt;1/1/2016\"/><s v=\"Jan\"/>"), "{cache}");
+    assert!(
+        cache.contains("<s v=\"2016\"/><s v=\"&gt;12/13/2016\"/></groupItems>"),
+        "{cache}"
+    );
+    // Ungroup brings the dates back.
+    run(
+        &mut engine,
+        json!({ "kind": "ungroupPivot", "pivot": pivot(), "field": 4 }),
+    )
+    .unwrap();
+    assert_eq!(labels(&engine).len(), 22);
+    assert!(!saved_cache(&mut engine).contains("fieldGroup"));
+    // Undo goes back to the groups.
+    run(&mut engine, json!({ "kind": "undo" })).unwrap();
+    assert_eq!(labels(&engine)[1], "2016");
+}
+
+#[test]
+fn numbers_group_in_steps_and_items_by_hand_as_excel_2016_does() {
+    let mut engine = dated();
+    run(
+        &mut engine,
+        json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "rows": [3], "values": [{ "field": 0, "summary": "count" }] } }),
+    )
+    .unwrap();
+    run(
+        &mut engine,
+        json!({ "kind": "groupPivot", "pivot": pivot(), "field": 3, "group": { "kind": "numbers", "start": 0, "end": 250, "by": 50 } }),
+    )
+    .unwrap();
+    assert_eq!(
+        labels(&engine),
+        [
+            "Row Labels",
+            "0-49",
+            "50-99",
+            "100-149",
+            "150-199",
+            "200-250",
+            "Grand Total"
+        ]
+    );
+    let cache = saved_cache(&mut engine);
+    assert!(cache.contains("<fieldGroup base=\"3\"><rangePr autoStart=\"0\" autoEnd=\"0\" startNum=\"0\" endNum=\"250\" groupInterval=\"50\"/><groupItems count=\"7\"><s v=\"&lt;0\"/><s v=\"0-49\"/>"), "{cache}");
+
+    // Apple and Fig grouped by hand, in a new field before Product.
+    run(
+        &mut engine,
+        json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "rows": [1], "values": [{ "field": 3 }] } }),
+    )
+    .unwrap();
+    run(
+        &mut engine,
+        json!({ "kind": "groupPivot", "pivot": pivot(), "field": 1, "group": { "kind": "items", "items": [0, 1] } }),
+    )
+    .unwrap();
+    assert_eq!(
+        labels(&engine),
+        [
+            "Row Labels",
+            "Group1",
+            "Apple",
+            "Fig",
+            "Pear",
+            "Pear",
+            "Plum",
+            "Plum",
+            "Grand Total"
+        ]
+    );
+    assert_eq!(shown(&engine, 0, 4, 8), "1100");
+    assert_eq!(shown(&engine, 0, 5, 8), "475");
+    let cache = saved_cache(&mut engine);
+    assert!(cache.contains("<cacheField name=\"Product2\" numFmtId=\"0\" databaseField=\"0\"><fieldGroup base=\"1\"><discretePr count=\"4\"><x v=\"2\"/><x v=\"0\"/><x v=\"1\"/><x v=\"2\"/></discretePr><groupItems count=\"3\"><s v=\"Pear\"/><s v=\"Plum\"/><s v=\"Group1\"/></groupItems>"), "{cache}");
+    run(
+        &mut engine,
+        json!({ "kind": "ungroupPivot", "pivot": pivot(), "field": 4 }),
+    )
+    .unwrap();
+    assert_eq!(
+        labels(&engine),
+        ["Row Labels", "Apple", "Fig", "Pear", "Plum", "Grand Total"]
+    );
+}
+
+fn sheet_names(engine: &Engine) -> Vec<String> {
+    let book = engine.book().unwrap();
+    book.tab_order()
+        .iter()
+        .map(|&s| book.sheets[s as usize].name.clone())
+        .collect()
+}
+
+#[test]
+fn show_details_lists_a_values_records_on_a_new_sheet_as_excel_2016_does() {
+    let mut engine = dated();
+    run(
+        &mut engine,
+        json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "rows": [0], "cols": [1], "values": [{ "field": 3 }] } }),
+    )
+    .unwrap();
+    // East and Apple: 150, as in Excel's B5.
+    assert_eq!(shown(&engine, 0, 5, 8), "150");
+    run(
+        &mut engine,
+        json!({ "kind": "pivotDetails", "sheet": 0, "row": 5, "col": 8 }),
+    )
+    .unwrap();
+    assert_eq!(sheet_names(&engine), ["Sheet2", "Sheet1"]);
+    let row =
+        |engine: &Engine, r| -> Vec<String> { (1..=4).map(|c| shown(engine, 1, r, c)).collect() };
+    assert_eq!(row(&engine, 1), ["Region", "Product", "Date", "Sales"]);
+    assert_eq!(row(&engine, 2), ["East", "Apple", "42370", "15"]);
+    assert_eq!(row(&engine, 3), ["East", "Apple", "42382", "135"]);
+    assert_eq!(row(&engine, 4), ["", "", "", ""]);
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    let package = cgs_xlsx::package::Package::open(Rc::new(out)).unwrap();
+    let part = package
+        .parts()
+        .iter()
+        .map(|p| p.name.clone())
+        .find(|n| n.starts_with("xl/tables/"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{:?}",
+                package
+                    .parts()
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let table = String::from_utf8(package.read(&part).unwrap()).unwrap();
+    assert!(table.contains("name=\"Table1\""), "{table}");
+    assert!(table.contains("ref=\"A1:D3\""), "{table}");
+    assert!(table.contains("TableStyleMedium2"), "{table}");
+    // The grand total's details are every record; a label isn't a value.
+    run(
+        &mut engine,
+        json!({ "kind": "pivotDetails", "sheet": 0, "row": 8, "col": 12 }),
+    )
+    .unwrap();
+    assert_eq!(sheet_names(&engine), ["Sheet2", "Sheet3", "Sheet1"]);
+    assert_eq!(shown(&engine, 2, 21, 4), "205");
+    assert!(run(
+        &mut engine,
+        json!({ "kind": "pivotDetails", "sheet": 0, "row": 5, "col": 7 })
+    )
+    .is_err());
+    // One undo step each.
+    run(&mut engine, json!({ "kind": "undo" })).unwrap();
+    run(&mut engine, json!({ "kind": "undo" })).unwrap();
+    assert_eq!(sheet_names(&engine), ["Sheet1"]);
+}
+
+#[test]
+fn report_filter_pages_copy_the_pivot_per_item_as_excel_2016_does() {
+    let mut engine = dated();
+    run(
+        &mut engine,
+        json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "pages": [0], "rows": [1], "values": [{ "field": 3 }] } }),
+    )
+    .unwrap();
+    run(
+        &mut engine,
+        json!({ "kind": "pivotFilterPages", "pivot": pivot(), "field": 0 }),
+    )
+    .unwrap();
+    assert_eq!(sheet_names(&engine), ["East", "North", "West", "Sheet1"]);
+    let book = engine.book().unwrap();
+    let on = |name: &str| book.sheets.iter().position(|s| s.name == name).unwrap() as u32;
+    let (east, west) = (on("East"), on("West"));
+    // Excel makes West's first, so it is PivotTable2 after the original's PivotTable1.
+    let named = |sheet: u32| {
+        book.pivot_tables
+            .iter()
+            .find(|t| t.sheet == sheet)
+            .unwrap()
+            .name
+            .clone()
+    };
+    assert_eq!(named(west), "PivotTable2");
+    assert_eq!(named(east), "PivotTable4");
+    assert_eq!(shown(&engine, east, 1, 7), "Region");
+    assert_eq!(shown(&engine, east, 1, 8), "East");
+    let total = |sheet: u32| {
+        (3..20)
+            .find(|&r| shown(&engine, sheet, r, 7) == "Grand Total")
+            .map(|r| shown(&engine, sheet, r, 8))
+            .unwrap()
+    };
+    // East's sales: rows 2, 5, 8, ... of the source.
+    let east_total: u32 = (0..20u32)
+        .filter(|i| i % 3 == 0)
+        .map(|i| 10 * (i + 1) + 5)
+        .sum();
+    assert_eq!(total(east), east_total.to_string());
+    assert_eq!(total(0), "2200");
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    let again = open(out);
+    assert_eq!(again.book().unwrap().pivot_tables.len(), 4);
+}
+
+fn pivot_formula(engine: &Engine, row: u32, col: u32, from: u32) -> Value {
+    let question =
+        json!({ "kind": "pivotDataFormula", "sheet": 0, "row": row, "col": col, "from": from });
+    serde_json::from_str(&engine.query(&question.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn a_click_on_a_value_writes_getpivotdata_which_reads_the_pivot() {
+    let mut engine = dated();
+    run(
+        &mut engine,
+        json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "rows": [0], "cols": [1], "values": [{ "field": 3 }] } }),
+    )
+    .unwrap();
+    let east_apple = pivot_formula(&engine, 5, 8, 0);
+    assert_eq!(
+        east_apple,
+        "GETPIVOTDATA(\"Sales\",$G$3,\"Region\",\"East\",\"Product\",\"Apple\")"
+    );
+    assert_eq!(
+        pivot_formula(&engine, 8, 12, 0),
+        "GETPIVOTDATA(\"Sales\",$G$3)"
+    );
+    assert_eq!(pivot_formula(&engine, 5, 7, 0), Value::Null);
+    typed(
+        &mut engine,
+        30,
+        1,
+        &format!("={}", east_apple.as_str().unwrap()),
+    );
+    typed(
+        &mut engine,
+        31,
+        1,
+        "=GETPIVOTDATA(\"Sum of Sales\",G5,\"Product\",\"pear\")",
+    );
+    typed(
+        &mut engine,
+        32,
+        1,
+        "=GETPIVOTDATA(\"Sales\",$G$3,\"Region\",\"Nowhere\")",
+    );
+    assert_eq!(shown(&engine, 0, 30, 1), "150");
+    assert_eq!(shown(&engine, 0, 31, 1), "525");
+    assert!(
+        shown(&engine, 0, 32, 1).contains("#REF!"),
+        "{}",
+        shown(&engine, 0, 32, 1)
+    );
+    // A change to the source, refreshed, reaches it.
+    typed(&mut engine, 2, 4, "1015");
+    run(&mut engine, json!({ "kind": "refreshPivot" })).unwrap();
+    assert_eq!(shown(&engine, 0, 30, 1), "1150");
+    // Dates are written as DATE(), as Excel writes them.
+    run(
+        &mut engine,
+        json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "rows": [2], "values": [{ "field": 3 }] } }),
+    )
+    .unwrap();
+    assert_eq!(
+        pivot_formula(&engine, 4, 8, 1),
+        "GETPIVOTDATA(\"Sales\",Sheet1!$G$3,\"Date\",DATE(2016,1,1))"
+    );
+}
+
+#[test]
+fn two_pivots_made_on_one_sheet_are_both_linked_from_it() {
+    let mut engine = dated();
+    run(
+        &mut engine,
+        json!({ "kind": "pivotLayout", "pivot": pivot(), "layout": { "rows": [0], "values": [{ "field": 3 }] } }),
+    )
+    .unwrap();
+    run(
+        &mut engine,
+        json!({
+            "kind": "createPivot",
+            "sheet": 0,
+            "area": { "top": 1, "left": 1, "bottom": 21, "right": 4 },
+            "to": { "kind": "existing", "sheet": 0, "row": 3, "col": 11 },
+        }),
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    engine.save(&mut out).unwrap();
+    let package = cgs_xlsx::package::Package::open(Rc::new(out.clone())).unwrap();
+    let rels =
+        String::from_utf8(package.read("xl/worksheets/_rels/sheet1.xml.rels").unwrap()).unwrap();
+    assert!(
+        rels.contains("pivotTable1.xml") && rels.contains("pivotTable2.xml"),
+        "{rels}"
+    );
+    assert_eq!(open(out).book().unwrap().pivot_tables.len(), 2);
+}

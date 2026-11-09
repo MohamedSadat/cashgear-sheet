@@ -238,6 +238,7 @@ impl Session {
                 | C::RenameSheet { .. }
                 | C::SheetState { .. } => true,
                 C::CreatePivot { to, .. } => matches!(to, crate::pivots::Destination::NewSheet),
+                C::PivotDetails { .. } | C::PivotFilterPages { .. } => true,
                 _ => false,
             };
             if structural {
@@ -383,7 +384,9 @@ impl Session {
                 .and_then(|pivot| allowed(pivot.sheet, |p| p.pivot_tables)),
             C::PivotLayout { pivot, .. }
             | C::PivotOptions { pivot, .. }
-            | C::PivotField { pivot, .. } => allowed(pivot.sheet, |p| p.pivot_tables),
+            | C::PivotField { pivot, .. }
+            | C::GroupPivot { pivot, .. }
+            | C::UngroupPivot { pivot, .. } => allowed(pivot.sheet, |p| p.pivot_tables),
             C::DeletePivot { pivot } => protected(pivot.sheet),
             C::CreatePivot { to, .. } => match to {
                 crate::pivots::Destination::Existing { sheet, .. } => protected(*sheet),

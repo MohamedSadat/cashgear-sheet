@@ -137,7 +137,7 @@ fn parse_summary(text: &str) -> Option<Summary> {
 }
 
 /// A cache value as a cell holds it.
-fn cell_of(value: &CacheValue) -> CalcValue {
+pub(crate) fn cell_of(value: &CacheValue) -> CalcValue {
     match value {
         CacheValue::Missing => CalcValue::Empty,
         CacheValue::Number(n) | CacheValue::Date(n) => CalcValue::Number(*n),
@@ -175,7 +175,7 @@ impl Session {
             .ok_or_else(|| format!("There's no PivotTable named {}.", pivot.name))
     }
 
-    fn records_slot(&mut self, cache: usize) -> &mut Option<Rc<CacheRecords>> {
+    pub(crate) fn records_slot(&mut self, cache: usize) -> &mut Option<Rc<CacheRecords>> {
         if self.pivot_records.len() < self.book.pivot_caches.len() {
             self.pivot_records
                 .resize(self.book.pivot_caches.len(), None);
@@ -185,7 +185,7 @@ impl Session {
 
     /// The records a cache holds now: read from the file the first time, or from the source if
     /// the file kept none.
-    fn cache_records(&mut self, cache: usize) -> Result<Rc<CacheRecords>, String> {
+    pub(crate) fn cache_records(&mut self, cache: usize) -> Result<Rc<CacheRecords>, String> {
         if let Some(records) = self.records_slot(cache).clone() {
             return Ok(records);
         }
@@ -457,7 +457,7 @@ impl Session {
     }
 
     /// The text a number shows in a format, for labels such as "1/5/2024 Total".
-    fn format_number(&self, n: f64, id: Option<u32>) -> String {
+    pub(crate) fn format_number(&self, n: f64, id: Option<u32>) -> String {
         let format = id.map_or_else(NumFmt::general, |id| self.num_fmt(id));
         let mut out = String::new();
         let _ = format.format(
@@ -471,7 +471,7 @@ impl Session {
         out
     }
 
-    fn lay_out(&mut self, table: &PivotTable) -> Result<Layout, String> {
+    pub(crate) fn lay_out(&mut self, table: &PivotTable) -> Result<Layout, String> {
         let cache = table.cache as usize;
         let records = self.cache_records(cache)?;
         let def = &self.book.pivot_caches[cache];
@@ -517,7 +517,7 @@ impl Session {
 
     /// The step that puts a pivot table's new layout in its cells and the model, with what it
     /// replaces. `before` is the area the old output covered.
-    fn output_op(
+    pub(crate) fn output_op(
         &mut self,
         index: usize,
         mut table: PivotTable,
@@ -1389,7 +1389,7 @@ impl Session {
             .unwrap_or(1)
     }
 
-    fn next_pivot_name(&self) -> String {
+    pub(crate) fn next_pivot_name(&self) -> String {
         let taken: HashSet<String> = self
             .book
             .pivot_tables
@@ -1413,6 +1413,7 @@ impl Session {
             self.dirty.sheets.insert(table.sheet);
         }
         self.edits.pivots_changed = true;
+        self.pivots_stale = true;
         Op::BookPivots {
             tables: std::mem::replace(&mut self.book.pivot_tables, tables),
             caches: std::mem::replace(&mut self.book.pivot_caches, caches),
@@ -1634,7 +1635,7 @@ pub(crate) fn area_text(area: Area) -> String {
 
 /// A pivot table's fields after its cache was read again: fields follow their names, and items
 /// follow their values.
-fn remap_table(
+pub(crate) fn remap_table(
     table: &PivotTable,
     remap: &[Option<usize>],
     old: &PivotCache,
@@ -1949,6 +1950,21 @@ fn field_json(
             .all(|v| matches!(v, CacheValue::Number(_) | CacheValue::Missing))
         && cache.fields[f].database
         && cache.fields[f].group.is_none();
+    // Dates, and where numbers or dates run from and to, for the Grouping dialog.
+    let dates = !values.is_empty()
+        && values
+            .iter()
+            .all(|v| matches!(v, CacheValue::Date(_) | CacheValue::Missing))
+        && cache.fields[f].database
+        && cache.fields[f].group.is_none();
+    let bounds = (numeric || dates)
+        .then(|| {
+            let list: Vec<f64> = values.iter().filter_map(CacheValue::number).collect();
+            let low = list.iter().copied().fold(f64::INFINITY, f64::min);
+            let high = list.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            low.is_finite().then_some((low, high))
+        })
+        .flatten();
     let label = |item: &PivotItem| {
         item.name.clone().unwrap_or_else(|| {
             item.x
@@ -2008,6 +2024,16 @@ fn field_json(
         "blankRow": field.insert_blank_row,
         "multiple": field.multiple_item_selection,
         "grouped": cache.fields[f].group.is_some(),
+        "groupKind": match cache.fields[f].group.as_ref().map(|g| &g.range) {
+            Some(Some(cgs_model::pivot::GroupRange::Dates { .. })) => Some("dates"),
+            Some(Some(cgs_model::pivot::GroupRange::Numbers { .. })) => Some("numbers"),
+            Some(Some(cgs_model::pivot::GroupRange::Discrete(_))) => Some("items"),
+            Some(None) => Some("base"),
+            None => None,
+        },
+        "dates": dates,
+        "low": bounds.map(|b| b.0),
+        "high": bounds.map(|b| b.1),
     })
 }
 

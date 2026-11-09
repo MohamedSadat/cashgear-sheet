@@ -80,6 +80,13 @@ enum Question {
     CellStyles,
     /// A named style's format and what it includes, for Modify Cell Style.
     StyleFormat { name: String },
+    /// The GETPIVOTDATA formula a click on a pivot table's value writes, from a formula on `from`.
+    PivotDataFormula {
+        sheet: u32,
+        row: u32,
+        col: u32,
+        from: u32,
+    },
     /// What conditional formats make of each cell of an area, for checking against Excel: its
     /// fill and font colours, whether bold, and its icon.
     CfLook { sheet: u32, area: Area },
@@ -274,6 +281,14 @@ impl Session {
             Question::Notes { sheet } => self.notes_list(sheet),
             Question::CellStyles => self.cell_styles_json(),
             Question::StyleFormat { name } => self.style_format_json(&name),
+            Question::PivotDataFormula {
+                sheet,
+                row,
+                col,
+                from,
+            } => self
+                .pivot_data_formula(sheet, row, col, from)
+                .map_or(Value::Null, Value::String),
             Question::CfLook { sheet, area } => self.cf_look_json(sheet, area),
             Question::TableStyles { options } => {
                 self.table_styles_json(&options.unwrap_or_default())

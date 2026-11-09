@@ -172,7 +172,7 @@ impl Session {
                 .any(|defined| defined.name.eq_ignore_ascii_case(name))
     }
 
-    fn next_table_name(&self) -> String {
+    pub(crate) fn next_table_name(&self) -> String {
         let mut number = 1;
         loop {
             let name = format!("Table{number}");
@@ -183,7 +183,7 @@ impl Session {
         }
     }
 
-    fn next_table_id(&self) -> u32 {
+    pub(crate) fn next_table_id(&self) -> u32 {
         self.book
             .tables
             .iter()
@@ -356,7 +356,7 @@ impl Session {
         names
     }
 
-    fn table_lists(&self) -> (Vec<TableInfo>, Vec<Table>) {
+    pub(crate) fn table_lists(&self) -> (Vec<TableInfo>, Vec<Table>) {
         (self.calc.tables().to_vec(), self.book.tables.clone())
     }
 

@@ -24,6 +24,8 @@ mod json;
 pub mod names;
 pub mod notes;
 pub mod page;
+pub mod pivot_drill;
+pub mod pivot_group;
 pub mod pivot_style;
 pub mod pivots;
 pub mod print;
@@ -115,6 +117,8 @@ struct Session {
     pub(crate) error_rules: u16,
     /// Each pivot cache's records, once a pivot table has needed them.
     pivot_records: Vec<Option<Rc<cgs_model::pivot::CacheRecords>>>,
+    /// The pivot tables changed since GETPIVOTDATA's index was made.
+    pivots_stale: bool,
     /// What pivot tables call things the file doesn't name, in the UI's language.
     pivot_captions: cgs_pivot::Captions,
     cache: tile::TileCache,
@@ -295,6 +299,7 @@ impl Engine {
             circled: Default::default(),
             error_rules: errors::DEFAULT_RULES,
             pivot_records: Vec::new(),
+            pivots_stale: true,
             pivot_captions: self.pivot_captions.clone(),
             cache: tile::TileCache::default(),
             phase: LoadPhase::Reading,
@@ -368,6 +373,10 @@ impl Engine {
                 if !more {
                     session.phase = LoadPhase::Ready;
                     session.after_preparing();
+                    // GETPIVOTDATA, and the formulas a click on a pivot table writes, need it.
+                    if !session.book.pivot_tables.is_empty() {
+                        session.rebuild_pivot_index();
+                    }
                 }
                 Ok(more)
             }

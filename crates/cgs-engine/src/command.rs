@@ -652,6 +652,27 @@ pub enum Command {
     DeletePivot {
         pivot: crate::pivots::PivotRef,
     },
+    /// Group Field or Group Selection: dates by period, numbers by steps, or items by hand.
+    GroupPivot {
+        pivot: crate::pivots::PivotRef,
+        field: u32,
+        group: crate::pivot_group::GroupSpec,
+    },
+    UngroupPivot {
+        pivot: crate::pivots::PivotRef,
+        field: u32,
+    },
+    /// Show Details on a value: its records on a new sheet.
+    PivotDetails {
+        sheet: u32,
+        row: u32,
+        col: u32,
+    },
+    /// Show Report Filter Pages for one of a pivot table's report filters.
+    PivotFilterPages {
+        pivot: crate::pivots::PivotRef,
+        field: u32,
+    },
     Undo,
     Redo,
 }
@@ -1017,7 +1038,11 @@ fn number_only(sheet: &SheetInfo) -> Result<(), String> {
 }
 
 /// Whether a name can be a sheet's, as Excel rules it.
-fn sheet_name_problem(book: &cgs_model::Book, name: &str, except: Option<u32>) -> Option<String> {
+pub(crate) fn sheet_name_problem(
+    book: &cgs_model::Book,
+    name: &str,
+    except: Option<u32>,
+) -> Option<String> {
     if name.is_empty() {
         return Some("A sheet needs a name.".to_string());
     }
@@ -3676,6 +3701,18 @@ impl Session {
             Command::RefreshPivot { pivot } => self.refresh_pivot_command(pivot),
             Command::PivotLayout { pivot, layout } => self.pivot_layout_command(&pivot, layout),
             Command::PivotOptions { pivot, options } => self.pivot_options_command(&pivot, options),
+            Command::GroupPivot {
+                pivot,
+                field,
+                group,
+            } => self.pivot_group_command(&pivot, field, group),
+            Command::UngroupPivot { pivot, field } => self.pivot_ungroup_command(&pivot, field),
+            Command::PivotDetails { sheet, row, col } => {
+                self.pivot_details_command(sheet, row, col)
+            }
+            Command::PivotFilterPages { pivot, field } => {
+                self.pivot_filter_pages_command(&pivot, field)
+            }
             Command::PivotField {
                 pivot,
                 field,
@@ -4023,6 +4060,10 @@ impl Engine {
         }
         if session.manual && !session.force_calc {
             return Ok(false);
+        }
+        // GETPIVOTDATA reads the pivot tables as they are before anything recalculates.
+        if session.pivots_stale {
+            session.rebuild_pivot_index();
         }
         if !session.calc.is_calculating() {
             session.force_calc = false;
