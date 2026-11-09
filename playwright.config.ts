@@ -30,12 +30,24 @@ export default defineConfig({
     { name: 'chrome', use: { channel: 'chrome' } },
     { name: 'edge', use: { channel: 'msedge' } },
   ],
-  webServer: process.env.E2E_BASE_URL
-    ? undefined
-    : {
-        command: 'pnpm preview',
-        url: baseURL,
-        reuseExistingServer: !process.env.CI,
-        timeout: 30000,
-      },
+  // The sheet's preview, and the mock ERP on a second origin for tests/e2e/erp.spec.ts, as the
+  // real API is on another origin than the sheet.
+  webServer: [
+    ...(process.env.E2E_BASE_URL
+      ? []
+      : [
+          {
+            command: 'pnpm preview',
+            url: baseURL,
+            reuseExistingServer: !process.env.CI,
+            timeout: 30000,
+          },
+        ]),
+    {
+      command: 'node tests/erp-mock/server.mjs --port 4180 --sheet-url http://127.0.0.1:4173',
+      url: 'http://127.0.0.1:4180/__mock/state',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30000,
+    },
+  ],
 });
