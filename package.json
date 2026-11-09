@@ -20,6 +20,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:save": "node scripts/write-fixtures.mjs && node bench/run-save-check.mjs bench/results/save-fixtures.json tests/workbooks/fixtures",
+    "erp:mock": "node tests/erp-mock/server.mjs",
     "desktop:build": "pnpm build && pnpm --filter @cgs/desktop build",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:installer": "node scripts/desktop-installer.mjs",
