@@ -20,6 +20,7 @@ import type {
   ErpRefreshSummary,
   FileSource,
   FindQuery,
+  FitRoom,
   FormatLists,
   FoundCell,
   LoadEvent,
@@ -64,7 +65,12 @@ export interface EngineClient {
   /** Fits rows of a sheet from another program's file, for how it looks here. */
   fitOpeningRows(sheet: number): Promise<void>;
   /** Fits columns to what they hold. */
-  autoFitColumns(sheet: number, first: number, last: number): Promise<Applied | null>;
+  autoFitColumns(
+    sheet: number,
+    first: number,
+    last: number,
+    room?: FitRoom,
+  ): Promise<Applied | null>;
   mergeDiscards(sheet: number, areas: CellArea[], across: boolean): Promise<boolean>;
   cellFormat(sheet: number, row: number, col: number): Promise<CellFormat | null>;
   formatLists(): Promise<FormatLists | null>;
@@ -264,10 +270,10 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
       const fitted = await tiles.fitRows(rows, measuringPalette());
       await engine.command({ kind: 'fitRows', rows: fitted, quiet: true });
     },
-    async autoFitColumns(sheet, first, last) {
+    async autoFitColumns(sheet, first, last, room) {
       const cells = await engine.colFits(sheet, first, last);
       if (!cells.length) return null;
-      const cols = await tiles.fitColumns(cells, measuringPalette());
+      const cols = await tiles.fitColumns(cells, measuringPalette(), room);
       return engine.command({ kind: 'fitCols', sheet, cols });
     },
     mergeDiscards: (sheet, areas, across) => engine.mergeDiscards(sheet, areas, across),

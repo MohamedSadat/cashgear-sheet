@@ -1476,7 +1476,7 @@ impl Session {
                         out.push(',');
                     }
                     comma = true;
-                    out.push_str(&format!("{{\"col\":{col},"));
+                    out.push_str(&format!("{{\"col\":{col},\"row\":{row},"));
                     let start = out.len();
                     push_font_cell(&mut out, &text, &font, 0, xf.alignment);
                     // The cell's own braces become part of this object.

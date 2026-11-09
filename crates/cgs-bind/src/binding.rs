@@ -50,7 +50,10 @@ pub struct Binding {
     pub table_name: String,
     pub sheet: u32,
     pub session: SessionInfo,
+    /// The entity's name in the session's language, as the sheet and workbook are named.
     pub entity_label: String,
+    /// Its English name, for the app's own messages until they come in Arabic too.
+    pub entity_label_en: String,
     pub schema_version: String,
     pub key_field: String,
     pub max_page_size: u32,
@@ -100,6 +103,7 @@ impl Binding {
             table_name,
             sheet,
             entity_label: schema.label.get(session.language()).to_string(),
+            entity_label_en: schema.label.en.clone(),
             session,
             schema_version: schema.schema_version.clone(),
             key_field: schema.key_field.clone(),
@@ -180,7 +184,7 @@ impl Binding {
             self.fields.clone(),
             self.key_index,
             self.max_records,
-            &self.entity_label.to_lowercase(),
+            &self.entity_label_en.to_lowercase(),
         )
     }
 

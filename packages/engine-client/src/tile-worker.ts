@@ -38,9 +38,9 @@ const api: TileWorkerApi = {
     await fontsReady;
     return fitRows(measuring(), rows, palette);
   },
-  async fitColumns(cells, palette) {
+  async fitColumns(cells, palette, room) {
     await fontsReady;
-    return fitColumns(measuring(), cells, palette);
+    return fitColumns(measuring(), cells, palette, room);
   },
   async draw({ sheet, firstRow, firstCol, scale, palette }) {
     if (!engine) throw new Error('The tile worker is not connected to the engine.');

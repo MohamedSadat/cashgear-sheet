@@ -44,7 +44,13 @@ export interface RowFit {
 }
 
 /** A cell to measure for a column to fit: see `Session::fit_cols_json`. */
-export type ColFit = FitCell & { col: number };
+export type ColFit = FitCell & { col: number; row: number };
+
+/** Room a fit leaves beside one row's text, such as a heading's filter button. */
+export interface FitRoom {
+  row: number;
+  px: number;
+}
 
 export interface TileRequest {
   sheet: number;
@@ -1724,8 +1730,10 @@ export interface ErpPageInfo {
 /** A bound ERP table, as the ribbon, the status badge and Connection Info show it. */
 export interface ErpBinding {
   entity: string;
-  /** The entity's name in the session's language, such as "Vendors". */
+  /** The entity's name in the session's language, such as "Vendors", as the sheet is named. */
   label: string;
+  /** Its English name, for the app's own messages. */
+  labelEn: string;
   company: string;
   userId: string;
   userName: string;
@@ -1780,5 +1788,5 @@ export interface TileWorkerApi {
   /** Each row's height, as [sheet, row, pixels]. */
   fitRows(rows: RowFit[], palette: TilePalette): Promise<[number, number, number][]>;
   /** Each column's width, as [column, pixels]. */
-  fitColumns(cells: ColFit[], palette: TilePalette): Promise<[number, number][]>;
+  fitColumns(cells: ColFit[], palette: TilePalette, room?: FitRoom): Promise<[number, number][]>;
 }

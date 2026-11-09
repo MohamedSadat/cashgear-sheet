@@ -101,6 +101,7 @@ struct FieldSummary<'a> {
 struct BindingSummary<'a> {
     entity: &'a str,
     label: &'a str,
+    label_en: &'a str,
     company: &'a str,
     user_id: &'a str,
     user_name: &'a str,
@@ -697,6 +698,7 @@ impl Session {
         let summary = BindingSummary {
             entity: &binding.session.entity,
             label: &binding.entity_label,
+            label_en: &binding.entity_label_en,
             company: &binding.session.company,
             user_id: &binding.session.user_id,
             user_name: &binding.session.user_name,

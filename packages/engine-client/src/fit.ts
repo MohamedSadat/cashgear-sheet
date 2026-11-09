@@ -2,7 +2,7 @@
 // the same room for text as drawing does, so that what fits here fits on the sheet.
 import { singleLine, wrapLines } from './text-fit';
 import { fontStack } from './tile-draw';
-import type { ColFit, FitCell, RowFit, TilePalette } from './types';
+import type { ColFit, FitCell, FitRoom, RowFit, TilePalette } from './types';
 
 type Measuring = Pick<OffscreenCanvasRenderingContext2D, 'font' | 'measureText'>;
 
@@ -63,6 +63,7 @@ export function fitColumns(
   context: Measuring,
   cells: ColFit[],
   palette: TilePalette,
+  room?: FitRoom,
 ): [number, number][] {
   const widest = new Map<number, number>();
   for (const cell of cells) {
@@ -80,7 +81,8 @@ export function fitColumns(
           ? (cell.size * 96) / 72
           : Math.abs(Math.cos(radians)) * width + Math.abs(Math.sin(radians)) * lineHeight(cell);
     }
-    const needed = Math.ceil(width) + cell.indent * INDENT + COLUMN_PADDING;
+    const beside = room && cell.row === room.row ? room.px : 0;
+    const needed = Math.ceil(width) + cell.indent * INDENT + COLUMN_PADDING + beside;
     widest.set(cell.col, Math.max(widest.get(cell.col) ?? 0, needed));
   }
   return [...widest].map(([col, px]) => [col, Math.min(px, 1792)]);
