@@ -757,3 +757,25 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | The entity connector | A concrete `VendorSheetConnector`; the `ISheetEntityConnector` interface comes with a second entity, as the ERP's rule on abstractions asks |
 | Cache after a commit | `RemoveByTag("Vendors")`, as `UpdateEx` does |
 | CORS for the sheet routes | An endpoint policy on the sheet controllers from E1, since the suite checks preflight; E4 adds rate limits |
+
+## 2026-11-09: Phase 15
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Column order and labels | The order of the ERP's own Vendors list and export, then its detail fields, then read-only context: Account, Name, Group, Mobile, Currency, Payment method, Address, Tax file, Blocked, Bank account, Credit limit, Modified by, Modified. The labels are those `ERPClient_React` already uses, in English and Arabic (الحساب، الاسم، المجموعة، الجوال، العملة، طريقة الدفع، العنوان، الملف الضريبي، موقوف، الحساب البنكي، حد الائتمان، عدل بواسطة، تاريخ التعديل). The Schema sends them, so the mock and UnifiedAPI both do |
+| What lookup cells hold | The ERP's codes (`LOCAL`, `NET30`, `EGP`), the values a commit sends later |
+| The 10,000-record cap | Refuse and ask to narrow: nothing loads, and the load panel says "This list has 12,400 vendors, and a sheet opens at most 10,000. Narrow the search in Cash Gear ERP and open it again." The ERP's button says the same when its list is over 10,000, before making a ticket |
+| The load panel's wording | As proposed: "Opening vendors from Cash Gear ERP", "Connecting to Cash Gear ERP…", "Loading vendors · 400 of 1,240" with Cancel, "Nothing was opened." with Close; "This link has expired or was already used. Go back to Cash Gear ERP and choose Edit in Cash Gear Sheet again."; "Your Cash Gear ERP account can't view vendors."; "Cash Gear ERP can't be reached. Check your connection, then try again." with Try again. The workbook is "Vendors – Kit", the status badge "Vendors · 1,240 · Read-only · Sara @ Kit", and refused edits say "This column is read-only in Cash Gear ERP." and "Rows can't be added or deleted in ERP data." English until Phase 18's en/ar catalogue; headers and lookups follow the ERP user's language now |
+| The git workflow in `ERPClient_React` | Small Conventional Commits on `main`, pushed to `origin/main`, as in the ERP repo. A push deploys to production (IIS and Azure Static Web Apps), where the button stays hidden. Your uncommitted changes there (login, LoginPage, both locale files, `index.css`) stay out of these commits |
+| What the ERP's button opens | Exactly the list's rows: the button sends `blocked: false` and the list's search, and Query's `search` matches what the list searches (account, name, group code, mobile and phone), not only account and name. The contract, the mock and the suite change with it |
+| How the button stays hidden per company until Phase 18 | A UnifiedAPI setting, `SheetLaunch:Companies`, empty by default. `GET api/system/SheetLaunch/Status?entity=vendors` tells the list whether to show the button, and CreateTicket refuses a company not listed with 403 `privilege.denied`. Phase 18 turns a company on with a config change, with no React deploy |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Arabic sessions | The bound sheet opens right-to-left now, since Phase 11 made direction a sheet setting; the app's own text stays English until Phase 18 |
+| RowVersion in E1 | UnifiedAPI's Query reads `Vendors.RowVersion` with its own SQL, so `VendorModel` stays untouched until your word that every database is scripted. A UnifiedAPI with E1 needs `Add_VendorsRowVersion.sql` in the tenant database and `Create_SheetSessions.sql` in CGService before it is deployed |
+| The suite against a partly built server | `ERP_TEST_STAGE=E1` runs the cases E1 serves (tickets, Redeem, Schema, Query, CORS, Status) and skips Commit (E2) and Renew, End and CommitStatus (E3). Unset, every case runs, as on the mock |
