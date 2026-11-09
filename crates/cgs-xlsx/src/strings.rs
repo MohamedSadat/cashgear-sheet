@@ -81,6 +81,10 @@ fn run_font_child(element: &BytesStart<'_>, font: &mut RunFont) {
         b"b" => font.bold = val_flag(element),
         b"i" => font.italic = val_flag(element),
         b"strike" => font.strike = val_flag(element),
+        b"vertAlign" => {
+            font.vert_align =
+                cgs_model::VertAlign::parse(&attr(element, b"val").unwrap_or_default())
+        }
         b"u" => {
             font.underline = Some(match attr(element, b"val").as_deref() {
                 Some("none") => Underline::None,

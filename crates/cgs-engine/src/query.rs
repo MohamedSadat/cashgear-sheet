@@ -344,9 +344,11 @@ impl Engine {
         out.push_str(",\"numberFormat\":");
         json::push_string(&mut out, &code);
         out.push_str(&format!(
-            ",\"numberFormatId\":{},\"merged\":{},\"border\":{{\"top\":{},\"bottom\":{},\"left\":{},\"right\":{},\"diagonal\":{},\"diagonalUp\":{},\"diagonalDown\":{}}}}}",
+            ",\"numberFormatId\":{},\"merged\":{},\"locked\":{},\"formulaHidden\":{},\"border\":{{\"top\":{},\"bottom\":{},\"left\":{},\"right\":{},\"diagonal\":{},\"diagonalUp\":{},\"diagonalDown\":{}}}}}",
             xf.num_fmt,
             info.merge_at(row, col).is_some(),
+            xf.locked,
+            xf.formula_hidden,
             line(border.top),
             line(border.bottom),
             line(border.left),

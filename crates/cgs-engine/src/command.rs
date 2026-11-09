@@ -207,6 +207,48 @@ pub enum Command {
         sheet: u32,
         name: String,
     },
+    /// Hides a sheet, or shows a hidden one. The last visible sheet can't be hidden.
+    SheetState {
+        sheet: u32,
+        hidden: bool,
+    },
+    /// Normal view's zoom, in percent, which is saved with the file but isn't a change to undo.
+    Zoom {
+        sheet: u32,
+        zoom: u32,
+    },
+    /// The sheet showing, which is saved with the file as Excel saves it but isn't a change.
+    ActiveSheet {
+        sheet: u32,
+    },
+    /// Protect Sheet: what people may still do, and a password, hashed with `salt` (base64).
+    ProtectSheet {
+        sheet: u32,
+        #[serde(default)]
+        allow: crate::protect::AllowSpec,
+        #[serde(default)]
+        password: String,
+        #[serde(default)]
+        salt: String,
+    },
+    UnprotectSheet {
+        sheet: u32,
+        #[serde(default)]
+        password: String,
+    },
+    /// Protect Structure and Windows.
+    ProtectWorkbook {
+        #[serde(default = "yes")]
+        structure: bool,
+        #[serde(default)]
+        password: String,
+        #[serde(default)]
+        salt: String,
+    },
+    UnprotectWorkbook {
+        #[serde(default)]
+        password: String,
+    },
     /// Formats cells. `active` is the cell a relative change, such as more decimals, goes by.
     Format {
         sheet: u32,
@@ -428,6 +470,46 @@ pub enum Command {
         area: Area,
         #[serde(default)]
         link: Option<crate::notes::LinkSpec>,
+        /// With no link: Remove Hyperlink, which takes the link's look off too.
+        #[serde(default)]
+        plain: bool,
+    },
+    /// Text with runs of its own fonts, as the cell editor makes it.
+    RichInput {
+        sheet: u32,
+        row: u32,
+        col: u32,
+        text: String,
+        runs: Vec<crate::rich::RunSpec>,
+    },
+    /// Error checking's rules that are on, as `errors`' bits; 0 turns background checking off.
+    /// It is Excel's own setting, not the file's, so it isn't a change.
+    ErrorRules {
+        rules: u16,
+    },
+    /// Ignore Error: the rules this cell breaks stay quiet for it, saved in `ignoredErrors`.
+    IgnoreError {
+        sheet: u32,
+        row: u32,
+        col: u32,
+    },
+    /// Convert to Number: text that reads as a number becomes the number.
+    ConvertToNumber {
+        sheet: u32,
+        areas: Vec<Area>,
+    },
+    /// Update Formula to Include Cells: the formula's range grows over the numbers beside it.
+    IncludeCells {
+        sheet: u32,
+        row: u32,
+        col: u32,
+    },
+    /// Show/Hide Note.
+    NoteVisible {
+        sheet: u32,
+        row: u32,
+        col: u32,
+        visible: bool,
     },
     /// A validation rule on these cells, or none to take rules off them.
     SetValidation {
@@ -563,6 +645,10 @@ fn first_line() -> u32 {
     1
 }
 
+fn yes() -> bool {
+    true
+}
+
 /// Cells and the rich strings they show.
 type RichCells = Vec<((u32, u32), Option<u32>)>;
 
@@ -650,6 +736,24 @@ pub(crate) enum Op {
         sheet: u32,
         name: String,
     },
+    /// A sheet's protection, or none.
+    SheetProtection {
+        sheet: u32,
+        protection: Option<Box<cgs_model::SheetProtection>>,
+    },
+    /// The workbook's protection, or none.
+    BookProtection(Option<cgs_model::WorkbookProtection>),
+    /// A sheet's ignored errors.
+    IgnoredErrors {
+        sheet: u32,
+        list: Vec<(Vec<Rect>, u16)>,
+    },
+    /// Whether a sheet shows, and which sheet is active with it.
+    SheetState {
+        sheet: u32,
+        state: SheetState,
+        active: u32,
+    },
     /// A format to apply, which comes back as what it changed.
     Format {
         sheet: u32,
@@ -685,6 +789,12 @@ pub(crate) enum Op {
         sheet: u32,
         cells: RichCells,
     },
+    /// Rich strings pasted or moved into cells, after their contents: each cell shows the file's
+    /// shared string, and saves as it.
+    RichCopy {
+        sheet: u32,
+        cells: Vec<((u32, u32), u32)>,
+    },
     /// A sheet's view to put in place. `freeze` says the panes are part of the change.
     View {
         sheet: u32,
@@ -709,7 +819,14 @@ impl Op {
     fn bytes(&self) -> usize {
         match self {
             Self::Cells(edits) => edits.iter().map(EditCell::bytes).sum(),
-            Self::Axis { .. } | Self::RemoveSheet { .. } | Self::Rename { .. } => 64,
+            Self::Axis { .. }
+            | Self::RemoveSheet { .. }
+            | Self::Rename { .. }
+            | Self::SheetState { .. }
+            | Self::SheetProtection { .. }
+            | Self::BookProtection(_) => 256,
+            Self::RichCopy { cells, .. } => 64 + cells.len() * 16,
+            Self::IgnoredErrors { list, .. } => 64 + list.len() * 64,
             Self::AxisBack {
                 shape,
                 names,
@@ -813,6 +930,13 @@ impl History {
 
     pub(crate) fn at_clean(&self) -> bool {
         self.state == self.clean
+    }
+
+    /// Nothing to undo or redo any more, as after protecting a sheet in Excel.
+    pub(crate) fn forget(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.bytes = 0;
     }
 
     pub(crate) fn mark_clean(&mut self) {
@@ -1863,6 +1987,36 @@ impl Session {
                 self.dirty.sheets.extend(0..self.book.sheets.len() as u32);
                 Ok(Op::Rename { sheet, name: old })
             }
+            Op::SheetProtection { sheet, protection } => {
+                Ok(self.apply_sheet_protection(sheet, protection))
+            }
+            Op::BookProtection(protection) => Ok(self.apply_book_protection(protection)),
+            Op::IgnoredErrors { sheet, list } => {
+                let before =
+                    std::mem::replace(&mut self.book.sheets[sheet as usize].ignored_errors, list);
+                self.edits.ignored_sheets.insert(sheet);
+                self.dirty.sheets.insert(sheet);
+                Ok(Op::IgnoredErrors {
+                    sheet,
+                    list: before,
+                })
+            }
+            Op::SheetState {
+                sheet,
+                state,
+                active,
+            } => {
+                let before = std::mem::replace(&mut self.book.sheets[sheet as usize].state, state);
+                let was_active = self.book.active_sheet;
+                self.set_active(active);
+                self.edits.sheet_states.insert(sheet);
+                self.dirty.book = true;
+                Ok(Op::SheetState {
+                    sheet,
+                    state: before,
+                    active: was_active,
+                })
+            }
             Op::Format {
                 sheet,
                 areas,
@@ -1909,6 +2063,50 @@ impl Session {
                         }
                         None => before.push((at, info.rich.remove(&at))),
                     }
+                    self.dirty.cell(sheet, at.0, at.1);
+                }
+                Ok(Op::Rich {
+                    sheet,
+                    cells: before,
+                })
+            }
+            Op::RichCopy { sheet, cells } => {
+                let mut before = Vec::with_capacity(cells.len());
+                for (at, index) in cells {
+                    let info = &mut self.book.sheets[sheet as usize];
+                    before.push((at, info.rich.insert(at, index)));
+                    // The file's own string by its index; one made here by its text and runs.
+                    let change = if index >= crate::rich::NEW_RICH {
+                        let text = match self.value_of(cgs_calc::CellRef {
+                            sheet,
+                            row: at.0,
+                            col: at.1,
+                        }) {
+                            CalcValue::Text(text) => text,
+                            _ => String::new(),
+                        };
+                        CellChange::Rich {
+                            text,
+                            runs: self
+                                .book
+                                .rich_strings
+                                .get(&index)
+                                .cloned()
+                                .unwrap_or_default(),
+                        }
+                    } else {
+                        CellChange::Shared(index)
+                    };
+                    self.edits
+                        .cells
+                        .entry(sheet)
+                        .or_default()
+                        .entry(at)
+                        .or_insert(CellPatch {
+                            change: CellChange::Keep,
+                            style: None,
+                        })
+                        .change = change;
                     self.dirty.cell(sheet, at.0, at.1);
                 }
                 Ok(Op::Rich {
@@ -2172,6 +2370,74 @@ impl Session {
         Ok(Applied::default())
     }
 
+    /// Makes a sheet the active one, keeping what the file said for the save.
+    fn set_active(&mut self, sheet: u32) {
+        if self.book.active_sheet != sheet && self.edits.file_active.is_none() {
+            self.edits.file_active = Some(self.book.active_sheet);
+        }
+        self.book.active_sheet = sheet;
+    }
+
+    /// Hides or shows a sheet, as Excel does: hiding the active sheet makes the next visible one
+    /// to its right active, or else the nearest to its left. Showing one makes it active.
+    fn sheet_state_command(&mut self, sheet: u32, hidden: bool) -> Result<Applied, String> {
+        let info = self
+            .book
+            .sheets
+            .get(sheet as usize)
+            .filter(|info| !info.deleted)
+            .ok_or_else(|| "That sheet has been deleted.".to_string())?;
+        let state = if hidden {
+            SheetState::Hidden
+        } else {
+            SheetState::Visible
+        };
+        if info.state == state {
+            return Ok(Applied::default());
+        }
+        let order = self.book.tab_order();
+        let visible = |other: u32| {
+            other != sheet && self.book.sheets[other as usize].state == SheetState::Visible
+        };
+        let mut active = self.book.active_sheet;
+        if hidden {
+            if !order.iter().any(|&other| visible(other)) {
+                return Err("A workbook must contain at least one visible worksheet.".to_string());
+            }
+            let at = order.iter().position(|&other| other == sheet).unwrap_or(0);
+            if !visible(active) {
+                active = order[at + 1..]
+                    .iter()
+                    .copied()
+                    .find(|&other| visible(other))
+                    .or_else(|| {
+                        order[..at]
+                            .iter()
+                            .rev()
+                            .copied()
+                            .find(|&other| visible(other))
+                    })
+                    .unwrap_or(active);
+            }
+        } else {
+            active = sheet;
+        }
+        let label = if hidden {
+            "hiding a sheet"
+        } else {
+            "showing a sheet"
+        };
+        self.perform(
+            label,
+            Op::SheetState {
+                sheet,
+                state,
+                active,
+            },
+            None,
+        )
+    }
+
     /// Applies a change made of steps that each build on the last, as one step to undo. `next`
     /// gives each in turn, and nothing once done. If one fails, those before it are taken back.
     pub(crate) fn perform_steps(
@@ -2327,8 +2593,13 @@ impl Session {
     fn arrive_at_state(&mut self) {
         if self.history.at_clean() {
             let styles = self.edits.styles.take();
+            // Zoom and the sheet showing aren't undone, so they stay to be saved.
+            let view_zoom = std::mem::take(&mut self.edits.view_zoom);
+            let file_active = self.edits.file_active;
             self.edits = Default::default();
             self.edits.styles = styles;
+            self.edits.view_zoom = view_zoom;
+            self.edits.file_active = file_active;
         }
     }
 
@@ -2762,7 +3033,29 @@ impl Session {
             }
         }
         self.refuse_array_in_table(sheet, target, &edits)?;
+        // A rich string keeps its runs, as in Excel, when everything is pasted.
+        let mut rich = Vec::new();
+        if mode == PasteMode::All {
+            let source = &self.book.sheets[from_sheet as usize];
+            for repeat_down in 0..down {
+                for repeat_across in 0..across {
+                    for (&(row, col), &index) in &source.rich {
+                        if !from.contains(row, col) {
+                            continue;
+                        }
+                        let at = (
+                            to.top + repeat_down * from.rows() + (row - from.top),
+                            to.left + repeat_across * from.cols() + (col - from.left),
+                        );
+                        rich.push((at, index));
+                    }
+                }
+            }
+        }
         let mut list = vec![Op::Cells(edits)];
+        if !rich.is_empty() {
+            list.push(Op::RichCopy { sheet, cells: rich });
+        }
         if matches!(mode, PasteMode::All | PasteMode::Formats) {
             let info = &self.book.sheets[sheet as usize];
             let mut merges: Vec<Rect> = info
@@ -2824,8 +3117,20 @@ impl Session {
                 replaced: 0,
             });
         }
+        // A rich string moves with its runs, as in Excel.
+        let rich: Vec<((u32, u32), u32)> = self.book.sheets[from_sheet as usize]
+            .rich
+            .iter()
+            .filter(|(&(r, c), _)| from.contains(r, c))
+            .map(|(&(r, c), &index)| ((row + (r - from.top), col + (c - from.left)), index))
+            .collect();
         let edits = self.move_edits(from_sheet, from, sheet, row, col)?;
-        self.perform("moving", Op::Cells(edits), Some((sheet, target)))
+        let op = if rich.is_empty() {
+            Op::Cells(edits)
+        } else {
+            Op::Many(vec![Op::Cells(edits), Op::RichCopy { sheet, cells: rich }])
+        };
+        self.perform("moving", op, Some((sheet, target)))
     }
 
     /// What moving cells changes, with what points at them following.
@@ -2929,6 +3234,9 @@ impl Session {
     ) -> Result<Applied, String> {
         if let Some(reason) = &self.cannot_edit {
             return Err(format!("This workbook can't be edited here: {reason}"));
+        }
+        if let Some(refused) = self.protection_refusal(&command) {
+            return Err(refused.to_string());
         }
         match command {
             Command::Input {
@@ -3095,6 +3403,45 @@ impl Session {
                     return Err(problem);
                 }
                 self.perform("renaming a sheet", Op::Rename { sheet, name }, None)
+            }
+            Command::SheetState { sheet, hidden } => self.sheet_state_command(sheet, hidden),
+            Command::ProtectSheet {
+                sheet,
+                allow,
+                password,
+                salt,
+            } => self.protect_sheet(sheet, allow, &password, &salt),
+            Command::UnprotectSheet { sheet, password } => self.unprotect_sheet(sheet, &password),
+            Command::ProtectWorkbook {
+                structure,
+                password,
+                salt,
+            } => self.protect_workbook(structure, &password, &salt),
+            Command::UnprotectWorkbook { password } => self.unprotect_workbook(&password),
+            Command::ActiveSheet { sheet } => {
+                let visible = self
+                    .book
+                    .sheets
+                    .get(sheet as usize)
+                    .is_some_and(|info| !info.deleted && info.state == SheetState::Visible);
+                if visible {
+                    self.set_active(sheet);
+                }
+                Ok(Applied::default())
+            }
+            Command::Zoom { sheet, zoom } => {
+                let info = self
+                    .book
+                    .sheets
+                    .get_mut(sheet as usize)
+                    .filter(|info| !info.deleted)
+                    .ok_or_else(|| "That sheet has been deleted.".to_string())?;
+                let zoom = zoom.clamp(10, 400) as u16;
+                if info.view.zoom != zoom {
+                    info.view.zoom = zoom;
+                    self.edits.view_zoom.insert(sheet);
+                }
+                Ok(Applied::default())
             }
             Command::Format {
                 sheet,
@@ -3376,9 +3723,37 @@ impl Session {
                 text,
                 author,
             } => self.set_note_command(sheet, row, col, text, author),
-            Command::SetLink { sheet, area, link } => {
-                self.set_link_command(sheet, area, link.as_ref())
+            Command::SetLink {
+                sheet,
+                area,
+                link,
+                plain,
+            } => self.set_link_command(sheet, area, link.as_ref(), plain),
+            Command::RichInput {
+                sheet,
+                row,
+                col,
+                text,
+                runs,
+            } => self.rich_input(sheet, row, col, text, &runs),
+            Command::ErrorRules { rules } => {
+                self.error_rules = rules;
+                self.dirty.sheets.extend(0..self.book.sheets.len() as u32);
+                Ok(Applied::default())
             }
+            Command::IgnoreError { sheet, row, col } => self.ignore_error(sheet, row, col, locale),
+            Command::ConvertToNumber { sheet, areas } => {
+                self.convert_to_number(sheet, &areas, locale)
+            }
+            Command::IncludeCells { sheet, row, col } => {
+                self.include_cells(sheet, row, col, locale)
+            }
+            Command::NoteVisible {
+                sheet,
+                row,
+                col,
+                visible,
+            } => self.note_visible_command(sheet, row, col, visible),
             Command::SetValidation { sheet, areas, rule } => {
                 self.set_validation_command(sheet, &areas, rule.as_ref())
             }
@@ -3476,6 +3851,13 @@ impl Session {
                 let count = edits.len() as u32;
                 if count == 0 {
                     return Ok(Applied::default());
+                }
+                // Replacing in a locked cell of a protected sheet stops the lot, as in Excel.
+                if edits.iter().any(|edit| {
+                    self.sheet_protection(edit.sheet).is_some()
+                        && !self.all_unlocked(edit.sheet, Area::cell(edit.row, edit.col))
+                }) {
+                    return Err(crate::protect::PROTECTED.to_string());
                 }
                 let mut applied = self.perform("replacing", Op::Cells(edits), None)?;
                 applied.replaced = count;

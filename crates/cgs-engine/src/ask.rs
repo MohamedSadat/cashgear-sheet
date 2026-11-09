@@ -34,6 +34,42 @@ enum Question {
     InvalidCells { sheet: u32 },
     /// The names the Name Manager lists.
     Names,
+    /// Where the selection may go on a protected sheet that keeps locked or any cells from being
+    /// selected: this cell if it may be, or else the next that may along `rows` and `cols`, read
+    /// on to the next rows when going right. Nothing when there is none.
+    NextSelectable {
+        sheet: u32,
+        row: u32,
+        col: u32,
+        #[serde(default)]
+        rows: i32,
+        #[serde(default)]
+        cols: i32,
+    },
+    /// The fills, text colours and icons a column shows from `top` to `bottom`, for the Sort
+    /// dialog's colours and icons.
+    ColumnLooks {
+        sheet: u32,
+        col: u32,
+        top: u32,
+        bottom: u32,
+    },
+    /// A cell's rich runs, for the cell editor.
+    RichAt { sheet: u32, row: u32, col: u32 },
+    /// Circular References: the cells on loops, as `[sheet, row, col]`, or nothing when the
+    /// workbook is too big to look through.
+    Circular,
+    /// The errors a cell shows a green triangle for, as Error Checking names them.
+    CellErrors { sheet: u32, row: u32, col: u32 },
+    /// Error Checking's next cell with an error after this one, in reading order, round the
+    /// sheet's used range, or before it with `back`; nothing when there is none.
+    NextError {
+        sheet: u32,
+        row: u32,
+        col: u32,
+        #[serde(default)]
+        back: bool,
+    },
     /// A cell's note.
     NoteAt { sheet: u32, row: u32, col: u32 },
     /// A cell's hyperlink.
@@ -195,6 +231,42 @@ impl Session {
             Question::CfRules { sheet } => self.cf_rules(sheet),
             Question::ValidationAt { sheet, row, col } => self.validation_json(sheet, row, col),
             Question::Names => self.names_json(),
+            Question::NextSelectable {
+                sheet,
+                row,
+                col,
+                rows,
+                cols,
+            } => match self.next_selectable(sheet, row, col, rows, cols) {
+                Some((row, col)) => json!([row, col]),
+                None => Value::Null,
+            },
+            Question::Circular => self.circular_json(),
+            Question::RichAt { sheet, row, col } => self.rich_json(sheet, row, col),
+            Question::CellErrors { sheet, row, col } => {
+                self.cell_errors_json(sheet, row, col, locale)
+            }
+            Question::NextError {
+                sheet,
+                row,
+                col,
+                back,
+            } => match self.next_error(sheet, row, col, back, locale) {
+                Some((row, col)) => json!([row, col]),
+                None => Value::Null,
+            },
+            Question::ColumnLooks {
+                sheet,
+                col,
+                top,
+                bottom,
+            } => {
+                if (sheet as usize) < self.book.sheets.len() {
+                    self.column_looks(sheet, col, top..=bottom.min(top + 100_000))
+                } else {
+                    Value::Null
+                }
+            }
             Question::NoteAt { sheet, row, col } => self.note_json(sheet, row, col),
             Question::LinkAt { sheet, row, col } => self.link_json(sheet, row, col),
             Question::Notes { sheet } => self.notes_list(sheet),

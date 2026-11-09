@@ -147,10 +147,63 @@ impl Session {
         index
     }
 
+    /// Each sheet's first view, where something in it changed.
+    fn view_extras(&self, edits: &mut cgs_xlsx::save::WorkbookEdits) {
+        // Which tab is selected: the active one, never a hidden one.
+        let mut tabs: std::collections::BTreeSet<u32> = edits.sheet_states.clone();
+        if let Some(active) = edits.file_active {
+            tabs.insert(active);
+        }
+        if !tabs.is_empty() {
+            tabs.insert(self.book.active_sheet);
+        }
+        let viewed: std::collections::BTreeSet<u32> = edits
+            .view_flags
+            .iter()
+            .chain(edits.view_freeze.iter())
+            .chain(edits.view_zoom.iter())
+            .chain(tabs.iter())
+            .copied()
+            .collect();
+        for sheet in viewed {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            if info.kind != cgs_model::SheetKind::Worksheet {
+                continue;
+            }
+            let flags = edits.view_flags.contains(&sheet);
+            edits.extras.entry(sheet).or_default().view = Some(ViewPatch {
+                freeze: edits
+                    .view_freeze
+                    .contains(&sheet)
+                    .then_some(info.view.freeze),
+                show_grid: flags.then_some(info.view.show_grid),
+                show_headers: flags.then_some(info.view.show_headers),
+                right_to_left: flags.then_some(info.view.right_to_left),
+                zoom: edits.view_zoom.contains(&sheet).then_some(info.view.zoom),
+                tab_selected: tabs.contains(&sheet).then(|| {
+                    sheet == self.book.active_sheet && info.state == cgs_model::SheetState::Visible
+                }),
+                active_cell: info.view.active_cell,
+            });
+        }
+    }
+
     /// Fills in what patches leave to the engine: results, formula text, and arrays' areas.
     fn edits_for_save(&self) -> cgs_xlsx::save::WorkbookEdits {
         if self.history.at_clean() {
-            return Default::default();
+            // Zoom isn't a change, so it's saved whether or not anything else is.
+            let mut edits = cgs_xlsx::save::WorkbookEdits {
+                view_zoom: self.edits.view_zoom.clone(),
+                file_active: self
+                    .edits
+                    .file_active
+                    .filter(|&active| active != self.book.active_sheet),
+                ..Default::default()
+            };
+            self.view_extras(&mut edits);
+            return edits;
         }
         let mut edits = self.edits.clone();
         let areas = self.calc.spill_areas();
@@ -392,25 +445,35 @@ impl Session {
                 edits.extras.entry(sheet).or_default().default_row_px = Some(info.rows.default_px);
             }
         }
-        let viewed: std::collections::BTreeSet<u32> = edits
-            .view_flags
-            .iter()
-            .chain(edits.view_freeze.iter())
-            .copied()
-            .collect();
-        for sheet in viewed {
+        self.view_extras(&mut edits);
+        for &sheet in &edits.ignored_sheets.clone() {
             let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
                 continue;
             };
-            edits.extras.entry(sheet).or_default().view = Some(ViewPatch {
-                freeze: edits
-                    .view_freeze
-                    .contains(&sheet)
-                    .then_some(info.view.freeze),
-                show_grid: Some(info.view.show_grid),
-                show_headers: Some(info.view.show_headers),
-                right_to_left: Some(info.view.right_to_left),
-                active_cell: info.view.active_cell,
+            if info.kind != cgs_model::SheetKind::Worksheet {
+                continue;
+            }
+            edits.elements.entry(sheet).or_default().push(NewElement {
+                name: "ignoredErrors".to_string(),
+                xml: crate::errors::ignored_xml(&info.ignored_errors),
+                replace: true,
+            });
+        }
+        for &sheet in &edits.protection_sheets.clone() {
+            let Some(info) = self.book.sheets.get(sheet as usize).filter(|i| !i.deleted) else {
+                continue;
+            };
+            if info.kind != cgs_model::SheetKind::Worksheet {
+                continue;
+            }
+            edits.elements.entry(sheet).or_default().push(NewElement {
+                name: "sheetProtection".to_string(),
+                xml: info
+                    .protection
+                    .as_ref()
+                    .map(cgs_xlsx::protection::sheet_protection_xml)
+                    .unwrap_or_default(),
+                replace: true,
             });
         }
         for &sheet in &edits.page_sheets.clone() {

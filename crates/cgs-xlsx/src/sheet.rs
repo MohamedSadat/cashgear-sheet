@@ -926,11 +926,16 @@ fn read_head_element(name: &[u8], element: &BytesStart<'_>, info: &mut SheetInfo
             }
         }
         b"sheetView" => {
+            // The app shows Normal view, whose zoom is `zoomScaleNormal` when the file was saved in
+            // another view.
+            let normal = attr(element, b"view").is_none_or(|view| view == "normal");
+            let zoom = if normal {
+                attr_u32(element, b"zoomScale")
+            } else {
+                attr_u32(element, b"zoomScaleNormal")
+            };
             info.view = SheetView {
-                zoom: attr_u32(element, b"zoomScale")
-                    .filter(|&zoom| zoom > 0)
-                    .unwrap_or(100)
-                    .clamp(10, 400) as u16,
+                zoom: zoom.filter(|&zoom| zoom > 0).unwrap_or(100).clamp(10, 400) as u16,
                 show_grid: attr_bool(element, b"showGridLines").unwrap_or(true),
                 show_headers: attr_bool(element, b"showRowColHeaders").unwrap_or(true),
                 right_to_left: attr_bool(element, b"rightToLeft").unwrap_or(false),
@@ -1032,6 +1037,32 @@ fn read_tail_element(
             }
         }
         b"drawing" => *drawing = attr(element, b"id"),
+        b"sheetProtection" => {
+            info.protection = Some(crate::protection::read_sheet_protection(element));
+        }
+        b"ignoredError" => {
+            let areas: Vec<cgs_model::Rect> = attr(element, b"sqref")
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter_map(|part| {
+                    parse_rect(part).or_else(|| {
+                        parse_cell(part.as_bytes()).map(|(row, col)| cgs_model::Rect {
+                            top: row,
+                            left: col,
+                            bottom: row,
+                            right: col,
+                        })
+                    })
+                })
+                .collect();
+            let kinds = cgs_model::checks::RULES
+                .iter()
+                .filter(|(_, name)| attr_bool(element, name.as_bytes()).unwrap_or(false))
+                .fold(0u16, |bits, (bit, _)| bits | bit);
+            if !areas.is_empty() && kinds != 0 {
+                info.ignored_errors.push((areas, kinds));
+            }
+        }
         b"legacyDrawingHF" => info.page.pictures_rel = attr(element, b"id"),
         b"pageSetUpPr" => {
             info.page.fit_to_page = crate::xml::attr_bool(element, b"fitToPage").unwrap_or(false);

@@ -131,6 +131,10 @@ pub fn read_workbook(package: &Package) -> Result<Book, ReadError> {
                         );
                         book.sheets.push(sheet);
                     }
+                    b"workbookProtection" => {
+                        book.protection =
+                            Some(crate::protection::read_workbook_protection(element));
+                    }
                     b"workbookPr" => {
                         book.date1904 = attr_bool(element, b"date1904").unwrap_or(false);
                     }

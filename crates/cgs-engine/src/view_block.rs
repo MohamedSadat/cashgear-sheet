@@ -57,6 +57,8 @@ pub const MARK_NOTE: u8 = 3;
 pub const MARK_INVALID: u8 = 4;
 /// A threaded comment, as a purple corner.
 pub const MARK_THREAD: u8 = 5;
+/// Error checking's green triangle, in the cell's top corner before its text.
+pub const MARK_ERROR: u8 = 6;
 
 pub const BAR_GRADIENT: u8 = 1;
 pub const BAR_BORDER: u8 = 2;
@@ -124,6 +126,8 @@ pub const CELL_OCCUPIED: u16 = 1 << 7;
 pub const FONT_BOLD: u8 = 1;
 pub const FONT_ITALIC: u8 = 2;
 pub const FONT_STRIKE: u8 = 4;
+pub const FONT_SUPERSCRIPT: u8 = 8;
+pub const FONT_SUBSCRIPT: u8 = 16;
 
 pub const LAYOUT_WRAP: u8 = 1;
 pub const LAYOUT_SHRINK: u8 = 2;

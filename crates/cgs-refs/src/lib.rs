@@ -306,6 +306,25 @@ impl SharedFormula {
     pub fn source(&self) -> &str {
         &self.text
     }
+
+    /// The formula as R1C1 would write it from `row` and `col` (1-based): relative references as
+    /// offsets, so formulas copied along a row or a column have the same key, as Excel's error
+    /// checking compares them.
+    pub fn r1c1_key(&self, row: i64, col: i64) -> String {
+        let mut out = String::with_capacity(self.text.len() + 8);
+        for piece in &self.pieces {
+            match *piece {
+                Piece::Literal(from, to) => {
+                    out.push_str(&self.text[from as usize..to as usize].to_ascii_uppercase())
+                }
+                Piece::Col(true, at) => out.push_str(&format!("C{at}")),
+                Piece::Col(false, at) => out.push_str(&format!("C[{}]", at - col)),
+                Piece::Row(true, at) => out.push_str(&format!("R{at}")),
+                Piece::Row(false, at) => out.push_str(&format!("R[{}]", at - row)),
+            }
+        }
+        out
+    }
 }
 
 /// Returns the formula as it reads `rows` below and `cols` right of where it is stored.

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Read, Write};
 
 use cgs_calc::CalcValue;
-use cgs_model::Book;
+use cgs_model::{Book, SheetState};
 use flate2::read::DeflateDecoder;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -121,6 +121,19 @@ pub struct WorkbookEdits {
     pub view_freeze: std::collections::BTreeSet<u32>,
     /// Sheets whose gridlines or headings may have changed.
     pub view_flags: std::collections::BTreeSet<u32>,
+    /// Sheets whose zoom may have changed, which isn't a change to undo.
+    pub view_zoom: std::collections::BTreeSet<u32>,
+    /// Sheets hidden or shown.
+    pub sheet_states: std::collections::BTreeSet<u32>,
+    /// Sheets whose protection changed. The engine turns these into elements when it saves.
+    pub protection_sheets: std::collections::BTreeSet<u32>,
+    /// The workbook's protection changed, so `workbookProtection` is written from the model.
+    pub book_protection: bool,
+    /// Sheets whose ignored errors changed.
+    pub ignored_sheets: std::collections::BTreeSet<u32>,
+    /// The active sheet the file says, once the active sheet has moved from it. A save writes
+    /// `activeTab` and each tab's `tabSelected` only when the model's active sheet differs.
+    pub file_active: Option<u32>,
     /// Sheets whose default row height may have changed.
     pub default_rows: std::collections::BTreeSet<u32>,
     /// Some table was made, removed, or changed how it looks, so the model's tables are saved.
@@ -169,6 +182,12 @@ impl WorkbookEdits {
             && self.page_sheets.is_empty()
             && self.drawing_sheets.is_empty()
             && !self.pivots_changed
+            && self.view_zoom.is_empty()
+            && self.sheet_states.is_empty()
+            && self.file_active.is_none()
+            && self.protection_sheets.is_empty()
+            && !self.book_protection
+            && self.ignored_sheets.is_empty()
     }
 
     /// Whether a cell's contents or result changed, rather than only how it looks.
@@ -834,7 +853,9 @@ fn sync_table_headers(
                     CellChange::Keep
                     | CellChange::Result(_)
                     | CellChange::ArrayResult { .. }
-                    | CellChange::Spilled(_) => continue,
+                    | CellChange::Spilled(_)
+                    | CellChange::Shared(_) => continue,
+                    CellChange::Rich { text, .. } => text.clone(),
                     CellChange::Clear => String::new(),
                     CellChange::Value(value) => header_text(value),
                     CellChange::Formula { value, .. } => header_text(value),
@@ -935,6 +956,7 @@ fn rewrite_workbook_part(
     book: &Book,
     ops: &[BookOp],
     new_ids: &HashMap<u32, String>,
+    states_changed: bool,
 ) -> Result<(Vec<u8>, Vec<String>), SaveError> {
     let edits = book_edits(ops);
     let in_file = book.sheets_in_file();
@@ -996,6 +1018,14 @@ fn rewrite_workbook_part(
                                     let escaped = escape_attr(&info.name);
                                     sheet.set_attr("name", Some(&escaped));
                                 }
+                                let state = match sheet.attr(b"state") {
+                                    Some(b"hidden") => SheetState::Hidden,
+                                    Some(b"veryHidden") => SheetState::VeryHidden,
+                                    _ => SheetState::Visible,
+                                };
+                                if state != info.state {
+                                    sheet.set_attr("state", state_attr(info.state));
+                                }
                                 sheet
                             }
                             None => {
@@ -1009,9 +1039,12 @@ fn rewrite_workbook_part(
                                     .filter(|needed| !root_tag.contains(needed))
                                     .map(|needed| format!(" {needed}\"{RELATIONSHIP_NAMESPACE}\""))
                                     .unwrap_or_default();
+                                let state = state_attr(info.state)
+                                    .map(|state| format!(" state=\"{state}\""))
+                                    .unwrap_or_default();
                                 Element {
                                     tag: format!(
-                                        "<{prefix}sheet name=\"{}\" sheetId=\"{next_id}\" {id_attr}=\"{id}\"{declared}/>",
+                                        "<{prefix}sheet name=\"{}\" sheetId=\"{next_id}\"{state} {id_attr}=\"{id}\"{declared}/>",
                                         escape_attr(&info.name)
                                     )
                                     .into_bytes(),
@@ -1065,6 +1098,9 @@ fn rewrite_workbook_part(
                                 view.set_attr(attr, Some(&text));
                             }
                         }
+                        if states_changed {
+                            fix_tabs(view, book, &order);
+                        }
                     }
                 }
                 _ => {}
@@ -1080,6 +1116,39 @@ fn rewrite_workbook_part(
     let mut out = Vec::with_capacity(xml.len());
     write_tree(&nodes, &mut out);
     Ok((out, gone_ids))
+}
+
+/// `<sheet state>`, which says nothing for a visible sheet.
+fn state_attr(state: SheetState) -> Option<&'static str> {
+    match state {
+        SheetState::Visible => None,
+        SheetState::Hidden => Some("hidden"),
+        SheetState::VeryHidden => Some("veryHidden"),
+    }
+}
+
+/// After sheets were hidden or shown: the active tab is the model's, and the first tab the bar
+/// shows is a visible one, as Excel saves them.
+fn fix_tabs(view: &mut Element, book: &Book, order: &[u32]) {
+    let visible = |at: usize| {
+        order
+            .get(at)
+            .is_some_and(|&sheet| book.sheets[sheet as usize].state == SheetState::Visible)
+    };
+    if let Some(active) = order.iter().position(|&sheet| sheet == book.active_sheet) {
+        let was = view.attr(b"activeTab").and_then(parse_u32).unwrap_or(0) as usize;
+        if was != active {
+            let text = active.to_string();
+            view.set_attr("activeTab", (active != 0).then_some(text.as_str()));
+        }
+    }
+    let first = view.attr(b"firstSheet").and_then(parse_u32).unwrap_or(0) as usize;
+    if !visible(first) {
+        if let Some(next) = (0..order.len()).find(|&at| visible(at)) {
+            let text = next.to_string();
+            view.set_attr("firstSheet", (next != 0).then_some(text.as_str()));
+        }
+    }
 }
 
 /// `definedNames` brought into step with the model's names: changed ones get their new text, gone
@@ -2028,19 +2097,36 @@ pub async fn save_workbook_paced(
                 .ok_or_else(|| SaveError::Damaged("no workbook part".to_string()))?;
             main_xml = Some(crate::patch_parts::set_calc_mode(&xml, manual));
         }
-        if !edits.ops.is_empty() {
+        let tabs_moved = edits
+            .file_active
+            .is_some_and(|active| active != book.active_sheet);
+        let states_changed = !edits.sheet_states.is_empty() || tabs_moved;
+        if !edits.ops.is_empty() || states_changed {
             let xml = match main_xml.take() {
                 Some(xml) => xml,
                 None => package
                     .read(&main)
                     .ok_or_else(|| SaveError::Damaged("no workbook part".to_string()))?,
             };
-            let (xml, gone_ids) = rewrite_workbook_part(&xml, book, &edits.ops, &new_ids)?;
+            let (xml, gone_ids) =
+                rewrite_workbook_part(&xml, book, &edits.ops, &new_ids, states_changed)?;
             if let (false, Some(rels)) = (gone_ids.is_empty(), &mut main_rels) {
                 *rels = remove_relationship_ids(rels, &gone_ids);
                 rels_changed = true;
             }
             main_xml = Some(xml);
+        }
+        if edits.book_protection {
+            let xml = match main_xml.take() {
+                Some(xml) => xml,
+                None => package
+                    .read(&main)
+                    .ok_or_else(|| SaveError::Damaged("no workbook part".to_string()))?,
+            };
+            main_xml = Some(
+                crate::protection::set_workbook_protection(&xml, book.protection.as_ref())
+                    .map_err(part_error)?,
+            );
         }
         if cells_change {
             // Excel rebuilds the calculation chain, and an out-of-date one makes it repair the file.

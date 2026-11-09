@@ -117,6 +117,8 @@ fn parse_xf(element: &BytesStart<'_>) -> Xf {
         border: attr_u32(element, b"borderId").unwrap_or(0),
         num_fmt: attr_u32(element, b"numFmtId").unwrap_or(0),
         alignment: Alignment::default(),
+        locked: true,
+        formula_hidden: false,
     }
 }
 
@@ -337,6 +339,10 @@ fn apply_child(
         (Section::Fonts, b"b") => font.bold = val_flag(element),
         (Section::Fonts, b"i") => font.italic = val_flag(element),
         (Section::Fonts, b"strike") => font.strike = val_flag(element),
+        (Section::Fonts, b"vertAlign") => {
+            font.vert_align =
+                cgs_model::VertAlign::parse(&attr(element, b"val").unwrap_or_default())
+        }
         (Section::Fonts, b"u") => {
             font.underline = match attr(element, b"val").as_deref() {
                 Some("none") => Underline::None,
@@ -369,6 +375,12 @@ fn apply_child(
         (Section::CellXfs, b"alignment") => {
             if let Some(xf) = table.xfs.last_mut() {
                 xf.alignment = parse_alignment(element);
+            }
+        }
+        (Section::CellXfs, b"protection") => {
+            if let Some(xf) = table.xfs.last_mut() {
+                xf.locked = attr_bool(element, b"locked").unwrap_or(true);
+                xf.formula_hidden = attr_bool(element, b"hidden").unwrap_or(false);
             }
         }
         _ => {}

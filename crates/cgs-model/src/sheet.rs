@@ -640,6 +640,10 @@ pub struct SheetInfo {
     pub captured: Vec<(String, Vec<u8>)>,
     /// How the sheet prints.
     pub page: crate::PageSetup,
+    /// `sheetProtection`, if the sheet has it. It protects only when its `sheet` says so.
+    pub protection: Option<crate::SheetProtection>,
+    /// `ignoredErrors`: areas, and the error checking rules (`checks`' bits) each turns off.
+    pub ignored_errors: Vec<(Vec<Rect>, u16)>,
     styles: Vec<ColumnRuns>,
 }
 

@@ -238,6 +238,7 @@ impl Session {
             options,
             today: self.today,
             invalid: None,
+            errors: 0,
         };
         if formulas {
             tile::edit_text(&input, &mut self.cache, sheet, row, col)

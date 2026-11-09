@@ -32,6 +32,8 @@ pub enum SortOn {
         #[serde(default)]
         color: Option<String>,
     },
+    /// Cells showing this conditional format icon first: its set's name and place from 0.
+    Icon { set: String, id: u32 },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -202,6 +204,41 @@ impl Session {
     }
 
     /// A cell's fill or font colour as it shows in a light theme, for sorting and filtering by it.
+    /// A reader of what the sheet's conditional formats make of its cells.
+    pub(crate) fn cf_reader(&self, sheet: u32) -> crate::cf::CfReader<'_> {
+        let info = &self.book.sheets[sheet as usize];
+        crate::cf::CfReader::new(
+            &self.calc,
+            &self.book.styles,
+            sheet,
+            &info.name,
+            &info.cf,
+            info.used,
+            self.today,
+        )
+    }
+
+    /// The fill or text colour a cell shows, a conditional format's first, as Excel sorts and
+    /// filters by it.
+    pub(crate) fn shown_color_with(
+        &self,
+        cf: &crate::cf::CfReader<'_>,
+        (sheet, row, col): (u32, u32, u32),
+        font: bool,
+    ) -> Option<u32> {
+        let styles = &self.book.styles;
+        if let Some(dxf) = cf.cell(row, col).and_then(|cell| cell.dxf) {
+            if font {
+                if let Some(color) = dxf.font.color {
+                    return styles.colors.resolve(color, None);
+                }
+            } else if let Some(fill) = dxf.fill.filter(|f| f.pattern != cgs_model::Pattern::None) {
+                return styles.colors.resolve(fill.color, None);
+            }
+        }
+        self.shown_color(sheet, row, col, font)
+    }
+
     pub(crate) fn shown_color(&self, sheet: u32, row: u32, col: u32, font: bool) -> Option<u32> {
         let styles = &self.book.styles;
         let xf = styles.xf(self.book.sheets[sheet as usize].style_at(row, col));
@@ -303,6 +340,7 @@ impl Session {
             })
             .collect();
         // Each line's keys, read once.
+        let cf = self.cf_reader(sheet);
         let mut rows: Vec<(u32, Vec<(SortValue, u32)>)> = lines
             .iter()
             .map(|&line| {
@@ -324,9 +362,13 @@ impl Session {
                             },
                             SortOn::CellColor { color } | SortOn::FontColor { color } => {
                                 let font = matches!(key.by, SortOn::FontColor { .. });
-                                let shown = self.shown_color(sheet, row, col, font);
+                                let shown = self.shown_color_with(&cf, (sheet, row, col), font);
                                 let wanted = color.as_deref().and_then(parse_rgb);
                                 u32::from(shown != wanted)
+                            }
+                            SortOn::Icon { set, id } => {
+                                let icon = cf.cell(row, col).and_then(|cell| cell.icon);
+                                u32::from(icon.as_ref() != Some(&(set.clone(), *id)))
                             }
                         };
                         (value, rank)

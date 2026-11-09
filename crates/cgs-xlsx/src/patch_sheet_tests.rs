@@ -695,6 +695,8 @@ fn a_frozen_view_writes_its_pane_and_selections() {
             show_grid: Some(false),
             show_headers: None,
             right_to_left: None,
+            zoom: None,
+            tab_selected: None,
             active_cell: (3, 2),
         }),
         ..SheetExtras::default()

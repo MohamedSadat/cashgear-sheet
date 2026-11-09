@@ -109,7 +109,12 @@ fn read_dxf_part(
 fn finish_fill(dxf: &mut Dxf, colors: (Option<Color>, Option<Color>)) {
     if let Some(fill) = dxf.fill.as_mut() {
         match fill.pattern {
-            Pattern::Solid => fill.color = colors.1.or(colors.0).unwrap_or(Color::AUTO),
+            Pattern::Solid => {
+                fill.color = colors.1.or(colors.0).unwrap_or(Color::AUTO);
+                // Kept for what filters and sorts by colour name: Excel writes their colour as a
+                // solid fill's `fgColor`, as a cell's fill has it.
+                fill.pattern_color = colors.0.unwrap_or(Color::AUTO);
+            }
             _ => {
                 fill.color = colors.1.unwrap_or(Color::AUTO);
                 fill.pattern_color = colors.0.unwrap_or(Color::AUTO);
@@ -288,6 +293,14 @@ pub fn dxf_xml(dxf: &Dxf) -> String {
     }
     if let Some(fill) = &dxf.fill {
         match fill.pattern {
+            // A colour a filter or sort names is a solid fill's `fgColor`, as Excel writes it;
+            // a conditional format's names no pattern and keeps its colour in `bgColor`.
+            Pattern::Solid if fill.pattern_color.kind != cgs_model::ColorKind::Auto => out
+                .push_str(&format!(
+                    "<fill><patternFill patternType=\"solid\">{}{}</patternFill></fill>",
+                    color_xml("fgColor", &fill.pattern_color),
+                    color_xml("bgColor", &fill.color)
+                )),
             Pattern::Solid => out.push_str(&format!(
                 "<fill><patternFill>{}</patternFill></fill>",
                 color_xml("bgColor", &fill.color)

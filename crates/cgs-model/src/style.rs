@@ -24,6 +24,34 @@ pub struct Font {
     pub strike: bool,
     pub underline: Underline,
     pub color: Color,
+    pub vert_align: VertAlign,
+}
+
+/// `vertAlign`: superscript or subscript, or neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum VertAlign {
+    #[default]
+    Baseline,
+    Superscript,
+    Subscript,
+}
+
+impl VertAlign {
+    pub fn parse(text: &str) -> Self {
+        match text {
+            "superscript" => Self::Superscript,
+            "subscript" => Self::Subscript,
+            _ => Self::Baseline,
+        }
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            Self::Baseline => None,
+            Self::Superscript => Some("superscript"),
+            Self::Subscript => Some("subscript"),
+        }
+    }
 }
 
 impl Default for Font {
@@ -36,6 +64,7 @@ impl Default for Font {
             strike: false,
             underline: Underline::None,
             color: Color::AUTO,
+            vert_align: VertAlign::Baseline,
         }
     }
 }
@@ -51,6 +80,7 @@ pub struct RunFont {
     pub strike: bool,
     pub underline: Option<Underline>,
     pub color: Option<Color>,
+    pub vert_align: VertAlign,
 }
 
 /// A stretch of a rich string, from this byte of its text to the next run's.
@@ -268,13 +298,32 @@ pub struct Alignment {
 }
 
 /// One `cellXfs` entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Xf {
     pub font: u32,
     pub fill: u32,
     pub border: u32,
     pub num_fmt: u32,
     pub alignment: Alignment,
+    /// `protection locked`: can't change once the sheet is protected. Cells are locked unless
+    /// their format says not.
+    pub locked: bool,
+    /// `protection hidden`: the formula bar shows nothing once the sheet is protected.
+    pub formula_hidden: bool,
+}
+
+impl Default for Xf {
+    fn default() -> Self {
+        Self {
+            font: 0,
+            fill: 0,
+            border: 0,
+            num_fmt: 0,
+            alignment: Alignment::default(),
+            locked: true,
+            formula_hidden: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

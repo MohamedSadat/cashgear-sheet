@@ -8,11 +8,13 @@ pub mod cf;
 pub mod cf_edit;
 pub mod chart_edit;
 pub mod charts;
+pub mod circular;
 pub mod clip;
 pub mod command;
 pub mod duplicates;
 pub mod dv;
 pub mod edit;
+pub mod errors;
 mod fill;
 pub mod filter;
 pub mod find;
@@ -25,7 +27,9 @@ pub mod page;
 pub mod pivot_style;
 pub mod pivots;
 pub mod print;
+pub mod protect;
 pub mod query;
+pub mod rich;
 mod shift;
 pub mod size;
 pub mod sort;
@@ -107,6 +111,8 @@ struct Session {
     loader: Option<Loader>,
     /// Sheets showing Circle Invalid Data.
     circled: std::collections::HashSet<u32>,
+    /// Error checking's rules that are on, as `errors`' bits: none with background checking off.
+    pub(crate) error_rules: u16,
     /// Each pivot cache's records, once a pivot table has needed them.
     pivot_records: Vec<Option<Rc<cgs_model::pivot::CacheRecords>>>,
     /// What pivot tables call things the file doesn't name, in the UI's language.
@@ -287,6 +293,7 @@ impl Engine {
             cannot_edit: None,
             loader: Some(loader),
             circled: Default::default(),
+            error_rules: errors::DEFAULT_RULES,
             pivot_records: Vec::new(),
             pivot_captions: self.pivot_captions.clone(),
             cache: tile::TileCache::default(),
@@ -404,6 +411,7 @@ impl Engine {
                         .circled
                         .contains(&sheet)
                         .then(|| session.invalid_cells(sheet)),
+                    errors: session.error_rules,
                 };
                 tile::build_tile(
                     &input,
@@ -539,6 +547,32 @@ impl Engine {
             out.push_str(if sheet.loaded { "true" } else { "false" });
             out.push_str(",\"deleted\":");
             out.push_str(if sheet.deleted { "true" } else { "false" });
+            out.push_str(",\"protection\":");
+            match sheet.protection.as_ref().filter(|p| p.sheet) {
+                Some(protection) => {
+                    let allow = crate::protect::AllowSpec::of(protection);
+                    out.push_str(&format!(
+                        "{{\"password\":{},\"selectLocked\":{},\"selectUnlocked\":{},\"formatCells\":{},\"formatColumns\":{},\"formatRows\":{},\"insertColumns\":{},\"insertRows\":{},\"insertHyperlinks\":{},\"deleteColumns\":{},\"deleteRows\":{},\"sort\":{},\"autoFilter\":{},\"pivotTables\":{},\"editObjects\":{},\"editScenarios\":{}}}",
+                        protection.password.is_some(),
+                        allow.select_locked,
+                        allow.select_unlocked,
+                        allow.format_cells,
+                        allow.format_columns,
+                        allow.format_rows,
+                        allow.insert_columns,
+                        allow.insert_rows,
+                        allow.insert_hyperlinks,
+                        allow.delete_columns,
+                        allow.delete_rows,
+                        allow.sort,
+                        allow.auto_filter,
+                        allow.pivot_tables,
+                        allow.edit_objects,
+                        allow.edit_scenarios,
+                    ));
+                }
+                None => out.push_str("null"),
+            }
             out.push('}');
         }
         out.push_str("],\"order\":[");
@@ -548,7 +582,16 @@ impl Engine {
             }
             out.push_str(&sheet.to_string());
         }
-        out.push_str("]}");
+        out.push_str("],\"structureLocked\":");
+        let locked = book.protection.as_ref().filter(|p| p.structure);
+        out.push_str(if locked.is_some() { "true" } else { "false" });
+        out.push_str(",\"structurePassword\":");
+        out.push_str(if locked.is_some_and(|p| p.password.is_some()) {
+            "true"
+        } else {
+            "false"
+        });
+        out.push('}');
         out
     }
 
@@ -700,6 +743,7 @@ impl Engine {
             options: &options,
             today: session.today,
             invalid: None,
+            errors: 0,
         };
         tile::display_text(&input, &mut session.cache, sheet, row, col)
     }
@@ -716,12 +760,26 @@ impl Engine {
         if sheet as usize >= session.book.sheets.len() {
             return String::new();
         }
+        // A hidden cell on a protected sheet shows nothing in the formula bar, as in Excel.
+        if session.sheet_protection(sheet).is_some() {
+            let style = session.book.sheets[sheet as usize].style_at(row, col);
+            if session
+                .book
+                .styles
+                .xfs
+                .get(style as usize)
+                .is_some_and(|xf| xf.formula_hidden)
+            {
+                return String::new();
+            }
+        }
         let input = tile::TileInput {
             book: &session.book,
             calc: &session.calc,
             options: &options,
             today: session.today,
             invalid: None,
+            errors: 0,
         };
         tile::edit_text(&input, &mut session.cache, sheet, row, col)
     }

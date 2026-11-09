@@ -613,7 +613,7 @@ fn the_shell_gets_sheets_layout_and_cell_text() {
     );
     assert_eq!(
         engine.book_json(),
-        r#"{"active":0,"sheets":[{"name":"One","state":"visible","kind":"worksheet","loaded":true,"deleted":false}],"order":[0]}"#
+        r#"{"active":0,"sheets":[{"name":"One","state":"visible","kind":"worksheet","loaded":true,"deleted":false,"protection":null}],"order":[0],"structureLocked":false,"structurePassword":false}"#
     );
     let numbers = engine.layout_numbers(0);
     assert_eq!(&numbers[..4], &[20, 64, 1, 2]);

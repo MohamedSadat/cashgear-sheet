@@ -131,6 +131,10 @@ pub struct FormatChange {
     /// 0 by context, 1 left to right, 2 right to left.
     pub reading_order: Option<u8>,
     pub border: Option<BorderChange>,
+    /// Format Cells' Protection tab: locked cells can't change once the sheet is protected.
+    pub locked: Option<bool>,
+    /// Hidden cells show no formula once the sheet is protected.
+    pub formula_hidden: Option<bool>,
 }
 
 impl FormatChange {
@@ -526,11 +530,20 @@ impl Session {
             }
         }
 
+        let protection = (change.locked.is_some() || change.formula_hidden.is_some())
+            .then(|| {
+                (
+                    change.locked.unwrap_or(xf.locked),
+                    change.formula_hidden.unwrap_or(xf.formula_hidden),
+                )
+            })
+            .filter(|&(locked, hidden)| locked != xf.locked || hidden != xf.formula_hidden);
         if new_font.is_none()
             && new_fill.is_none()
             && new_border.is_none()
             && new_num_fmt.is_none()
             && alignment_edits.is_empty()
+            && protection.is_none()
         {
             return base;
         }
@@ -543,6 +556,7 @@ impl Session {
                 num_fmt: new_num_fmt,
                 alignment: None,
                 alignment_edits,
+                protection,
             },
         )
     }
@@ -1351,6 +1365,7 @@ impl Session {
                         options,
                         today: self.today,
                         invalid: None,
+                        errors: 0,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1410,6 +1425,7 @@ impl Session {
                         options,
                         today: self.today,
                         invalid: None,
+                        errors: 0,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1434,6 +1450,7 @@ impl Session {
                             options,
                             today: self.today,
                             invalid: None,
+                            errors: 0,
                         };
                         crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                     };
@@ -1615,6 +1632,9 @@ impl Session {
     /// Puts a sheet's view in place, and gives what puts it back.
     pub(crate) fn apply_view(&mut self, sheet: u32, view: SheetView, freeze: bool) -> Op {
         let info = &mut self.book.sheets[sheet as usize];
+        // Zoom isn't part of what undo puts back.
+        let mut view = view;
+        view.zoom = info.view.zoom;
         let before = std::mem::replace(&mut info.view, view);
         if freeze {
             self.edits.view_freeze.insert(sheet);

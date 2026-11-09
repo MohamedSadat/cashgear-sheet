@@ -807,6 +807,38 @@ fn edit_view(view: &mut Element, patch: &crate::patch_sheet::ViewPatch) {
             view.set_attr("rightToLeft", on.then_some("1"));
         }
     }
+    if let Some(zoom) = patch.zoom {
+        // Excel writes Normal view's zoom twice, and neither at 100%. In another view `zoomScale`
+        // is that view's, so only `zoomScaleNormal` is Normal's.
+        let normal = view.attr(b"view").is_none_or(|kind| kind == b"normal");
+        let read = |name: &[u8]| {
+            view.attr(name)
+                .and_then(|value| std::str::from_utf8(value).ok()?.parse::<u16>().ok())
+                .filter(|&zoom| zoom > 0)
+                .unwrap_or(100)
+        };
+        let was = if normal {
+            read(b"zoomScale")
+        } else {
+            read(b"zoomScaleNormal")
+        };
+        if was != zoom {
+            let text = zoom.to_string();
+            let value = (zoom != 100).then_some(text.as_str());
+            if normal {
+                view.set_attr("zoomScale", value);
+            }
+            view.set_attr("zoomScaleNormal", value);
+        }
+    }
+    if let Some(selected) = patch.tab_selected {
+        let was = view
+            .attr(b"tabSelected")
+            .is_some_and(|value| value == b"1" || value == b"true");
+        if was != selected {
+            view.set_attr("tabSelected", selected.then_some("1"));
+        }
+    }
     let Some(freeze) = patch.freeze else {
         return;
     };

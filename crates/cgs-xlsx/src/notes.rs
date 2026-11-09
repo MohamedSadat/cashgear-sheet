@@ -72,6 +72,7 @@ pub fn read_comments(xml: &[u8]) -> BTreeMap<(u32, u32), Note> {
                             Note {
                                 author: authors.get(who).cloned().unwrap_or_default(),
                                 text: std::mem::take(&mut text),
+                                ..Note::default()
                             },
                         );
                     }
@@ -119,9 +120,11 @@ pub fn read_threaded(xml: &[u8]) -> Vec<(u32, u32)> {
 pub type Notes = BTreeMap<(u32, u32), Note>;
 
 /// A sheet's notes, its threaded comments' cells, and the comments part, from its relationships.
+/// Each note's box comes from the sheet's VML drawing: whether it shows and where it is.
 pub fn read_sheet_notes(package: &Package, part: &str) -> (Notes, Vec<(u32, u32)>) {
     let mut notes = BTreeMap::new();
     let mut threaded = Vec::new();
+    let mut boxes = BTreeMap::new();
     for (kind, target) in read_relationships(package, part).into_values() {
         if kind.ends_with("/comments") {
             if let Some(xml) = package.read(&target) {
@@ -131,9 +134,60 @@ pub fn read_sheet_notes(package: &Package, part: &str) -> (Notes, Vec<(u32, u32)
             if let Some(xml) = package.read(&target) {
                 threaded = read_threaded(&xml);
             }
+        } else if kind.ends_with("/vmlDrawing") {
+            if let Some(xml) = package.read(&target) {
+                boxes = read_note_boxes(&xml);
+            }
+        }
+    }
+    for (cell, note) in &mut notes {
+        if let Some(&(visible, anchor)) = boxes.get(cell) {
+            note.visible = visible;
+            note.anchor = anchor;
         }
     }
     (notes, threaded)
+}
+
+/// A note's box: whether it shows, and its anchor.
+pub type NoteBox = (bool, Option<[u32; 8]>);
+
+/// Each note shape's cell, 1-based, with whether it shows and its anchor.
+pub fn read_note_boxes(vml: &[u8]) -> BTreeMap<(u32, u32), NoteBox> {
+    let text = String::from_utf8_lossy(vml);
+    let mut out = BTreeMap::new();
+    let mut rest: &str = &text;
+    let inner = |piece: &str, name: &str| -> Option<String> {
+        let open = format!("<x:{name}>");
+        let start = piece.find(&open)? + open.len();
+        let end = piece[start..].find(&format!("</x:{name}>"))? + start;
+        Some(piece[start..end].trim().to_string())
+    };
+    while let Some(start) = rest.find("<v:shape ") {
+        let tail = &rest[start..];
+        let end = tail.find("</v:shape>").map_or(tail.len(), |at| at + 10);
+        let piece = &tail[..end];
+        rest = &tail[end..];
+        if !piece.contains("ObjectType=\"Note\"") {
+            continue;
+        }
+        let (Some(row), Some(col)) = (
+            inner(piece, "Row").and_then(|v| v.parse::<u32>().ok()),
+            inner(piece, "Column").and_then(|v| v.parse::<u32>().ok()),
+        ) else {
+            continue;
+        };
+        let visible = piece.contains("<x:Visible") || piece.contains("visibility:visible");
+        let anchor = inner(piece, "Anchor").and_then(|list| {
+            let numbers: Vec<u32> = list
+                .split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .collect();
+            <[u32; 8]>::try_from(numbers).ok()
+        });
+        out.insert((row + 1, col + 1), (visible, anchor));
+    }
+    out
 }
 
 /// A sheet's hyperlinks, from its `hyperlinks` element and relationships.
@@ -198,27 +252,53 @@ pub fn comments_xml(notes: &BTreeMap<(u32, u32), Note>) -> String {
         out.push_str(&format!("<author>{}</author>", escape_text(author)));
     }
     out.push_str("</authors><commentList>");
+    const RUN: &str =
+        "<sz val=\"9\"/><color indexed=\"81\"/><rFont val=\"Tahoma\"/><family val=\"2\"/>";
     for (&(row, col), note) in notes {
         let id = authors.iter().position(|a| *a == note.author).unwrap_or(0);
+        // A note made in Excel's box starts with its author's name in bold, as Excel writes it.
+        let head = format!("{}:", note.author);
+        let (bold, plain) = match note.text.strip_prefix(&head) {
+            Some(rest) if !note.author.is_empty() => (Some(head.as_str()), rest),
+            _ => (None, note.text.as_str()),
+        };
         out.push_str(&format!(
-            "<comment ref=\"{}\" authorId=\"{id}\"><text><r><rPr><sz val=\"9\"/><color indexed=\"81\"/><rFont val=\"Tahoma\"/><family val=\"2\"/></rPr><t xml:space=\"preserve\">{}</t></r></text></comment>",
-            cell_name(row, col),
-            escape_text(&note.text)
+            "<comment ref=\"{}\" authorId=\"{id}\"><text>",
+            cell_name(row, col)
         ));
+        if let Some(bold) = bold {
+            out.push_str(&format!(
+                "<r><rPr><b/>{RUN}</rPr><t xml:space=\"preserve\">{}</t></r>",
+                escape_text(bold)
+            ));
+        }
+        if bold.is_none() || !plain.is_empty() {
+            out.push_str(&format!(
+                "<r><rPr>{RUN}</rPr><t xml:space=\"preserve\">{}</t></r>",
+                escape_text(plain)
+            ));
+        }
+        out.push_str("</text></comment>");
     }
     out.push_str("</commentList></comments>");
     out
 }
 
-/// One note's shape, hidden as Excel's are until hovered, beside its cell.
-fn note_shape(row: u32, col: u32, id: u32) -> String {
+/// One note's shape beside its cell, hidden until hovered unless Show/Hide Note shows it.
+fn note_shape(row: u32, col: u32, id: u32, note: &Note) -> String {
     let (r, c) = (row - 1, col - 1);
+    let anchor = note
+        .anchor
+        .unwrap_or_else(|| Note::default_anchor(row, col))
+        .map(|n| n.to_string())
+        .join(", ");
+    let (visibility, visible) = if note.visible {
+        ("visible", "<x:Visible/>")
+    } else {
+        ("hidden", "")
+    };
     format!(
-        "<v:shape id=\"_x0000_s{id}\" type=\"#_x0000_t202\" style='position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:108pt;height:59.25pt;z-index:{z};visibility:hidden' fillcolor=\"#ffffe1\" o:insetmode=\"auto\"><v:fill color2=\"#ffffe1\"/><v:shadow on=\"t\" color=\"black\" obscured=\"t\"/><v:path o:connecttype=\"none\"/><v:textbox style='mso-direction-alt:auto'><div style='text-align:left'></div></v:textbox><x:ClientData ObjectType=\"Note\"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>{}, 15, {}, 2, {}, 15, {}, 16</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>{r}</x:Row><x:Column>{c}</x:Column></x:ClientData></v:shape>",
-        c + 1,
-        r.saturating_sub(1),
-        c + 3,
-        r + 3,
+        "<v:shape id=\"_x0000_s{id}\" type=\"#_x0000_t202\" style='position:absolute;margin-left:59.25pt;margin-top:1.5pt;width:108pt;height:59.25pt;z-index:{z};visibility:{visibility}' fillcolor=\"#ffffe1\" o:insetmode=\"auto\"><v:fill color2=\"#ffffe1\"/><v:shadow on=\"t\" color=\"black\" obscured=\"t\"/><v:path o:connecttype=\"none\"/><v:textbox style='mso-direction-alt:auto'><div style='text-align:left'></div></v:textbox><x:ClientData ObjectType=\"Note\"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>{anchor}</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>{r}</x:Row><x:Column>{c}</x:Column>{visible}</x:ClientData></v:shape>",
         z = id - 1024,
     )
 }
@@ -282,8 +362,8 @@ pub fn vml_xml(notes: &BTreeMap<(u32, u32), Note>, existing: Option<&[u8]>) -> S
         }
         rest = &rest[at + 8..];
     }
-    for (index, &(row, col)) in notes.keys().enumerate() {
-        out.push_str(&note_shape(row, col, next + index as u32));
+    for (index, (&(row, col), note)) in notes.iter().enumerate() {
+        out.push_str(&note_shape(row, col, next + index as u32, note));
     }
     out.push_str("</xml>");
     out
@@ -339,10 +419,38 @@ mod tests {
             Note {
                 author: "Ann".to_string(),
                 text: "Check <this> & that".to_string(),
+                ..Note::default()
             },
         );
-        let read = read_comments(comments_xml(&notes).as_bytes());
-        assert_eq!(read, notes);
+        notes.insert(
+            (5, 4),
+            Note {
+                author: "Ann".to_string(),
+                text: "Ann:\nshown".to_string(),
+                visible: true,
+                anchor: None,
+            },
+        );
+        let comments = comments_xml(&notes);
+        // Excel's bold name on the note made in its box.
+        assert!(comments.contains("<b/>"), "{comments}");
+        let read = read_comments(comments.as_bytes());
+        let plain: BTreeMap<_, _> = notes
+            .iter()
+            .map(|(&cell, note)| {
+                (
+                    cell,
+                    Note {
+                        visible: false,
+                        ..note.clone()
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(read, plain);
+        let boxes = read_note_boxes(vml_xml(&notes, None).as_bytes());
+        assert_eq!(boxes[&(2, 3)], (false, Some([3, 15, 0, 10, 5, 31, 4, 9])));
+        assert_eq!(boxes[&(5, 4)], (true, Some([4, 15, 3, 10, 6, 31, 7, 9])));
         let vml = vml_xml(&notes, None);
         assert!(
             vml.contains("<x:Row>1</x:Row><x:Column>2</x:Column>"),

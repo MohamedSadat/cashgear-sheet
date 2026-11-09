@@ -65,6 +65,14 @@ pub enum CellChange {
     },
     /// A cell an array spills into, which gets written even if the file has no such cell.
     Spilled(CalcValue),
+    /// Text that is one of the file's shared strings, by its index: a rich string pasted or
+    /// moved keeps its runs this way.
+    Shared(u32),
+    /// Rich text made here: a new shared string with these runs.
+    Rich {
+        text: String,
+        runs: Vec<cgs_model::RichRun>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,17 +82,109 @@ pub struct CellPatch {
     pub style: Option<u32>,
 }
 
+/// What goes inside a rich string's `<si>`: a run for each stretch, with its font's
+/// `<rPr>` in the schema's order. A run with no font of its own takes the cell's.
+pub fn rich_items(text: &str, runs: &[cgs_model::RichRun]) -> String {
+    use cgs_model::{ColorKind, Underline};
+    let mut out = String::new();
+    let mut runs: Vec<&cgs_model::RichRun> = runs.iter().collect();
+    runs.sort_by_key(|run| run.start);
+    if runs.first().is_none_or(|run| run.start > 0) {
+        out.push_str("<r><t xml:space=\"preserve\">");
+        let end = runs
+            .first()
+            .map_or(text.len(), |run| run.start as usize)
+            .min(text.len());
+        out.push_str(&escape_plain(&crate::scan::escape_x(&text[..end])));
+        out.push_str("</t></r>");
+    }
+    for (at, run) in runs.iter().enumerate() {
+        let start = (run.start as usize).min(text.len());
+        let end = runs
+            .get(at + 1)
+            .map_or(text.len(), |next| next.start as usize)
+            .min(text.len());
+        if start >= end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            continue;
+        }
+        out.push_str("<r>");
+        if let Some(font) = &run.font {
+            out.push_str("<rPr>");
+            if font.bold {
+                out.push_str("<b/>");
+            }
+            if font.italic {
+                out.push_str("<i/>");
+            }
+            if font.strike {
+                out.push_str("<strike/>");
+            }
+            match font.underline {
+                Some(Underline::Single) => out.push_str("<u/>"),
+                Some(Underline::Double) => out.push_str("<u val=\"double\"/>"),
+                Some(Underline::SingleAccounting) => out.push_str("<u val=\"singleAccounting\"/>"),
+                Some(Underline::DoubleAccounting) => out.push_str("<u val=\"doubleAccounting\"/>"),
+                _ => {}
+            }
+            if let Some(name) = font.vert_align.name() {
+                out.push_str(&format!("<vertAlign val=\"{name}\"/>"));
+            }
+            if let Some(size) = font.size {
+                out.push_str(&format!("<sz val=\"{size}\"/>"));
+            }
+            if let Some(color) = font.color {
+                match color.kind {
+                    ColorKind::Rgb(rgb) => out.push_str(&format!("<color rgb=\"FF{rgb:06X}\"/>")),
+                    ColorKind::Theme(theme) => out.push_str(&format!("<color theme=\"{theme}\"/>")),
+                    ColorKind::Indexed(index) => {
+                        out.push_str(&format!("<color indexed=\"{index}\"/>"))
+                    }
+                    ColorKind::Auto => {}
+                }
+            }
+            if let Some(name) = &font.name {
+                out.push_str(&format!(
+                    "<rFont val=\"{}\"/>",
+                    crate::scan::escape_attr(name)
+                ));
+            }
+            out.push_str("</rPr>");
+        }
+        out.push_str("<t xml:space=\"preserve\">");
+        out.push_str(&escape_plain(&crate::scan::escape_x(&text[start..end])));
+        out.push_str("</t></r>");
+    }
+    out
+}
+
+fn escape_plain(text: &str) -> String {
+    let mut out = Vec::new();
+    crate::scan::escape_text(text, &mut out);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// New text cells, which go on the end of `sharedStrings.xml`.
 #[derive(Debug, Default)]
 pub struct StringTable {
     pub base: u32,
     pub added: Vec<String>,
+    /// Added strings that are rich, by their place in `added`: what goes inside their `<si>`.
+    pub rich: HashMap<usize, String>,
     by_text: HashMap<String, u32>,
     /// Cells that now point here, for the part's `count`.
     pub references: u64,
 }
 
 impl StringTable {
+    /// A rich string, which is never shared with another cell's.
+    pub fn intern_rich(&mut self, text: &str, items: String) -> u32 {
+        self.references += 1;
+        let index = self.base + self.added.len() as u32;
+        self.rich.insert(self.added.len(), items);
+        self.added.push(text.to_string());
+        index
+    }
+
     pub fn new(base: u32) -> Self {
         Self {
             base,
@@ -150,6 +250,8 @@ pub const WORKSHEET_ORDER: &[&str] = &[
 /// Elements that a new one of the same name replaces, all of them, wherever the first stood. A
 /// new one with no XML just takes them out.
 pub const REPLACED: &[&str] = &[
+    "sheetProtection",
+    "ignoredErrors",
     "mergeCells",
     "tableParts",
     "autoFilter",
@@ -225,6 +327,10 @@ pub struct ViewPatch {
     pub show_grid: Option<bool>,
     pub show_headers: Option<bool>,
     pub right_to_left: Option<bool>,
+    /// Normal view's zoom, in percent.
+    pub zoom: Option<u16>,
+    /// Whether the sheet's tab is the selected one, which a hidden sheet's never is.
+    pub tab_selected: Option<bool>,
     /// 1-based, for a pane's selection.
     pub active_cell: (u32, u32),
 }
@@ -692,6 +798,24 @@ impl Patcher<'_> {
         }
     }
 
+    /// A new rich shared string's `t` and `<v>`.
+    fn rich_parts(
+        &mut self,
+        text: &str,
+        runs: &[cgs_model::RichRun],
+    ) -> (Option<&'static str>, Vec<u8>) {
+        let index = self.strings.intern_rich(text, rich_items(text, runs));
+        let name = self.name("v");
+        (Some("s"), format!("<{name}>{index}</{name}>").into_bytes())
+    }
+
+    /// The `t` attribute and `<v>` for one of the file's shared strings.
+    fn shared_parts(&mut self, index: u32) -> (Option<&'static str>, Vec<u8>) {
+        self.strings.references += 1;
+        let name = self.name("v");
+        (Some("s"), format!("<{name}>{index}</{name}>").into_bytes())
+    }
+
     /// The `t` attribute and `<v>` for a value, which may add to the shared strings.
     fn value_parts(&mut self, value: &CalcValue, formula: bool) -> (Option<&'static str>, Vec<u8>) {
         let mut body = Vec::new();
@@ -782,6 +906,8 @@ impl Patcher<'_> {
         let (kind, body) = match &patch.change {
             CellChange::Keep | CellChange::Clear => (None, Vec::new()),
             CellChange::Value(value) => self.value_parts(value, false),
+            CellChange::Shared(index) => self.shared_parts(*index),
+            CellChange::Rich { text, runs } => self.rich_parts(text, runs),
             CellChange::Spilled(value) => self.value_parts(value, true),
             // A result with no cell is an array's anchor or spill this file doesn't hold. Excel
             // works it out on opening.
@@ -1163,6 +1289,14 @@ impl Patcher<'_> {
             CellChange::Clear => (None, Vec::new(), false),
             CellChange::Value(value) => {
                 let (kind, body) = self.value_parts(value, false);
+                (kind, body, false)
+            }
+            CellChange::Shared(index) => {
+                let (kind, body) = self.shared_parts(*index);
+                (kind, body, false)
+            }
+            CellChange::Rich { text, runs } => {
+                let (kind, body) = self.rich_parts(text, runs);
                 (kind, body, false)
             }
             CellChange::Formula { text, value, array } => {
@@ -1565,7 +1699,9 @@ impl Patcher<'_> {
         for (&(row, col), patch) in self.patches {
             let grows = match &patch.change {
                 CellChange::Value(value) => has_value(value),
-                CellChange::Formula { .. } => true,
+                CellChange::Formula { .. } | CellChange::Shared(_) | CellChange::Rich { .. } => {
+                    true
+                }
                 CellChange::Spilled(value) => has_value(value),
                 CellChange::Keep | CellChange::Clear => patch.style.is_some(),
                 // Nothing new is written for a result.
@@ -2003,7 +2139,15 @@ pub async fn patch_into_paced<R: Read, W: Write>(
             view_due: extras.view.is_some(),
             sheet_pr_due: extras.filter_mode.is_some() || extras.fit_to_page.is_some(),
             strings: &mut *strings,
-            elements: elements.iter().collect(),
+            // In the schema's order, whatever order they were made in: a filter and a
+            // conditional format added in one save must still be written filter first.
+            elements: {
+                let mut list: Vec<&NewElement> = elements.iter().collect();
+                list.sort_by_key(|element| {
+                    worksheet_order(element.name.as_bytes()).unwrap_or(usize::MAX)
+                });
+                list
+            },
             replaced: Vec::new(),
             ascii_only,
             facts: facts.clone(),

@@ -46,10 +46,20 @@ impl Session {
         let mut notes = self.book.sheets[sheet as usize].notes.clone();
         match text {
             Some(text) => {
+                // An edited note keeps its author, and whether and where its box shows.
+                let old = notes.get(&(row, col)).cloned().unwrap_or_default();
                 let author = author
-                    .or_else(|| notes.get(&(row, col)).map(|note| note.author.clone()))
+                    .filter(|_| old.author.is_empty())
+                    .or_else(|| (!old.author.is_empty()).then(|| old.author.clone()))
                     .unwrap_or_else(|| "Author".to_string());
-                notes.insert((row, col), Note { author, text });
+                notes.insert(
+                    (row, col),
+                    Note {
+                        author,
+                        text,
+                        ..old
+                    },
+                );
             }
             None => {
                 if notes.remove(&(row, col)).is_none() {
@@ -64,6 +74,29 @@ impl Session {
         )
     }
 
+    /// Show/Hide Note: a note's box showing all the time, or only on hover.
+    pub(crate) fn note_visible_command(
+        &mut self,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        visible: bool,
+    ) -> Result<Applied, String> {
+        let mut notes = self.sheet_for_edit(sheet)?.notes.clone();
+        let Some(note) = notes.get_mut(&(row, col)) else {
+            return Ok(Applied::default());
+        };
+        if note.visible == visible {
+            return Ok(Applied::default());
+        }
+        note.visible = visible;
+        self.perform(
+            "show or hide a note",
+            Op::SheetNotes { sheet, notes },
+            Some((sheet, Area::cell(row, col))),
+        )
+    }
+
     /// A link on cells, or none to take links off them. A new link's cell shows its text, in
     /// blue and underlined, as Excel's Hyperlink style draws it.
     pub(crate) fn set_link_command(
@@ -71,6 +104,7 @@ impl Session {
         sheet: u32,
         area: Area,
         spec: Option<&LinkSpec>,
+        plain: bool,
     ) -> Result<Applied, String> {
         self.sheet_for_edit(sheet)?;
         let rect = Rect {
@@ -160,6 +194,20 @@ impl Session {
                 active: None,
             });
         }
+        if spec.is_none() && plain {
+            // Remove Hyperlink takes the link's look off too, back to the Normal style's, as
+            // Excel 2016 does; Clear Hyperlinks leaves it.
+            list.push(Op::Format {
+                sheet,
+                areas: vec![area],
+                change: Box::new(FormatChange {
+                    font_color: Some(ColorSpec::Auto),
+                    underline: Some("none".to_string()),
+                    ..FormatChange::default()
+                }),
+                active: None,
+            });
+        }
         list.push(Op::SheetLinks { sheet, links });
         self.perform("hyperlink", Op::Many(list), Some((sheet, area)))
     }
@@ -169,7 +217,12 @@ impl Session {
             return Value::Null;
         };
         match info.notes.get(&(row, col)) {
-            Some(note) => json!({ "author": note.author, "text": note.text }),
+            Some(note) => json!({
+                "author": note.author,
+                "text": note.text,
+                "visible": note.visible,
+                "anchor": note.anchor.unwrap_or_else(|| Note::default_anchor(row, col)),
+            }),
             None if info.threaded.contains(&(row, col)) => json!({ "threaded": true }),
             None => Value::Null,
         }
@@ -199,7 +252,16 @@ impl Session {
         Value::Array(
             info.notes
                 .iter()
-                .map(|(&(row, col), note)| json!({ "row": row, "col": col, "author": note.author, "text": note.text }))
+                .map(|(&(row, col), note)| {
+                    json!({
+                        "row": row,
+                        "col": col,
+                        "author": note.author,
+                        "text": note.text,
+                        "visible": note.visible,
+                        "anchor": note.anchor.unwrap_or_else(|| Note::default_anchor(row, col)),
+                    })
+                })
                 .collect(),
         )
     }

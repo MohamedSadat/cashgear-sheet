@@ -550,9 +550,15 @@ impl Styles<'_> {
         let cell_font = self.table.font(xf);
         let mut record = self.record(xf, flags, starts_rtl, true, None, None);
         record.size = (f64::from(font.size.unwrap_or(cell_font.size)) * 100.0).round() as u16;
+        // A run's own superscript or subscript, or else the cell's.
+        let vert = match font.vert_align {
+            cgs_model::VertAlign::Baseline => cell_font.vert_align,
+            own => own,
+        };
         record.font_flags = (u8::from(font.bold) * FONT_BOLD)
             | (u8::from(font.italic) * FONT_ITALIC)
-            | (u8::from(font.strike) * FONT_STRIKE);
+            | (u8::from(font.strike) * FONT_STRIKE)
+            | vert_flags(vert);
         record.underline = underline_code(font.underline.unwrap_or(Underline::None));
         let name = font.name.as_deref().unwrap_or(cell_font.name.as_str());
         if let Some(&index) = self.by_name.get(&(name.to_string(), record)) {
@@ -589,7 +595,8 @@ impl Styles<'_> {
             record.size = (f64::from(font.size) * 100.0).round() as u16;
             record.font_flags = (u8::from(font.bold) * FONT_BOLD)
                 | (u8::from(font.italic) * FONT_ITALIC)
-                | (u8::from(font.strike) * FONT_STRIKE);
+                | (u8::from(font.strike) * FONT_STRIKE)
+                | vert_flags(font.vert_align);
             record.underline = underline_code(font.underline);
             let alignment = xf.alignment;
             record.horizontal = horizontal_code(alignment.horizontal, flags, starts_rtl);
@@ -681,6 +688,15 @@ fn pick_line(
 }
 
 /// Everything a tile is made from.
+/// The font flags for superscript and subscript.
+fn vert_flags(vert: cgs_model::VertAlign) -> u8 {
+    match vert {
+        cgs_model::VertAlign::Baseline => 0,
+        cgs_model::VertAlign::Superscript => crate::view_block::FONT_SUPERSCRIPT,
+        cgs_model::VertAlign::Subscript => crate::view_block::FONT_SUBSCRIPT,
+    }
+}
+
 pub struct TileInput<'a> {
     pub book: &'a Book,
     pub calc: &'a FormualizerEngine,
@@ -689,6 +705,8 @@ pub struct TileInput<'a> {
     pub today: f64,
     /// Cells to ring for Circle Invalid Data, when it's on.
     pub invalid: Option<Vec<(u32, u32)>>,
+    /// Error checking's rules that draw a green triangle: none for pages and copies.
+    pub errors: u16,
 }
 
 fn row_span(info: &SheetInfo, from: u32, to: u32) -> i32 {
@@ -1326,6 +1344,31 @@ pub fn build_tile(
     }
     for (row, col, mark) in cf_marks {
         writer.mark(row, col, mark);
+    }
+    // Error checking's green triangles, in cells that hold something.
+    if input.errors != 0 && top <= info.used.0 {
+        for row in top..=bottom.min(info.used.0) {
+            for col in left..=right.min(info.used.1) {
+                let found = crate::errors::shown_errors(
+                    input.book,
+                    input.calc,
+                    input.options,
+                    input.today,
+                    input.errors,
+                    (sheet, row, col),
+                );
+                if found != 0 {
+                    writer.mark(
+                        row - top,
+                        col - left,
+                        MarkRecord {
+                            kind: crate::view_block::MARK_ERROR,
+                            ..MarkRecord::default()
+                        },
+                    );
+                }
+            }
+        }
     }
     // Notes' red corners, and threaded comments' purple ones.
     let notes = info

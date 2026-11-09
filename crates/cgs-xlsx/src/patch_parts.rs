@@ -353,7 +353,21 @@ pub fn count_strings<R: Read>(reader: R) -> io::Result<u32> {
 
 fn string_items(strings: &StringTable, si: &str, t: &str, ascii_only: bool) -> Vec<u8> {
     let mut out = Vec::new();
-    for text in &strings.added {
+    for (at, text) in strings.added.iter().enumerate() {
+        if let Some(items) = strings.rich.get(&at) {
+            // Rich strings made here go in without a prefix, declaring the namespace.
+            if si == "si" {
+                out.extend_from_slice(format!("<si>{items}</si>").as_bytes());
+            } else {
+                out.extend_from_slice(
+                    format!(
+                        "<si xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">{items}</si>"
+                    )
+                    .as_bytes(),
+                );
+            }
+            continue;
+        }
         let spaced = text.starts_with(char::is_whitespace)
             || text.ends_with(char::is_whitespace)
             || text.contains('\n');
@@ -618,6 +632,8 @@ pub struct XfChanges {
     pub alignment: Option<String>,
     /// Attributes to set or remove on the `<alignment>` the format starts from, keeping the rest.
     pub alignment_edits: Vec<(&'static str, Option<String>)>,
+    /// The format's `<protection>`: whether it's locked and whether its formula is hidden.
+    pub protection: Option<(bool, bool)>,
 }
 
 /// What changes in a font. The rest of it stays, including what we don't read.
@@ -697,6 +713,62 @@ fn with_alignment(xf: &str, name: &str, attributes: &str) -> String {
     match xf.find('>') {
         Some(at) => format!("{}{element}{}", &xf[..=at], &xf[at + 1..]),
         None => xf.to_string(),
+    }
+}
+
+/// A format with its `<protection>` set, after its `<alignment>` as the schema orders them. A
+/// format that is locked with its formula shown says nothing, as Excel writes it.
+fn with_protection(xf: &str, name: &str, locked: bool, hidden: bool) -> String {
+    let mut attributes = String::new();
+    if !locked {
+        attributes.push_str(" locked=\"0\"");
+    }
+    if hidden {
+        attributes.push_str(" hidden=\"1\"");
+    }
+    let open = format!("<{name}protection");
+    // Take out the one it had.
+    let mut xf = xf.to_string();
+    if let Some(start) = xf.find(&open) {
+        let tail = &xf[start..];
+        let end = tail.find("/>").map(|at| at + 2).or_else(|| {
+            tail.find(&format!("</{name}protection>"))
+                .map(|at| at + name.len() + 13)
+        });
+        if let Some(end) = end {
+            xf = format!("{}{}", &xf[..start], &tail[end..]);
+        }
+    }
+    let flag = if attributes.is_empty() {
+        None
+    } else {
+        Some("1")
+    };
+    let tag_end = xf.find('>').map_or(xf.len(), |at| at + 1);
+    let edited = edit_tag(&xf.as_bytes()[..tag_end], &[("applyProtection", flag)]);
+    let xf = format!("{}{}", String::from_utf8_lossy(&edited), &xf[tag_end..]);
+    if attributes.is_empty() {
+        return xf;
+    }
+    let element = format!("<{name}protection{attributes}/>");
+    if let Some(body) = xf.strip_suffix("/>") {
+        return format!("{body}>{element}</{name}xf>");
+    }
+    // After `<alignment>` if there is one, and before anything else.
+    let alignment = format!("<{name}alignment");
+    let at = match xf.find(&alignment) {
+        Some(start) => {
+            let tail = &xf[start..];
+            tail.find("/>").map(|end| start + end + 2).or_else(|| {
+                tail.find(&format!("</{name}alignment>"))
+                    .map(|end| start + end + name.len() + 12)
+            })
+        }
+        None => xf.find('>').map(|at| at + 1),
+    };
+    match at {
+        Some(at) => format!("{}{element}{}", &xf[..at], &xf[at..]),
+        None => xf,
     }
 }
 
@@ -1301,6 +1373,9 @@ impl StylesXml {
                 })
                 .unwrap_or_default();
             xml = with_alignment(&xml, &name, &attributes);
+        }
+        if let Some((locked, hidden)) = changes.protection {
+            xml = with_protection(&xml, &name, locked, hidden);
         }
         self.append_new("cellXfs", "xf", &xml)
     }

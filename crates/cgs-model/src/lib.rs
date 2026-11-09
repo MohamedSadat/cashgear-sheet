@@ -3,6 +3,7 @@
 
 pub mod cf;
 pub mod chart;
+pub mod checks;
 pub mod color;
 pub mod dv;
 pub mod dxf;
@@ -10,6 +11,7 @@ pub mod filter;
 pub mod notes;
 pub mod page;
 pub mod pivot;
+pub mod protection;
 pub mod sheet;
 pub mod style;
 pub mod table;
@@ -27,13 +29,14 @@ pub use page::{
     HeaderFooter, HfFields, HfPicture, HfRun, HfSections, HfStyle, HfText, Margins, Orientation,
     PageBreak, PageOrder, PageSetup, PrintComments, PrintErrors,
 };
+pub use protection::{PasswordHash, SheetProtection, WorkbookProtection};
 pub use sheet::{
     Anchor, AnchorPoint, ColAxis, ColumnRuns, Drawing, DrawingKind, Freeze, LineInfo, RowAxis,
     SheetInfo, SheetKind, SheetShape, SheetState, SheetView, NO_CELL,
 };
 pub use style::{
     Alignment, Border, Fill, Font, HAlign, Hatch, Line, LineStyle, Pattern, ReadingOrder, RichRun,
-    RunFont, StyleTable, Underline, VAlign, Xf,
+    RunFont, StyleTable, Underline, VAlign, VertAlign, Xf,
 };
 pub use table::{Table, TableColumnInfo, TableStyle, TotalsFunction};
 
@@ -96,6 +99,8 @@ pub struct Book {
     /// Pivot caches, which pivot tables point at by index.
     pub pivot_caches: Vec<pivot::PivotCache>,
     pub pivot_tables: Vec<pivot::PivotTable>,
+    /// `workbookProtection`, if the file has it.
+    pub protection: Option<WorkbookProtection>,
 }
 
 impl Book {

@@ -50,6 +50,13 @@ pub enum FilterSpec {
         #[serde(default)]
         color: Option<String>,
     },
+    /// Cells showing a conditional format's icon: its set and place from 0, or no place for
+    /// cells with no icon.
+    Icon {
+        set: String,
+        #[serde(default)]
+        id: Option<u32>,
+    },
 }
 
 fn yes() -> bool {
@@ -114,6 +121,8 @@ impl<F: FnMut(u32, &CalcValue)> CellSink for Each<F> {
 /// One column's test, with what it needs worked out from the whole column first.
 struct Test<'a> {
     criteria: &'a FilterCriteria,
+    /// What conditional formats make of the cells, for a filter by colour or icon.
+    cf: Option<&'a crate::cf::CfReader<'a>>,
     /// A top ten's cut-off.
     cut: Option<f64>,
     average: Option<f64>,
@@ -368,10 +377,7 @@ impl Session {
             let Some(criteria) = &column.criteria else {
                 continue;
             };
-            if matches!(
-                criteria,
-                FilterCriteria::Other(_) | FilterCriteria::Icon { .. }
-            ) {
+            if matches!(criteria, FilterCriteria::Other(_)) {
                 continue;
             }
             let col = r.left + column.col_id;
@@ -390,8 +396,14 @@ impl Session {
                 .into_iter()
                 .map(|(top, bottom, style)| (top, bottom, self.book.styles.xf(style).num_fmt))
                 .collect();
+            let cf = matches!(
+                criteria,
+                FilterCriteria::Color { .. } | FilterCriteria::Icon { .. }
+            )
+            .then(|| self.cf_reader(sheet));
             let mut test = Test {
                 criteria,
+                cf: cf.as_ref(),
                 cut: None,
                 average: None,
                 dates: (None, None),
@@ -632,19 +644,26 @@ impl Session {
             FilterCriteria::Color { cell, dxf } => {
                 let wanted = dxf
                     .and_then(|index| self.book.styles.dxfs.get(index as usize))
-                    .and_then(|dxf| {
-                        if *cell {
-                            dxf.fill
-                                .and_then(|fill| self.book.styles.colors.resolve(fill.color, None))
-                        } else {
-                            dxf.font
-                                .color
-                                .and_then(|color| self.book.styles.colors.resolve(color, None))
-                        }
-                    });
-                self.shown_color(sheet, row, col, !*cell) == wanted
+                    .and_then(|dxf| self.filter_color(dxf, *cell));
+                let shown = match test.cf {
+                    Some(cf) => self.shown_color_with(cf, (sheet, row, col), !*cell),
+                    None => self.shown_color(sheet, row, col, !*cell),
+                };
+                shown == wanted
             }
-            FilterCriteria::Icon { .. } | FilterCriteria::Other(_) => true,
+            FilterCriteria::Icon { set, id } => {
+                let icon = test
+                    .cf
+                    .and_then(|cf| cf.cell(row, col))
+                    .and_then(|cell| cell.icon);
+                match (icon, id) {
+                    (Some((shown, place)), Some(id)) => shown == *set && place == *id,
+                    // No icon wanted: cells that show none.
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
+            FilterCriteria::Other(_) => true,
         }
     }
 
@@ -1075,7 +1094,33 @@ impl Session {
                     dxf: Some(dxf),
                 }
             }
+            FilterSpec::Icon { set, id } => FilterCriteria::Icon { set, id },
         })
+    }
+
+    /// The colour a filter by colour's format names. Excel keeps a fill's colour as a solid fill's
+    /// `fgColor`, and a text colour as one too, with `cellColor="0"`; No Fill is a fill of no
+    /// pattern, which only cells with no fill match.
+    fn filter_color(&self, dxf: &cgs_model::Dxf, cell: bool) -> Option<u32> {
+        let colors = &self.book.styles.colors;
+        let fill_color = |fill: cgs_model::DxfFill| {
+            let color = if fill.pattern_color.kind == cgs_model::ColorKind::Auto {
+                fill.color
+            } else {
+                fill.pattern_color
+            };
+            colors.resolve(color, None)
+        };
+        if cell {
+            return dxf
+                .fill
+                .filter(|fill| fill.pattern != cgs_model::Pattern::None)
+                .and_then(fill_color);
+        }
+        match dxf.font.color {
+            Some(color) => colors.resolve(color, None),
+            None => dxf.fill.and_then(fill_color).or(Some(0)),
+        }
     }
 
     /// A differential format holding just a colour, for a filter or sort by colour to name.
@@ -1086,14 +1131,29 @@ impl Session {
             kind: rgb.map_or(cgs_model::ColorKind::Auto, cgs_model::ColorKind::Rgb),
             tint: 0.0,
         };
-        if cell {
-            dxf.fill = Some(cgs_model::DxfFill {
-                pattern: cgs_model::Pattern::Solid,
-                color,
-                pattern_color: cgs_model::Color::AUTO,
-            });
-        } else {
-            dxf.font.color = Some(color);
+        // As Excel 2016 writes them: the colour as a solid fill's `fgColor` on white, for text
+        // colours too, and No Fill as a fill with no pattern.
+        let white = cgs_model::Color {
+            kind: cgs_model::ColorKind::Rgb(0xFFFFFF),
+            tint: 0.0,
+        };
+        match (cell, rgb) {
+            (true, None) => {
+                dxf.fill = Some(cgs_model::DxfFill {
+                    pattern: cgs_model::Pattern::None,
+                    color: cgs_model::Color::AUTO,
+                    pattern_color: cgs_model::Color::AUTO,
+                });
+            }
+            // Automatic text.
+            (false, None) => dxf.font.color = Some(color),
+            _ => {
+                dxf.fill = Some(cgs_model::DxfFill {
+                    pattern: cgs_model::Pattern::Solid,
+                    color: white,
+                    pattern_color: color,
+                });
+            }
         }
         self.add_dxf(dxf)
     }
@@ -1147,6 +1207,13 @@ impl Session {
         let mut numbers: Vec<(f64, String)> = Vec::new();
         let mut dates: BTreeMap<(u32, u32, u32), ()> = BTreeMap::new();
         let mut blanks = false;
+        // The colours and icons the column shows, for Sort and Filter by Color, in the order
+        // they come.
+        let looks = self.column_looks(
+            sheet,
+            col,
+            (first..=filter.range.bottom).filter(|row| kept.get(row).copied().unwrap_or(true)),
+        );
         for row in first..=filter.range.bottom {
             if !kept.get(&row).copied().unwrap_or(true) {
                 continue;
@@ -1228,7 +1295,61 @@ impl Session {
             "blanks": blanks,
             "blanksChecked": blank_checked,
             "filtered": kind,
+            "fills": looks["fills"],
+            "fonts": looks["fonts"],
+            "icons": looks["icons"],
         }))
+    }
+
+    /// The fills, text colours and conditional format icons some rows of a column show, in the
+    /// order they come, for Sort and Filter by Color. Excel offers colours only where a column
+    /// has more than one, and No Cell Icon where some cells have an icon and some don't.
+    pub(crate) fn column_looks(
+        &self,
+        sheet: u32,
+        col: u32,
+        rows: impl Iterator<Item = u32>,
+    ) -> serde_json::Value {
+        let cf = self.cf_reader(sheet);
+        let mut fills: Vec<Option<u32>> = Vec::new();
+        let mut fonts: Vec<u32> = Vec::new();
+        let mut icons: Vec<(String, u32)> = Vec::new();
+        let mut no_icon = false;
+        for row in rows {
+            let fill = self.shown_color_with(&cf, (sheet, row, col), false);
+            if !fills.contains(&fill) {
+                fills.push(fill);
+            }
+            if let Some(font) = self.shown_color_with(&cf, (sheet, row, col), true) {
+                if !fonts.contains(&font) {
+                    fonts.push(font);
+                }
+            }
+            match cf.cell(row, col).and_then(|cell| cell.icon) {
+                Some(icon) if !icons.contains(&icon) => icons.push(icon),
+                Some(_) => {}
+                None => no_icon = true,
+            }
+        }
+        let hex = |rgb: u32| format!("{rgb:06X}");
+        let fills: Vec<Option<String>> = if fills.len() > 1 {
+            fills.into_iter().map(|fill| fill.map(hex)).collect()
+        } else {
+            Vec::new()
+        };
+        let fonts: Vec<String> = if fonts.len() > 1 {
+            fonts.into_iter().map(hex).collect()
+        } else {
+            Vec::new()
+        };
+        let mut icons: Vec<serde_json::Value> = icons
+            .into_iter()
+            .map(|(set, id)| serde_json::json!({ "set": set, "id": id }))
+            .collect();
+        if !icons.is_empty() && no_icon {
+            icons.push(serde_json::json!({ "set": "", "id": null }));
+        }
+        serde_json::json!({ "fills": fills, "fonts": fonts, "icons": icons })
     }
 }
 
