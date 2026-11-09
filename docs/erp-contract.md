@@ -45,14 +45,15 @@ Routes are module first, as the ERP's are. Every route takes and returns JSON
 | `X-Company-Id` | Response | On every response with a session |
 | `Cache-Control: no-store` | Response | On every sheet response, because `UseResponseCaching` runs between authentication and authorization |
 | `Retry-After` | Response | With 429 and 503, in seconds |
-| CORS | Both | The sheet routes allow the sheet's origins only: `https://sheet.cashgearerp.com`, `http://localhost:4173`, `http://127.0.0.1:4173`, `http://localhost:5173` and `http://127.0.0.1:5173`. Preflight allows `GET`, `POST`, `Content-Type` and `X-Sheet-Session`, and responses expose `X-Correlation-Id`, `X-Company-Id` and `Retry-After`. No credentials |
+| CORS | Both | The session's routes (`api/sheet/*` and the entity routes) allow the sheet's origins only: `https://sheet.cashgearerp.com`, `http://localhost:4173`, `http://127.0.0.1:4173`, `http://localhost:5173` and `http://127.0.0.1:5173`. Preflight allows `GET`, `POST`, `Content-Type` and `X-Sheet-Session`, and responses expose `X-Correlation-Id`, `X-Company-Id` and `Retry-After`. No credentials. CreateTicket and Status keep the host's own CORS, since the ERP client calls them from its own origin (Track E1) |
 
 ## Launch and session
 
 **Turned on per company.** UnifiedAPI's setting `SheetLaunch:Companies` lists the companies the
 sheet is on for, and is empty until Phase 18 turns companies on (decisions, 2026-11-09, Phase 15).
-Status answers `{enabled}`: true when the key's company is listed and its user has the Vendors
-unit's View. The ERP's list shows "Edit in Cash Gear Sheet" only then, and CreateTicket refuses
+Status needs a valid API key (401 without) and answers `{enabled}`: true when the key's company is
+listed and an active tenant, and its user passes the entity module's policy (`Payable`) with the
+Vendors unit's View in that company (Track E1). The ERP's list shows "Edit in Cash Gear Sheet" only then, and CreateTicket refuses
 everyone else with 403 `privilege.denied`, so a direct call can't launch either. The mock lists
 every company, and `/__mock/launch` changes that.
 
