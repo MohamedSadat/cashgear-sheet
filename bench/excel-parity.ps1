@@ -108,6 +108,7 @@ try {
         bold = [bool]$range.Font.Bold
         italic = [bool]$range.Font.Italic
         number = [string]$range.NumberFormat
+        value = [string]$range.Value2
         note = $null
       }
       # Error checking: the rules Excel finds the cell breaks, and those `ignoredErrors` turns off.
@@ -164,6 +165,29 @@ try {
       else { $still = [bool]$book.ProtectStructure }
       $unprotected += , [ordered]@{ sheet = [string]$try.sheet; password = [string]$try.password; unprotected = ($ok -and -not $still) }
     }
+    # Pivot tables: each sheet's, with its report filter's item and its first column as Excel
+    # shows it once it has refreshed the table itself. Tables in the file are counted too.
+    $pivots = @()
+    if ($spec.pivots) {
+      foreach ($sheet in $book.Worksheets) {
+        $count = [int]$sheet.PivotTables().Count
+        for ($at = 1; $at -le $count; $at++) {
+          $pt = $sheet.PivotTables($at)
+          [void]$pt.RefreshTable()
+          $first = @()
+          foreach ($c in $pt.TableRange1.Columns.Item(1).Cells) { $first += [string]$c.Text }
+          $page = ''
+          foreach ($pf in $pt.PageFields()) { $page = [string]$pf.CurrentPage.Name }
+          $pivots += , [ordered]@{ sheet = [string]$sheet.Name; name = [string]$pt.Name; page = $page; labels = ($first -join '|') }
+        }
+      }
+    }
+    $lists = @()
+    foreach ($sheet in $book.Worksheets) {
+      foreach ($lo in $sheet.ListObjects) {
+        $lists += , [ordered]@{ sheet = [string]$sheet.Name; name = [string]$lo.Name; style = [string]$lo.TableStyle.Name; range = [string]$lo.Range.Address() }
+      }
+    }
     # Named styles: what each includes, as the Style dialog shows it.
     $styles = @()
     foreach ($name in @($spec.styles)) {
@@ -180,7 +204,7 @@ try {
         italic = [bool]$style.Font.Italic
       }
     }
-    $result.book = [ordered]@{ structure = $structure; unprotected = $unprotected; styles = $styles }
+    $result.book = [ordered]@{ structure = $structure; unprotected = $unprotected; styles = $styles; pivots = $pivots; tables = $lists }
     $book.Close($false)
   } catch {
     $result.error = $_.Exception.Message

@@ -3,7 +3,7 @@
 // own save of it back the same. Generated workbooks and fixtures only.
 // Usage: node bench/run-parity-check.mjs [--only=<text>] [out.json]
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { root } from '../scripts/lib.mjs';
@@ -35,6 +35,31 @@ const NOTHING_ALLOWED = {
   pivotTables: false,
 };
 const EVERYTHING_ALLOWED = Object.fromEntries(Object.keys(NOTHING_ALLOWED).map((k) => [k, true]));
+
+/** Excel's probe book for pivot tables: 20 sales over 2016 in three regions and four products. */
+const DATED = (() => {
+  const regions = ['East', 'West', 'North'];
+  const products = ['Apple', 'Pear', 'Plum', 'Fig'];
+  const rows = [['Region', 'Product', 'Date', 'Sales']];
+  for (let i = 0; i < 20; i++) {
+    rows.push([
+      regions[i % 3],
+      products[i % 4],
+      `${(i % 12) + 1}/${(i % 27) + 1}/2016`,
+      String(10 * (i + 1) + 5),
+    ]);
+  }
+  return rows.flatMap((row, r) =>
+    row.map((text, c) => ({ kind: 'input', sheet: 0, row: r + 1, col: c + 1, text })),
+  );
+})();
+const pivotAt = (row, col) => ({
+  kind: 'createPivot',
+  sheet: 0,
+  area: { top: 1, left: 1, bottom: 21, right: 4 },
+  to: { kind: 'existing', sheet: 0, row, col },
+});
+const named = (name) => ({ sheet: 0, name });
 
 /**
  * Each case: a source, the app's commands, what Excel must read (`expect`: per sheet name, the
@@ -344,6 +369,105 @@ const CASES = {
       Good: { builtIn: true, number: false, font: true, fill: true },
     },
   },
+  'pivot groups made here, as Excel 2016 refreshes them': {
+    source: 'blank',
+    commands: [
+      ...DATED,
+      pivotAt(3, 7),
+      {
+        kind: 'pivotLayout',
+        pivot: named('PivotTable1'),
+        layout: { rows: [2], values: [{ field: 3 }] },
+      },
+      {
+        kind: 'groupPivot',
+        pivot: named('PivotTable1'),
+        field: 2,
+        group: { kind: 'dates', parts: ['months', 'quarters', 'years'] },
+      },
+      pivotAt(3, 11),
+      {
+        kind: 'pivotLayout',
+        pivot: named('PivotTable2'),
+        layout: { rows: [3], values: [{ field: 0, summary: 'count' }] },
+      },
+      {
+        kind: 'groupPivot',
+        pivot: named('PivotTable2'),
+        field: 3,
+        group: { kind: 'numbers', start: 0, end: 250, by: 50 },
+      },
+      pivotAt(3, 15),
+      {
+        kind: 'pivotLayout',
+        pivot: named('PivotTable3'),
+        layout: { rows: [1], values: [{ field: 3 }] },
+      },
+      {
+        kind: 'groupPivot',
+        pivot: named('PivotTable3'),
+        field: 1,
+        group: { kind: 'items', items: [0, 1] },
+      },
+    ],
+    pivots: [
+      {
+        sheet: 'Sheet1',
+        name: 'PivotTable1',
+        labels:
+          'Row Labels|2016|Qtr1|Jan|Feb|Mar|Qtr2|Apr|May|Jun|Qtr3|Jul|Aug|Sep|Qtr4|Oct|Nov|Dec|Grand Total',
+      },
+      {
+        sheet: 'Sheet1',
+        name: 'PivotTable2',
+        labels: 'Row Labels|0-49|50-99|100-149|150-199|200-250|Grand Total',
+      },
+      {
+        sheet: 'Sheet1',
+        name: 'PivotTable3',
+        labels: 'Row Labels|Group1|Apple|Fig|Pear|Pear|Plum|Plum|Grand Total',
+      },
+    ],
+  },
+  'Show Details, report filter pages and GETPIVOTDATA, as Excel 2016 makes and reads them': {
+    source: 'blank',
+    commands: [
+      ...DATED,
+      pivotAt(3, 7),
+      {
+        kind: 'pivotLayout',
+        pivot: named('PivotTable1'),
+        layout: { rows: [0], cols: [1], values: [{ field: 3 }] },
+      },
+      {
+        kind: 'input',
+        sheet: 0,
+        row: 30,
+        col: 1,
+        text: '=GETPIVOTDATA("Sales",$G$3,"Region","East","Product","Apple")',
+      },
+      { kind: 'input', sheet: 0, row: 31, col: 1, text: '=GETPIVOTDATA("Sales",$G$3)' },
+      { kind: 'pivotDetails', sheet: 0, row: 5, col: 8 },
+      pivotAt(3, 20),
+      {
+        kind: 'pivotLayout',
+        pivot: named('PivotTable2'),
+        layout: { pages: [0], rows: [1], values: [{ field: 3 }] },
+      },
+      { kind: 'pivotFilterPages', pivot: named('PivotTable2'), field: 0 },
+    ],
+    excelCells: [
+      { sheet: 'Sheet1', cell: 'A30', value: '150' },
+      { sheet: 'Sheet1', cell: 'A31', value: '2200' },
+    ],
+    sheetOrder: ['Sheet2', 'East', 'North', 'West', 'Sheet1'],
+    tables: [{ sheet: 'Sheet2', name: 'Table1', style: 'TableStyleMedium2', range: '$A$1:$D$3' }],
+    pivots: [
+      { sheet: 'East', page: 'East', labels: 'Row Labels|Apple|Fig|Pear|Plum|Grand Total' },
+      { sheet: 'West', page: 'West' },
+      { sheet: 'North', page: 'North' },
+    ],
+  },
   'protection taken off again': {
     source: 'blank',
     commands: [
@@ -413,6 +537,9 @@ try {
       { encoding: 'utf8' },
     );
     if (made.status !== 0) throw new Error(`${name}: ${made.stderr.slice(0, 400)}`);
+    // PARITY_KEEP names a folder to keep each case's saved file in, for a look inside.
+    if (process.env.PARITY_KEEP)
+      copyFileSync(saved, join(process.env.PARITY_KEEP, results.length + '.xlsx'));
     writeFileSync(
       probe,
       JSON.stringify({
@@ -421,6 +548,7 @@ try {
         ),
         unprotect: (spec.unprotect ?? []).map(({ sheet, password }) => ({ sheet, password })),
         styles: Object.keys(spec.styles ?? {}),
+        pivots: Boolean(spec.pivots),
       }),
     );
     const run = spawnSync(
@@ -440,6 +568,20 @@ try {
     excel.cells = [excel.cells ?? []].flat();
     if (process.env.PARITY_DEBUG) console.log(JSON.stringify(excel));
     const problems = excel.error ? [excel.error] : judge(excel, spec);
+    for (const want of spec.pivots ?? []) {
+      const got = [excel.book?.pivots ?? []]
+        .flat()
+        .find((one) => one.sheet === want.sheet && (!want.name || one.name === want.name));
+      if (!matches(got, want)) problems.push(`pivot on ${want.sheet}: ${JSON.stringify(got)}`);
+    }
+    for (const want of spec.tables ?? []) {
+      const got = [excel.book?.tables ?? []].flat().find((one) => one.sheet === want.sheet);
+      if (!matches(got, want)) problems.push(`table on ${want.sheet}: ${JSON.stringify(got)}`);
+    }
+    if (spec.sheetOrder) {
+      const order = excel.sheets.map((sheet) => sheet.name).join(',');
+      if (order !== spec.sheetOrder.join(',')) problems.push('sheet order: ' + order);
+    }
     for (const [style, fields] of Object.entries(spec.styles ?? {})) {
       const got = [excel.book?.styles ?? []].flat().find((one) => one.name === style);
       if (!matches(got, fields)) problems.push(`style ${style}: ${JSON.stringify(got)}`);
