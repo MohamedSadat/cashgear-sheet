@@ -567,6 +567,8 @@ Nothing generic needs adding to `CashGear.React.UI` for the MVP: dialogs, grid, 
 
 ### D.3 Track E: the ERP repo (proposed, new code following its conventions)
 
+Track E0 reviewed this table against the code on 2026-11-09, and `erp-contract.md` has what changed: a concrete `VendorSheetConnector` first, no ownership or row-lock rules for vendors, CGService's scripts in `CashGear.IdentitySystem/DbScripts` behind a `SheetDbContext`, the ERP's script names, and `ERPClient_React` as its own repository.
+
 | Path in `D:\CashGear\Projects\CashGear` | What |
 | --- | --- |
 | `CashGear.UnifiedAPI/Controllers/API/V1/System/SheetLaunchController.cs` | `CreateTicket`, under the API key and the entity module's policy |
@@ -715,9 +717,9 @@ The user's API key never reaches the sheet. The token is held in `erp-connector`
 **Authorization**
 - Opening needs unit 2004 View; committing needs Edit.
 - Sensitive fields need AdvEdit or stay read-only (I.2).
-- Ownership (`LoadOwnedRows`) and row locks (`SysSecRules`) apply to Query and Commit alike.
+- Ownership and row locks would apply to Query and Commit alike, but Track E0 found none for vendors: `SysSecRules` is unused and `LoadOwnedRowsPurch` covers purchase orders only (`erp-contract.md`).
 - The schema reports each field's editability for the caller, and the server re-checks every field on dry run and commit.
-- `CallerPrivileges` falling back to another company's row for Admin is reviewed in Track E.
+- `CallerPrivileges` falls back to another company's row for any non-admin user (Track E0), so the sheet's routes use a company-strict check.
 
 **Business validation**
 - Done on the server, from the ERP's own rules (`ValidateSave`), extended with per-field checks. Local rules only make feedback fast.
@@ -1008,7 +1010,7 @@ Track E runs in the ERP repo alongside, in stages E0 to E4. Its git workflow is 
 **ERP consistency** (the ERP's own gaps, listed rather than fixed silently)
 - The Blazor host's `UpdateEx` is last-write-wins: its edits can overwrite a sheet commit, though a sheet commit never overwrites them.
 - The Blazor host's cache serves vendors for up to 8 hours.
-- `CallerPrivileges` can fall back to another company's row for Admin.
+- `CallerPrivileges` can fall back to another company's row for any non-admin user; the sheet's routes check strictly.
 
 **Rollout and testing**
 - **RowVersion rollout:** `[Timestamp]` on the shared `VendorModel` breaks vendor reads on any tenant database without the column, so the order is fixed: script every tenant database, then deploy either host.

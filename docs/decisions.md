@@ -714,3 +714,46 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | ERP Vendors | Primary key `(Company, VendorAccount)`, identity `RecId`, no RowVersion; UnifiedAPI only reads them; the Blazor host's `UpdateEx` is last-write-wins |
 | ERP auth and tenancy | ASP.NET Identity plus a long-lived per-user, per-company API key; a database per tenant (Kit and Dot share one) plus a `Company` column, from the `CompanyId` claim |
 | ERP gaps | No idempotency, no master-data audit, no rate limiting; an 8-hour vendor cache with no backplane; the development configuration points at a live shared SQL Server |
+
+## 2026-11-09: Phase 14
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| The planning docs, uncommitted when the phase started | Committed on `main` first as `docs: plan the ERP sheet integration`, pushed later with the phase |
+| The Vendors field list, and which fields need AdvEdit | The fields `UpdateEx` writes today, plus read-only context. Read-only key: `vendorAccount`. Edit: `vendorName`, `taxFile`, `mobile`, `address`, `payMethod`, `vendorGroup`. AdvEdit: `blocked`, `currency`. Read-only: `bankAccount`, `debitLimit`, `modifiedBy`, `modifiedDate`. Never sent: `token` and `secRule`; `recId` goes only as the record's `id` |
+| Which test tenant Track E uses | Kit. Track E's tests seed company `Kit`, with `Dot` sharing its database as it does in ASTDataTest, on SQLite and opt-in LocalDB databases the tests create. They never touch the live shared SQL Server (2026-11-09, planning) |
+| Where the Blazor host is, for the rollout plan | `D:\CashGear\Projects\assistoWebApp`. Read-only: one deployment per company profile (Kit, Dat), each reading vendors from its profile's `cn`, kept in secrets; it builds the ERP's libraries by project reference, and saves vendors by reading and saving in one context |
+| The ERP repo's git workflow for Track E | As in this repo: small Conventional Commits on `main` in `D:\CashGear\Projects\CashGear`, pushed to `origin/main`. E0 in this phase changes nothing there. `[Timestamp]` on `VendorModel` must not reach a deploy before every tenant database has the column, so that commit waits for your word that the scripts have run |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Where the contract suite runs | Inside `pnpm test` (the root Vitest run), against a mock it starts on a free port, so CI needs no new step. `ERP_BASE_URL` points it at another server |
+| Getting tickets in the suite | Through `CreateTicket` with an API key, on the mock as on UnifiedAPI. The mock seeds keys for an editor, an AdvEdit user and a viewer in Kit and an editor in Dot; another server takes them from `ERP_TEST_KEY_*`. Cases that need the mock's clock or failure injection skip elsewhere and say so |
+| Writes against a real server | The suite writes to the records it reads, so it refuses any `ERP_BASE_URL` that isn't localhost unless `ERP_ALLOW_WRITES=1` |
+| Error codes added to plan C.8's list | `ticket.invalid` (unknown, used or expired, one code so a ticket's state never leaks), `origin.denied`, `commit.reused` (the same `commitId` with another payload) and `request.invalid` (a malformed request) |
+| Status codes | 400 for every error the request carries (field errors, batch errors such as `company.mismatch`, `schema.changed`, `commit.reused`), checked before versions; then 409 for every conflicting record; 401 for sessions and tickets; 403 for a missing unit privilege or Origin; 413 past `maxCommitRecords` or `maxRecords` ids |
+| Another company's ids | Treated as missing: Query leaves them out and Commit answers `record.notFound`, so a session never learns they exist |
+| Idle expiry | Only `Renew` slides it. The sheet knows when its user is working, and the server writes the session row only on Renew |
+| Dry runs | Checked as a commit is, versions included, and never stored, so the real commit may reuse their `commitId` |
+| How the contract is versioned | `schemaVersion` names the entity's field list (`vendors.1`), and a commit naming another one is refused with `schema.changed`. Routes have no version, as the ERP's don't |
+| Versions in the mock | One 8-byte counter per database, shared by the companies in it, big-endian and base64, as SQL Server's `rowversion` travels |
+| The databases in the rollout plan | Every one a host reads vendors from: ASTDataTest (Kit, Dot, and Portal's connections), Kitchino (Dat), ASTData (AST) and ASTDataNew (Portal's `NewConnection`, scripted too since Portal maps the same model), with `SheetLaunch` and `SheetSession` in CGService. The Blazor host's deployments keep their `cn` in secrets, so the plan asks you to confirm each before scripts run |
+
+**Defaults from Track E0, the review of the contract against UnifiedAPI's code (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| `dateTime` values | Keep the offset: the ERP writes local `DateTime.Now`, sends it with the host's own offset, and the sheet shows that wall-clock time, as the ERP shows it. The hour a DST change repeats can be an hour out, on read-only fields |
+| Inactive lookup items | Sent with `active: false`. Records may keep one; no change may choose one (`lookup.notFound`). Labels are the ERP's one description, sent as both languages |
+| `payMethod` | `PaymentModes (Company, PaymentId)`: payment terms with days, as the ERP keeps them |
+| `currency` | Required, checked against `LedgerCurrencies`, as the ERP's `Save` does |
+| Ownership and row locks for Vendors | None: the ERP has no such rules for vendors, so Query and Commit filter by company alone and `record.locked` is reserved |
+| Where CGService's tables go | `CashGear.IdentitySystem/DbScripts`, read through a UnifiedAPI-only `SheetDbContext` |
+| Script names | The ERP's `<Verb>_<Subject>.sql`: `Add_VendorsRowVersion.sql` on its own, since it gates the deploy, then `Create_SheetCommit.sql` and `Create_SheetSessions.sql` |
+| The entity connector | A concrete `VendorSheetConnector`; the `ISheetEntityConnector` interface comes with a second entity, as the ERP's rule on abstractions asks |
+| Cache after a commit | `RemoveByTag("Vendors")`, as `UpdateEx` does |
+| CORS for the sheet routes | An endpoint policy on the sheet controllers from E1, since the suite checks preflight; E4 adds rate limits |

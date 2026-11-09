@@ -132,15 +132,15 @@ Later gaps go here too when phases find them, such as scatter charts in `CgChart
 
 ## Track E: the ERP side, in `D:\CashGear\Projects\CashGear`
 
-This runs in the ERP repo alongside Phases 14 to 19, in the stages each phase names. It's built here by Claude, and you run its database scripts and deploy it. Its git workflow is agreed when it starts. Details are in `ERP_SHEET_INTEGRATION_PLAN.md` (D.3, F and I.4).
+This runs in the ERP repo alongside Phases 14 to 19, in the stages each phase names. It's built here by Claude, and you run its database scripts and deploy it. It commits to the ERP repo's `main` and pushes (decisions, 2026-11-09, Phase 14). Details are in `ERP_SHEET_INTEGRATION_PLAN.md` (D.3, F and I.4), and the contract and Track E0's review of it are in `erp-contract.md`.
 
 **Build:**
 - New UnifiedAPI routes: `api/system/SheetLaunch/CreateTicket`, `api/sheet/Session/{Redeem, Renew, End}` and `api/payable/VendorSheet/{Schema, Query, Commit, CommitStatus}`.
 - A `SheetSession` authentication scheme, read from `X-Sheet-Session`.
-- `ISheetEntityConnector`, with the Vendors connector.
+- `VendorSheetConnector`; an `ISheetEntityConnector` interface comes with a second entity.
 - `SheetCommitService`: one transaction per batch, strict RowVersion, idempotency by `(Company, CommitId)`, audit per field.
 - Database scripts, including `Vendors.RowVersion` in every tenant database before either host deploys the model change.
-- An "Edit in Cash Gear Sheet" button on `ERPClient_React`'s Vendors list, hidden per company until Phase 18.
+- An "Edit in Cash Gear Sheet" button on `ERPClient_React`'s Vendors list, hidden per company until Phase 18. `ERPClient_React` is its own repository, `D:\CashGear\Projects\ERPClient_React`.
 
 **Rules:**
 - Follow the ERP's own conventions: module-first RPC routes, class-level role policies, `{message, correlationId, errors[]}`, `CallerPrivileges`, and a SystemLog row inside the transaction.
@@ -410,7 +410,7 @@ The sheet acts only on a valid launch ticket, and the ERP's button stays hidden 
 ### Phase 15: Read-only ERP slice (tag `v1.6.0`)
 **Goal:** ERP vendors open from the ERP, and can be sorted, filtered and refreshed, with every bound cell read-only, proving the handoff, CORS, COEP and the identity guard early.
 
-**Questions:** Column order and labels? The 10,000-record cap? The load panel's wording?
+**Questions:** Column order and labels? The 10,000-record cap? The load panel's wording? The git workflow in `ERPClient_React`, its own repository, where E1 adds the hidden button?
 
 **Tasks:**
 - `erpLaunch()`, which reads and strips `#launch=`.
