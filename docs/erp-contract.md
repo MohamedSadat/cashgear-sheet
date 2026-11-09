@@ -582,9 +582,10 @@ expiry) or its failure injection (lost responses, a locked record, Retry-After);
 those in its own WebApplicationFactory tests (plan I.4), with its LocalDB cases behind
 `CASHGEAR_SHEET_SQL_TESTS=1`, as each ERP suite has its own `CASHGEAR_<AREA>_SQL_TESTS`.
 
-Measured on 2026-11-09 against a mock started by hand: with `ERP_BASE_IS_MOCK=1`, all 55 cases
-pass; with only `ERP_TEST_KEY_EDITOR`, as a real server with one key would be run, 34 pass and 21
-skip.
+Measured on 2026-11-09 (Phase 15) against a mock started by hand: with `ERP_BASE_IS_MOCK=1`, all
+58 cases pass; with only `ERP_TEST_KEY_EDITOR` and `ERP_TEST_SKIP_KEYS=V-1005` (the mock's locked
+vendor), as a real server with one key would be run, 36 pass and 22 skip; and adding
+`ERP_TEST_STAGE=E1`, 20 pass and 38 skip.
 
 ## The mock
 
