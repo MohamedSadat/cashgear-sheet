@@ -232,12 +232,12 @@ export function useErrorTools(host: ErrorToolsHost) {
     () => ({
       key: 'auditing',
       text: 'Formula Auditing',
-      icon: 'formula',
+      icon: 'error-check',
       items: [
         {
           name: 'error-checking',
           text: 'Error Checking',
-          icon: 'formula',
+          icon: 'error-check',
           size: 'large',
           onClick: startChecking,
         },

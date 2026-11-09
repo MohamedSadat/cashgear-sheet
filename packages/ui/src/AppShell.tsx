@@ -79,6 +79,7 @@ import { chartInsertGroups, chartTabs } from './charts/ribbon-charts';
 import { usePivotTools } from './pivots/usePivotTools';
 import { usePrintTools } from './print/usePrintTools';
 import { pageLayoutTab } from './print/ribbon-page';
+import { BROWSER_ALT_KEYS, withKeyTips } from './key-tips';
 import type { PrintChoice } from './print/printJob';
 import { pivotInsertItem, pivotTabs } from './pivots/ribbon-pivots';
 import { saveReportLines, saveSummary, workbookExtension } from './save-report';
@@ -1833,6 +1834,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       errorTools.group,
     ],
   );
+  // Excel's key tips on the tabs and the Home tab's commands.
+  const tippedTabs = useMemo(() => withKeyTips(ribbonTabs), [ribbonTabs]);
 
   formatActionRef.current = (action) => {
     switch (action) {
@@ -2250,12 +2253,15 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       </header>
       <CgRibbon
         className="cgs-ribbon"
-        tabs={ribbonTabs}
+        tabs={tippedTabs}
         defaultActiveKey="home"
         ariaLabel="Ribbon"
         data-testid="ribbon"
+        keyTips
+        reservedAltKeys={platform.kind === 'web' ? BROWSER_ALT_KEYS : []}
         startContent={
           <CgMenu
+            data-cg-keytip="F"
             className="cgs-menu"
             items={menu}
             semanticMode="application-menu"

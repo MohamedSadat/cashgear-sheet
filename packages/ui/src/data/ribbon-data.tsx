@@ -547,7 +547,7 @@ export function dataTabs(state: DataState, data: DataActions): CgRibbonTab[] {
             {
               name: 'note-show-all',
               text: 'Show All Notes',
-              icon: 'comment',
+              icon: 'comment-multiple',
               checked: state.allNotesShown,
               disabled: off,
               onClick: data.showAllNotes,

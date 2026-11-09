@@ -150,12 +150,12 @@ export function useProtectTools(options: ProtectToolsOptions): ProtectTools {
     () => ({
       key: 'protect',
       text: 'Protect',
-      icon: 'table',
+      icon: 'lock',
       items: [
         {
           name: 'protect-sheet',
           text: protection ? 'Unprotect Sheet' : 'Protect Sheet',
-          icon: 'table',
+          icon: 'lock',
           size: 'large',
           disabled: !options.hasBook || book?.sheets[sheet]?.kind !== 'worksheet',
           onClick: toggleSheet,
@@ -163,7 +163,7 @@ export function useProtectTools(options: ProtectToolsOptions): ProtectTools {
         {
           name: 'protect-workbook',
           text: 'Protect Workbook',
-          icon: 'workbook',
+          icon: 'shield-lock',
           size: 'large',
           checked: structureLocked,
           disabled: !options.hasBook,

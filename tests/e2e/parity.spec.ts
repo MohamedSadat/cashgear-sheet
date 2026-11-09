@@ -558,3 +558,76 @@ test.describe('cell styles', () => {
     expect(saved).toMatch(/applyNumberFormat="0"[^>]*\/><\/cellStyleXfs>/);
   });
 });
+
+test.describe('key tips', () => {
+  const badge = (page: Page, tip: string) => page.locator(`[data-cg-keytip-badge="${tip}"]`);
+  const selectedTab = (page: Page) =>
+    ribbon(page).getByRole('tab', { selected: true }).first().textContent();
+
+  test('a tap of Alt shows the tabs’ tips, and letters open a tab and run its commands', async ({
+    page,
+  }) => {
+    await goTo(page, 'A1');
+    await page.keyboard.type('tip');
+    await page.keyboard.press('Enter');
+    await goTo(page, 'A1');
+    await ribbon(page).getByRole('tab', { name: 'View', exact: true }).click();
+    await canvas(page).click({ position: { x: 5, y: 5 } });
+    await goTo(page, 'A1');
+    await page.keyboard.press('Alt');
+    for (const tip of ['F', 'H', 'N', 'P', 'M', 'A', 'R', 'W']) {
+      await expect(badge(page, tip)).toBeVisible();
+    }
+    // H opens Home and shows its commands' tips; 1 is Bold, and isn't typed into the cell.
+    await page.keyboard.press('h');
+    await expect.poll(() => selectedTab(page)).toBe('Home');
+    await expect(badge(page, '1')).toBeVisible();
+    await expect(badge(page, 'FN')).toBeVisible();
+    await page.keyboard.press('1');
+    await expect(badge(page, '1')).toHaveCount(0);
+    await expect
+      .poll(() => page.evaluate(() => window.cgsTest.cellFormat(1, 1)))
+      .toMatchObject({ bold: true });
+    await shows(page, 1, 1).toBe('tip');
+    // Two letters: F waits for N, and FN is the Font group's launcher.
+    await page.keyboard.press('Alt');
+    await page.keyboard.press('h');
+    await page.keyboard.press('f');
+    await expect(badge(page, 'FN')).toBeVisible();
+    await expect(badge(page, '1')).toHaveCount(0);
+    await page.keyboard.press('n');
+    await expect(page.getByTestId('format-cells')).toBeVisible();
+    await page.getByTestId('format-cancel').click();
+    // Esc goes back to the tabs' tips, and again ends them.
+    await page.keyboard.press('Alt');
+    await page.keyboard.press('h');
+    await expect(badge(page, '1')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(badge(page, 'H')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(badge(page, 'H')).toHaveCount(0);
+    // FF goes to the font box, as in Excel.
+    await page.keyboard.press('Alt');
+    await page.keyboard.press('h');
+    await page.keyboard.press('f');
+    await page.keyboard.press('f');
+    await expect(page.getByTestId('font-name')).toBeFocused();
+  });
+
+  test('Alt and a tab’s letter go straight to it, and F opens the File menu', async ({ page }) => {
+    await page.keyboard.press('Alt+n');
+    await expect.poll(() => selectedTab(page)).toBe('Insert');
+    // Straight to Insert's commands' tips, as in Excel.
+    await expect(page.locator('[data-cg-ribbon-keytips="commands"]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Alt+m');
+    await expect.poll(() => selectedTab(page)).toBe('Formulas');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    // In a browser, Alt+F stays the browser's; tapping Alt first reaches File.
+    await page.keyboard.press('Alt');
+    await page.keyboard.press('f');
+    await expect(page.getByRole('menuitem', { name: 'Options…' })).toBeVisible();
+  });
+});
