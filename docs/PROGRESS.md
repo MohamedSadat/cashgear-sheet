@@ -708,3 +708,63 @@ None this phase.
 - The first edit's graph build, a sheet at a time, still can't be divided: on the 10M book each sheet holds the worker for about 20 s once reads have gone quiet, and tiles not yet drawn wait meanwhile.
 - About 10M formulas is still the ceiling. A book between about 10M and 12.5M formulas isn't refused early, and can still run out while reading, as before.
 - During a save, typing still opens the cell editor, and what is typed waits; nothing says that the edit is waiting other than the status bar's "Saving n%".
+
+## Phase 13: Excel parity polish
+
+All ten candidates are in, in the order you chose them, each measured against Excel 2016 over COM before it was built. Measured on 2026-11-09 on the reference machine, in Chrome and Edge, with Excel 2016 (16.0), and Formualizer pinned at fork commit `4b581d3`. Answers and defaults are in `docs/decisions.md`: all ten candidates, Excel's SHA-512 password hash, and key tips by tapping Alt.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| Each chosen candidate has an e2e test in Chrome and Edge, and an Excel COM check wherever COM can judge it | Pass | `tests/e2e/parity.spec.ts`, 26 tests, each passing in Chrome and Edge (table below). `bench/run-parity-check.mjs` makes each case through the engine, saves it, has Excel 2016 open the file over COM with no repair and read back what the case expects, and has the app read Excel's own save of it the same: **15 of 15 cases agree**. Key tips are a browser matter COM can't judge, so they have the e2e tests only |
+| The matrix opens every saved file with no repair, the rules check passes, and the fuzz has 0 diverged | Pass | `bench/run-excel-matrix.mjs`: 116 edits on each of 11 fixtures, **1,276 of 1,276 saved files open with no repair**, all 12 broken controls are refused, 22 of 22 scenarios and 22 of 22 generated books are clean, the 9 feature checks (charts, pivot tables and macros kept after rows go in, pivot refreshes) pass, and 4 of 4 large books (20.5 to 54.4 MB saved) open clean. `bench/run-excel-rules.mjs`: **51 of 51 cases and 1,793 of 1,793 comparisons** agree with Excel, among them Phase 13's colour and icon sorts and filters. `bench/run-edit-fuzz.mjs`: 906 of 1,000 steps match Excel, **0 diverged**, 76 not reached past a step both refused; 166 of 166 saves open with no repair and match Excel's own result |
+
+**Each candidate**
+
+| Candidate | e2e, in Chrome and Edge | Excel over COM |
+| --- | --- | --- |
+| 1. Hiding and showing sheets; zoom saved per sheet | Hide moves to the next sheet and Unhide brings it back, both saved and undone; each sheet keeps its own zoom without being a change | Sheet states and the active sheet as Excel moves them; zoom per sheet; a fixture's sheet hidden beside its charts |
+| 2. Sheet and workbook protection, Format Cells' Protection tab | Protect Sheet keeps locked cells, lets unlocked ones change and takes its password; Protect Workbook locks the sheets; a sheet can keep its cells from being selected | Excel reads every option and both passwords, and takes the passwords; with no password; with nothing selectable around a fixture's edits; taken off again |
+| 3. Notes in a box, Show/Hide and Show All, Remove Hyperlink, user name | A note is written beside its cell by the user name and can show all the time; Remove Hyperlink from the cell menu | Notes' text, author, box and showing, as Excel 2016 gives them; Remove Hyperlink and Clear Hyperlinks |
+| 4. Sort and filter by colour and icon | The filter menu sorts and filters by the colours its column has | In the rules check: fills, font colours, conditional colours and icons, sorted and filtered |
+| 5. Error triangles, Error Checking, circular references | A smart tag offers the fix and Error Checking goes from cell to cell; a loop gets Excel's warning and the status bar names it | The rules Excel finds each cell breaks, and those ignored here |
+| 6. Rich text, superscript and subscript | Characters selected while editing take their own font and keep it when copied | Each character's bold, italic, superscript and subscript as Excel reads it, typed, pasted and moved |
+| 7. New and Modify Cell Style, the book's styles in the gallery | New Cell Style takes a cell by example, and Modify changes the cells linked to it | Built-in and new styles linked as Excel links them, Style Includes, and Modify's change on its cells |
+| 8. Key tips | A tap of Alt shows the tabs' tips, letters open a tab and run its commands, two-letter tips, Esc, FF to the font box; Alt and a tab's letter, and F to the File menu | (A browser's keys; COM can't judge them) |
+| 9. Pivot grouping, Drill Down, Report Filter Pages, GETPIVOTDATA | Group Field by period, Group Selection by hand, Ungroup; a click writes GETPIVOTDATA, a double-click shows details, filter pages copy the table | Excel refreshes the date, number and hand-made groups made here and shows exactly the app's labels; Excel reads the details table, the sheets in Excel's order with each page's filter, and calculates GETPIVOTDATA to the app's values |
+| 10. Chart trendlines and a Picture Format tab | Add Chart Element › Trendline draws the fit and saves it as Excel writes it; Picture Format turns, sizes and resets a picture and gives it alt text | Excel reads the trendline's type, periods and name, and each picture's turn, flip, alt text and order |
+
+**Excel 2016, measured first**
+
+Each candidate began with a COM probe of what Excel 2016 does and writes; the defaults that follow from them are in `docs/decisions.md`. Among what the probes found: Excel saves a hidden active sheet's neighbour as the active one and moves `firstSheet`; it hashes passwords with SHA-512 and 100,000 spins; it writes a filter's colour as a differential format's `fgColor` with a solid fill; it groups dates into new fields named "Months (Date)" even for one period; it puts Show Report Filter Pages' copies in the field's order before the pivot table's sheet, making the last first; it puts Show Details' records in a TableStyleMedium2 table on a new sheet to the left; it writes a new trendline dotted and 1.5 points wide in its series' colour; and it turns a picture with `a:xfrm rot` and keeps its alt text in `descr`.
+
+**What else was checked**
+
+- Saving: `pnpm test:save`, 11 fixtures: an unedited save is identical in all 11, 49 of 49 entries checked after edits match, and 3,786 of 3,786 cells match.
+- The full e2e suite: 288 of 288 in Chrome and Edge.
+- Unit tests: 186 in Vitest and 647 in Rust; the library's 1,019. Clippy is clean natively and for WASM.
+- Fork: Formualizer's custom functions can now take a reference's place (`register_custom_function_with_references`, commit `4b581d3`), for GETPIVOTDATA; its custom function tests pass, the new one among them.
+- Library: `CashGear.React.UI` gained `CgRibbon` key tips and the Phase 13 icons, at `ef1277e` on its branch.
+- CI: green on `main`, and the tags were pushed after it.
+
+**Found and fixed on the way**
+
+- A table made on a sheet added since opening wasn't saved, since that sheet had no part yet when tables were saved. Show Details found it.
+- A second new pivot table on one sheet replaced the first's link in the sheet's new relationships, so Excel saw only one. The grouping check found it.
+- Excel refused a file with conditional formats and a filter made here: new sheet elements weren't written in the schema's order. They are now sorted.
+- A filter by colour read back inverted in Excel, until the differential format's colour was written as Excel writes it.
+- A Phase 13 test raced on CI's slower runner, typing a note before its box had the keyboard; it waits for it now.
+
+**Known gaps**
+
+- Show All Notes isn't saved, by design: Excel keeps it in the application, not the file.
+- Cell styles: Duplicate and Delete on a style's menu aren't here, and a right-click opens Modify directly where Excel shows a menu.
+- Error checking: Excel's Circular References submenu, which lists the loops' cells to go to, isn't here; the status bar names the first.
+- Pivot grouping offers Days, Months, Quarters and Years, not Seconds, Minutes and Hours; a group of groups isn't made here; Show Details doesn't fit its columns' widths as Excel does.
+- GETPIVOTDATA recalculates with everything rather than only when a pivot table changes, as Excel's does.
+- Trendlines: a forecast's periods past the last point aren't drawn, nor the equation and R² labels; a new trendline replaces the series' others; Excel asks which series in a dialog, and here it's the one selected or the first.
+- Picture Format has no Crop, corrections, colour, effects or picture styles.
+- Rich text: Paste Special's other choices paste plain text.
+- Key tips: menus opened by a tip don't show tips of their own.
+- Outside this phase: nothing new.

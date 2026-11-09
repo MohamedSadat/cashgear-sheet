@@ -4,6 +4,45 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.4.0] - 2026-11-09
+
+Excel parity polish: the daily-use gaps that 1.0 left, each measured against Excel 2016 first.
+
+- **Hiding sheets, and zoom per sheet:** Hide and Unhide… on a tab's menu and in Home › Format,
+  as Excel 2016 has them, the active sheet moving to its neighbour. Each sheet keeps its own
+  zoom, saved with the file.
+- **Protection:** Protect Sheet with Excel's fifteen options and Protect Workbook's structure,
+  with passwords hashed as Excel 2016 hashes them, so a file protected in Excel unprotects here
+  with its password and the other way round. Format Cells has a Protection tab for Locked and
+  Hidden, and a protected sheet refuses what Excel refuses, with Excel's message.
+- **Notes and links:** a note is written in a yellow box beside its cell, by the user name set in
+  File › Options. Show/Hide Note and Show All Notes, as in Excel; Remove Hyperlink takes the
+  link's look with it.
+- **Sort and filter by colour and icon:** fills, font colours and conditional formatting's icons,
+  in the filter menu and the Sort dialog.
+- **Error checking:** green triangles for Excel's rules, each with its menu (Convert to Number,
+  Ignore Error and more), Formulas › Error Checking, and the status bar naming a circular
+  reference's cell.
+- **Rich text:** characters selected while editing a cell take their own font, and a cell's runs
+  stay with it when it is pasted or moved. Superscript and subscript are drawn, on a cell or on
+  characters.
+- **Cell styles:** New Cell Style by example and Modify on a style's right-click, with Style
+  Includes; a style's cells are linked to it as in Excel, and the book's own styles head the
+  gallery.
+- **Key tips:** tap Alt for badges on the tabs and File, then letters to reach any command, with
+  Excel's own tips on the tabs and the Home tab. Alt and a tab's letter work too, except Alt+F,
+  Alt+E and Alt+D in a browser.
+- **Pivot tables:** Group Field groups dates by days, months, quarters and years and numbers in
+  steps, Group Selection groups items by hand, and Ungroup takes them away, as Excel 2016 does.
+  A double-click on a value shows its records on a new sheet, Show Report Filter Pages copies a
+  pivot table for each filter item, and a click on a value while typing a formula writes
+  GETPIVOTDATA, which now calculates.
+- **Charts and pictures:** Add Chart Element adds a trendline (linear, exponential, linear
+  forecast or moving average) drawn from its fit, and a Picture Format tab turns, flips, sizes,
+  resets, orders and describes a picture.
+- **Fixed:** a table made on a sheet added since opening is saved, and so is a second pivot table
+  made on one sheet.
+
 ## [1.3.0] - 2026-11-09
 
 Large books: saving without holding up the sheet, a book too big refused in seconds, much faster

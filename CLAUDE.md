@@ -155,6 +155,16 @@ Found in Phase 12:
 - `bench/generate-speed-books.mjs` skips a book that exists, so a book from before a generator fix keeps the old bytes. Delete it to write it again.
 - Formualizer's `ingest_has_no_formula_plane_producer_sites` test reads its own source split on an LF-only marker, so it fails on a CRLF checkout whatever the change.
 
+Found in Phase 13:
+
+- Excel 2016 on this PC groups dates into new fields named "Months (Date)" and so on, even for one period, and gives the date field `par` on the last. Excel's own pivots in `bench/` were made this way.
+- Formualizer's custom functions see values only. GETPIVOTDATA needs its reference's place, so fork commit `4b581d3` added `register_custom_function_with_references`.
+- `scan::edit_tag` applies the first edit it's given for an attribute and drops a second one for the same name.
+- `SheetCanvas` forwards each grid event by name, so a new `GridEvents` handler must be added there too, or it never fires.
+- `CgRibbon` key tips listen on `window` in the capture phase, so they see letters before the grid. They skip Ctrl chords, so `Control+Alt+n` still opens a book.
+- Over COM, a trendline's `DataLabel.Text` is empty, so compare its fit with LINEST and LOGEST, not with its label.
+- A built-in cell style goes into the file the first time it is applied, with Excel's `builtinId`. A file with no `cellStyleXfs` gets Normal first.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
