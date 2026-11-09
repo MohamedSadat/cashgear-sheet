@@ -12,6 +12,7 @@ export const TAB_TIPS: Readonly<Record<string, string>> = {
   review: 'R',
   view: 'W',
   'table-design': 'JT',
+  'erp-data': 'JE',
   'pivot-analyze': 'JT',
   'pivot-design': 'JY',
   'chart-design': 'JC',

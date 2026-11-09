@@ -1,3 +1,4 @@
+import { erpApiBase, readErpLaunch, type ErpLaunch } from '@cgs/erp-connector';
 import {
   MAX_RECENT_FILES,
   OPENABLE_EXTENSIONS,
@@ -6,6 +7,21 @@ import {
   type SaveTarget,
   type SheetPlatform,
 } from '@cgs/ui';
+
+/**
+ * The launch from Cash Gear ERP, read and cut out of the address bar and history when this module
+ * loads, which is before the app renders (plan B.4). The ERP's origin is configured, never taken
+ * from the link: `VITE_ERP_API_URL` at build time, else the mock on this machine for a page served
+ * from it, else Cash Gear ERP's own.
+ */
+let pendingLaunch: ErpLaunch | null =
+  typeof window === 'undefined'
+    ? null
+    : readErpLaunch(
+        window.location,
+        window.history,
+        erpApiBase(window.location.origin, import.meta.env.VITE_ERP_API_URL),
+      );
 
 const DATABASE = 'cgs-recent';
 const STORE = 'files';
@@ -203,6 +219,11 @@ const downloadTarget = (name: string): SaveTarget => ({
 
 export const webPlatform: SheetPlatform = {
   kind: 'web',
+  erpLaunch() {
+    const launch = pendingLaunch;
+    pendingLaunch = null;
+    return launch;
+  },
   askFontAccess() {
     void listLocalFonts();
   },

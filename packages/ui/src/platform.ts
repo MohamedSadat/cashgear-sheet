@@ -1,4 +1,5 @@
 import type { FileSource } from '@cgs/engine-client';
+import type { ErpLaunch } from '@cgs/erp-connector';
 import type { Theme } from './theme';
 
 export interface NativeInfo {
@@ -65,6 +66,12 @@ export interface SheetPlatform {
    * without one, or after the first ask. A web app started without a file may never answer.
    */
   launchFile?(): Promise<OpenedFile | null>;
+  /**
+   * What Cash Gear ERP's "Edit in Cash Gear Sheet" opened this tab with, once: the launch ticket,
+   * read from the URL's fragment and removed from it before the app rendered. Null otherwise, and
+   * always on the desktop until its deep link (plan B.4).
+   */
+  erpLaunch?(): ErpLaunch | null;
   /** Desktop: newer versions from the release feed. */
   updates?: {
     /** The newer version the feed offers, or null. */

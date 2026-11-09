@@ -434,6 +434,29 @@ body {
   margin: 0;
 }
 
+/* Connection Info: what the ERP data came from, as terms and values. */
+.cgs-erp-info {
+  display: grid;
+  gap: var(--cg-space-1);
+  margin: 0;
+  padding-block-start: var(--cg-space-2);
+}
+
+.cgs-erp-info-row {
+  display: grid;
+  grid-template-columns: 10rem minmax(0, 1fr);
+  gap: var(--cg-space-2);
+}
+
+.cgs-erp-info-row dt {
+  color: var(--cg-text-muted, var(--cg-text));
+}
+
+.cgs-erp-info-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .cgs-color-chip {
   display: inline-block;
   inline-size: 0.9rem;

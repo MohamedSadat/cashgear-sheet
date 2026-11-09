@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@cgs/engine-client": "workspace:*",
+    "@cgs/erp-connector": "workspace:*",
     "@cgs/ui": "workspace:*",
     "@tauri-apps/api": "2.12.4",
     "react": "19.3.1",

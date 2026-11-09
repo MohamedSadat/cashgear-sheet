@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@cashgear/ui": "github:MohamedSadat/CashGear.React.UI#ef1277e78c6151643043fe3327a7f0733307b873",
-    "@cgs/engine-client": "workspace:*"
+    "@cgs/engine-client": "workspace:*",
+    "@cgs/erp-connector": "workspace:*"
   },
   "peerDependencies": {
     "react": "19.3.1",

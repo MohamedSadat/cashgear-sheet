@@ -208,6 +208,9 @@ importers:
       '@cgs/engine-client':
         specifier: workspace:*
         version: link:../../packages/engine-client
+      '@cgs/erp-connector':
+        specifier: workspace:*
+        version: link:../../packages/erp-connector
       '@cgs/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -243,6 +246,8 @@ importers:
         specifier: ^4.4.2
         version: 4.4.2
 
+  packages/erp-connector: {}
+
   packages/ui:
     dependencies:
       '@cashgear/ui':
@@ -251,6 +256,9 @@ importers:
       '@cgs/engine-client':
         specifier: workspace:*
         version: link:../engine-client
+      '@cgs/erp-connector':
+        specifier: workspace:*
+        version: link:../erp-connector
     devDependencies:
       '@types/react':
         specifier: ^19.2.0

@@ -35,7 +35,12 @@ export interface LoadProgress {
 
 export interface OpenOptions {
   readonly http: ErpHttp;
+  /** The launch ticket, redeemed once. */
   readonly ticket: string;
+  /** A session already redeemed with it, when opening again after a failure. */
+  readonly session?: ErpSession;
+  /** Hears the session as soon as Redeem answers, so a retry can use it. */
+  readonly onSession?: (session: ErpSession) => void;
   readonly sink: RecordSink;
   readonly onProgress?: (progress: LoadProgress) => void;
   readonly signal?: AbortSignal;
@@ -90,7 +95,8 @@ export async function openRecords(options: OpenOptions): Promise<Opened> {
   const { http, ticket, sink, onProgress, signal } = options;
   onProgress?.({ stage: 'connecting', loaded: 0, total: null });
   try {
-    const session = await ErpSession.redeem(http, ticket, { signal });
+    const session = options.session ?? (await ErpSession.redeem(http, ticket, { signal }));
+    options.onSession?.(session);
     const answer = await session.json('GET', session.route(ENTITY_ROUTES.schema), {
       signal,
       idempotent: true,

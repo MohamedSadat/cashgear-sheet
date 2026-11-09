@@ -38,8 +38,10 @@ import {
   type CellFormat,
   type ChartView,
   type Command,
+  type CellArea,
   type DrawingBox,
   type EngineClient,
+  type ErpBinding,
   type FormatChange,
   type FormatLists,
   type FoundCell,
@@ -103,6 +105,8 @@ import {
 import { RULE_LABELS } from './errors/error-text';
 import { cellName } from './grid/geometry';
 import { PROTECTED_MESSAGE, useProtectTools } from './sheets/useProtectTools';
+import { isErpRefusal, READ_ONLY_MESSAGE } from './erp/messages';
+import { useErpTools } from './erp/useErpTools';
 
 const themeChoices = [
   { name: 'system', text: 'System' },
@@ -253,6 +257,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const formatRef = useRef<CellFormat | null>(null);
   formatRef.current = format;
   const protectMessageRef = useRef<(message: string) => void>(() => undefined);
+  const erpBoundAtRef = useRef<(sheet: number, row: number, col: number) => boolean>(() => false);
   const refusedRef = useRef<(error: unknown) => void>(() => undefined);
   /**
    * A protected sheet that keeps locked cells, or every cell, from being selected moves the
@@ -295,6 +300,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const selectionRef = useRef<GridSelection | null>(null);
   // The data tools' refresh and message, which come later than what calls them.
   const dataRefreshRef = useRef<() => void>(() => undefined);
+  /** Reads the ERP binding again after a command, which may have moved its table. */
+  const erpSyncRef = useRef<() => void>(() => undefined);
+  /** Settles when a workbook opened for ERP data can be written, or fails with its open. */
+  const erpLoadRef = useRef<{ resolve: () => void; reject: (error: Error) => void } | null>(null);
   const errorRefreshRef = useRef<() => void>(() => undefined);
   /** Circular References, as the status bar names its first cell, and the cells it knows. */
   const [circular, setCircular] = useState<[number, number, number][]>([]);
@@ -499,6 +508,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           break;
         case 'loaded':
           setLoad((state) => ({ ...state, phase: 'preparing' }));
+          erpLoadRef.current?.resolve();
+          erpLoadRef.current = null;
           if (csvRef.current !== null) {
             const text = csvRef.current;
             csvRef.current = null;
@@ -514,6 +525,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           });
           break;
         case 'error':
+          erpLoadRef.current?.reject(new Error(event.message));
+          erpLoadRef.current = null;
           setProblem(event.message);
           setBook(null);
           setFileName(null);
@@ -834,6 +847,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
             }
           }
           refreshCell();
+          erpSyncRef.current();
           // Circular References, after anything that can change what formulas read.
           if (FORMULA_CHANGES.has(command.kind)) {
             const loops = (await engine.query({ kind: 'circular' })) ?? [];
@@ -907,6 +921,12 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       );
     },
     mayEdit: (index) => {
+      // ERP data's cells refuse at the first key too, with the guard's own message.
+      const active = selectionRef.current;
+      if (active && erpBoundAtRef.current(index, active.row + 1, active.col + 1)) {
+        protectMessageRef.current(READ_ONLY_MESSAGE);
+        return false;
+      }
       // A locked cell on a protected sheet refuses at the first key, as in Excel. The active
       // cell's format is what the ribbon shows; the engine refuses anything else.
       const guarded = bookRef.current?.sheets[index]?.protection;
@@ -1000,7 +1020,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     hasBook: Boolean(book),
     sheetNames: book?.sheets.map((entry) => entry.name) ?? [],
     run: runCommand,
-    notice: setNotice,
+    notice: (message) => {
+      if (message && isErpRefusal(message)) protectMessageRef.current(message);
+      else setNotice(message);
+    },
     goTo: async (index, area) => {
       await goToSheet(index);
       controller.current?.selectArea(fromArea(area));
@@ -1045,6 +1068,51 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     },
   });
   pivotGenerateRef.current = pivotTools.state.generate;
+  // ERP data, from a launch in Cash Gear ERP: staged, then bound into a new workbook.
+  const erpTools = useErpTools({
+    engine: () => clientRef.current,
+    queue: (job) => {
+      const run = commands.current
+        .catch(() => undefined)
+        .then(async () => {
+          const engine = clientRef.current;
+          if (!engine) throw new Error('The engine isn’t running.');
+          return job(engine);
+        });
+      commands.current = run;
+      return run;
+    },
+    openBlank: async (name, rightToLeft) => {
+      const engine = clientRef.current;
+      if (!engine) throw new Error('The engine isn’t running.');
+      const loaded = new Promise<void>((resolve, reject) => {
+        erpLoadRef.current = { resolve, reject };
+      });
+      const bytes = await engine.blankWorkbook(rightToLeft);
+      await openBook({
+        name,
+        source: { kind: 'blob', blob: new Blob([bytes as BlobPart]) },
+        isNew: true,
+      });
+      if (fileRef.current?.name !== name) {
+        erpLoadRef.current = null;
+        throw new Error('The new workbook didn’t open.');
+      }
+      await loaded;
+    },
+    afterBind: async () => {
+      const engine = clientRef.current;
+      if (!engine) return;
+      applySummary(await engine.bookSummary());
+      await showSheet(engine, sheetRef.current);
+      setUndoLabels({ undo: null, redo: null });
+      refreshCell();
+    },
+    notice: setNotice,
+    sheet,
+  });
+  erpSyncRef.current = erpTools.sync;
+  erpBoundAtRef.current = erpTools.boundAt;
   // A double-click on a pivot table's value shows its details, as in Excel.
   doubleCellRef.current = (row, col) => {
     // Inside a pivot table, a double-click isn't an edit: on a value it shows the details.
@@ -1151,6 +1219,15 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       .then(setRecoverable)
       .catch((error) => console.warn('Could not look for recovered edits:', error));
   }, [applySummary, client, engineReady, report, showSheet]);
+
+  // What Cash Gear ERP's button opened this tab with, once the engine can stage it.
+  const erpLaunchRef = useRef(erpTools.launch);
+  erpLaunchRef.current = erpTools.launch;
+  useEffect(() => {
+    if (!engineReady || !platform.erpLaunch) return;
+    const launch = platform.erpLaunch();
+    if (launch) erpLaunchRef.current(launch);
+  }, [engineReady, platform]);
 
   // The workbook Explorer started this window with: a double-click on the desktop, or Open with
   // for the installed web app.
@@ -1300,6 +1377,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         /** Milliseconds for one cell read, tile read or drawn tile, for the save bench. */
         probe: (kind: 'cell' | 'block' | 'tile', row: number, col: number) => Promise<number>;
         pdf: (choice?: Partial<PrintChoice>) => Promise<{ bytes: Uint8Array; pages: number }>;
+        /** The ERP binding, as the engine holds it. */
+        binding: () => Promise<ErpBinding | null>;
+        /** An area's shown text, as Copy gives it: tabs between cells, lines between rows. */
+        shownText: (area: CellArea) => Promise<string>;
       };
     };
     hooks.cgsTest = {
@@ -1351,6 +1432,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         return performance.now() - started;
       },
       pdf: (choice) => printPdfRef.current({ what: 'active', ignorePrintArea: false, ...choice }),
+      binding: async () => (await clientRef.current?.binding()) ?? null,
+      shownText: async (area) =>
+        (await clientRef.current?.copyText(sheetRef.current, area))?.text ?? '',
     };
   }, [openFile, runCommand, writeTo]);
 
@@ -1466,7 +1550,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   // What protection refuses, Excel says in a message box; anything else goes in the status bar.
   refusedRef.current = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    if (message === PROTECTED_MESSAGE || message.startsWith('Workbook is protected')) {
+    if (
+      message === PROTECTED_MESSAGE ||
+      message.startsWith('Workbook is protected') ||
+      isErpRefusal(message)
+    ) {
       protectMessageRef.current(message);
     } else {
       setNotice(message);
@@ -1841,8 +1929,12 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
               : tab,
         )
         .flatMap((tab) =>
-          // Page Layout comes after Insert, as in Excel.
-          tab.key === 'insert' ? [tab, pageLayoutTab(printTools.state, printTools.actions)] : [tab],
+          // Page Layout comes after Insert, as in Excel, and ERP Data after Table Design.
+          tab.key === 'insert'
+            ? [tab, pageLayoutTab(printTools.state, printTools.actions)]
+            : tab.key === 'table-design'
+              ? [tab, ...erpTools.tabs]
+              : [tab],
         ),
     [
       builtTabs,
@@ -1854,6 +1946,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       printTools.actions,
       protectTools.group,
       errorTools.group,
+      erpTools.tabs,
     ],
   );
   // Excel's key tips on the tabs and the Home tab's commands.
@@ -2446,6 +2539,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
               />
             ),
           },
+          ...(erpTools.badge ? [{ key: 'erp', content: erpTools.badge }] : []),
           ...(circular.length
             ? [
                 {
@@ -2641,6 +2735,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         />
       )}
       {dataTools.overlays}
+      {erpTools.overlays}
       {pivotTools.overlays}
       {chartTools.overlays}
       {printTools.overlays}
