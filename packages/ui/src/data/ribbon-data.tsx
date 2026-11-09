@@ -45,6 +45,10 @@ export interface DataActions {
   cfManage(): void;
   formatAsTable(style: string): void;
   cellStyle(name: string): void;
+  /** New Cell Style, by example from the active cell. */
+  newCellStyle(): void;
+  /** Modify, from a style's right-click in the gallery. */
+  modifyCellStyle(name: string): void;
   insertTable(): void;
   hyperlink(): void;
   removeLink(): void;
@@ -296,7 +300,13 @@ export function stylesGroup(state: DataState, data: DataActions): CgRibbonGroup 
         name: 'cell-styles',
         ownsKeyboard: true,
         render: () => (
-          <CellStyleGallery groups={state.cellStyles} disabled={off} onPick={data.cellStyle} />
+          <CellStyleGallery
+            groups={state.cellStyles}
+            disabled={off}
+            onPick={data.cellStyle}
+            onNew={data.newCellStyle}
+            onModify={data.modifyCellStyle}
+          />
         ),
       },
     ],

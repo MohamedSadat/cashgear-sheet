@@ -505,3 +505,54 @@ test.describe('rich text in the cell', () => {
     expect(copied.match(/<rPr><b\/><\/rPr><t xml:space="preserve">Bold<\/t>/g)).toHaveLength(2);
   });
 });
+
+test.describe('cell styles', () => {
+  const styles = async (page: Page) => {
+    await ribbon(page).getByRole('tab', { name: 'Home', exact: true }).click();
+    await page.getByTestId('cell-style-gallery').getByRole('button').first().click();
+  };
+  const format = (page: Page, row: number, col: number) =>
+    expect.poll(() => page.evaluate(([r, c]) => window.cgsTest.cellFormat(r!, c!), [row, col]));
+
+  test('New Cell Style takes a cell by example, and Modify changes the cells linked to it', async ({
+    page,
+  }) => {
+    await goTo(page, 'B2');
+    await page.keyboard.type('1.5');
+    await page.keyboard.press('Enter');
+    await goTo(page, 'B2');
+    await page.keyboard.press('Control+b');
+    await format(page, 2, 2).toMatchObject({ bold: true });
+    await styles(page);
+    await page.getByTestId('cell-style-new').click();
+    await expect(page.getByTestId('style-name')).toHaveValue('Style 1');
+    await page.getByTestId('style-name').fill('Mine');
+    await page.getByTestId('style-includes-number').uncheck();
+    await page.getByTestId('style-ok').click();
+    await expect(page.getByTestId('style-dialog')).toBeHidden();
+    // The example keeps the Normal style, as in Excel; D4 takes Mine and keeps its own number.
+    await goTo(page, 'D4');
+    await page.keyboard.type('25%');
+    await page.keyboard.press('Enter');
+    await goTo(page, 'D4');
+    await styles(page);
+    await page.getByRole('gridcell', { name: 'Mine' }).click();
+    await format(page, 4, 4).toMatchObject({ style: 'Mine', bold: true, numberFormat: '0%' });
+    await format(page, 2, 2).toMatchObject({ style: 'Normal' });
+    // Modify, from the style's right-click: Format… makes it italic, and D4 follows.
+    await styles(page);
+    await page.getByRole('gridcell', { name: 'Mine' }).click({ button: 'right' });
+    await expect(page.getByTestId('style-name')).toHaveValue('Mine');
+    await expect(page.getByTestId('style-includes-number')).not.toBeChecked();
+    await page.getByTestId('style-format').click();
+    await page.getByRole('tab', { name: 'Font', exact: true }).click();
+    await page.getByTestId('font-dialog-style').selectOption('bi');
+    await page.getByTestId('format-ok').click();
+    await page.getByTestId('style-ok').click();
+    await format(page, 4, 4).toMatchObject({ style: 'Mine', bold: true, italic: true });
+    await format(page, 2, 2).toMatchObject({ italic: false });
+    const saved = await savedPart(page, 'xl/styles.xml');
+    expect(saved).toMatch(/<cellStyle name="Mine" xfId="\d+"\/>/);
+    expect(saved).toMatch(/applyNumberFormat="0"[^>]*\/><\/cellStyleXfs>/);
+  });
+});

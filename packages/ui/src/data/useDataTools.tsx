@@ -7,9 +7,12 @@ import { CgButton, CgWindow } from '@cashgear/ui';
 import type {
   Applied,
   CellArea,
+  CellFormat,
   CellStyleInfo,
   Command,
   EngineClient,
+  FormatChange,
+  StyleIncludes,
   FilterInfo,
   TableInfo,
   TableStyleInfo,
@@ -32,6 +35,7 @@ import {
 import { NoteLayer, type NoteEdit, type ShownNote } from './NoteLayer';
 import { SortDialog } from './SortDialog';
 import { ValidationDialog } from './ValidationDialog';
+import { ALL_INCLUDED, StyleDialog } from './StyleDialog';
 
 /** The cell editor as far as a refusal needs it. */
 export interface RefusedEditor {
@@ -57,6 +61,10 @@ export interface DataToolsHost {
   extraButtons?: () => CellButton[];
   /** Who a new note says wrote it. */
   userName: () => string;
+  /** The active cell's format, which New Cell Style takes by example. */
+  cellFormat?: CellFormat | null;
+  /** Format Cells on a style's look, for Modify's Format…. */
+  formatStyle?: (format: CellFormat, done: (change: FormatChange) => void) => void;
 }
 
 /** Where Excel 2016 puts a new note's box: see `Note::default_anchor` in cgs-model. 1-based. */
@@ -80,7 +88,16 @@ type DataDialog =
   | { kind: 'note'; row: number; col: number }
   | { kind: 'message'; title: string; text: string }
   | { kind: 'convert'; table: string }
-  | { kind: 'refused'; style: string; title: string; text: string };
+  | { kind: 'refused'; style: string; title: string; text: string }
+  | {
+      kind: 'cellStyle';
+      mode: 'new' | 'modify';
+      name: string;
+      includes: StyleIncludes;
+      format: CellFormat | null;
+      /** What Format… changed, sent with OK. */
+      change?: FormatChange;
+    };
 
 /** Excel's message when validation refuses what was typed, from the engine's error. */
 export function readRefusal(message: string) {
@@ -167,11 +184,16 @@ export function useDataTools(host: DataToolsHost) {
       .query({ kind: 'tableStyles' })
       .then(setTableStyles)
       .catch(() => setTableStyles([]));
-    engine
-      .query({ kind: 'cellStyles' })
+    loadCellStyles();
+  }, [host.hasBook]);
+
+  const loadCellStyles = useCallback(() => {
+    hostRef.current
+      .engine()
+      ?.query({ kind: 'cellStyles' })
       .then(setCellStyles)
       .catch(() => setCellStyles([]));
-  }, [host.hasBook]);
+  }, []);
 
   /** What the ribbon and the grid show about the selection and the sheet. */
   const refresh = useCallback(() => {
@@ -398,6 +420,38 @@ export function useDataTools(host: DataToolsHost) {
       cellStyle: (name) => {
         const here = selected();
         if (here) send({ kind: 'cellStyle', sheet: here.sheet, areas: [here.area], name });
+      },
+      newCellStyle: () => {
+        const taken = new Set(
+          cellStyles.flatMap(({ styles }) => styles.map((style) => style.name.toLowerCase())),
+        );
+        let n = 1;
+        while (taken.has('style ' + n)) n++;
+        setDialog({
+          kind: 'cellStyle',
+          mode: 'new',
+          name: 'Style ' + n,
+          includes: ALL_INCLUDED,
+          format: hostRef.current.cellFormat ?? null,
+        });
+      },
+      modifyCellStyle: async (name) => {
+        const engine = hostRef.current.engine();
+        if (!engine) return;
+        let found = await engine.query({ kind: 'styleFormat', name });
+        // A built-in style the book doesn't have yet goes into it first, as in Excel.
+        if (!found) {
+          await hostRef.current.run({ kind: 'modifyCellStyle', name, change: {} });
+          found = await engine.query({ kind: 'styleFormat', name });
+        }
+        if (!found) return;
+        setDialog({
+          kind: 'cellStyle',
+          mode: 'modify',
+          name,
+          includes: found.includes,
+          format: found.format,
+        });
       },
       insertTable: () =>
         withRegion(({ area, headers }) => setDialog({ kind: 'createTable', area, headers })),
@@ -766,6 +820,45 @@ export function useDataTools(host: DataToolsHost) {
             headers={dialog.headers}
             engine={engine}
             run={create}
+            onClose={close}
+          />
+        );
+        break;
+      }
+      case 'cellStyle': {
+        const style = dialog;
+        shown = (
+          <StyleDialog
+            open
+            mode={style.mode}
+            name={style.name}
+            includes={style.includes}
+            format={style.format}
+            onFormat={
+              host.formatStyle && style.format
+                ? () =>
+                    host.formatStyle?.(style.format as CellFormat, (change) =>
+                      setDialog({ ...style, change: { ...style.change, ...change } }),
+                    )
+                : undefined
+            }
+            onOk={(name, includes) => {
+              close();
+              const command: Command =
+                style.mode === 'new'
+                  ? {
+                      kind: 'newCellStyle',
+                      name,
+                      sheet,
+                      row: selection.row + 1,
+                      col: selection.col + 1,
+                      includes,
+                    }
+                  : { kind: 'modifyCellStyle', name, change: style.change ?? {}, includes };
+              run(command)
+                .then(loadCellStyles)
+                .catch((error) => hostRef.current.notice(errorText(error)));
+            }}
             onClose={close}
           />
         );

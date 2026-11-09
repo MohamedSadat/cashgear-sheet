@@ -985,3 +985,11 @@ body {
     block-size: 100%;
   }
 }
+
+/* What the Style dialog says each included part is. */
+.cgs-dialog-note {
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

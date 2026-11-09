@@ -40,6 +40,7 @@ import {
   type Command,
   type DrawingBox,
   type EngineClient,
+  type FormatChange,
   type FormatLists,
   type FoundCell,
   type LoadEvent,
@@ -164,6 +165,8 @@ const memoryNotice = (bytes: number) =>
 /** A dialog the shell is showing. */
 type ShellDialog =
   | { kind: 'format'; tab: FormatTab }
+  /** Format Cells on a cell style's look, for the Style dialog's Format…. */
+  | { kind: 'styleFormat'; format: CellFormat; done: (change: FormatChange) => void }
   | { kind: 'find'; tab: 'find' | 'replace' }
   | { kind: 'size'; axis: 'row' | 'col'; value: string }
   | { kind: 'shift'; remove: boolean; choice: 'side' | 'down' | 'row' | 'col' }
@@ -1002,6 +1005,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     }),
     extraButtons: () => pivotButtonsRef.current(),
     userName: () => noteAuthor(),
+    cellFormat: format,
+    formatStyle: (styleFormat, done) =>
+      setDialog({ kind: 'styleFormat', format: styleFormat, done }),
   });
   const pivotTools = usePivotTools({
     engine: () => clientRef.current,
@@ -2582,6 +2588,28 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
             setDialog(null);
             controller.current?.focus();
           }}
+        />
+      )}
+      {dialog?.kind === 'styleFormat' && (
+        <FormatCellsDialog
+          open
+          tab="number"
+          format={dialog.format}
+          theme={themeColors(lists)}
+          codes={lists?.codes ?? []}
+          sample={(code) => {
+            const selection = selectionRef.current;
+            const engine = clientRef.current;
+            if (!selection || !engine) return Promise.resolve('');
+            return engine.formatSample(
+              sheetRef.current,
+              selection.row + 1,
+              selection.col + 1,
+              code,
+            );
+          }}
+          onApply={(change) => dialog.done(change)}
+          onClose={() => setDialog(null)}
         />
       )}
       {dataTools.overlays}

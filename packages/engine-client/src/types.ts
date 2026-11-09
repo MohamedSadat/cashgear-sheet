@@ -380,6 +380,17 @@ export type Command =
       byColumns?: boolean;
     }
   | { kind: 'cellStyle'; sheet: number; areas: CellArea[]; name: string }
+  /** New Cell Style: a style with the look of a cell, by example. 1-based. */
+  | {
+      kind: 'newCellStyle';
+      name: string;
+      sheet: number;
+      row: number;
+      col: number;
+      includes: StyleIncludes;
+    }
+  /** Modify Cell Style: the style takes the change, and its cells follow. */
+  | { kind: 'modifyCellStyle'; name: string; change: FormatChange; includes?: StyleIncludes }
   | {
       kind: 'removeDuplicates';
       sheet: number;
@@ -791,6 +802,7 @@ export type Question =
   | { kind: 'linkAt'; sheet: number; row: number; col: number }
   | { kind: 'notes'; sheet: number }
   | { kind: 'cellStyles' }
+  | { kind: 'styleFormat'; name: string }
   | { kind: 'tableStyles'; options?: Omit<TableOptions, 'style' | 'filterButton'> }
   | { kind: 'pageSetup'; sheet: number }
   | { kind: 'pages'; sheet: number; request?: PrintRequest };
@@ -823,6 +835,7 @@ export interface Answers {
     anchor: number[];
   }[];
   cellStyles: { group: string; styles: CellStyleInfo[] }[];
+  styleFormat: { format: CellFormat; includes: StyleIncludes } | null;
   tableStyles: TableStyleInfo[];
   pageSetup: PageSetupInfo;
   pages: PagesInfo;
@@ -1062,6 +1075,16 @@ export interface StoredLine {
 }
 
 /** How a cell is formatted, for the ribbon. */
+/** Style Includes, in Excel's Style dialog. */
+export interface StyleIncludes {
+  number: boolean;
+  alignment: boolean;
+  font: boolean;
+  border: boolean;
+  fill: boolean;
+  protection: boolean;
+}
+
 export interface CellFormat {
   fontName: string;
   fontSize: number;
@@ -1085,6 +1108,8 @@ export interface CellFormat {
   /** Format Cells' Protection tab. */
   locked: boolean;
   formulaHidden: boolean;
+  /** The named style the cell is linked to. */
+  style: string;
   border: {
     top: StoredLine;
     bottom: StoredLine;

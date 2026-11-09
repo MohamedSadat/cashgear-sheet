@@ -52,6 +52,7 @@ export type {
   PageSpec,
   PrintRequest,
   CellStyleInfo,
+  StyleIncludes,
   CfFormat,
   CfPoint,
   CfRuleInfo,

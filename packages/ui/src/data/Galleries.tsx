@@ -1,6 +1,7 @@
 // Format as Table and Cell Styles: Excel's galleries, drawn from what the engine says each style
 // looks like. Choosing one is a command; nothing here reads cells.
-import { CgGallery, type CgGalleryItem } from '@cashgear/ui';
+import { useState } from 'react';
+import { CgButton, CgGallery, type CgGalleryItem } from '@cashgear/ui';
 import type { CellStyleInfo, TableStyleInfo } from '@cgs/engine-client';
 
 /** Excel's names for its built-in table styles, as the gallery's tooltips give them. */
@@ -88,9 +89,24 @@ export function TableStyleGallery({
   );
 }
 
-function CellStylePreview({ style }: { style: CellStyleInfo }) {
+function CellStylePreview({
+  style,
+  onModify,
+}: {
+  style: CellStyleInfo;
+  onModify?: (name: string) => void;
+}) {
   return (
     <div
+      data-testid={'cell-style-' + style.name}
+      onContextMenu={
+        onModify
+          ? (event) => {
+              event.preventDefault();
+              onModify(style.name);
+            }
+          : undefined
+      }
       style={{
         width: '100%',
         height: '100%',
@@ -124,16 +140,33 @@ export interface CellStyleGalleryProps {
   groups: { group: string; styles: CellStyleInfo[] }[];
   disabled?: boolean;
   onPick: (name: string) => void;
+  /** New Cell Style…, under the gallery as in Excel. */
+  onNew?: () => void;
+  /** Right-clicking a style: Modify. */
+  onModify?: (name: string) => void;
 }
 
-export function CellStyleGallery({ groups, disabled, onPick }: CellStyleGalleryProps) {
+export function CellStyleGallery({
+  groups,
+  disabled,
+  onPick,
+  onNew,
+  onModify,
+}: CellStyleGalleryProps) {
+  const [open, setOpen] = useState(false);
+  const modify = onModify
+    ? (name: string) => {
+        setOpen(false);
+        onModify(name);
+      }
+    : undefined;
   const items: CgGalleryItem<CellStyleInfo>[] = groups.flatMap(({ group, styles }) =>
     styles.map((style) => ({
       key: style.name,
       text: style.name,
       group,
       data: style,
-      preview: <CellStylePreview style={style} />,
+      preview: <CellStylePreview style={style} onModify={modify} />,
     })),
   );
   return (
@@ -151,6 +184,22 @@ export function CellStyleGallery({ groups, disabled, onPick }: CellStyleGalleryP
       maxHeight={460}
       disabled={disabled || !items.length}
       ariaLabel="Cell Styles"
+      open={open}
+      onOpenChange={setOpen}
+      footer={
+        onNew ? (
+          <CgButton
+            appearance="ghost"
+            data-testid="cell-style-new"
+            onClick={() => {
+              setOpen(false);
+              onNew();
+            }}
+          >
+            New Cell Style…
+          </CgButton>
+        ) : undefined
+      }
       onValueChange={(key) => onPick(key)}
     />
   );
