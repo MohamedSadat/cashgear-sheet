@@ -396,6 +396,15 @@ class Painter {
   drawStates() {
     const { context, block, xs, ys, scale } = this;
     if (!this.palette.erp || this.edges) return;
+    // Most tiles hold no ERP data: a look at the packed flags, with nothing made per cell.
+    let any = false;
+    for (let at = 4; at < block.cells.length; at += 6) {
+      if ((block.cells[at]! >>> 16) & ERP_STATES) {
+        any = true;
+        break;
+      }
+    }
+    if (!any) return;
     const pixel = Math.max(1, Math.round(scale));
     const bar = Math.max(2, Math.round(3 * scale));
     for (let row = 0; row < block.rows; row++) {
