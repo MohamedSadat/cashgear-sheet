@@ -271,9 +271,17 @@ $found`);
  * installed app says when it couldn't open a launched file, such as a SecurityError from
  * `getFile()`, which no page of the test's context can see when the app's window isn't one of them.
  */
-function windowTexts(profile: string, channel: string | undefined): string {
+function windowTexts(profile: string, channel: string | undefined, progId?: string): string {
   const browser = channel === 'msedge' ? 'msedge.exe' : 'chrome.exe';
   return powershell(`
+"browser processes:"
+Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*chrome*' -or $_.Name -like '*msedge*' } |
+  Where-Object { $_.CommandLine -notlike '*--type=*' } |
+  ForEach-Object { "  $($_.ProcessId) $($_.Name) $($_.CommandLine)".Substring(0, [Math]::Min(400, "  $($_.ProcessId) $($_.Name) $($_.CommandLine)".Length)) }
+${progId ? `"open command: $((Get-ItemProperty -LiteralPath 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\${progId}\\shell\\open\\command' -ErrorAction SilentlyContinue).'(default)')"` : ''}
+foreach ($dir in @("$env:ProgramFiles\\Google\\Chrome\\Application", "\${env:ProgramFiles(x86)}\\Microsoft\\Edge\\Application")) {
+  if (Test-Path $dir) { "$dir : $((Get-ChildItem $dir | ForEach-Object { $_.Name }) -join ', ')" }
+}
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $A = [System.Windows.Automation.AutomationElement]
 $scope = [System.Windows.Automation.TreeScope]
@@ -413,7 +421,7 @@ test('the installed web app opens a workbook from Open with', async () => {
     } catch (error) {
       // What the browser's windows show, so a failure on CI says why the file didn't open.
       await testInfo.attach('browser-windows.txt', {
-        body: `prompt answered: ${asked}\n${windowTexts(profile, channel)}`,
+        body: `prompt answered: ${asked}\n${windowTexts(profile, channel, progIds[0])}`,
         contentType: 'text/plain',
       });
       throw error;
