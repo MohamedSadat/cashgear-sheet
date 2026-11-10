@@ -637,6 +637,26 @@ impl Engine {
         self.0.erp_settle();
     }
 
+    /// Holds every write to the bound table while a commit is in flight, or lets them go.
+    pub fn erp_freeze(&mut self, on: bool) {
+        self.0.erp_freeze(on);
+    }
+
+    /// Takes in what Cash Gear ERP answered to a dry run or a commit, `{sent, errors,
+    /// conflicts}`: errors on their cells, conflicts on their records.
+    pub fn erp_set_states(&mut self, json: &str) -> Result<String, JsError> {
+        self.0
+            .erp_set_states(json)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Applies a commit's answer, `{sent, records}`, and lets writes go again.
+    pub fn erp_apply_commit(&mut self, json: &str) -> Result<String, JsError> {
+        self.0
+            .erp_apply_commit(json)
+            .map_err(|error| JsError::new(&error))
+    }
+
     /// The open workbook's ERP binding as JSON, or `null`.
     pub fn binding_json(&self) -> String {
         self.0.binding_json()

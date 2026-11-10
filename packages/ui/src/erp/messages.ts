@@ -88,7 +88,7 @@ export function badgeText(
   expired: boolean,
   userName: string,
   company: string,
-  counts: ErpCounts = { changed: 0, changedRecords: 0, invalid: 0, formulas: 0 },
+  counts: ErpCounts = { changed: 0, changedRecords: 0, invalid: 0, formulas: 0, conflicts: 0 },
   editable = false,
 ) {
   const parts = [isolate(label), count(records)];

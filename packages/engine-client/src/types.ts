@@ -869,7 +869,8 @@ export type Question =
   | { kind: 'richAt'; sheet: number; row: number; col: number }
   | { kind: 'cellErrors'; sheet: number; row: number; col: number }
   | { kind: 'nextError'; sheet: number; row: number; col: number; back?: boolean }
-  | { kind: 'erpChanges' }
+  | { kind: 'erpChanges'; visible?: boolean }
+  | { kind: 'erpReview' }
   | { kind: 'erpCell'; sheet: number; row: number; col: number }
   | { kind: 'erpNextError'; sheet: number; row: number; col: number; back?: boolean }
   | { kind: 'noteAt'; sheet: number; row: number; col: number }
@@ -900,6 +901,7 @@ export interface Answers {
   cellErrors: { rule: string; value?: string; from?: 'above' | 'left' }[];
   nextError: [number, number] | null;
   erpChanges: ErpChangeset | null;
+  erpReview: ErpReview | null;
   erpCell: ErpCellInfo | null;
   erpNextError: { row: number; col: number } | null;
   noteAt: NoteInfo | null;
@@ -1748,6 +1750,19 @@ export interface EngineApi {
   erpRefresh(): Promise<ErpRefreshSummary>;
   /** Leaves nothing to undo from setting ERP data up. */
   erpSettle(): Promise<void>;
+  /** Holds every write to the bound table while a commit is in flight, or lets them go. */
+  erpFreeze(on: boolean): Promise<void>;
+  /**
+   * Takes in what Cash Gear ERP answered to a dry run or a commit, as JSON `{sent, errors,
+   * conflicts}`: errors go on their cells by id and field, conflicts on their records.
+   */
+  erpSetStates(json: string): Promise<ErpMarkSummary>;
+  /**
+   * Applies a commit's answer, as JSON `{sent, records}`: cells that still hold what was sent take
+   * the persisted values, versions move, saved fields show Committed, undo clears and writes go
+   * again.
+   */
+  erpApplyCommit(json: string): Promise<ErpCommitApplied>;
   /** The open workbook's ERP binding, or null. */
   binding(): Promise<ErpBinding | null>;
   /** The bound records' ERP ids, ascending, for a refresh. */
@@ -1812,10 +1827,12 @@ export interface ErpCounts {
   /** Fields whose values differ from the ERP's, formulas left out. */
   changed: number;
   changedRecords: number;
-  /** Fields a local rule refuses. */
+  /** Fields a local rule or Cash Gear ERP refuses. */
   invalid: number;
   /** Formulas and spilled values, left out until converted to values. */
   formulas: number;
+  /** Records in conflict with Cash Gear ERP (Phase 17). */
+  conflicts: number;
 }
 
 /** A wire value, as the contract sends it. */
@@ -1830,9 +1847,11 @@ export interface ErpChangeset {
     key: string;
     version: string;
     row: number;
+    /** In a row a filter or the user hid. */
+    hidden?: boolean;
     changes: Record<string, { from: ErpWireValue; to: ErpWireValue }>;
   }[];
-  formulas: { key: string; field: string; row: number; col: number }[];
+  formulas: { key: string; field: string; row: number; col: number; hidden?: boolean }[];
   errors: { key: string; field: string; code: string; row: number; col: number }[];
   counts: ErpCounts;
 }
@@ -1858,10 +1877,76 @@ export interface ErpCellInfo {
   editable: boolean;
   reason?: string;
   key?: string;
-  state?: 'modified' | 'invalid' | 'formula';
+  state?: 'formula' | 'conflict' | 'invalid' | 'modified' | 'committed';
   original?: string;
   now?: string;
   rule?: ErpRuleInfo;
+  /** The error Cash Gear ERP refused the value with. */
+  server?: ErpServerError;
+  /** The record changed in Cash Gear ERP since it was read. */
+  conflict?: ErpConflictInfo;
+}
+
+/** An error Cash Gear ERP set on a field, by the contract's code. */
+export interface ErpServerError {
+  code: string;
+  message: string;
+}
+
+/** Who changed a record in Cash Gear ERP, when, and the field's value there now. */
+export interface ErpConflictInfo {
+  by: string | null;
+  at: string | null;
+  /** As the cell would show it; absent when empty. */
+  now?: string | null;
+  /** Whether the ERP sent the field's value now. */
+  known: boolean;
+}
+
+/** One field the Review dialog lists. */
+export interface ErpReviewEntry {
+  key: string;
+  /** The record's name, its first text field after the key. */
+  name?: string;
+  row: number;
+  col: number;
+  field: string;
+  label: string;
+  original?: string;
+  now?: string;
+  state: 'formula' | 'conflict' | 'invalid' | 'modified';
+  invalid: boolean;
+  conflict: boolean;
+  /** In a row a filter or the user hid. */
+  hidden: boolean;
+  rule?: ErpRuleInfo;
+  server?: ErpServerError;
+  conflictWith?: ErpConflictInfo;
+}
+
+/** What `erpReview` answers: every field to review, in reading order. */
+export interface ErpReview {
+  entries: ErpReviewEntry[];
+  counts: ErpCounts;
+}
+
+/** What `erpSetStates` placed. */
+export interface ErpMarkSummary {
+  /** Fields that took an error. */
+  errors: number;
+  errorRecords: number;
+  conflicts: number;
+  /** Errors no cell can show: batch errors, or ones for what wasn't sent. */
+  unplaced: { key?: string; field?: string; code: string; message: string }[];
+}
+
+/** What applying a commit did. */
+export interface ErpCommitApplied {
+  records: number;
+  /** Fields that took the persisted value and show Committed. */
+  saved: number;
+  /** Sent fields whose cells changed since, which keep what they hold. */
+  kept: number;
 }
 
 /** What a refresh changed. */

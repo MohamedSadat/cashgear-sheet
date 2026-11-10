@@ -19,6 +19,12 @@ pub const MODIFIED: u8 = 1;
 pub const INVALID: u8 = 2;
 /// A formula or a spilled value, left out of commits until converted to values.
 pub const FORMULA: u8 = 4;
+/// Cash Gear ERP refused the value in a dry run or a commit (Phase 17); `INVALID` is set too.
+pub const SERVER: u8 = 8;
+/// The record changed in Cash Gear ERP since it was read, and this field is among its changes.
+pub const CONFLICT: u8 = 16;
+/// The last commit saved this field, and it hasn't changed since.
+pub const COMMITTED: u8 = 32;
 
 /// One editable field of one record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,8 +34,14 @@ pub struct FieldState {
 }
 
 impl FieldState {
+    /// Whether the field shows nothing at all.
     pub fn is_clean(&self) -> bool {
         self.bits == 0
+    }
+
+    /// Whether the cell differs from what the ERP sent: a changed value or a formula.
+    pub fn has_change(&self) -> bool {
+        self.bits & (MODIFIED | FORMULA) != 0
     }
 }
 
@@ -41,8 +53,11 @@ pub struct Counts {
     pub changed: usize,
     /// Records with a changed field.
     pub changed_records: usize,
+    /// Fields a local rule or Cash Gear ERP refuses.
     pub invalid: usize,
     pub formulas: usize,
+    /// Records in conflict with Cash Gear ERP.
+    pub conflicts: usize,
 }
 
 impl Counts {
@@ -61,6 +76,9 @@ impl Counts {
         }
         if changed > 0 {
             self.changed_records = self.changed_records.wrapping_add_signed(sign);
+        }
+        if fields.iter().any(|field| field.bits & CONFLICT != 0) {
+            self.conflicts = self.conflicts.wrapping_add_signed(sign);
         }
     }
 }
@@ -323,7 +341,8 @@ mod tests {
                 changed: 2,
                 changed_records: 1,
                 invalid: 1,
-                formulas: 1
+                formulas: 1,
+                conflicts: 0
             }
         );
         states.set("V-1", vec![FieldState::default(), modified]);
@@ -333,7 +352,8 @@ mod tests {
                 changed: 1,
                 changed_records: 1,
                 invalid: 0,
-                formulas: 1
+                formulas: 1,
+                conflicts: 0
             }
         );
         states.set("V-1", vec![FieldState::default(); 2]);

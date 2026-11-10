@@ -16,6 +16,8 @@ import type {
   EngineApi,
   EngineInfo,
   ErpBinding,
+  ErpCommitApplied,
+  ErpMarkSummary,
   ErpPageInfo,
   ErpRefreshSummary,
   FileSource,
@@ -134,6 +136,9 @@ export interface EngineClient {
   erpBind(session: string): Promise<ErpBinding>;
   erpRefresh(): Promise<ErpRefreshSummary>;
   erpSettle(): Promise<void>;
+  erpFreeze(on: boolean): Promise<void>;
+  erpSetStates(json: string): Promise<ErpMarkSummary>;
+  erpApplyCommit(json: string): Promise<ErpCommitApplied>;
   binding(): Promise<ErpBinding | null>;
   bindingIds(): Promise<number[]>;
   drawTile(request: TileRequest): Promise<TileImage>;
@@ -326,6 +331,9 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     erpBind: (session) => engine.erpBind(session),
     erpRefresh: () => engine.erpRefresh(),
     erpSettle: () => engine.erpSettle(),
+    erpFreeze: (on) => engine.erpFreeze(on),
+    erpSetStates: (json) => engine.erpSetStates(json),
+    erpApplyCommit: (json) => engine.erpApplyCommit(json),
     binding: () => engine.binding(),
     bindingIds: () => engine.bindingIds(),
     async drawTile(request) {

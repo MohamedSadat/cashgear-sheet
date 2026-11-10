@@ -302,7 +302,7 @@ fn each_changed_field_is_tracked_and_a_value_changed_back_drops_out() {
     assert_eq!(list[2]["changes"]["vendorGroup"]["to"], other_group);
     assert_eq!(
         counts(&engine),
-        json!({"changed": 3, "changedRecords": 3, "invalid": 0, "formulas": 0})
+        json!({"changed": 3, "changedRecords": 3, "invalid": 0, "formulas": 0, "conflicts": 0})
     );
     // Typing the original back drops the field.
     let name: String = serde_json::from_str(&records[0].wire[1]).unwrap();
@@ -332,7 +332,15 @@ fn each_changed_field_is_tracked_and_a_value_changed_back_drops_out() {
         &mut engine,
         r#"{"kind":"setFilter","sheet":0,"table":"Vendors","col":3,"criteria":{"kind":"values","values":["LOCAL"]}}"#,
     );
-    assert_eq!(changes(&engine)["records"], sorted["records"]);
+    // The changes stay, and those the filter hides say so (Phase 17's Review lists them).
+    let filtered = changes(&engine);
+    let mut records_now = filtered["records"].as_array().unwrap().clone();
+    for record in &mut records_now {
+        let hidden = record.as_object_mut().unwrap().remove("hidden");
+        let local = value(&engine, record["row"].as_u64().unwrap() as u32, 3) == text("LOCAL");
+        assert_eq!(hidden.is_some(), !local, "{record}");
+    }
+    assert_eq!(Value::Array(records_now), sorted["records"]);
     assert_keys_with(&engine, &records, false);
 }
 
@@ -571,7 +579,7 @@ fn discard_changes_writes_the_originals_back_as_one_step() {
     ok(&mut engine, r#"{"kind":"erpDiscard"}"#);
     assert_eq!(
         counts(&engine),
-        json!({"changed": 0, "changedRecords": 0, "invalid": 0, "formulas": 0})
+        json!({"changed": 0, "changedRecords": 0, "invalid": 0, "formulas": 0, "conflicts": 0})
     );
     assert_keys_with_records(&engine, &records);
     ok(&mut engine, r#"{"kind":"undo"}"#);
@@ -768,7 +776,7 @@ fn a_refresh_after_edits_takes_the_erps_values_and_compares_again() {
     settle(&mut engine);
     assert_eq!(
         counts(&engine),
-        json!({"changed": 0, "changedRecords": 0, "invalid": 0, "formulas": 0})
+        json!({"changed": 0, "changedRecords": 0, "invalid": 0, "formulas": 0, "conflicts": 0})
     );
     assert_keys_with_records(&engine, &records);
 }
@@ -1046,6 +1054,7 @@ fn assert_changeset_is_the_oracles(engine: &mut Engine, records: &[Record], step
             "changedRecords": expected.changes.len(),
             "invalid": expected.errors.len(),
             "formulas": expected.formulas.len(),
+            "conflicts": 0,
         }),
         "step {step} ({op}): counts"
     );

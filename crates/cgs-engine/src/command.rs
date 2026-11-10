@@ -3342,6 +3342,9 @@ impl Session {
         if let Some(refused) = self.binding_refusal(&command) {
             return Err(refused.to_string());
         }
+        if self.erp_frozen && matches!(command, Command::Undo | Command::Redo) {
+            return Err(crate::erp::FROZEN.to_string());
+        }
         match command {
             Command::Input {
                 sheet,

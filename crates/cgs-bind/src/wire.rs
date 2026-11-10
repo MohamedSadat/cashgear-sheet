@@ -135,43 +135,53 @@ impl Staging {
     }
 
     fn read(&self, record: WireRecord) -> Result<StagedRecord, String> {
-        let WireRecord {
-            id,
-            key,
-            version,
-            mut values,
-        } = record;
-        if id <= 0 || key.is_empty() {
-            return Err("The ERP sent a record without its id or key.".to_string());
-        }
-        let version = decode_version(&version)
-            .ok_or_else(|| format!("The ERP sent {key} without a version the sheet can read."))?;
-        if values.len() != self.fields.len() {
+        read_record(&self.fields, self.key_index, record)
+    }
+}
+
+/// A record as the ERP sends it, read against a binding's fields: its values in column order,
+/// each checked against its field's type, with every field there and no others.
+pub fn read_record(
+    fields: &[BoundField],
+    key_index: usize,
+    record: WireRecord,
+) -> Result<StagedRecord, String> {
+    let WireRecord {
+        id,
+        key,
+        version,
+        mut values,
+    } = record;
+    if id <= 0 || key.is_empty() {
+        return Err("The ERP sent a record without its id or key.".to_string());
+    }
+    let version = decode_version(&version)
+        .ok_or_else(|| format!("The ERP sent {key} without a version the sheet can read."))?;
+    if values.len() != fields.len() {
+        return Err(format!(
+            "The ERP sent {key} with other fields than its schema's."
+        ));
+    }
+    let mut cells = Vec::with_capacity(fields.len());
+    for (index, field) in fields.iter().enumerate() {
+        let wire = values
+            .remove(&field.name)
+            .ok_or_else(|| format!("The ERP sent {key} without {}.", field.label))?;
+        let cell = cell_value(&field.kind, wire.as_ref())
+            .map_err(|problem| format!("{key}'s {} {}.", field.label, problem.describe()))?;
+        if index == key_index && cell != CellValue::Text(key.clone()) {
             return Err(format!(
-                "The ERP sent {key} with other fields than its schema's."
+                "The ERP sent {key} with another key in its values."
             ));
         }
-        let mut cells = Vec::with_capacity(self.fields.len());
-        for (index, field) in self.fields.iter().enumerate() {
-            let wire = values
-                .remove(&field.name)
-                .ok_or_else(|| format!("The ERP sent {key} without {}.", field.label))?;
-            let cell = cell_value(&field.kind, wire.as_ref())
-                .map_err(|problem| format!("{key}'s {} {}.", field.label, problem.describe()))?;
-            if index == self.key_index && cell != CellValue::Text(key.clone()) {
-                return Err(format!(
-                    "The ERP sent {key} with another key in its values."
-                ));
-            }
-            cells.push(cell);
-        }
-        Ok(StagedRecord {
-            id,
-            key,
-            version,
-            values: cells,
-        })
+        cells.push(cell);
     }
+    Ok(StagedRecord {
+        id,
+        key,
+        version,
+        values: cells,
+    })
 }
 
 fn too_many(total: u32, max: u32, noun: &str) -> String {

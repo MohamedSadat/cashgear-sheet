@@ -17,6 +17,8 @@ import type {
   EngineApi,
   EngineTilePort,
   ErpBinding,
+  ErpCommitApplied,
+  ErpMarkSummary,
   ErpPageInfo,
   ErpRefreshSummary,
   FileSource,
@@ -980,6 +982,21 @@ const api: EngineApi = {
   async erpSettle() {
     (await ensureEngine()).erp_settle();
   },
+  async erpFreeze(on) {
+    (await ensureEngine()).erp_freeze(on);
+  },
+  async erpSetStates(json) {
+    const wasm = await ensureEngine();
+    const summary = JSON.parse(wasm.erp_set_states(json)) as ErpMarkSummary;
+    afterChange(wasm);
+    return summary;
+  },
+  async erpApplyCommit(json) {
+    const wasm = await ensureEngine();
+    const applied = JSON.parse(wasm.erp_apply_commit(json)) as ErpCommitApplied;
+    afterChange(wasm);
+    return applied;
+  },
   async binding() {
     return JSON.parse((await ensureEngine()).binding_json()) as ErpBinding | null;
   },
@@ -1008,6 +1025,8 @@ const WAITS_FOR_SAVE = new Set([
   'addMedia',
   'erpBind',
   'erpRefresh',
+  'erpSetStates',
+  'erpApplyCommit',
   'save',
   'commitSaved',
 ]);

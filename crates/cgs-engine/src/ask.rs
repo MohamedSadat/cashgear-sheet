@@ -99,8 +99,13 @@ enum Question {
     /// A sheet's page setup, print area and titles, for the Page Layout tab and Page Setup.
     PageSetup { sheet: u32 },
     /// ERP data's changeset: each changed record's fields from and to, and the formulas and
-    /// cells local rules refuse, apart.
-    ErpChanges,
+    /// cells local rules refuse, apart. With `visible`, only rows no filter hides.
+    ErpChanges {
+        #[serde(default)]
+        visible: bool,
+    },
+    /// Every bound field the Review dialog lists: changed, refused, in conflict or a formula.
+    ErpReview,
     /// A bound cell's field, state, original and new values and broken rule, for hover details.
     ErpCell { sheet: u32, row: u32, col: u32 },
     /// The next bound cell a local rule refuses, round the table, or before with `back`.
@@ -198,7 +203,7 @@ impl Session {
         Ok(match question {
             Question::PageSetup { sheet } => self.page_setup_json(sheet)?,
             // Answered as text by `Engine::query`, without building a JSON tree.
-            Question::ErpChanges => Value::Null,
+            Question::ErpChanges { .. } | Question::ErpReview => Value::Null,
             Question::ErpCell { sheet, row, col } => self.erp_cell_json(sheet, row, col, locale),
             Question::ErpNextError {
                 sheet,
@@ -353,8 +358,10 @@ impl Engine {
             .session
             .as_ref()
             .ok_or_else(|| "No workbook is open.".to_string())?;
-        if let Question::ErpChanges = question {
-            return Ok(session.changeset_text());
+        match question {
+            Question::ErpChanges { visible } => return Ok(session.changeset_text(visible)),
+            Question::ErpReview => return Ok(session.erp_review_text(&self.locale)),
+            _ => {}
         }
         Ok(session.answer(question, &self.locale)?.to_string())
     }

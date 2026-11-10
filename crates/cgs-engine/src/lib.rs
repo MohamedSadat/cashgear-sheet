@@ -133,6 +133,9 @@ struct Session {
     /// Whether commands are checked against bound tables before they run. Only tests turn it
     /// off, to show the content rule refuses the same edits on its own.
     erp_precheck: bool,
+    /// A commit to the ERP is in flight: nothing may write the bound table until its answer is
+    /// applied (plan B.3, item 8).
+    erp_frozen: bool,
 }
 
 /// The engine a worker holds.
@@ -319,6 +322,7 @@ impl Engine {
             bindings: cgs_bind::Bindings::default(),
             unguarded: false,
             erp_precheck: true,
+            erp_frozen: false,
         });
         Ok(())
     }

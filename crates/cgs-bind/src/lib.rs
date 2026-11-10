@@ -8,6 +8,7 @@
 pub mod base64;
 pub mod binding;
 pub mod guard;
+pub mod marks;
 pub mod rules;
 pub mod schema;
 pub mod state;
@@ -16,10 +17,11 @@ pub mod wire;
 
 pub use binding::{Binding, Bindings, RecordMeta, RefreshPlan, SessionInfo};
 pub use guard::{check_writes, Content, Refusal, TableArea};
+pub use marks::{ApiConflict, ApiError, ConflictMark, MarkSummary, Marks, SentRecord, ServerError};
 pub use rules::Rule;
 pub use schema::{
     BoundField, EntitySchema, FieldKind, FieldSchema, Language, Localized, LookupEntry,
 };
 pub use state::{Counts, FieldState, States};
 pub use value::{CellValue, ValueError};
-pub use wire::{Page, PageInfo, Staging, WireRecord, WireValue};
+pub use wire::{read_record, Page, PageInfo, StagedRecord, Staging, WireRecord, WireValue};

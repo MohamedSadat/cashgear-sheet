@@ -17,6 +17,9 @@ use crate::command::{Area, AxisName, Command, PasteMode};
 use crate::edit::{EditCell, EditInput, NewStyle};
 use crate::{Engine, Session};
 
+/// What a write to a bound table is told while a commit is in flight.
+pub(crate) const FROZEN: &str = "Wait until the commit to Cash Gear ERP finishes.";
+
 /// Pages on their way in: for a new binding with its schema, or for a refresh of the one there.
 pub(crate) struct ErpStaging {
     schema: Option<EntitySchema>,
@@ -408,6 +411,9 @@ impl Session {
                     .collect();
                 if writes.is_empty() {
                     continue;
+                }
+                if self.erp_frozen {
+                    return Err(FROZEN.to_string());
                 }
                 let left = table.left;
                 let read_only = |col: u32| !binding.editable_in_sheet((col - left) as usize);
@@ -897,6 +903,35 @@ impl Engine {
                 session.history.forget();
             }
         }
+    }
+
+    /// Holds every write to the bound table while a commit is in flight, or lets them go again.
+    /// Applying the commit's result lets them go by itself.
+    pub fn erp_freeze(&mut self, on: bool) {
+        if let Some(session) = self.session.as_mut() {
+            session.erp_frozen = on && !session.bindings.is_empty();
+        }
+    }
+
+    /// Takes in what Cash Gear ERP answered to a dry run or a commit: `{sent, errors,
+    /// conflicts}`, with the records as sent. Errors go on their cells by id and field, and
+    /// conflicts on their records; what the sent records had before is replaced. Answers what was
+    /// placed, with the errors no cell can show.
+    pub fn erp_set_states(&mut self, json: &str) -> Result<String, String> {
+        self.session
+            .as_mut()
+            .ok_or_else(|| "No workbook is open.".to_string())?
+            .erp_set_states(json)
+    }
+
+    /// Applies a commit's answer: `{sent, records}`, with the records as sent and as persisted.
+    /// Only cells that still hold what was sent take the persisted values; versions and
+    /// originals move, the saved fields show Committed, undo is cleared and writes go again.
+    pub fn erp_apply_commit(&mut self, json: &str) -> Result<String, String> {
+        self.session
+            .as_mut()
+            .ok_or_else(|| "No workbook is open.".to_string())?
+            .erp_apply_commit(json)
     }
 
     /// The open workbook's binding, as JSON, or `null`.
