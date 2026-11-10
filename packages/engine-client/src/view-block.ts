@@ -55,6 +55,10 @@ export const CELL_ERP_INVALID = 1 << 9;
 export const CELL_ERP_FORMULA = 1 << 10;
 /** ERP data: a read-only field's value. */
 export const CELL_ERP_READ_ONLY = 1 << 11;
+/** ERP data (Phase 17): the record changed in the ERP since it was read, and this field clashes. */
+export const CELL_ERP_CONFLICT = 1 << 12;
+/** ERP data (Phase 17): the last commit saved this field, and it hasn't changed since. */
+export const CELL_ERP_COMMITTED = 1 << 13;
 /** ERP data: the heading of a read-only column, which carries a lock. */
 export const CELL_ERP_LOCK = 1 << 14;
 

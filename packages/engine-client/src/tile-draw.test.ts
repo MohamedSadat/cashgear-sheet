@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { cssColor, drawTile, fontStack, tileEdges, type TileContext } from './tile-draw';
 import type { TilePalette } from './types';
 import {
+  CELL_ERP_COMMITTED,
+  CELL_ERP_CONFLICT,
   CELL_ERP_FORMULA,
   CELL_ERP_INVALID,
   CELL_ERP_LOCK,
@@ -343,6 +345,9 @@ describe('ERP cell states', () => {
       invalid: 'red',
       formula: 'violet',
       readOnly: 'wash',
+      conflict: 'orange',
+      conflictHatch: 'orange-hatch',
+      committed: 'green',
     },
     dark: {
       modified: 'AMBER',
@@ -350,6 +355,9 @@ describe('ERP cell states', () => {
       invalid: 'RED',
       formula: 'VIOLET',
       readOnly: 'WASH',
+      conflict: 'ORANGE',
+      conflictHatch: 'ORANGE-HATCH',
+      committed: 'GREEN',
     },
   };
   const states = {
@@ -392,6 +400,32 @@ describe('ERP cell states', () => {
       ['violet', 128, 12, 3, 3],
       ['violet', 128, 18, 3, 1],
     ]);
+  });
+
+  it('hatches a conflict with a "!" in its corner, and bars a committed field green', () => {
+    const recording = recorder();
+    drawTile(
+      recording.context,
+      decodeViewBlock(
+        encodeTile({
+          rowPx: [20],
+          colPx: [64, 64],
+          cells: [{ flags: CELL_ERP_MODIFIED | CELL_ERP_CONFLICT }, { flags: CELL_ERP_COMMITTED }],
+        }),
+      ),
+      { ...palette, erp },
+      1,
+    );
+    expect(recording.rects).toContainEqual(['amber', 0, 0, 3, 19]);
+    expect(recording.clips).toContainEqual([0, 0, 63, 19]);
+    expect(recording.texts).toContainEqual(
+      expect.objectContaining({ text: '!', color: 'orange', x: 64 - 1 - 3 - 6 }),
+    );
+    expect(recording.rects).toContainEqual(['green', 64, 0, 3, 19]);
+    // The committed cell has no amber of its own.
+    expect(recording.rects.filter(([color, x]) => color.startsWith('amber') && x === 64)).toEqual(
+      [],
+    );
   });
 
   it('puts the bar on the right of a right-to-left sheet, its leading edge', () => {

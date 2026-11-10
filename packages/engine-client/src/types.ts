@@ -35,6 +35,11 @@ export interface ErpStateColors {
   formula: string;
   /** Read-only: the wash over the cell. */
   readOnly: string;
+  /** Conflict (Phase 17): the hatch over the cell, and its "!". */
+  conflict: string;
+  conflictHatch: string;
+  /** Committed (Phase 17): the bar on the leading edge. */
+  committed: string;
 }
 
 /** One cell to measure for a row or column to fit. */
@@ -1808,6 +1813,8 @@ export interface ErpBinding {
   asOf: string;
   maxRecords: number;
   maxPageSize: number;
+  /** The most records one commit takes (Phase 17). */
+  maxCommitRecords: number;
   fields: ErpFieldInfo[];
   /** What the status badge counts (Phase 16). */
   counts: ErpCounts;

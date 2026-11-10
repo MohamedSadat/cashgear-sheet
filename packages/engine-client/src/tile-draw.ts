@@ -20,6 +20,8 @@ import {
   ALIGN_JUSTIFY,
   ALIGN_LEFT,
   ALIGN_RIGHT,
+  CELL_ERP_COMMITTED,
+  CELL_ERP_CONFLICT,
   CELL_ERP_FORMULA,
   CELL_ERP_INVALID,
   CELL_ERP_LOCK,
@@ -73,7 +75,13 @@ const CELL_INSET = 2;
 const INDENT_PX = 9;
 /** Room a read-only ERP column's heading leaves before its text for the lock, at 100%. */
 export const LOCK_PX = 11;
-const ERP_STATES = CELL_ERP_MODIFIED | CELL_ERP_INVALID | CELL_ERP_FORMULA | CELL_ERP_LOCK;
+const ERP_STATES =
+  CELL_ERP_MODIFIED |
+  CELL_ERP_INVALID |
+  CELL_ERP_FORMULA |
+  CELL_ERP_LOCK |
+  CELL_ERP_CONFLICT |
+  CELL_ERP_COMMITTED;
 const EMPTY_STYLE: TileStyle = {
   font: '',
   size: 11,
@@ -389,9 +397,10 @@ class Painter {
   }
 
   /**
-   * ERP states over the text: Modified's bar and a formula's dotted one on the cell's leading
-   * edge, which is its right on a right-to-left sheet; Invalid's border; a read-only column's
-   * lock in its heading. Never on pages.
+   * ERP states over the text: Modified's bar, a formula's dotted one and Committed's green one on
+   * the cell's leading edge, which is its right on a right-to-left sheet; Invalid's border;
+   * Conflict's hatch with a "!" at the trailing top corner; a read-only column's lock in its
+   * heading. Never on pages.
    */
   drawStates() {
     const { context, block, xs, ys, scale } = this;
@@ -426,7 +435,11 @@ class Painter {
         } else if (flags & CELL_ERP_MODIFIED) {
           context.fillStyle = colors.modified;
           context.fillRect(lead, top, bar, height - pixel);
+        } else if (flags & CELL_ERP_COMMITTED) {
+          context.fillStyle = colors.committed;
+          context.fillRect(lead, top, bar, height - pixel);
         }
+        if (flags & CELL_ERP_CONFLICT) this.drawConflict(left, top, width, height, colors);
         if (flags & CELL_ERP_INVALID) {
           const line = 2 * pixel;
           context.strokeStyle = colors.invalid;
@@ -448,6 +461,44 @@ class Painter {
         }
       }
     }
+  }
+
+  /** A conflict's hatch across the cell, and a "!" in its trailing top corner. */
+  private drawConflict(
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+    colors: ErpStateColors,
+  ) {
+    const { context, scale } = this;
+    const pixel = Math.max(1, Math.round(scale));
+    const step = Math.max(4, Math.round(6 * scale));
+    context.save();
+    context.beginPath();
+    context.rect(left, top, width - pixel, height - pixel);
+    context.clip();
+    context.strokeStyle = colors.conflictHatch;
+    context.lineWidth = pixel;
+    context.beginPath();
+    for (let x = left - height; x < left + width; x += step) {
+      context.moveTo(x, top + height);
+      context.lineTo(x + height, top);
+    }
+    context.stroke();
+    const size = Math.max(8, Math.round(9 * scale));
+    context.font = `bold ${size}px sans-serif`;
+    context.fillStyle = colors.conflict;
+    context.textBaseline = 'top';
+    context.textAlign = 'left';
+    const mark = Math.round(context.measureText('!').width);
+    const inset = Math.max(2, Math.round(3 * scale));
+    context.fillText(
+      '!',
+      this.rtl ? left + inset : left + width - pixel - inset - mark,
+      top + pixel,
+    );
+    context.restore();
   }
 
   /** A small padlock in the room a heading leaves before its text. */
