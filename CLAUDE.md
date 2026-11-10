@@ -195,6 +195,7 @@ Found in Phase 16:
 - ViewBlock 5: cell flag bits 8 to 14 are ERP states, set only through `TileInput.erp`, which only the screen's tiles get, so pages, PDF and copies never show them.
 - The browser pane's `type` action sends text without keydown events, which the grid needs to start editing. Drive edits there with `cgsTest.command`, and keyboard paths with Playwright.
 - The dev server in the browser pane offers to recover working copies from earlier sessions on each load. Close the prompts; don't discard them.
+- From Chrome 157, an installed web app can't read a file Open with launches from a folder File System Access counts as the system's, such as `%LOCALAPPDATA%\Temp`: `getFile()` throws a SecurityError. The PWA test launches its file from its own output folder.
 
 Carried over from CashGear Video, where they were measured:
 

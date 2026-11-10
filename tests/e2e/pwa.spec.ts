@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { chromium, expect, test, type BrowserContext, type Page } from '@playwright/test';
@@ -292,7 +292,10 @@ test('the installed web app opens a workbook from Open with', async () => {
   test.setTimeout(240_000);
   const { channel } = testInfo.project.use;
   const profile = await mkdtemp(join(tmpdir(), 'cgs-pwa-'));
-  const files = await mkdtemp(join(tmpdir(), 'cgs-launch-'));
+  // Not in %LOCALAPPDATA%\Temp: from Chrome 157 an installed app can't read a launched file in a
+  // folder File System Access counts as the system's, and getFile() throws a SecurityError.
+  const files = join(testInfo.outputDir, 'launch');
+  await mkdir(files, { recursive: true });
   // A headless browser takes the system's launch and opens no window for it.
   const launch = () =>
     chromium.launchPersistentContext(profile, {
