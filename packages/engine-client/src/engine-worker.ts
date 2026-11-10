@@ -810,7 +810,9 @@ const api: EngineApi = {
   async query(question) {
     const wasm = await ensureEngine();
     try {
-      return JSON.parse(wasm.query(JSON.stringify(question))) as unknown;
+      // The answer's text, which the main thread parses: a large answer, such as ERP data's
+      // changeset, then crosses as one string rather than as a structured clone of its objects.
+      return wasm.query(JSON.stringify(question));
     } catch (error) {
       throw friendly(error);
     }

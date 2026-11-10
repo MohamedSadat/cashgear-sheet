@@ -189,33 +189,53 @@ pub fn date_text(serial: f64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// A value as the contract sends it, ready to serialise: `null`, a string, a number or a boolean.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Wire {
+    Text(String),
+    Number(f64),
+    Bool(bool),
+    Null,
+}
+
 /// A value as the contract sends it: text as a string, decimals as strings at their scale, dates
 /// as `YYYY-MM-DD`, booleans as booleans and empty as `null`. A value of the wrong type goes as it
 /// is, for the server to refuse, though local rules refuse it first.
-pub fn wire(kind: &FieldKind, value: &Content) -> Value {
+pub fn wire_of(kind: &FieldKind, value: &Content) -> Wire {
     match (kind, value) {
-        (_, Content::Empty) => Value::Null,
-        (_, Content::Text(text)) if text.is_empty() => Value::Null,
-        (_, Content::Text(text)) => Value::String(text.clone()),
-        (_, Content::Bool(b)) => Value::Bool(*b),
-        (_, Content::Error(error)) => Value::String(error.clone()),
+        (_, Content::Empty) => Wire::Null,
+        (_, Content::Text(text)) if text.is_empty() => Wire::Null,
+        (_, Content::Text(text)) => Wire::Text(text.clone()),
+        (_, Content::Bool(b)) => Wire::Bool(*b),
+        (_, Content::Error(error)) => Wire::Text(error.clone()),
         (FieldKind::Decimal(scale), Content::Number(bits)) => {
             let n = f64::from_bits(*bits);
             let text = format!("{:.*}", *scale as usize, n);
             let negative_zero =
                 text.starts_with('-') && text[1..].bytes().all(|b| b == b'0' || b == b'.');
-            Value::String(if negative_zero {
+            Wire::Text(if negative_zero {
                 text[1..].to_string()
             } else {
                 text
             })
         }
-        (FieldKind::Date, Content::Number(bits)) => Value::String(date_text(f64::from_bits(*bits))),
+        (FieldKind::Date, Content::Number(bits)) => Wire::Text(date_text(f64::from_bits(*bits))),
         (_, Content::Number(bits)) => {
-            serde_json::Number::from_f64(f64::from_bits(*bits)).map_or(Value::Null, Value::Number)
+            let n = f64::from_bits(*bits);
+            if n.is_finite() {
+                Wire::Number(n)
+            } else {
+                Wire::Null
+            }
         }
-        (_, Content::Formula(_) | Content::Spill) => Value::Null,
+        (_, Content::Formula(_) | Content::Spill) => Wire::Null,
     }
+}
+
+/// `wire_of` as a JSON value.
+pub fn wire(kind: &FieldKind, value: &Content) -> Value {
+    serde_json::to_value(wire_of(kind, value)).unwrap_or(Value::Null)
 }
 
 #[cfg(test)]

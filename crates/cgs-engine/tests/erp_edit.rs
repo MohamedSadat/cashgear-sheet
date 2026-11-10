@@ -1283,3 +1283,33 @@ fn random_edits_keep_keys_read_only_cells_and_the_changeset_with_the_oracle() {
         "{tally:?}, {changed} changed at the end"
     );
 }
+
+/// Where editing's time goes, natively: `cargo test --profile fast -p cgs-engine --test erp_edit
+/// edit_steps -- --ignored --nocapture`. The browser's numbers are `bench/measure-erp-edit.mjs`'s.
+#[test]
+#[ignore]
+fn edit_steps() {
+    for n in [1000usize, 10_000] {
+        let records = records(n, 5);
+        let mut engine = bound(&records);
+        let column: Vec<String> = (0..n).map(|i| format!("Name {i}")).collect();
+        let paste = json!({"kind": "pasteExternal", "sheet": 0, "row": 2, "col": 2,
+            "text": column.join("\r\n")})
+        .to_string();
+        let started = std::time::Instant::now();
+        engine.apply_json(&paste).unwrap();
+        let pasted = started.elapsed();
+        let mut times = Vec::new();
+        let mut size = 0;
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            size = engine.query(r#"{"kind":"erpChanges"}"#).unwrap().len();
+            times.push(started.elapsed());
+        }
+        times.sort();
+        eprintln!(
+            "{n}: paste one column {pasted:?}, changeset {:?} median for {size} bytes",
+            times[2]
+        );
+    }
+}

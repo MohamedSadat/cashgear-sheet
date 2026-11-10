@@ -299,7 +299,7 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     functionNames: () => engine.functionNames(),
     definedNames: () => engine.definedNames(),
     query: <Q extends Question>(question: Q) =>
-      engine.query(question) as Promise<Answers[Q['kind']]>,
+      engine.query(question).then((text) => JSON.parse(text) as Answers[Q['kind']]),
     bookSummary: () => engine.bookSummary(),
     recoverable: () => engine.recoverable(),
     openRecovered: (id, onEvent) => engine.openRecovered(id, proxy(onEvent)),

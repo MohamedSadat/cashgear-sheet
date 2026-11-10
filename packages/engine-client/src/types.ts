@@ -1697,8 +1697,8 @@ export interface EngineApi {
   resolveName(text: string, sheet: number): Promise<(CellArea & { sheet: number }) | null>;
   functionNames(): Promise<string[]>;
   definedNames(): Promise<string[]>;
-  /** One of the data tools' questions, answered as JSON. See `Question`. */
-  query(question: Question): Promise<unknown>;
+  /** One of the data tools' questions, answered as JSON text, which the client parses. */
+  query(question: Question): Promise<string>;
   /** The list of sheets as it now stands. */
   bookSummary(): Promise<BookSummary>;
   /** Edits a crashed session left, for the next launch to offer back. */

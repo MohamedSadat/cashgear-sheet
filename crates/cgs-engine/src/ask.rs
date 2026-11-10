@@ -197,7 +197,8 @@ impl Session {
     fn answer(&self, question: Question, locale: &cgs_numfmt::Locale) -> Result<Value, String> {
         Ok(match question {
             Question::PageSetup { sheet } => self.page_setup_json(sheet)?,
-            Question::ErpChanges => self.changeset_json(),
+            // Answered as text by `Engine::query`, without building a JSON tree.
+            Question::ErpChanges => Value::Null,
             Question::ErpCell { sheet, row, col } => self.erp_cell_json(sheet, row, col, locale),
             Question::ErpNextError {
                 sheet,
@@ -352,6 +353,9 @@ impl Engine {
             .session
             .as_ref()
             .ok_or_else(|| "No workbook is open.".to_string())?;
+        if let Question::ErpChanges = question {
+            return Ok(session.changeset_text());
+        }
         Ok(session.answer(question, &self.locale)?.to_string())
     }
 }

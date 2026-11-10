@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use cgs_bind::guard::{Content, TableArea};
-use cgs_bind::state::{wire, FieldState, FORMULA, INVALID, MODIFIED};
+use cgs_bind::state::{wire_of, FieldState, Wire, FORMULA, INVALID, MODIFIED};
 use cgs_bind::{Binding, Bindings, FieldKind, Rule};
 use cgs_calc::{CalcEngine, CalcValue, CellRef, Rect as CalcRect, SheetRect};
 use serde::Serialize;
@@ -228,14 +228,63 @@ impl cgs_calc::CellSink for KeyColumn {
     }
 }
 
-/// The counts as the changeset writes them.
-#[derive(serde::Deserialize)]
+/// One changed field, from and to, as the contract sends it.
+#[derive(Serialize)]
+struct ChangeOut {
+    from: Wire,
+    to: Wire,
+}
+
+/// A record's changed fields, as a JSON object by field name.
+struct FieldChanges<'a>(Vec<(&'a str, ChangeOut)>);
+
+impl Serialize for FieldChanges<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (field, change) in &self.0 {
+            map.serialize_entry(field, change)?;
+        }
+        map.end()
+    }
+}
+
+#[derive(Serialize)]
+struct RecordOut<'a> {
+    id: i64,
+    key: &'a str,
+    version: String,
+    row: u32,
+    changes: FieldChanges<'a>,
+}
+
+#[derive(Serialize)]
+struct PlaceOut<'a> {
+    key: String,
+    field: &'a str,
+    row: u32,
+    col: u32,
+}
+
+#[derive(Serialize)]
+struct ErrorOut<'a> {
+    key: &'a str,
+    field: &'a str,
+    code: &'static str,
+    row: u32,
+    col: u32,
+}
+
+/// The changeset as `erpChanges` answers it.
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CountsIn {
-    changed: usize,
-    changed_records: usize,
-    invalid: usize,
-    formulas: usize,
+struct ChangesetOut<'a> {
+    company: &'a str,
+    schema_version: &'a str,
+    records: Vec<RecordOut<'a>>,
+    formulas: Vec<PlaceOut<'a>>,
+    errors: Vec<ErrorOut<'a>>,
+    counts: cgs_bind::Counts,
 }
 
 /// A bound cell's details, for the hover layer.
@@ -497,40 +546,91 @@ impl Session {
         out
     }
 
-    /// The changeset (plan B.3, item 5; contract C.4): each changed record's id, key, version and
-    /// changed fields from and to, in id order, with the row it is on now. Formulas and spilled
-    /// values are listed apart and left out, and the changes local rules refuse are listed too.
-    pub(crate) fn changeset_json(&self) -> Value {
-        let Some(binding) = self.bindings.0.first() else {
-            return Value::Null;
+    /// The data rows of a binding's table whose keys `wanted` takes, by key: one read of the key
+    /// column, keeping only those keys.
+    fn rows_of(
+        &self,
+        binding: &Binding,
+        table: &TableArea,
+        wanted: &dyn Fn(&str) -> bool,
+    ) -> HashMap<String, u32> {
+        struct Wanted<'a> {
+            wanted: &'a dyn Fn(&str) -> bool,
+            rows: HashMap<String, u32>,
+        }
+        impl cgs_calc::CellSink for Wanted<'_> {
+            fn cell(&mut self, row: u32, _col: u32, value: &CalcValue) {
+                if let CalcValue::Text(key) = value {
+                    if (self.wanted)(key) {
+                        self.rows.insert(key.clone(), row);
+                    }
+                }
+            }
+        }
+        let key_col = table.left + binding.key_index as u32;
+        let mut sink = Wanted {
+            wanted,
+            rows: HashMap::new(),
         };
-        let Some(table) = self.bound_area(binding) else {
-            return Value::Null;
-        };
-        let rows = self.rows_by_key(binding, &table);
+        self.calc.read_block(
+            SheetRect {
+                sheet: binding.sheet,
+                rect: CalcRect {
+                    top: table.first_data_row(),
+                    left: key_col,
+                    bottom: table.bottom,
+                    right: key_col,
+                },
+            },
+            &mut sink,
+        );
+        sink.rows
+    }
+
+    /// The key a data row holds now.
+    fn key_at(&self, binding: &Binding, table: &TableArea, row: u32) -> Option<String> {
+        match content_of_input(&self.calc.cell_input(CellRef {
+            sheet: binding.sheet,
+            row,
+            col: table.left + binding.key_index as u32,
+        })) {
+            Content::Text(key) => Some(key),
+            _ => None,
+        }
+    }
+
+    /// Builds the changeset (plan B.3, item 5; contract C.4) and hands it to `f`: each changed
+    /// record's id, key, version and changed fields from and to, in id order, with the row it is on
+    /// now. Formulas and spilled values are listed apart and left out, and the changes local rules
+    /// refuse are listed too. It reads only the changed records' cells, so it takes time in
+    /// proportion to what changed, past one read of the key column.
+    fn with_changeset<R>(&self, f: impl FnOnce(&ChangesetOut<'_>) -> R) -> Option<R> {
+        let binding = self.bindings.0.first()?;
+        let table = self.bound_area(binding)?;
+        let rows = self.rows_of(binding, &table, &|key| binding.states.get(key).is_some());
         // Spills into empty editable cells come from formulas elsewhere, so no write noted them.
         let spilled: HashSet<(u32, u32)> =
             self.spilled_cells(binding, &table).into_iter().collect();
-        let mut records = Vec::new();
+        let mut records = Vec::with_capacity(rows.len());
         let mut formulas = Vec::new();
         let mut errors = Vec::new();
         let mut changed = 0;
-        let mut keys: Vec<&str> = binding.states.keys().collect();
-        keys.sort_unstable();
-        for key in keys {
-            let (Some(meta), Some(&row), Some(fields)) =
-                (binding.record(key), rows.get(key), binding.states.get(key))
-            else {
+        for (key, &row) in &rows {
+            let (Some(meta), Some(fields)) = (binding.record(key), binding.states.get(key)) else {
                 continue;
             };
-            let mut changes = serde_json::Map::new();
+            let mut changes = Vec::new();
             for (slot, state) in fields.iter().enumerate() {
                 let field = binding.editable[slot];
                 let col = table.left + field as u32;
                 let bound = &binding.fields[field];
                 if state.bits & FORMULA != 0 || spilled.contains(&(row, col)) {
-                    formulas
-                        .push(json!({ "key": key, "field": bound.name, "row": row, "col": col }));
+                    formulas.push(PlaceOut {
+                        key: key.clone(),
+                        field: &bound.name,
+                        row,
+                        col,
+                    });
                     continue;
                 }
                 if state.bits & MODIFIED == 0 {
@@ -542,63 +642,70 @@ impl Session {
                     col,
                 }));
                 if let Some(rule) = state.rule {
-                    errors.push(json!({
-                        "key": key, "field": bound.name, "code": rule.code(), "row": row, "col": col,
-                    }));
+                    errors.push(ErrorOut {
+                        key,
+                        field: &bound.name,
+                        code: rule.code(),
+                        row,
+                        col,
+                    });
                 }
-                changes.insert(
-                    bound.name.clone(),
-                    json!({
-                        "from": wire(&bound.kind, &Content::of_cell(&meta.originals[slot])),
-                        "to": wire(&bound.kind, &now),
-                    }),
-                );
+                changes.push((
+                    bound.name.as_str(),
+                    ChangeOut {
+                        from: wire_of(&bound.kind, &Content::of_cell(&meta.originals[slot])),
+                        to: wire_of(&bound.kind, &now),
+                    },
+                ));
             }
             if !changes.is_empty() {
                 changed += changes.len();
-                records.push((
-                    meta.id,
-                    json!({
-                        "id": meta.id,
-                        "key": key,
-                        "version": binding.version_text(key),
-                        "row": row,
-                        "changes": changes,
-                    }),
-                ));
+                records.push(RecordOut {
+                    id: meta.id,
+                    key,
+                    version: binding.version_text(key).unwrap_or_default(),
+                    row,
+                    changes: FieldChanges(changes),
+                });
             }
         }
-        records.sort_by_key(|(id, _)| *id);
-        let by_row: HashMap<u32, &str> =
-            rows.iter().map(|(key, &row)| (row, key.as_str())).collect();
+        records.sort_unstable_by_key(|record| record.id);
         for &(row, col) in &spilled {
-            let Some(&key) = by_row.get(&row) else {
+            if formulas.iter().any(|f| (f.row, f.col) == (row, col)) {
+                continue;
+            }
+            let Some(key) = self.key_at(binding, &table, row) else {
                 continue;
             };
-            if binding.states.get(key).is_none() {
-                let field = &binding.fields[(col - table.left) as usize];
-                formulas.push(json!({ "key": key, "field": field.name, "row": row, "col": col }));
-            }
+            formulas.push(PlaceOut {
+                key,
+                field: &binding.fields[(col - table.left) as usize].name,
+                row,
+                col,
+            });
         }
-        let by_place = |a: &Value, b: &Value| {
-            (a["row"].as_u64(), a["col"].as_u64()).cmp(&(b["row"].as_u64(), b["col"].as_u64()))
-        };
-        formulas.sort_by(by_place);
-        errors.sort_by(by_place);
+        formulas.sort_unstable_by_key(|f| (f.row, f.col));
+        errors.sort_unstable_by_key(|e| (e.row, e.col));
         let counts = cgs_bind::Counts {
             changed,
             changed_records: records.len(),
             invalid: errors.len(),
             formulas: formulas.len(),
         };
-        json!({
-            "company": binding.session.company,
-            "schemaVersion": binding.schema_version,
-            "records": records.into_iter().map(|(_, record)| record).collect::<Vec<_>>(),
-            "formulas": formulas,
-            "errors": errors,
-            "counts": counts,
-        })
+        Some(f(&ChangesetOut {
+            company: &binding.session.company,
+            schema_version: &binding.schema_version,
+            records,
+            formulas,
+            errors,
+            counts,
+        }))
+    }
+
+    /// The changeset as JSON text, or `null`.
+    pub(crate) fn changeset_text(&self) -> String {
+        self.with_changeset(|set| serde_json::to_string(set).unwrap_or_default())
+            .unwrap_or_else(|| "null".to_string())
     }
 
     /// What the status badge counts. The dirty-record set's own counts, unless a formula spills
@@ -610,14 +717,8 @@ impl Session {
         if !spills_in {
             return binding.states.counts();
         }
-        serde_json::from_value::<CountsIn>(self.changeset_json()["counts"].clone())
-            .map(|c| cgs_bind::Counts {
-                changed: c.changed,
-                changed_records: c.changed_records,
-                invalid: c.invalid,
-                formulas: c.formulas,
-            })
-            .unwrap_or_else(|_| binding.states.counts())
+        self.with_changeset(|set| set.counts)
+            .unwrap_or_else(|| binding.states.counts())
     }
 
     /// What a cell shows of a bound value, in its column's format.
