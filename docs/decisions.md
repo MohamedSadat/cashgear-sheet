@@ -798,3 +798,27 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Question | Answer |
 | --- | --- |
 | Binding missed plan B.6's targets: 1,000 records of 20 fields from response to first paint in 0.70 s (target 0.3 s), 10,000 in 2.56 s (target 1.5 s), in Chrome's WASM | Accepted for Phase 15 and carried to Phase 19, whose exit already requires B.6's targets. What's left to speed up: Formualizer's own write of each cell (about 10 µs a cell in WASM), fitting columns without a pass over every cell, opening the new workbook while the records download, and parsing pages faster. This phase already made large writes linear: writing the farthest value first and skipping the reads of cells known to be empty took 10,000 records from 29 s to 2.6 s |
+
+## 2026-11-10: Phase 16
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| The state colours, from a mock-up of the Vendors table in light, dark and right-to-left | A, amber edits: Modified is an amber bar on the cell's leading edge with a light amber tint; Invalid a red border; Formula a dotted violet bar on the leading edge; Read-only a faint grey wash, with a lock in the column's heading. Conflict (an orange hatch and "!") and Committed (a green bar) come with Phases 17 and 18. On a light table band in dark mode, states take their light-theme colours, so they stay visible |
+| Formulas and spills in bound editable cells | Allowed, flagged with the Formula state, and left out of the changeset until converted to values, so a formula's result never reaches the ERP by itself |
+| When local rules mark cells Invalid | As you edit: every edit is checked against `required`, `maxLength`, type, scale, range and lookup, and Invalid is painted at once, so Next Error and the badge's count work now. Phase 17's Validate adds the server's dry run |
+| What lookup dropdowns list | Each item's code and the ERP's label in the session's language ("NET30 · Net 30 days"); a pick writes the code as text. Inactive items aren't offered |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| The paste-area gap in `protect.rs` | Fixed: Paste checked only the area it was sent, which `paste_command` then grows to the source's size, so a paste into one unlocked cell could write locked cells beside it. Protection now checks the area the paste writes, as Excel does |
+| Discard Changes | All changes, or only those in the selected cells, as one step undo takes back; no confirmation, since undo brings them back. It writes cells, never the originals |
+| A code typed in another case | Takes the list's own spelling (`local` becomes `LOCAL`), on every input path |
+| Booleans | TRUE and FALSE, as typing takes them; anything else is Invalid (`type`) |
+| Hover details | The field, "Original → New", the rule a cell breaks, and why a read-only column is read-only, after the note's hover delay |
+| Status badge and Next Error | "Vendors · 12 changed · 2 invalid · 1 formula · Sara @ Kit"; Next Error on the ERP Data tab goes through invalid cells in row order and wraps |
+| Closing the tab | Asks first while there are changes, since a bound workbook keeps no recovery copy until Phase 18 |
+| Targets | Key to paint and tile build p99 within 10% of the same sheet unbound; `changeset` at most 10 ms for 1,000 × 20 and 100 ms for 10,000 × 20; local rules at most 50 ms after pasting 1,000 rows; the property test over 1,000 records |
