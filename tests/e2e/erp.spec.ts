@@ -558,3 +558,311 @@ test.describe('editing ERP data', () => {
     });
   }
 });
+
+// Phase 17: Validate, Review and Commit, against the mock's store as the oracle.
+
+interface MockState {
+  writes: number;
+  commits: number;
+  audit: number;
+}
+
+async function mockState(): Promise<MockState> {
+  const response = await fetch(`${MOCK}/__mock/state?company=Kit`);
+  const state = (await response.json()) as MockState;
+  return { writes: state.writes, commits: state.commits, audit: state.audit };
+}
+
+async function mockVendor(key: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${MOCK}/__mock/vendor?company=Kit&key=${key}`);
+  return (await response.json()) as Record<string, unknown>;
+}
+
+const ERP_GREEN = '#079455';
+
+async function erpTab(page: Page) {
+  await page.getByTestId('ribbon').getByRole('tab', { name: 'ERP Data', exact: true }).click();
+}
+
+async function typeInto(page: Page, row: number, col: number, text: string) {
+  await select(page, row, col);
+  await page.keyboard.type(text);
+  await page.keyboard.press('Enter');
+  await expect.poll(() => cellText(page, row + 1, col + 1)).toBe(text);
+}
+
+async function commitAll(page: Page, visible = false) {
+  await erpTab(page);
+  await page.getByTestId('ribbon').getByRole('button', { name: 'Commit▾', exact: true }).click();
+  await page
+    .getByText(visible ? 'Commit Changes in Visible Rows…' : 'Commit All Changes…', { exact: true })
+    .click();
+}
+
+const status = (page: Page) => page.getByTestId('engine-status');
+
+/** The commit's confirmation, without the isolates around names. */
+const confirmText = async (page: Page) =>
+  plain(await page.getByTestId('erp-commit-text').textContent());
+
+test.describe('committing ERP data', () => {
+  // V-1001 to V-1008, the mock's fixed vendors, in id order: data rows 1 to 8 (0-based, the
+  // heading at 0).
+  const FILTER = { search: 'V-100' };
+  const COL = { name: 1, group: 2, mobile: 3, pay: 5, address: 6 };
+
+  test('validates, reviews and commits, leaving the ERP equal to the oracle', async ({ page }) => {
+    const before = await records(FILTER);
+    expect(before.map((r) => r.key)).toEqual(Array.from({ length: 8 }, (_, i) => `V-100${i + 1}`));
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 1, COL.name, 'Al Noor Trading Co');
+    await typeInto(page, 2, COL.mobile, '01009876543');
+    await typeInto(page, 3, COL.pay, 'NET60');
+    await typeInto(page, 4, COL.address, '12 Tahrir St');
+    const oracle = structuredClone(before);
+    oracle[0]!.values['vendorName'] = 'Al Noor Trading Co';
+    oracle[1]!.values['mobile'] = '01009876543';
+    oracle[2]!.values['payMethod'] = 'NET60';
+    oracle[3]!.values['address'] = '12 Tahrir St';
+    const start = await mockState();
+
+    // Validate: the dry run finds nothing and writes nothing.
+    await erpTab(page);
+    await page.getByTestId('ribbon').getByRole('button', { name: 'Validate', exact: true }).click();
+    await expect(status(page)).toHaveText(
+      'Cash Gear ERP checked 4 changes to 4 vendors and found no problems.',
+      { timeout: 30_000 },
+    );
+    expect(await mockState()).toEqual(start);
+
+    // Review lists the four, with their originals.
+    await page
+      .getByTestId('ribbon')
+      .getByRole('button', { name: 'Review Changes', exact: true })
+      .click();
+    const review = page.getByTestId('erp-review');
+    await expect(review).toBeVisible();
+    await expect(page.getByTestId('erp-review-filters')).toContainText('All (4)');
+    await expect(review).toContainText('Al Noor Trading Co');
+    await expect(review).toContainText(String(before[1]!.values['mobile']));
+    await expect(page.getByTestId('erp-review-commit')).toHaveText('Commit 4 changes to 4 vendors');
+
+    // Commit from Review, through the confirmation.
+    await page.getByTestId('erp-review-commit').click();
+    await expect
+      .poll(() => confirmText(page))
+      .toBe(
+        "Commit 4 changes to 4 vendors in Cash Gear ERP (Kit)?Cash Gear ERP checks them again and saves all of them or none. Undo is cleared once they're saved.",
+      );
+    await page.getByTestId('erp-commit-send').click();
+    await expect(status(page)).toHaveText('Committed 4 changes to 4 vendors.', {
+      timeout: 30_000,
+    });
+    const end = await mockState();
+    expect(end.writes).toBe(start.writes + 4);
+    expect(end.commits).toBe(start.commits + 1);
+    expect(end.audit).toBe(start.audit + 4);
+
+    // The ERP holds the oracle, and the sheet what the ERP persisted.
+    const after = await records(FILTER);
+    for (const [i, record] of after.entries()) {
+      const expected = oracle[i]!;
+      for (const field of FIELDS.slice(0, 11))
+        expect(record.values[field], `${record.key} ${field}`).toEqual(expected.values[field]);
+      const touched = i < 4;
+      expect(record.version !== before[i]!.version, record.key).toBe(touched);
+      if (touched) expect(record.values['modifiedBy']).toBe('u17');
+    }
+    await expectRecords(page, after);
+    expect(await counts(page)).toEqual({
+      changed: 0,
+      changedRecords: 0,
+      invalid: 0,
+      formulas: 0,
+      conflicts: 0,
+    });
+    // Committed fields show a green bar until they change; undo is cleared.
+    await select(page, 9, 9);
+    await expect.poll(() => leadingEdge(page, 1, COL.name)).toBe(ERP_GREEN);
+    await expect.poll(() => leadingEdge(page, 3, COL.pay)).toBe(ERP_GREEN);
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => cellText(page, 2, 2)).toBe('Al Noor Trading Co');
+    await typeInto(page, 1, COL.name, 'Al Noor');
+    await select(page, 9, 9);
+    await expect.poll(() => leadingEdge(page, 1, COL.name)).toBe('#d97706');
+  });
+
+  test('a 400 marks cells and a 409 marks conflicts, and neither writes anything', async ({
+    page,
+  }) => {
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    // V-1005 is locked in the mock: the ERP refuses its record, not a local rule.
+    await typeInto(page, 5, COL.address, '5 Locked St');
+    await typeInto(page, 6, COL.mobile, '01000000006');
+    const start = await mockState();
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(page.getByTestId('erp-commit-status')).toHaveText(
+      'Cash Gear ERP refused 1 change to 1 vendor, so nothing was saved. The cells are marked; Next Error goes through them.',
+      { timeout: 30_000 },
+    );
+    expect(await mockState()).toEqual(start);
+    expect((await counts(page)).invalid).toBe(1);
+    const locked = await page.evaluate(() =>
+      window.cgsTest.query({ kind: 'erpCell', sheet: 0, row: 6, col: 7 }),
+    );
+    expect(locked!.server!.code).toBe('record.locked');
+    await page.getByTestId('erp-commit-close').click();
+    // Discarding it leaves V-1006, which someone else changes in the ERP meanwhile.
+    await select(page, 5, COL.address);
+    await erpTab(page);
+    await page.getByRole('button', { name: 'Discard Changes' }).click();
+    await page.getByText('Discard Changes in Selected Cells').click();
+    await expect.poll(async () => (await counts(page)).changedRecords).toBe(1);
+    await mock('edit', { company: 'Kit', key: 'V-1006', values: { mobile: '0111' }, by: 'omar' });
+    const edited = await mockState();
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(page.getByTestId('erp-commit-status')).toHaveText(
+      "1 vendor was changed in Cash Gear ERP since you opened it, so nothing was saved. Its cells are marked. Discard your changes to it, or Refresh to take Cash Gear ERP's values, then commit again.",
+      { timeout: 30_000 },
+    );
+    await page.getByTestId('erp-commit-close').click();
+    expect(await mockState()).toEqual(edited);
+    expect((await mockVendor('V-1006'))['mobile']).toBe('0111');
+    await expect
+      .poll(async () => plain(await page.getByTestId('erp-status').textContent()))
+      .toBe('Vendors · 8 · 1 changed · 1 conflict · Sara @ Kit');
+    const info = await page.evaluate(() =>
+      window.cgsTest.query({ kind: 'erpCell', sheet: 0, row: 7, col: 4 }),
+    );
+    expect(info!.state).toBe('conflict');
+    expect(info!.conflict).toMatchObject({ by: 'omar', now: '0111' });
+    // Commit waits until the conflict is dealt with.
+    await commitAll(page);
+    await expect(page.getByTestId('erp-commit-refused-text')).toHaveText(
+      "1 vendor was changed in Cash Gear ERP since you opened it. Discard your changes to it, or Refresh to take Cash Gear ERP's values, then commit.",
+    );
+    await page.getByTestId('erp-commit-refused-close').click();
+    expect(await mockState()).toEqual(edited);
+    // A Validate that finds an error says nothing of versions: the conflict stays.
+    await typeInto(page, 5, COL.address, '5 Locked St');
+    await erpTab(page);
+    await page.getByTestId('ribbon').getByRole('button', { name: 'Validate', exact: true }).click();
+    await expect(status(page)).toHaveText(
+      'Cash Gear ERP refuses 1 change to 1 vendor. The cells are marked.',
+      { timeout: 30_000 },
+    );
+    await expect
+      .poll(async () => plain(await page.getByTestId('erp-status').textContent()))
+      .toBe('Vendors · 8 · 2 changed · 1 invalid · 1 conflict · Sara @ Kit');
+    expect(await mockState()).toEqual(edited);
+  });
+
+  test('a response dropped after the write, then a retry, writes exactly once', async ({
+    page,
+  }) => {
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 1, COL.mobile, '01001111111');
+    await typeInto(page, 2, COL.address, '2 Nile St');
+    const start = await mockState();
+    // Every answer is lost: the commit's, the HTTP layer's three retries' and any the browser
+    // sends again itself, until the fault is cleared.
+    await mock('fault', { match: 'VendorSheet/Commit$', drop: 'after', times: 0 });
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(page.getByTestId('erp-commit-status')).toHaveText(
+      "Cash Gear ERP didn't answer, so it isn't known whether the changes were saved. Try again sends the same commit, which Cash Gear ERP saves only once.",
+      { timeout: 60_000 },
+    );
+    expect((await mockState()).writes).toBe(start.writes + 2);
+    // Writes stay held while the outcome isn't known.
+    const held = await page.evaluate(() =>
+      window.cgsTest.command({ kind: 'input', sheet: 0, row: 4, col: 2, text: 'x' }).then(
+        () => 'ok',
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      ),
+    );
+    expect(held).toBe('Wait until the commit to Cash Gear ERP finishes.');
+    await mock('fault', { clear: true });
+    await page.getByTestId('erp-commit-retry').click();
+    await expect(status(page)).toHaveText('Committed 2 changes to 2 vendors.', {
+      timeout: 30_000,
+    });
+    const end = await mockState();
+    expect(end.writes).toBe(start.writes + 2);
+    expect(end.commits).toBe(start.commits + 1);
+    expect((await mockVendor('V-1001'))['mobile']).toBe('01001111111');
+    expect((await counts(page)).changed).toBe(0);
+    await typeInto(page, 4, COL.name, 'Free again');
+  });
+
+  test('past 500 records Commit is refused, and Review lists changes in hidden rows', async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    await launch(page, (await ticket({ blocked: false })).url);
+    await expect
+      .poll(async () => plain(await page.getByTestId('erp-status').textContent()), {
+        timeout: 90_000,
+      })
+      .toBe('Vendors · 2,174 · Sara @ Kit');
+    await waitForGrid(page);
+    // One address typed into 601 records at once, as Ctrl+Enter does.
+    await page.evaluate(() =>
+      window.cgsTest.command({
+        kind: 'input',
+        sheet: 0,
+        row: 2,
+        col: 7,
+        text: '1 Bulk St',
+        areas: [{ top: 2, left: 7, bottom: 602, right: 7 }],
+      }),
+    );
+    await expect.poll(async () => (await counts(page)).changedRecords).toBe(601);
+    const start = await mockState();
+    await commitAll(page);
+    await expect(page.getByTestId('erp-commit-refused-text')).toHaveText(
+      '601 vendors have changes, and Cash Gear ERP takes at most 500 in one commit. Filter the table to fewer of them, then choose Commit Changes in Visible Rows.',
+    );
+    await page.getByTestId('erp-commit-refused-close').click();
+    // Filtered to one group, the rows shown can be committed; the rest are listed as hidden.
+    await page.evaluate(() =>
+      window.cgsTest.command({
+        kind: 'setFilter',
+        sheet: 0,
+        table: 'Vendors',
+        col: 3,
+        criteria: { kind: 'values', values: ['LOCAL'] },
+      }),
+    );
+    await page.evaluate(() => window.cgsTest.settled());
+    const visible = (await page.evaluate(() =>
+      window.cgsTest.query({ kind: 'erpChanges', visible: true }),
+    ))!;
+    const shownCount = visible.records.length;
+    expect(shownCount).toBeGreaterThan(0);
+    expect(shownCount).toBeLessThan(500);
+    await erpTab(page);
+    await page
+      .getByTestId('ribbon')
+      .getByRole('button', { name: 'Review Changes', exact: true })
+      .click();
+    await expect(page.getByTestId('erp-review-filters')).toContainText(
+      `In hidden rows (${601 - shownCount})`,
+      { timeout: 30_000 },
+    );
+    await page.getByTestId('erp-review-close').click();
+    await commitAll(page, true);
+    await expect
+      .poll(() => confirmText(page))
+      .toBe(
+        `Commit ${shownCount} changes to ${shownCount} vendors in Cash Gear ERP (Kit)?Cash Gear ERP checks them again and saves all of them or none. Undo is cleared once they're saved.`,
+      );
+    await page.getByTestId('erp-commit-cancel').click();
+    expect(await mockState()).toEqual(start);
+  });
+});

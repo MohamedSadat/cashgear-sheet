@@ -1,37 +1,75 @@
-// ERP data in the shell (Phases 15 and 16): opening a launch from Cash Gear ERP with its load
-// panel, the ERP Data tab with Refresh, Discard Changes, Next Error and Connection Info, the status
-// badge with what changed, hover details and the window's title. The connector fetches, the
-// engine reads, binds and tracks changes, and this only shows what they report: it never reads or
-// changes cells itself.
+// ERP data in the shell (Phases 15 to 17): opening a launch from Cash Gear ERP with its load
+// panel, the ERP Data tab with Refresh, Validate, Review Changes, Commit, Discard Changes, Next
+// Error and Connection Info, the status badge with what changed, hover details and the window's
+// title. The connector fetches and sends, the engine reads, binds, tracks changes and applies what
+// the ERP answers, and this only shows what they report: it never reads or changes cells itself.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CgButton, CgProgressBar, CgStatusBadge, CgWindow, type CgRibbonTab } from '@cashgear/ui';
-import type { Applied, CellArea, Command, EngineClient, ErpBinding } from '@cgs/engine-client';
+import type {
+  Applied,
+  CellArea,
+  Command,
+  EngineClient,
+  ErpBinding,
+  ErpChangeset,
+  ErpMarkSummary,
+  ErpReview,
+  ErpReviewEntry,
+} from '@cgs/engine-client';
 import {
+  commitRecords,
   ErpError,
   ErpHttp,
+  newCommitId,
   openRecords,
+  payloadKey,
   refreshRecords,
+  sendCommit,
+  type CommitRequest,
   type ErpLaunch,
   type ErpSession,
+  type RecordChange,
   type RecordSink,
   type SessionInfo,
 } from '@cgs/erp-connector';
 import {
   badgeText,
+  batchErrorText,
+  BUSY_FAILED,
   cellTip,
+  commitButton,
+  commitFailureText,
+  committedText,
+  committingText,
+  COMMIT_TITLE,
+  confirmLines,
+  conflictsWaitText,
+  conflictText409,
   CONNECTING,
   count,
   failureText,
   hasChanges,
+  HIDDEN_ROW,
   loadingText,
+  localErrorsText,
   NO_ERRORS,
+  NOTHING_TO_COMMIT,
   NOTHING_TO_DISCARD,
+  NOTHING_TO_VALIDATE,
+  NOTHING_VISIBLE,
   openingTitle,
   REFRESH_ANYWAY,
   refreshedText,
   refreshReplaces,
+  refusedText,
+  SERVER_FAILED,
+  tooManyText,
+  UNKNOWN_OUTCOME,
+  validatedText,
+  validatingText,
   workbookTitle,
 } from './messages';
+import { ReviewChangesDialog } from './ReviewChangesDialog';
 import { LOCK_PX } from '@cgs/engine-client';
 
 export interface ErpToolsHost {
@@ -58,6 +96,36 @@ type Panel =
   | { phase: 'loading'; noun: string; loaded: number; total: number | null }
   | { phase: 'binding'; noun: string; total: number }
   | { phase: 'failed'; noun: string | null; text: string; retry: boolean };
+
+/** A commit on its way: what was sent, and how many changes and records it carries. */
+interface InFlight {
+  request: CommitRequest;
+  changes: number;
+  records: number;
+}
+
+/** The commit's panel: while it runs, when its outcome isn't known, and when it was refused. */
+type CommitPanel =
+  | { phase: 'committing'; text: string }
+  | { phase: 'unknown'; text: string }
+  | { phase: 'refused'; text: string; nextError: boolean };
+
+/** Changes in a changeset, and those in rows a filter hides. */
+function tally(set: ErpChangeset) {
+  let changes = 0;
+  let hidden = 0;
+  for (const record of set.records) {
+    const n = Object.keys(record.changes).length;
+    changes += n;
+    if (record.hidden) hidden += n;
+  }
+  return { changes, records: set.records.length, hidden, formulas: set.formulas.length };
+}
+
+/** A batch error's words, for errors no cell can show. */
+const batchTexts = (summary: ErpMarkSummary, noun: string) => [
+  ...new Set(summary.unplaced.map((error) => batchErrorText(error.code, error.message, noun))),
+];
 
 export interface ErpTools {
   binding: ErpBinding | null;
@@ -122,6 +190,20 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
   const [infoOpen, setInfoOpen] = useState(false);
   /** Refresh waiting on the user's word, with how many changes it would replace. */
   const [refreshAsk, setRefreshAsk] = useState<number | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [review, setReview] = useState<ErpReview | null>(null);
+  /** The commit's confirmation, with what it would send. */
+  const [confirm, setConfirm] = useState<{
+    visible: boolean;
+    lines: string[];
+    changes: number;
+  } | null>(null);
+  const [commitPanel, setCommitPanel] = useState<CommitPanel | null>(null);
+  /** Why Commit sent nothing, in a message box. */
+  const [refusal, setRefusal] = useState<{ text: string; nextError: boolean } | null>(null);
+  /** A commit whose outcome isn't known, kept so the same payload goes again under its id. */
+  const pendingRef = useRef<{ key: string; commitId: string } | null>(null);
+  const inFlightRef = useRef<InFlight | null>(null);
   const sessionRef = useRef<ErpSession | null>(null);
   const launchRef = useRef<ErpLaunch | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -301,6 +383,289 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
     else h.notice(NO_ERRORS);
   }, []);
 
+  /** Reads the binding again after the engine took in what the ERP answered. */
+  const reread = useCallback(async () => {
+    const next = await hostRef.current.engine()?.binding();
+    if (next !== undefined) setBinding(next);
+  }, []);
+
+  /**
+   * Validate: the server's dry run of every change, local rules' refusals included, so one
+   * Validate shows every problem, in batches as large as a commit may be. What comes back goes on
+   * the cells (decisions, 2026-11-10, Phase 17).
+   */
+  const validate = useCallback(async () => {
+    const h = hostRef.current;
+    const b = bindingRef.current;
+    const session = sessionRef.current;
+    if (!b || !session || session.state === 'expired') return;
+    const noun = b.labelEn.toLowerCase();
+    const set = await h.queue((e) => e.query({ kind: 'erpChanges' }));
+    if (!set || set.records.length === 0) {
+      h.notice(NOTHING_TO_VALIDATE);
+      return;
+    }
+    const sent = tally(set);
+    setBusy(true);
+    h.notice(validatingText(sent.changes));
+    const found = { errors: 0, errorRecords: 0, conflicts: 0, batch: [] as string[] };
+    try {
+      const all = commitRecords(set.records);
+      const size = Math.max(1, b.maxCommitRecords);
+      for (let at = 0; at < all.length; at += size) {
+        const batch = all.slice(at, at + size);
+        const outcome = await sendCommit(session, {
+          commitId: newCommitId(),
+          company: b.company,
+          schemaVersion: b.schemaVersion,
+          dryRun: true,
+          records: batch,
+        });
+        const states =
+          outcome.kind === 'ok'
+            ? { sent: batch, errors: [], conflicts: [] }
+            : outcome.kind === 'invalid'
+              ? { sent: batch, errors: outcome.errors, conflicts: [] }
+              : { sent: batch, errors: [], conflicts: outcome.conflicts };
+        const summary = await h.queue((e) => e.erpSetStates(JSON.stringify(states)));
+        found.errors += summary.errors;
+        found.errorRecords += summary.errorRecords;
+        found.conflicts += summary.conflicts;
+        found.batch.push(...batchTexts(summary, noun));
+      }
+      await reread();
+      h.notice(validatedText(noun, sent, found));
+    } catch (error) {
+      const failure = asErpError(error);
+      h.notice(failureText(failure.kind, failure.message, noun).text);
+    } finally {
+      setBusy(false);
+    }
+  }, [reread]);
+
+  /** Why a commit of `set` can't be sent as it is, or null. */
+  const commitRefusal = useCallback((set: ErpChangeset, visible: boolean) => {
+    const b = bindingRef.current;
+    if (!b) return null;
+    const noun = b.labelEn.toLowerCase();
+    if (set.errors.length > 0) return { text: localErrorsText(set.errors.length), nextError: true };
+    if (set.counts.conflicts > 0)
+      return { text: conflictsWaitText(set.counts.conflicts, noun), nextError: false };
+    if (set.records.length > b.maxCommitRecords)
+      return {
+        text: tooManyText(set.records.length, b.maxCommitRecords, noun, visible),
+        nextError: false,
+      };
+    return null;
+  }, []);
+
+  /**
+   * Commit All Changes, or Commit Changes in Visible Rows: checks what would be sent, then asks,
+   * stating the counts (decisions, 2026-11-10, Phase 17).
+   */
+  const commit = useCallback(
+    async (visible: boolean) => {
+      const h = hostRef.current;
+      const b = bindingRef.current;
+      const session = sessionRef.current;
+      if (!b || !session || session.state === 'expired') return;
+      setReviewOpen(false);
+      const set = await h.queue((e) => e.query({ kind: 'erpChanges', visible }));
+      if (!set || set.records.length === 0) {
+        h.notice(visible ? NOTHING_VISIBLE : NOTHING_TO_COMMIT);
+        return;
+      }
+      const refused = commitRefusal(set, visible);
+      if (refused) {
+        setRefusal(refused);
+        return;
+      }
+      const counts = tally(set);
+      setConfirm({
+        visible,
+        lines: confirmLines(b.labelEn.toLowerCase(), b.company, counts),
+        changes: counts.changes,
+      });
+    },
+    [commitRefusal],
+  );
+
+  /** Sends a commit, and applies or marks what comes back. Writes stay held until then. */
+  const attempt = useCallback(
+    async (flight: InFlight) => {
+      const h = hostRef.current;
+      const b = bindingRef.current;
+      const session = sessionRef.current;
+      if (!b || !session) {
+        await h.queue((e) => e.erpFreeze(false)).catch(() => undefined);
+        return;
+      }
+      const noun = b.labelEn.toLowerCase();
+      inFlightRef.current = flight;
+      setBusy(true);
+      setCommitPanel({
+        phase: 'committing',
+        text: committingText(flight.changes, flight.records, noun),
+      });
+      const release = async () => {
+        await h.queue((e) => e.erpFreeze(false)).catch(() => undefined);
+        inFlightRef.current = null;
+      };
+      try {
+        const outcome = await sendCommit(session, flight.request);
+        const sent = flight.request.records;
+        if (outcome.kind === 'ok') {
+          const applied = await h.queue((e) =>
+            e.erpApplyCommit(JSON.stringify({ sent, records: outcome.response.records })),
+          );
+          pendingRef.current = null;
+          inFlightRef.current = null;
+          await h.afterBind();
+          await reread();
+          setCommitPanel(null);
+          h.notice(committedText(flight.changes, flight.records, noun, applied.kept));
+          return;
+        }
+        // Refused, so nothing was written: a later commit takes a new id.
+        pendingRef.current = null;
+        const summary = await h.queue((e) =>
+          e.erpSetStates(
+            JSON.stringify(
+              outcome.kind === 'invalid'
+                ? { sent, errors: outcome.errors, conflicts: [] }
+                : { sent, errors: [], conflicts: outcome.conflicts },
+            ),
+          ),
+        );
+        await release();
+        await reread();
+        setCommitPanel({
+          phase: 'refused',
+          text:
+            outcome.kind === 'invalid'
+              ? refusedText(noun, summary, batchTexts(summary, noun))
+              : conflictText409(summary.conflicts, noun),
+          nextError: outcome.kind === 'invalid' && summary.errors > 0,
+        });
+      } catch (error) {
+        const failure = asErpError(error);
+        if (failure.kind === 'network' || failure.kind === 'server') {
+          // It may have been saved: writes stay held, and Try again sends the same commit.
+          setCommitPanel({
+            phase: 'unknown',
+            text: failure.kind === 'network' ? UNKNOWN_OUTCOME : SERVER_FAILED,
+          });
+          return;
+        }
+        // An answer the sheet can't read may follow a save, so its id is kept for the same
+        // payload; anything else was refused before a write.
+        if (failure.kind !== 'contract') pendingRef.current = null;
+        await release();
+        await reread();
+        setCommitPanel({
+          phase: 'refused',
+          text:
+            failure.kind === 'busy'
+              ? BUSY_FAILED
+              : commitFailureText(failure.kind, failure.message, noun, b.maxCommitRecords),
+          nextError: false,
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [reread],
+  );
+
+  /** The confirmation's Commit: writes are held, and what the cells hold now is sent. */
+  const send = useCallback(
+    async (visible: boolean) => {
+      const h = hostRef.current;
+      const b = bindingRef.current;
+      setConfirm(null);
+      if (!b) return;
+      const set = await h.queue(async (e) => {
+        const now = await e.query({ kind: 'erpChanges', visible });
+        if (now && now.records.length > 0) await e.erpFreeze(true);
+        return now;
+      });
+      if (!set || set.records.length === 0) return;
+      const refused = commitRefusal(set, visible);
+      if (refused) {
+        await h.queue((e) => e.erpFreeze(false));
+        setRefusal(refused);
+        return;
+      }
+      const records: RecordChange[] = commitRecords(set.records);
+      const base = {
+        company: b.company,
+        schemaVersion: b.schemaVersion,
+        dryRun: false,
+        records,
+      };
+      const key = payloadKey(base);
+      // A commit whose outcome wasn't known goes again under its id, so a save that did land is
+      // answered from the ERP's store rather than refused as a conflict.
+      const commitId =
+        pendingRef.current?.key === key ? pendingRef.current.commitId : newCommitId();
+      pendingRef.current = { key, commitId };
+      const counts = tally(set);
+      await attempt({
+        request: { commitId, ...base },
+        changes: counts.changes,
+        records: counts.records,
+      });
+    },
+    [attempt, commitRefusal],
+  );
+
+  /** Gives up waiting on a commit whose outcome isn't known: writes go again, its id is kept. */
+  const stopWaiting = useCallback(async () => {
+    setCommitPanel(null);
+    inFlightRef.current = null;
+    await hostRef.current.queue((e) => e.erpFreeze(false)).catch(() => undefined);
+  }, []);
+
+  /** Review Changes: the engine's list of every changed, refused, conflicting or formula field. */
+  const openReview = useCallback(async () => {
+    const answer = await hostRef.current.queue((e) => e.query({ kind: 'erpReview' }));
+    setReview(answer);
+    setReviewOpen(true);
+  }, []);
+
+  // The list follows the sheet while it is open.
+  useEffect(() => {
+    if (!reviewOpen || !binding) return;
+    let current = true;
+    void hostRef.current
+      .queue((e) => e.query({ kind: 'erpReview' }))
+      .then((answer) => {
+        if (current) setReview(answer);
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [binding, reviewOpen]);
+
+  const goTo = useCallback((entry: ErpReviewEntry) => {
+    const h = hostRef.current;
+    setReviewOpen(false);
+    h.select(entry.row, entry.col);
+    if (entry.hidden) h.notice(HIDDEN_ROW);
+  }, []);
+
+  const discardEntries = useCallback(async (entries: ErpReviewEntry[]) => {
+    if (entries.length === 0) return;
+    const areas = entries.map((entry) => ({
+      top: entry.row,
+      left: entry.col,
+      bottom: entry.row,
+      right: entry.col,
+    }));
+    await hostRef.current.run({ kind: 'erpDiscard', areas });
+  }, []);
+
   // Closing the tab with changes asks first: a bound workbook keeps no recovery copy until
   // Phase 18 (decisions, 2026-11-10, Phase 16).
   const pending = hasChanges(binding?.counts);
@@ -328,6 +693,7 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
     const shown = Boolean(binding) && binding?.sheet === host.sheet;
     const offline = expired || busy;
     const changed = hasChanges(binding?.counts);
+    const values = Boolean(binding?.counts.changed);
     const editable = Boolean(binding?.fields.some((field) => field.editable));
     return [
       {
@@ -356,6 +722,41 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
             icon: 'eraser',
             visible: editable,
             items: [
+              {
+                name: 'erp-validate',
+                text: 'Validate',
+                icon: 'check',
+                size: 'large',
+                disabled: !values || offline,
+                onClick: () => void validate(),
+              },
+              {
+                name: 'erp-review',
+                text: 'Review Changes',
+                icon: 'eye',
+                size: 'large',
+                disabled: !changed && !binding?.counts.invalid && !binding?.counts.conflicts,
+                onClick: () => void openReview(),
+              },
+              {
+                name: 'erp-commit',
+                text: 'Commit',
+                icon: 'save',
+                size: 'large',
+                disabled: !values || offline,
+                children: [
+                  {
+                    name: 'erp-commit-all',
+                    text: 'Commit All Changes…',
+                    onClick: () => void commit(false),
+                  },
+                  {
+                    name: 'erp-commit-visible',
+                    text: 'Commit Changes in Visible Rows…',
+                    onClick: () => void commit(true),
+                  },
+                ],
+              },
               {
                 name: 'erp-discard',
                 text: 'Discard Changes',
@@ -402,7 +803,18 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
         ],
       },
     ];
-  }, [binding, busy, discard, expired, host.sheet, nextError, refresh]);
+  }, [
+    binding,
+    busy,
+    commit,
+    discard,
+    expired,
+    host.sheet,
+    nextError,
+    openReview,
+    refresh,
+    validate,
+  ]);
 
   const badge = binding ? (
     <CgStatusBadge
@@ -465,7 +877,7 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
             return editable === 0
               ? 'Every column is read-only for you.'
               : `${count(editable)} of ${count(binding.fields.length)} columns can be edited. ` +
-                  'Changes stay in this sheet until they can be committed in a later version.';
+                  'Changes stay in this sheet until you commit them.';
           })(),
         ],
       ]
@@ -547,6 +959,154 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
             </CgButton>
             <CgButton data-testid="erp-refresh-cancel" onClick={() => setRefreshAsk(null)}>
               Cancel
+            </CgButton>
+          </div>
+        )}
+      />
+      <ReviewChangesDialog
+        open={reviewOpen && Boolean(binding)}
+        review={review}
+        noun={binding?.labelEn.toLowerCase() ?? 'records'}
+        rightToLeft={binding?.language === 'ar'}
+        busy={busy}
+        canCommit={!expired && Boolean(binding?.counts.changed)}
+        onClose={() => setReviewOpen(false)}
+        onGoTo={goTo}
+        onDiscard={(entries) => void discardEntries(entries)}
+        onCommit={() => void commit(false)}
+      />
+      <CgWindow
+        open={confirm !== null}
+        onOpenChange={(next) => {
+          if (!next) setConfirm(null);
+        }}
+        headerText={COMMIT_TITLE}
+        width={480}
+        data-testid="erp-commit-confirm"
+        renderBody={() => (
+          <div className="cgs-erp-lines" data-testid="erp-commit-text">
+            {confirm?.lines.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+          </div>
+        )}
+        renderFooter={() => (
+          <div className="cgs-dialog-actions">
+            <CgButton
+              intent="primary"
+              data-testid="erp-commit-send"
+              onClick={() => {
+                if (confirm) void send(confirm.visible);
+              }}
+            >
+              {commitButton(confirm?.changes ?? 0)}
+            </CgButton>
+            <CgButton
+              data-testid="erp-commit-review"
+              onClick={() => {
+                setConfirm(null);
+                void openReview();
+              }}
+            >
+              Review Changes
+            </CgButton>
+            <CgButton data-testid="erp-commit-cancel" onClick={() => setConfirm(null)}>
+              Cancel
+            </CgButton>
+          </div>
+        )}
+      />
+      <CgWindow
+        open={commitPanel !== null}
+        onOpenChange={(next) => {
+          if (next || !commitPanel || commitPanel.phase === 'committing') return;
+          if (commitPanel.phase === 'unknown') void stopWaiting();
+          else setCommitPanel(null);
+        }}
+        headerText={COMMIT_TITLE}
+        width={480}
+        data-testid="erp-commit-panel"
+        renderBody={() => (
+          <div className="cgs-dialog-column">
+            <p className="cgs-dialog-message" data-testid="erp-commit-status" role="status">
+              {commitPanel?.text}
+            </p>
+            {commitPanel?.phase === 'committing' && (
+              <CgProgressBar data-testid="erp-commit-progress" />
+            )}
+          </div>
+        )}
+        renderFooter={() =>
+          commitPanel?.phase === 'committing' ? null : (
+            <div className="cgs-dialog-actions">
+              {commitPanel?.phase === 'unknown' && (
+                <CgButton
+                  intent="primary"
+                  data-testid="erp-commit-retry"
+                  onClick={() => {
+                    const flight = inFlightRef.current;
+                    if (flight) void attempt(flight);
+                  }}
+                >
+                  Try again
+                </CgButton>
+              )}
+              {commitPanel?.phase === 'refused' && commitPanel.nextError && (
+                <CgButton
+                  data-testid="erp-commit-next-error"
+                  onClick={() => {
+                    setCommitPanel(null);
+                    void nextError();
+                  }}
+                >
+                  Next Error
+                </CgButton>
+              )}
+              <CgButton
+                data-testid="erp-commit-close"
+                onClick={() => {
+                  if (commitPanel?.phase === 'unknown') void stopWaiting();
+                  else setCommitPanel(null);
+                }}
+              >
+                Close
+              </CgButton>
+            </div>
+          )
+        }
+      />
+      <CgWindow
+        open={refusal !== null}
+        onOpenChange={(next) => {
+          if (!next) setRefusal(null);
+        }}
+        headerText={COMMIT_TITLE}
+        width={440}
+        data-testid="erp-commit-refused"
+        renderBody={() => (
+          <p className="cgs-dialog-message" data-testid="erp-commit-refused-text">
+            {refusal?.text}
+          </p>
+        )}
+        renderFooter={() => (
+          <div className="cgs-dialog-actions">
+            {refusal?.nextError && (
+              <CgButton
+                data-testid="erp-commit-refused-next"
+                onClick={() => {
+                  setRefusal(null);
+                  void nextError();
+                }}
+              >
+                Next Error
+              </CgButton>
+            )}
+            <CgButton
+              intent="primary"
+              data-testid="erp-commit-refused-close"
+              onClick={() => setRefusal(null)}
+            >
+              OK
             </CgButton>
           </div>
         )}

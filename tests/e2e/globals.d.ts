@@ -59,6 +59,8 @@ interface Window {
     saveBytes(): Promise<Uint8Array>;
     binding(): Promise<import('@cgs/engine-client').ErpBinding | null>;
     erpChanges(): Promise<import('@cgs/engine-client').ErpChangeset | null>;
+    /** Any question for the engine. */
+    query: import('@cgs/engine-client').EngineClient['query'];
     shownText(area: { top: number; left: number; bottom: number; right: number }): Promise<string>;
     pdf(choice?: {
       what?: 'active' | 'workbook' | 'selection';

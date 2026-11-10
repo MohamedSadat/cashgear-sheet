@@ -802,6 +802,11 @@ export class MockErp {
         if (typeof body.set === 'string') this.offsetMs = Date.parse(body.set) - Date.now();
         return ok({ now: iso(this.now()) });
       case 'fault': {
+        // `{clear: true}` forgets every fault, such as one that lasts until then.
+        if (body.clear === true) {
+          this.faults = [];
+          return ok();
+        }
         if (typeof body.match !== 'string' || body.match.length === 0)
           return bad('match is required.');
         let pattern;

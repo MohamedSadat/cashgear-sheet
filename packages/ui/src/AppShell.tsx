@@ -43,6 +43,7 @@ import {
   type EngineClient,
   type ErpBinding,
   type ErpChangeset,
+  type Question,
   type FormatChange,
   type FormatLists,
   type FoundCell,
@@ -1405,8 +1406,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         pdf: (choice?: Partial<PrintChoice>) => Promise<{ bytes: Uint8Array; pages: number }>;
         /** The ERP binding, as the engine holds it. */
         binding: () => Promise<ErpBinding | null>;
-        /** The ERP binding's changeset, as Phase 17's Commit will send it. */
+        /** The ERP binding's changeset, as Commit sends it. */
         erpChanges: () => Promise<ErpChangeset | null>;
+        /** Any question for the engine, as the shell asks it. */
+        query: EngineClient['query'];
         /** An area's shown text, as Copy gives it: tabs between cells, lines between rows. */
         shownText: (area: CellArea) => Promise<string>;
         /**
@@ -1471,6 +1474,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       pdf: (choice) => printPdfRef.current({ what: 'active', ignorePrintArea: false, ...choice }),
       binding: async () => (await clientRef.current?.binding()) ?? null,
       erpChanges: async () => (await clientRef.current?.query({ kind: 'erpChanges' })) ?? null,
+      query: (async (question: Question) => {
+        const engine = clientRef.current;
+        if (!engine) throw new Error('The engine isn’t running.');
+        return engine.query(question);
+      }) as EngineClient['query'],
       shownText: async (area) =>
         (await clientRef.current?.copyText(sheetRef.current, area))?.text ?? '',
       bindPages: async (schema, pages, session) => {

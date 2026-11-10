@@ -457,6 +457,26 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* Review Changes and the commit's confirmation (Phase 17). */
+.cgs-erp-review {
+  gap: var(--cg-space-2);
+  min-inline-size: 0;
+}
+
+.cgs-dialog-spacer {
+  flex: 1;
+}
+
+.cgs-erp-lines {
+  display: grid;
+  gap: var(--cg-space-2);
+  margin: 0;
+}
+
+.cgs-erp-lines p {
+  margin: 0;
+}
+
 .cgs-color-chip {
   display: inline-block;
   inline-size: 0.9rem;

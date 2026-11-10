@@ -13,7 +13,8 @@ the reference for Track E in `D:\CashGear\Projects\CashGear`.
 
 Contract version: `vendors.1`, Phase 14 (2026-11-09), with Phase 15's changes (2026-11-09): the
 Status route and its per-company switch, Query's search over what the ERP's Vendors list searches,
-and the columns' order and labels.
+and the columns' order and labels; and Phase 17's notes (2026-11-10): retries after a 500, and
+versions in canonical base64.
 
 ## Routes
 
@@ -116,7 +117,7 @@ Decided on 2026-11-09 (Phase 14): the fields `UpdateEx` writes today, plus read-
 | `vendorName` | Name, الاسم | text | 150, required | Edit | `VendorName` |
 | `vendorGroup` | Group, المجموعة | lookup `vendorGroups` | required | Edit | `VendorGroup` → `VendorsGroup (Company, GroupId)`, whose `Active` flag gives `active` |
 | `mobile` | Mobile, الجوال | text | 50 | Edit | `Mobile` |
-| `currency` | Currency, العملة | lookup `currencies` | required, as `Save` requires it | AdvEdit | `Currency` → `LedgerCurrencies (Company, Code)`, with no foreign key; an old blank `""` is sent as `null`, and can't be chosen |
+| `currency` | Currency, العملة | lookup `currencies` | required, as `Save` requires it | AdvEdit | `Currency` → `LedgerCurrencies (Company, Code)`, with no foreign key, whose `Active` flag gives `active` (Phase 17); an old blank `""` is sent as `null`, and can't be chosen |
 | `payMethod` | Payment method, طريقة الدفع | lookup `paymentModes` | required | Edit | `PayMethod` → `PaymentModes (Company, PaymentId)`: payment terms with `PaymentDays`, all active |
 | `address` | Address, العنوان | text | 150 | Edit | `Address` |
 | `taxFile` | Tax file, الملف الضريبي | text | 50 | Edit | `TaxFile` |
@@ -189,7 +190,16 @@ is `{id, key, version, changes}`, and each change `{from, to}`. Only changed fie
   every retry. `SheetCommit (Company, CommitId)` is written in the commit's transaction with a
   SHA-256 hash of the payload: `company`, `schemaVersion` and the records sorted by id, as JSON
   with sorted keys (the mock's `canonical`). A retry returns the stored body, and the same id with
-  another payload is refused. CommitIds are per company, because Kit and Dot share a database.
+  another payload is refused. CommitIds are per company, because Kit and Dot share a database. A
+  retry that races its first attempt waits for it on the `SheetCommit` row's lock, so it never sees
+  a 409 for its own commit (Track E2).
+- **Retries.** A commit with no answer, or a 429 or 503, is sent again with the same `commitId`
+  and payload, which the store makes safe: three times, then the sheet offers Try again with the
+  same id. A 500 offers Try again too, since the database's COMMIT itself can fail with its
+  outcome unknown. While an outcome is unknown, the sheet keeps the id for the next commit of the
+  same payload (decisions, 2026-11-10, Phase 17).
+- **Versions** are 8 bytes of base64 in canonical form; anything else is `request.invalid` (the
+  mock takes any version it can decode, and refuses only a stale one).
 - **CommitStatus** answers `{status: "committed", …the stored 200 body}` or `{status: "unknown"}`.
   Unknown means nothing was written under that id in the session's company, so a retry is safe. A
   refused commit stores nothing, so it is unknown too.
@@ -226,7 +236,7 @@ is `{id, key, version, changes}`, and each change `{from, to}`. Only changed fie
 | 409 | Records changed since they were read; nothing written | `ConflictBody` |
 | 413 | Too many records or ids | `ErrorBody` with `batch.tooLarge` |
 | 429, 503 | Try later, after `Retry-After` | `ErrorBody` |
-| 500 | Something failed; nothing written | `ErrorBody` |
+| 500 | Something failed; nothing written, except when the database's own COMMIT failed, whose outcome isn't known (Track E2) | `ErrorBody` |
 
 `ErrorBody` is `{message, correlationId, errors[]}`, the shape of the ERP's item endpoints. Each
 error is `{id?, key?, field?, code, message}`: a field error has all three, a record error `id` and
@@ -610,7 +620,7 @@ the suite starts its own on a free port.
 | --- | --- |
 | `POST /__mock/reset` | Back to the seed, with the clock at real time |
 | `POST /__mock/clock` `{advanceMs}` or `{set}` | Moves the clock tickets and sessions expire by; answers `{now}` |
-| `POST /__mock/fault` `{match, status?, retryAfter?, latencyMs?, drop?, times?}` | The next `times` (1 by default, 0 for every) requests whose path matches the regular expression `match`, ignoring case, wait `latencyMs`, answer `status`, or drop the connection `before` or `after` the server acts. Anchor it: `VendorSheet/Commit$`, since `VendorSheet/Commit` matches CommitStatus too |
+| `POST /__mock/fault` `{match, status?, retryAfter?, latencyMs?, drop?, times?}` | The next `times` (1 by default, 0 for every) requests whose path matches the regular expression `match`, ignoring case, wait `latencyMs`, answer `status`, or drop the connection `before` or `after` the server acts. Anchor it: `VendorSheet/Commit$`, since `VendorSheet/Commit` matches CommitStatus too. `{clear: true}` forgets every fault. A browser may send a request again itself when its connection drops, so a fault counted by `times` can run out sooner than the sheet's own retries |
 | `POST /__mock/edit` `{company, key, values, by}` | Another ERP user's edit, moving the version |
 | `POST /__mock/key` `{key, active?, privileges?}` | Revokes a key or changes its privileges |
 | `POST /__mock/launch` `{companies}` | The companies the sheet is on for, as `SheetLaunch:Companies` lists them; every company after a reset |
