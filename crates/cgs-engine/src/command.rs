@@ -1029,6 +1029,27 @@ pub struct Applied {
     pub replaced: u32,
 }
 
+/// The area a paste of `from` into `to` writes: a destination that holds the source a whole
+/// number of times gets it that many times, and any other gets it once from its top left, however
+/// small the destination was. Protection and the ERP guard check this area, not `to`.
+pub(crate) fn paste_area(from: Area, to: Area) -> Area {
+    let fits = to.cols().is_multiple_of(from.cols()) && to.rows().is_multiple_of(from.rows());
+    let (across, down) = if fits {
+        (
+            (to.cols() / from.cols()).max(1),
+            (to.rows() / from.rows()).max(1),
+        )
+    } else {
+        (1, 1)
+    };
+    Area {
+        top: to.top,
+        left: to.left,
+        bottom: to.top + from.rows() * down - 1,
+        right: to.left + from.cols() * across - 1,
+    }
+}
+
 fn not_open() -> String {
     "No workbook is open.".to_string()
 }
@@ -3028,17 +3049,9 @@ impl Session {
                 .ok_or_else(|| format!("There is no sheet {index}."))?;
             number_only(info)?;
         }
-        // A destination that holds the source a whole number of times gets it that many times.
-        let across = (to.cols() / from.cols()).max(1);
-        let down = (to.rows() / from.rows()).max(1);
-        let fits = to.cols().is_multiple_of(from.cols()) && to.rows().is_multiple_of(from.rows());
-        let (across, down) = if fits { (across, down) } else { (1, 1) };
-        let target = Area {
-            top: to.top,
-            left: to.left,
-            bottom: to.top + from.rows() * down - 1,
-            right: to.left + from.cols() * across - 1,
-        };
+        let target = paste_area(from, to);
+        let across = target.cols() / from.cols();
+        let down = target.rows() / from.rows();
         if !target.valid() {
             return Err("That doesn't fit on the sheet.".to_string());
         }

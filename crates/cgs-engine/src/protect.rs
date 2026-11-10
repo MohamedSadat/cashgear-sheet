@@ -286,7 +286,10 @@ impl Session {
             } => cells(*sheet, &[Area::cell(*row, *col)]),
             C::Clear { sheet, areas } => cells(*sheet, areas),
             C::Fill { sheet, to, .. } => cells(*sheet, &[*to]),
-            C::Paste { sheet, to, .. } => cells(*sheet, &[*to]),
+            // The area the paste writes, which grows to the source's size.
+            C::Paste {
+                sheet, from, to, ..
+            } => cells(*sheet, &[crate::command::paste_area(*from, *to)]),
             C::Move {
                 from_sheet,
                 from,
@@ -308,23 +311,7 @@ impl Session {
                 col,
                 text,
                 ..
-            } => {
-                let rows = text.trim_end_matches(['\r', '\n']).lines().count().max(1) as u32;
-                let cols = text
-                    .lines()
-                    .map(|line| line.split('\t').count())
-                    .max()
-                    .unwrap_or(1) as u32;
-                cells(
-                    *sheet,
-                    &[Area {
-                        top: *row,
-                        left: *col,
-                        bottom: (row + rows - 1).min(cgs_model::MAX_ROWS),
-                        right: (col + cols - 1).min(cgs_model::MAX_COLS),
-                    }],
-                )
-            }
+            } => cells(*sheet, &[crate::clip::external_area(*row, *col, text)]),
             C::ReplaceOne {
                 sheet, row, col, ..
             }

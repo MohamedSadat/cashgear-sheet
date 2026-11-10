@@ -642,6 +642,23 @@ pub fn join_delimited(rows: &[Vec<String>], delimiter: char, line_end: &str) -> 
     out
 }
 
+/// The area a paste of text from another program into `(row, col)` covers, as its lines and tabs
+/// shape it.
+pub(crate) fn external_area(row: u32, col: u32, text: &str) -> Area {
+    let rows = text.trim_end_matches(['\r', '\n']).lines().count().max(1) as u32;
+    let cols = text
+        .lines()
+        .map(|line| line.split('\t').count())
+        .max()
+        .unwrap_or(1) as u32;
+    Area {
+        top: row,
+        left: col,
+        bottom: (row + rows - 1).min(cgs_model::MAX_ROWS),
+        right: (col + cols - 1).min(cgs_model::MAX_COLS),
+    }
+}
+
 impl Session {
     /// The edits for what came from another program, and new merges if it had any.
     pub(crate) fn external_edits(

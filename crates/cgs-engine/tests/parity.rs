@@ -456,6 +456,41 @@ fn protecting_here_saves_excels_hash_and_options() {
 }
 
 #[test]
+fn a_paste_is_checked_where_it_writes_not_where_it_was_sent() {
+    // Phase 16's check of the gap the ERP plan found: Paste grows a one-cell destination to the
+    // source's size, so protection must check the cells it writes, as Excel does.
+    let mut engine = opened(three());
+    run(
+        &mut engine,
+        r#"{"kind":"input","sheet":0,"row":5,"col":5,"text":"1","areas":[{"top":5,"left":5,"bottom":6,"right":6}]}"#,
+    );
+    run(
+        &mut engine,
+        r#"{"kind":"format","sheet":0,"areas":[{"top":1,"left":1,"bottom":2,"right":1}],"change":{"locked":false}}"#,
+    );
+    run(&mut engine, r#"{"kind":"protectSheet","sheet":0}"#);
+    let grown = r#"{"kind":"paste","fromSheet":0,"from":{"top":5,"left":5,"bottom":6,"right":6},"sheet":0,"to":{"top":1,"left":1,"bottom":1,"right":1}}"#;
+    assert_eq!(
+        engine.apply_json(grown).unwrap_err(),
+        cgs_engine::protect::PROTECTED
+    );
+    // B1 is locked and stays empty; a paste that fits the unlocked cells goes through.
+    assert_eq!(engine.display_text(0, 1, 2), "");
+    assert_eq!(engine.display_text(0, 2, 2), "");
+    run(
+        &mut engine,
+        r#"{"kind":"paste","fromSheet":0,"from":{"top":5,"left":5,"bottom":6,"right":5},"sheet":0,"to":{"top":1,"left":1,"bottom":1,"right":1}}"#,
+    );
+    // External paste was already checked by the area its text covers.
+    assert_eq!(
+        engine
+            .apply_json(r#"{"kind":"pasteExternal","sheet":0,"row":1,"col":1,"text":"1\t2"}"#)
+            .unwrap_err(),
+        cgs_engine::protect::PROTECTED
+    );
+}
+
+#[test]
 fn format_cells_unlocks_and_hides_formulas() {
     let mut engine = opened(three());
     run(
