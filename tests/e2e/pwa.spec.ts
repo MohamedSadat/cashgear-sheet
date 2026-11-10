@@ -266,6 +266,32 @@ $found`);
   return result.trim() === 'True';
 }
 
+/**
+ * The text every window of this profile's browser shows, through UI Automation: what the
+ * installed app says when it couldn't open a launched file, such as a SecurityError from
+ * `getFile()`, which no page of the test's context can see when the app's window isn't one of them.
+ */
+function windowTexts(profile: string, channel: string | undefined): string {
+  const browser = channel === 'msedge' ? 'msedge.exe' : 'chrome.exe';
+  return powershell(`
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+$A = [System.Windows.Automation.AutomationElement]
+$scope = [System.Windows.Automation.TreeScope]
+$ids = @(Get-CimInstance Win32_Process -Filter "Name='${browser}'" |
+  Where-Object { $_.CommandLine -like '*${basename(profile)}*' -and $_.CommandLine -notlike '*--type=*' } |
+  ForEach-Object { $_.ProcessId })
+"processes: $($ids -join ', ')"
+foreach ($id in $ids) {
+  $mine = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, [int]$id)
+  foreach ($window in $A::RootElement.FindAll($scope::Children, $mine)) {
+    "== window: $($window.Current.Name)"
+    $names = $window.FindAll($scope::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+      ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -Unique -First 120
+    $names -join ' | '
+  }
+}`);
+}
+
 /** The names in the app's recent files, which it adds to once a workbook has opened. */
 const recentNames = (page: Page) =>
   page.evaluate(
@@ -374,15 +400,24 @@ test('the installed web app opens a workbook from Open with', async () => {
     // The first launch with files asks whether the app may open them, as it asks anyone. The app
     // adds a workbook to its recent files once it has opened it.
     let asked = false;
-    await expect
-      .poll(
-        async () => {
-          if (!asked) asked = answerFilePrompt(profile, channel);
-          return recentNames(page);
-        },
-        { timeout: 90_000 },
-      )
-      .toContain('Launched.xlsx');
+    try {
+      await expect
+        .poll(
+          async () => {
+            if (!asked) asked = answerFilePrompt(profile, channel);
+            return recentNames(page);
+          },
+          { timeout: 90_000 },
+        )
+        .toContain('Launched.xlsx');
+    } catch (error) {
+      // What the browser's windows show, so a failure on CI says why the file didn't open.
+      await testInfo.attach('browser-windows.txt', {
+        body: `prompt answered: ${asked}\n${windowTexts(profile, channel)}`,
+        contentType: 'text/plain',
+      });
+      throw error;
+    }
     const app = await appeared;
     expect(app?.url().startsWith(base)).toBe(true);
     await showsWorkbook(app!);
