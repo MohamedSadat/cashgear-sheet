@@ -24,7 +24,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Planning the ERP integration | Done 2026-11-09: Phases 14 to 19 and Track E added to `PLAN.md`, designed in `ERP_SHEET_INTEGRATION_PLAN.md` | |
 | Phase 14: ERP contract and mock | Done 2026-11-09, with your sign-off on the contract and the rollout plan | `v1.5.0` |
 | Phase 15: Read-only ERP slice | Done 2026-11-09 | `v1.6.0` |
-| Phase 16: Editing and change tracking | Not started | `v1.7.0` |
+| Phase 16: Editing and change tracking | Done 2026-11-10 | `v1.7.0` |
 | Phase 17: Validate, review and commit | Not started | `v1.8.0` |
 | Phase 18: Conflicts, refresh, sessions and recovery | Not started | `v1.9.0` |
 | Phase 19: ERP hardening | Not started | `v1.10.0` |
@@ -889,3 +889,48 @@ Cash Gear ERP's vendors open in the sheet from a launch link, as a bound table t
 - The ERP's button stays hidden for every company: `SheetLaunch:Companies` is empty until Phase 18. Before a company is listed, `Create_SheetSessions.sql` must run in CGService and `Add_VendorsRowVersion.sql` in that company's database. UnifiedAPI with E1 can be deployed before that.
 - The icon set has no refresh or information icon, so Refresh uses the circular arrow and Connection Info the link.
 - Outside this phase: two `CashGear.Operation.Tests` cases fail in the ERP repo (`ShipOrderPartnerListTests`, `no such column: s.DueDate`), from its commit `129d0dcb` of 2026-11-04, not from Track E1.
+
+## Phase 16: Editing and change tracking
+
+Cash Gear ERP's editable fields can be edited in the sheet, with every field tracked against what the ERP sent and its state on its cell; nothing leaves the sheet yet. Done on 2026-11-10. Answers and defaults are in `docs/decisions.md` (2026-11-10, Phase 16): the amber state colours from the mock-up, formulas flagged and left out until converted to values, local rules as you edit, and lookup dropdowns with code and label.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| A Rust property test over typing, paste, fill, move, replace, sort, filter, undo and redo: keys stay with their records, read-only cells never change, and the changeset equals an oracle diff | Pass | `crates/cgs-engine/tests/erp_edit.rs`, `random_edits_keep_keys_read_only_cells_and_the_changeset_with_the_oracle`: 160 seeded steps over 1,000 records of 14 fields (9 editable): typing one cell or many (leading zeros, `1-2`, `1,23`, formulas, lookups in lower case, inactive and unknown codes, over-long text, decimals past their scale, dates, booleans, and typing read-only cells, which must be refused), internal paste all and values (shifted onto read-only columns, which must be refused), external paste, fill and Ctrl+D, clear, cut and paste, Replace, Convert to Number, sorts on random keys, filters, undo, redo, Discard Changes and typing originals back. After every step each row's key appears once and holds its record's read-only values, the binding knows its id, text fields hold text, and the changeset's records, fields, from and to, formulas and broken rules equal an oracle that reads every cell independently and diffs it with the records as sent, as do the badge's counts. **Proving it:** four faults put in one at a time were each caught: states not updated on writes (step 0), not updated on undo and redo (step 2), a changed date a day out (step 1), and read-only columns taken as editable (step 10). 12 tests in all, and 31 more in `cgs-bind` |
+| Bound-sheet input and tiles within 10% of unbound, and normal-sheet benches, the matrix, save checks and fuzz unchanged | Pass | **Bound against unbound** (`bench/measure-erp-edit.mjs`, release build in Chrome 157, 10,000 records of 20 fields, the unbound sheet being the bound one saved and opened again, after the same 1,000-row paste, median of 3 rounds alternating which goes first): key to painted frame p99 **38.1 ms bound, 41.7 ms unbound**; drawn tiles p99 **65.5 ms bound, 80.3 ms unbound** (engine tiles 25.7 and 27.0). The 1,000-row paste of 9 fields took 276 ms bound and 394 ms unbound: local rules and states add nothing measurable, as text fields skip Excel's parsing (target 50 ms). **Changeset**, end to end from the page: **4.3 ms** for 1,000 records of 20 fields each with a change (target 10), 32.5 ms with every editable field changed, and **48.6 ms** for 10,000 (target 100). **Normal sheets**, against v1.6.0 built from its tag and measured on the same machine in the same hour, alternating, two rounds each: the 1M-row filter's median 221 and 232 ms (v1.6.0: 257 and 202); key to paint during the 1M-formula recalculation p99 79.9 and 89.0 ms (v1.6.0: 85.3 and 88.8), and once settled 42.1 and 41.4 (42.0 and 49.2); wheel scrolling 96.8% and 95.7% of frames within 17 ms (97.0% and 97.3%), dragging 91.5% and 91.8% (92.4% and 91.9%). `pnpm test:save`, `bench/run-edit-fuzz.mjs` and `bench/run-excel-matrix.mjs` give exactly Phase 15's results, below |
+
+**Found and fixed on the way**
+
+- The paste-area gap the plan suspected was real: Paste grows a destination smaller than its source, but protection checked only the area it was sent, so a paste into one unlocked cell could write locked cells beside it. Protection, and the ERP guard, now check the area a paste writes (`paste_area`), with a test.
+- The mock's Schema sends a decimal's `min` as text (`"0"`), as the contract allows; the schema parser took only numbers, so an editor's launch failed in the browser while every Rust test, built with numbers, passed. Limits now take either.
+- Convert to Number turned a bound `001` into 1, which the text rule then wrote back as `"1"`. It now leaves bound text fields alone.
+- The changeset built a JSON tree per record (about 5 µs a record) and the worker sent its answer as a structured clone: 14.4 ms for 1,000 records and 114.6 ms for 10,000 in Chrome, past both targets. It now serialises typed parts, reads only the changed records' rows, and query answers cross as text that the page parses: 4.3 ms and 48.6 ms.
+
+**Delivered**
+
+- `cgs-bind`: editable fields from the schema (never the key), `rules` (required, length in UTF-16 units, type, range, scale and 15 digits, active lookup codes), `state` (each record's editable fields modified, invalid or formula, kept only for records with something to show, with the badge's counts; empty and blank equal, decimals compared at their scale), lookup lists with labels, and wire values for the changeset.
+- `cgs-engine`: the command checks refuse only what reaches a key, a read-only column or a heading; text and lookup fields keep text on every path (`bound_text_typed` for typing, external paste and Replace, `coerce_bound_values` in `apply_cells` for the rest); states follow every write, undo and redo included; the `erpChanges`, `erpCell` and `erpNextError` queries, the `erpDiscard` command, lookup dropdowns in `validationAt` with no rule in the file; tile flags for Modified, Invalid, Formula, Read-only and a heading's lock (ViewBlock 5), on screen tiles only; no number-as-text triangles on bound text fields.
+- `@cgs/engine-client`: the new types, ViewBlock 5, and the states painted in `tile-draw.ts` from the chosen colours, on the leading edge (the right on a right-to-left sheet) and in the light colours on pale fills in dark mode, never on pages.
+- `@cgs/ui`: typing allowed in editable cells, Discard Changes (all, or in the selected cells) and Next Error on the ERP Data tab, the badge's counts, hover details, dropdowns with labels, Refresh asking before it replaces changes, and closing the tab asking while there are any.
+- Tests: `crates/cgs-engine/tests/erp_edit.rs` (12, the property test among them), `erp_harness` shared with Phase 15's `erp.rs`, rules and states in `cgs-bind`, the paste-area check in `parity.rs`, 5 tile-drawing cases, and 6 e2e cases (12 runs) with state goldens in light, dark and right-to-left. `bench/measure-erp-edit.mjs`.
+
+**What else was checked**
+
+- Unit tests: 278 in Vitest (5 new) and 703 in Rust (25 new). Clippy is clean natively and for WASM; `cargo fmt`, typecheck, lint and format checks are clean.
+- Saving: `pnpm test:save`, 11 fixtures: an unedited save is identical in all 11, 49 of 49 entries checked after edits match, and 3,786 of 3,786 cells match, as in Phase 15.
+- `bench/run-edit-fuzz.mjs`: 906 of 1,000 steps match Excel, **0 diverged**, 76 not reached; 166 of 166 saves open with no repair and match Excel's own result, as in Phase 15.
+- `bench/run-excel-matrix.mjs`: 116 edits on each of 11 fixtures, **1,276 of 1,276 saved files open with no repair**, all 12 broken controls are refused, 22 of 22 scenarios and 22 of 22 generated books are clean, the 9 feature checks pass, and 4 of 4 large books open clean, as in Phase 15.
+- The full e2e suite: **311 of 312** in Chrome and Edge (Phase 15's 300 and the 12 new). The one failure is the PWA's Open with in Chrome, twice: the installed app never received the file, as the prompt Chrome shows once was not answered. Edge's run of the same test passes, nothing in this phase touches launching files, and Chrome updated to 157 on this machine after Phase 15's run. CI decides it.
+- `pnpm desktop:build` and `pnpm desktop:smoke`: the desktop app builds, and its smoke run passes in WebView2 157 (goldens within tolerance, overwrite and Save As, recent files, the theme kept).
+- Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.7.0 everywhere and its changelog notes.
+
+**Known gaps**
+
+- Refresh replaces changes, after asking, until Phase 18's three-way merge keeps them.
+- Nothing is sent yet: Validate, Review and Commit are Phase 17 (Track E2 builds the Commit route).
+- The ERP's messages, hover details and rule texts are English for Arabic sessions until Phase 18's catalogue; the engine names each rule by its contract code so the catalogue can word it.
+- A bound workbook still keeps no recovery copy until Phase 18; closing the tab with changes asks first.
+- Binding speed still misses B.6 (Phase 15's 0.70 s and 2.56 s), carried to Phase 19.
+- Outside this phase: on this machine today the 1M-row filter takes about 225 ms and key to paint during the 1M-formula recalculation reaches about 85 ms at p99, in v1.6.0 and v1.7.0 alike, where Phases 4 and 6 measured 151 ms and 44.4 ms on 2026-11-05 and 06. The filter is past its 200 ms target, the input still under its 100 ms. Neither bench was run in Phases 7 to 15, so when it changed isn't known.

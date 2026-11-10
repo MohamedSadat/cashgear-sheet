@@ -4,6 +4,36 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.7.0] - 2026-11-10
+
+Cash Gear ERP's vendors can now be edited in the sheet, with every change tracked against what the
+ERP sent and shown on its cell. Nothing leaves the sheet yet: Validate, Review and Commit come in
+1.8.0. Normal workbooks are unchanged, and the ERP's button stays hidden for every company until
+Phase 18.
+
+- **Editable fields:** the columns the ERP lets the user edit (for Vendors: name, group, mobile,
+  payment method, address and tax file) take typing, paste, fill, clear, cut and paste, Replace and
+  dropdown picks. Keys and read-only columns still refuse with "This column is read-only in Cash
+  Gear ERP.", now with a lock in their heading and a faint tint, and sorting still moves whole
+  records.
+- **Text stays text:** mobiles, codes and tax files keep their leading zeros on every way in, and a
+  code typed in another case takes its list's spelling. The green number-stored-as-text triangles
+  no longer show on those columns.
+- **Every change tracked:** each edited field shows an amber bar and tint until it holds the ERP's
+  value again, by undo or by typing it back. Local rules (required, length, type, decimals, range
+  and list codes) mark a broken value with a red border as it is typed, and Next Error goes through
+  them. Formulas are allowed, shown with a dotted violet bar, and left out of what will be sent
+  until converted to values. The colours hold in light, dark and right-to-left sheets, and never
+  print or copy.
+- **Hover details and dropdowns:** hovering over a changed cell shows its original and new value
+  and any rule it breaks; over a read-only one, why it is read-only. List fields drop down their
+  codes with the ERP's labels, with no validation rule written to the file.
+- **The ERP Data tab:** Discard Changes puts the ERP's values back, everywhere or in the selected
+  cells, as one step undo takes back. The status bar counts changed, invalid and formula fields.
+  Refresh asks before replacing changes, and closing the tab asks while there are any.
+- **Protection:** a paste that grows to its source's size is now checked against every cell it
+  writes, so it can no longer reach locked cells on a protected sheet.
+
 ## [1.6.0] - 2026-11-09
 
 Cash Gear ERP's vendors open in the sheet, read-only: the first end-to-end slice of editing ERP

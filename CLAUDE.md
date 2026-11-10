@@ -186,6 +186,16 @@ Found in Phase 15:
 - Against a hand-started mock with only `ERP_TEST_KEY_EDITOR`, set `ERP_TEST_SKIP_KEYS=V-1005`, or the 413 case picks the locked vendor.
 - `[Timestamp]` isn't on `VendorModel`: UnifiedAPI reads `Vendors.RowVersion` with its own SQL until every tenant database is scripted. `CashGear.UnifiedAPI.Tests/SheetContractRun.md` runs the contract suite against UnifiedAPI on LocalDB, after printing and checking every connection string.
 
+Found in Phase 16:
+
+- Bound text and lookup fields keep what's typed as text. Typing, external paste and Replace coerce the raw text with `bound_text_typed` before Excel's parsing loses it; `coerce_bound_values` in `apply_cells` turns any other number or TRUE written there into text. A new path that parses typed text must call `bound_text_typed`, or `001` becomes 1. Convert to Number skips bound text cells.
+- Record states follow the cells through `note_bound_writes` at the end of `apply_cells`, undo and redo included. Anything that changes the originals (refresh) must call `restate_all`, or the badge and tiles go stale.
+- A spill into an empty bound cell isn't a write, so tiles, `erpCell`, the changeset and the badge's counts read `spill_areas()` for it.
+- The Schema's `min` and `max` come as strings too (the mock sends `"min": "0"`), as decimals travel. Rust tests built with numbers passed; only the browser found it.
+- ViewBlock 5: cell flag bits 8 to 14 are ERP states, set only through `TileInput.erp`, which only the screen's tiles get, so pages, PDF and copies never show them.
+- The browser pane's `type` action sends text without keydown events, which the grid needs to start editing. Drive edits there with `cgsTest.command`, and keyboard paths with Playwright.
+- The dev server in the browser pane offers to recover working copies from earlier sessions on each load. Close the prompts; don't discard them.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

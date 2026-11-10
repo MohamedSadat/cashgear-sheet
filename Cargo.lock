@@ -593,7 +593,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "cgs-bench"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "calamine",
  "cgs-calc",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "cgs-bind"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "cgs-calc"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "cgs-numfmt",
  "cgs-refs",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "cgs-desktop"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "cgs-native",
  "serde",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "cgs-engine"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "base64 0.23.1",
  "cgs-bind",
@@ -668,14 +668,14 @@ dependencies = [
 
 [[package]]
 name = "cgs-model"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "cgs-refs",
 ]
 
 [[package]]
 name = "cgs-native"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -685,11 +685,11 @@ dependencies = [
 
 [[package]]
 name = "cgs-numfmt"
-version = "1.6.0"
+version = "1.7.0"
 
 [[package]]
 name = "cgs-pdf"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "pdf-writer",
@@ -702,18 +702,18 @@ dependencies = [
 
 [[package]]
 name = "cgs-pivot"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "cgs-model",
 ]
 
 [[package]]
 name = "cgs-refs"
-version = "1.6.0"
+version = "1.7.0"
 
 [[package]]
 name = "cgs-size-probe"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "cgs-calc",
  "wasm-bindgen",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "cgs-wasm"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "cgs-calc",
  "cgs-engine",
@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "cgs-xlsx"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "cgs-calc",
  "cgs-model",

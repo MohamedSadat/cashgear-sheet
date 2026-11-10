@@ -822,3 +822,19 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Status badge and Next Error | "Vendors · 12 changed · 2 invalid · 1 formula · Sara @ Kit"; Next Error on the ERP Data tab goes through invalid cells in row order and wraps |
 | Closing the tab | Asks first while there are changes, since a bound workbook keeps no recovery copy until Phase 18 |
 | Targets | Key to paint and tile build p99 within 10% of the same sheet unbound; `changeset` at most 10 ms for 1,000 × 20 and 100 ms for 10,000 × 20; local rules at most 50 ms after pasting 1,000 rows; the property test over 1,000 records |
+
+**Defaults picked during the phase (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| A formula typed into a bound text field | Stays a formula, flagged, though Excel's Text format would take it as text: text starting with `=` would otherwise reach the ERP. An apostrophe makes it text (`'=…`) |
+| Numbers written into text fields by paste, fill or a pick | Their General form in en-US (`1001234567`), and TRUE and FALSE as words. Typing, external paste and Replace keep exactly what was typed. Convert to Number leaves bound text fields alone |
+| The key | Never editable, whatever a schema says, since it keeps each row with its record |
+| Spilled values in bound cells | Count as formulas: left out, and shown with the formula bar. Discard leaves them to their formula |
+| Refresh with changes in the sheet | Asks first ("Refreshing replaces your 12 changes with the values in Cash Gear ERP."), then replaces them, until Phase 18's three-way merge keeps them |
+| Hover details on read-only cells | Say why: the key, Advanced Edit, Edit, or not editable from the sheet |
+| Lookup dropdowns | At most 1,000 items, active codes only, a pick typed as its code |
+| The lock in a read-only heading | 11 pixels before the heading's text; fitted columns leave that room as well as the filter button's |
+| The changeset | `erpChanges` answers the contract's commit records with each record's row now (for Phase 17's Review), and lists formulas and local rules' refusals apart. Records go in id order |
+| Query answers | Cross from the engine worker as text, which the page parses, so a large answer isn't structured-cloned object by object |
+| The Schema's `min` and `max` | Taken as numbers or as a decimal's text, as the contract allows and the mock sends |
