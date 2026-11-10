@@ -551,6 +551,10 @@ impl crate::Session {
                     let Held::Value(CalcValue::Text(text)) = held(&self.calc, at) else {
                         continue;
                     };
+                    // ERP text fields hold numbers as text on purpose.
+                    if self.bound_text_cell(sheet, r, c) {
+                        continue;
+                    }
                     let typed =
                         parse_input(text.trim(), options.locale, options.date1904, self.today);
                     let number = match typed {

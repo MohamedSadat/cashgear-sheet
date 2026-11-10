@@ -1,10 +1,11 @@
-// ERP data in the shell (Phase 15): opening a launch from Cash Gear ERP with its load panel, the
-// ERP Data tab with Refresh and Connection Info, the status badge and the window's title. The
-// connector fetches, the engine reads and binds, and this only shows what they report: it never
-// reads or changes cells itself.
+// ERP data in the shell (Phases 15 and 16): opening a launch from Cash Gear ERP with its load
+// panel, the ERP Data tab with Refresh, Discard Changes, Next Error and Connection Info, the status
+// badge with what changed, hover details and the window's title. The connector fetches, the
+// engine reads, binds and tracks changes, and this only shows what they report: it never reads or
+// changes cells itself.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CgButton, CgProgressBar, CgStatusBadge, CgWindow, type CgRibbonTab } from '@cashgear/ui';
-import type { EngineClient, ErpBinding } from '@cgs/engine-client';
+import type { Applied, CellArea, Command, EngineClient, ErpBinding } from '@cgs/engine-client';
 import {
   ErpError,
   ErpHttp,
@@ -17,14 +18,21 @@ import {
 } from '@cgs/erp-connector';
 import {
   badgeText,
+  cellTip,
   CONNECTING,
   count,
   failureText,
+  hasChanges,
   loadingText,
+  NO_ERRORS,
+  NOTHING_TO_DISCARD,
   openingTitle,
+  REFRESH_ANYWAY,
   refreshedText,
+  refreshReplaces,
   workbookTitle,
 } from './messages';
+import { LOCK_PX } from '@cgs/engine-client';
 
 export interface ErpToolsHost {
   engine: () => EngineClient | null;
@@ -37,6 +45,12 @@ export interface ErpToolsHost {
   notice: (message: string | null) => void;
   /** The sheet showing. */
   sheet: number;
+  /** Runs a command as the ribbon's commands run, so undo and the grid follow it. */
+  run: (command: Command) => Promise<Applied>;
+  /** The selected areas and the active cell on the sheet showing, 1-based. */
+  selection: () => { areas: CellArea[]; row: number; col: number } | null;
+  /** Selects one cell on the sheet showing, 1-based. */
+  select: (row: number, col: number) => void;
 }
 
 type Panel =
@@ -56,8 +70,17 @@ export interface ErpTools {
   launch: (launch: ErpLaunch) => void;
   /** Reads the binding again after a command, which may have moved its table. */
   sync: () => void;
-  /** Whether a cell is in the bound table, where typing is refused at the first key. */
-  boundAt: (sheet: number, row: number, col: number) => boolean;
+  /**
+   * Whether a cell is a bound table's heading or a read-only column's, where typing is refused at
+   * the first key. Editable columns take typing.
+   */
+  readOnlyAt: (sheet: number, row: number, col: number) => boolean;
+  /** What hovering over a bound cell shows: its field, what changed and why it's refused. */
+  hoverDetails: (
+    sheet: number,
+    row: number,
+    col: number,
+  ) => Promise<{ title: string; text: string } | null>;
   /** For the bind bench: binds records already staged in the engine, as opening does. */
   bindStaged: (session: SessionInfo, label: string) => Promise<ErpBinding>;
 }
@@ -78,8 +101,11 @@ const asErpError = (error: unknown) =>
 
 const nounOf = (entity: string) => entity.toLowerCase();
 
-/** A filter button's width at 100%, as the grid draws it (`GridController.buttonBox`). */
-const FILTER_BUTTON_PX = 17;
+/**
+ * Room a heading's text leaves at 100%: a filter button's width, as the grid draws it
+ * (`GridController.buttonBox`), and a read-only column's lock.
+ */
+const HEADING_ROOM_PX = 17 + LOCK_PX;
 
 /** The longest texts by characters measured in each column: enough for its widest, and quick. */
 const FIT_SAMPLE = 16;
@@ -94,6 +120,8 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
   const [expired, setExpired] = useState(false);
   const [busy, setBusy] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  /** Refresh waiting on the user's word, with how many changes it would replace. */
+  const [refreshAsk, setRefreshAsk] = useState<number | null>(null);
   const sessionRef = useRef<ErpSession | null>(null);
   const launchRef = useRef<ErpLaunch | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -117,7 +145,7 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
       await h
         .queue((e) =>
           e.autoFitColumns(bound.sheet, bound.left, bound.right, {
-            room: { row: bound.top, px: FILTER_BUTTON_PX },
+            room: { row: bound.top, px: HEADING_ROOM_PX },
             keep: FIT_SAMPLE,
           }),
         )
@@ -186,11 +214,16 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
 
   const launch = useCallback((given: ErpLaunch) => void open(given), [open]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (anyway = false) => {
     const h = hostRef.current;
     const session = sessionRef.current;
     const bound = bindingRef.current;
     if (!session || !bound || session.state === 'expired') return;
+    // Until Phase 18 merges them, a refresh replaces the sheet's changes, so it asks first.
+    if (!anyway && hasChanges(bound.counts)) {
+      setRefreshAsk(bound.counts.changed + bound.counts.formulas);
+      return;
+    }
     const noun = bound.labelEn.toLowerCase();
     setBusy(true);
     h.notice(`Refreshing ${noun}…`);
@@ -221,12 +254,65 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
       .catch(() => undefined);
   }, []);
 
-  const boundAt = useCallback((sheet: number, row: number, col: number) => {
+  const readOnlyAt = useCallback((sheet: number, row: number, col: number) => {
     const b = bindingRef.current;
-    return Boolean(
-      b && b.sheet === sheet && row >= b.top && row <= b.bottom && col >= b.left && col <= b.right,
-    );
+    if (!b || b.sheet !== sheet || row < b.top || row > b.bottom || col < b.left || col > b.right)
+      return false;
+    return row === b.top || !b.fields[col - b.left]?.editable;
   }, []);
+
+  const hoverDetails = useCallback(async (sheet: number, row: number, col: number) => {
+    const b = bindingRef.current;
+    const engine = hostRef.current.engine();
+    if (!b || !engine || b.sheet !== sheet) return null;
+    if (row < b.top || row > b.bottom || col < b.left || col > b.right) return null;
+    const info = await engine.query({ kind: 'erpCell', sheet, row, col });
+    return info ? cellTip(info, b.labelEn.toLowerCase()) : null;
+  }, []);
+
+  /** Discard Changes: all of them, or those in the selected cells, as one step undo takes back. */
+  const discard = useCallback(async (selected: boolean) => {
+    const h = hostRef.current;
+    const b = bindingRef.current;
+    if (!b) return;
+    const areas = selected ? h.selection()?.areas : undefined;
+    if (selected && !areas?.length) return;
+    const before = b.counts.changed + b.counts.formulas;
+    await h.run({ kind: 'erpDiscard', ...(areas ? { areas } : {}) });
+    const after = await h.engine()?.binding();
+    if (after && after.counts.changed + after.counts.formulas === before)
+      h.notice(NOTHING_TO_DISCARD);
+  }, []);
+
+  /** Next Error: the next cell a local rule refuses, in reading order, round the table. */
+  const nextError = useCallback(async () => {
+    const h = hostRef.current;
+    const b = bindingRef.current;
+    const engine = h.engine();
+    if (!b || !engine) return;
+    const at = h.selection();
+    const found = await engine.query({
+      kind: 'erpNextError',
+      sheet: b.sheet,
+      row: at?.row ?? b.top,
+      col: at?.col ?? b.left,
+    });
+    if (found) h.select(found.row, found.col);
+    else h.notice(NO_ERRORS);
+  }, []);
+
+  // Closing the tab with changes asks first: a bound workbook keeps no recovery copy until
+  // Phase 18 (decisions, 2026-11-10, Phase 16).
+  const pending = hasChanges(binding?.counts);
+  useEffect(() => {
+    if (!pending) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [pending]);
 
   // The window's title names the ERP data, as the workbook's does.
   useEffect(() => {
@@ -241,6 +327,8 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
   const tabs = useMemo<CgRibbonTab[]>(() => {
     const shown = Boolean(binding) && binding?.sheet === host.sheet;
     const offline = expired || busy;
+    const changed = hasChanges(binding?.counts);
+    const editable = Boolean(binding?.fields.some((field) => field.editable));
     return [
       {
         key: 'erp-data',
@@ -263,6 +351,41 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
             ],
           },
           {
+            key: 'erp-changes',
+            text: 'Changes',
+            icon: 'eraser',
+            visible: editable,
+            items: [
+              {
+                name: 'erp-discard',
+                text: 'Discard Changes',
+                icon: 'eraser',
+                size: 'large',
+                disabled: !changed || busy,
+                children: [
+                  {
+                    name: 'erp-discard-all',
+                    text: 'Discard All Changes',
+                    onClick: () => void discard(false),
+                  },
+                  {
+                    name: 'erp-discard-selected',
+                    text: 'Discard Changes in Selected Cells',
+                    onClick: () => void discard(true),
+                  },
+                ],
+              },
+              {
+                name: 'erp-next-error',
+                text: 'Next Error',
+                icon: 'error-check',
+                size: 'large',
+                disabled: !binding?.counts.invalid,
+                onClick: () => void nextError(),
+              },
+            ],
+          },
+          {
             key: 'erp-connection',
             text: 'Connection',
             icon: 'link',
@@ -279,12 +402,12 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
         ],
       },
     ];
-  }, [binding, busy, expired, host.sheet, refresh]);
+  }, [binding, busy, discard, expired, host.sheet, nextError, refresh]);
 
   const badge = binding ? (
     <CgStatusBadge
       data-testid="erp-status"
-      type={expired ? 'warning' : 'info'}
+      type={expired || binding.counts.invalid > 0 ? 'warning' : 'info'}
       text={badgeText(
         binding.labelEn,
         binding.records,
@@ -292,6 +415,8 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
         expired,
         binding.userName,
         binding.company,
+        binding.counts,
+        binding.fields.some((field) => field.editable),
       )}
     />
   ) : null;
@@ -333,7 +458,16 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
             : `Open until ${new Date(session.expiresAt).toLocaleTimeString()}`,
         ],
         ['Server', apiBase],
-        ['Editing', 'Every column is read-only in this version.'],
+        [
+          'Editing',
+          (() => {
+            const editable = binding.fields.filter((field) => field.editable).length;
+            return editable === 0
+              ? 'Every column is read-only for you.'
+              : `${count(editable)} of ${count(binding.fields.length)} columns can be edited. ` +
+                  'Changes stay in this sheet until they can be committed in a later version.';
+          })(),
+        ],
       ]
     : [];
 
@@ -391,6 +525,33 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
         )}
       />
       <CgWindow
+        open={refreshAsk !== null}
+        onOpenChange={(next) => {
+          if (!next) setRefreshAsk(null);
+        }}
+        headerText="Refresh"
+        width={420}
+        data-testid="erp-refresh-ask"
+        renderBody={() => <p className="cgs-dialog-message">{refreshReplaces(refreshAsk ?? 0)}</p>}
+        renderFooter={() => (
+          <div className="cgs-dialog-actions">
+            <CgButton
+              intent="primary"
+              data-testid="erp-refresh-anyway"
+              onClick={() => {
+                setRefreshAsk(null);
+                void refresh(true);
+              }}
+            >
+              {REFRESH_ANYWAY}
+            </CgButton>
+            <CgButton data-testid="erp-refresh-cancel" onClick={() => setRefreshAsk(null)}>
+              Cancel
+            </CgButton>
+          </div>
+        )}
+      />
+      <CgWindow
         open={infoOpen && Boolean(binding)}
         onOpenChange={(next) => {
           if (!next) setInfoOpen(false);
@@ -424,5 +585,15 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
     </>
   );
 
-  return { binding, tabs, badge, overlays, launch, sync, boundAt, bindStaged };
+  return {
+    binding,
+    tabs,
+    badge,
+    overlays,
+    launch,
+    sync,
+    readOnlyAt,
+    hoverDetails,
+    bindStaged,
+  };
 }

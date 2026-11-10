@@ -17,6 +17,24 @@ export interface TilePalette {
   showGrid?: boolean;
   /** Sheet Right-to-Left: the tile's columns run from the right, as Excel mirrors them. */
   rightToLeft?: boolean;
+  /**
+   * ERP data's cell states (Phase 16), in both themes' colours: a cell on a light fill takes the
+   * light ones in dark mode too, so states show on a table's pale bands. Never set for pages.
+   */
+  erp?: { light: ErpStateColors; dark: ErpStateColors };
+}
+
+/** How ERP cell states look, as CSS colours (decisions, 2026-11-10, Phase 16). */
+export interface ErpStateColors {
+  /** Modified: the bar on the cell's leading edge, and the tint over the cell. */
+  modified: string;
+  modifiedTint: string;
+  /** Invalid: the border inside the cell. */
+  invalid: string;
+  /** Formula: the dotted bar on the leading edge. */
+  formula: string;
+  /** Read-only: the wash over the cell. */
+  readOnly: string;
 }
 
 /** One cell to measure for a row or column to fit. */
@@ -516,6 +534,8 @@ export type Command =
   | { kind: 'ignoreError'; sheet: number; row: number; col: number }
   | { kind: 'convertToNumber'; sheet: number; areas: CellArea[] }
   | { kind: 'includeCells'; sheet: number; row: number; col: number }
+  /** Discard Changes on ERP data: the edited cells in `areas`, or all of them, take back the ERP's values. */
+  | { kind: 'erpDiscard'; areas?: CellArea[] }
   | { kind: 'setValidation'; sheet: number; areas: CellArea[]; rule?: ValidationRule }
   | { kind: 'circleInvalid'; sheet: number; on: boolean }
   | { kind: 'addCf'; sheet: number; areas: CellArea[]; rule: CfRuleSpec }
@@ -613,6 +633,10 @@ export interface ValidationInfo extends Required<Omit<ValidationRule, 'formula1'
   formula2: string | null;
   /** A list's items, as the dropdown shows them. */
   items: string[];
+  /** An ERP lookup's labels beside its codes, which `items` holds (Phase 16). */
+  labels?: string[];
+  /** An ERP lookup's dropdown: no rule in the file, so none to edit. */
+  lookup?: boolean;
   /** A rule from newer Excel, kept but not edited. */
   extended: boolean;
   /** The cells the rule covers, as `A1:B5 D1`. */
@@ -845,6 +869,9 @@ export type Question =
   | { kind: 'richAt'; sheet: number; row: number; col: number }
   | { kind: 'cellErrors'; sheet: number; row: number; col: number }
   | { kind: 'nextError'; sheet: number; row: number; col: number; back?: boolean }
+  | { kind: 'erpChanges' }
+  | { kind: 'erpCell'; sheet: number; row: number; col: number }
+  | { kind: 'erpNextError'; sheet: number; row: number; col: number; back?: boolean }
   | { kind: 'noteAt'; sheet: number; row: number; col: number }
   | { kind: 'linkAt'; sheet: number; row: number; col: number }
   | { kind: 'notes'; sheet: number }
@@ -872,6 +899,9 @@ export interface Answers {
   circular: [number, number, number][] | null;
   cellErrors: { rule: string; value?: string; from?: 'above' | 'left' }[];
   nextError: [number, number] | null;
+  erpChanges: ErpChangeset | null;
+  erpCell: ErpCellInfo | null;
+  erpNextError: { row: number; col: number } | null;
   noteAt: NoteInfo | null;
   linkAt: LinkInfo | null;
   notes: {
@@ -1763,7 +1793,75 @@ export interface ErpBinding {
   asOf: string;
   maxRecords: number;
   maxPageSize: number;
-  fields: { name: string; label: string; editable: boolean; editReason?: string }[];
+  fields: ErpFieldInfo[];
+  /** What the status badge counts (Phase 16). */
+  counts: ErpCounts;
+}
+
+export interface ErpFieldInfo {
+  name: string;
+  label: string;
+  kind: 'text' | 'lookup' | 'integer' | 'decimal' | 'boolean' | 'date' | 'dateTime';
+  /** Whether the sheet lets its cells be edited, for this ERP user. */
+  editable: boolean;
+  /** Why not: `key`, `notEditable`, `needsEdit` or `needsAdvEdit`. */
+  editReason?: string;
+}
+
+export interface ErpCounts {
+  /** Fields whose values differ from the ERP's, formulas left out. */
+  changed: number;
+  changedRecords: number;
+  /** Fields a local rule refuses. */
+  invalid: number;
+  /** Formulas and spilled values, left out until converted to values. */
+  formulas: number;
+}
+
+/** A wire value, as the contract sends it. */
+export type ErpWireValue = string | number | boolean | null;
+
+/** ERP data's changes, as `erpChanges` answers (contract C.4, with each record's row now). */
+export interface ErpChangeset {
+  company: string;
+  schemaVersion: string;
+  records: {
+    id: number;
+    key: string;
+    version: string;
+    row: number;
+    changes: Record<string, { from: ErpWireValue; to: ErpWireValue }>;
+  }[];
+  formulas: { key: string; field: string; row: number; col: number }[];
+  errors: { key: string; field: string; code: string; row: number; col: number }[];
+  counts: ErpCounts;
+}
+
+/** A broken local rule, with what explains it. */
+export interface ErpRuleInfo {
+  code: 'required' | 'maxLength' | 'type' | 'range' | 'scale' | 'lookup.notFound';
+  type: ErpFieldInfo['kind'];
+  maxLength: number | null;
+  min: number | null;
+  max: number | null;
+  scale: number | null;
+  value: string | null;
+  /** A lookup code the ERP has but no longer offers. */
+  inactive: boolean;
+}
+
+/** A bound cell, for hover details. */
+export interface ErpCellInfo {
+  field: string;
+  label: string;
+  heading: boolean;
+  editable: boolean;
+  reason?: string;
+  key?: string;
+  state?: 'modified' | 'invalid' | 'formula';
+  original?: string;
+  now?: string;
+  rule?: ErpRuleInfo;
 }
 
 /** What a refresh changed. */

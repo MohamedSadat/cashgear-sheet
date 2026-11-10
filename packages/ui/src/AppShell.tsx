@@ -42,6 +42,7 @@ import {
   type DrawingBox,
   type EngineClient,
   type ErpBinding,
+  type ErpChangeset,
   type FormatChange,
   type FormatLists,
   type FoundCell,
@@ -258,7 +259,12 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const formatRef = useRef<CellFormat | null>(null);
   formatRef.current = format;
   const protectMessageRef = useRef<(message: string) => void>(() => undefined);
-  const erpBoundAtRef = useRef<(sheet: number, row: number, col: number) => boolean>(() => false);
+  const erpReadOnlyAtRef = useRef<(sheet: number, row: number, col: number) => boolean>(
+    () => false,
+  );
+  const erpHoverRef = useRef<
+    (sheet: number, row: number, col: number) => Promise<{ title: string; text: string } | null>
+  >(() => Promise.resolve(null));
   const erpBindRef = useRef<(session: SessionInfo, label: string) => Promise<ErpBinding>>(() =>
     Promise.reject(new Error('Not ready.')),
   );
@@ -925,9 +931,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       );
     },
     mayEdit: (index) => {
-      // ERP data's cells refuse at the first key too, with the guard's own message.
+      // ERP data's read-only cells refuse at the first key too, with the guard's own message.
       const active = selectionRef.current;
-      if (active && erpBoundAtRef.current(index, active.row + 1, active.col + 1)) {
+      if (active && erpReadOnlyAtRef.current(index, active.row + 1, active.col + 1)) {
         protectMessageRef.current(READ_ONLY_MESSAGE);
         return false;
       }
@@ -1041,6 +1047,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     cellFormat: format,
     formatStyle: (styleFormat, done) =>
       setDialog({ kind: 'styleFormat', format: styleFormat, done }),
+    hoverDetails: (index, row, col) => erpHoverRef.current(index, row, col),
   });
   const pivotTools = usePivotTools({
     engine: () => clientRef.current,
@@ -1114,10 +1121,24 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     },
     notice: setNotice,
     sheet,
+    run: runCommand,
+    selection: () => {
+      const active = selectionRef.current;
+      if (!active) return null;
+      return { areas: [toArea(active.range)], row: active.row + 1, col: active.col + 1 };
+    },
+    select: (row, col) =>
+      controller.current?.selectArea({
+        top: row - 1,
+        left: col - 1,
+        bottom: row - 1,
+        right: col - 1,
+      }),
   });
   erpSyncRef.current = erpTools.sync;
   erpBindRef.current = erpTools.bindStaged;
-  erpBoundAtRef.current = erpTools.boundAt;
+  erpReadOnlyAtRef.current = erpTools.readOnlyAt;
+  erpHoverRef.current = erpTools.hoverDetails;
   // A double-click on a pivot table's value shows its details, as in Excel.
   doubleCellRef.current = (row, col) => {
     // Inside a pivot table, a double-click isn't an edit: on a value it shows the details.
@@ -1384,6 +1405,8 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         pdf: (choice?: Partial<PrintChoice>) => Promise<{ bytes: Uint8Array; pages: number }>;
         /** The ERP binding, as the engine holds it. */
         binding: () => Promise<ErpBinding | null>;
+        /** The ERP binding's changeset, as Phase 17's Commit will send it. */
+        erpChanges: () => Promise<ErpChangeset | null>;
         /** An area's shown text, as Copy gives it: tabs between cells, lines between rows. */
         shownText: (area: CellArea) => Promise<string>;
         /**
@@ -1447,6 +1470,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       },
       pdf: (choice) => printPdfRef.current({ what: 'active', ignorePrintArea: false, ...choice }),
       binding: async () => (await clientRef.current?.binding()) ?? null,
+      erpChanges: async () => (await clientRef.current?.query({ kind: 'erpChanges' })) ?? null,
       shownText: async (area) =>
         (await clientRef.current?.copyText(sheetRef.current, area))?.text ?? '',
       bindPages: async (schema, pages, session) => {

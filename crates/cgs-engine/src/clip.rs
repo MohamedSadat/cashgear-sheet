@@ -713,6 +713,10 @@ impl Session {
             },
             other => other,
         };
+        // ERP text and lookup fields take the text as it came.
+        let typed = self
+            .bound_text_typed(sheet, at.0, at.1, text, &typed)
+            .unwrap_or(typed);
         self.typed_edit_at(sheet, at, &typed)
     }
 
@@ -784,7 +788,11 @@ impl Session {
                         style
                     }
                 };
-                let input = if let Some(number) = cell.number {
+                let input = if self.bound_text_cell(sheet, at_row, at_col) {
+                    // ERP text keeps the text the other program showed, not the number behind it.
+                    let plain = self.pasted_cell(sheet, (at_row, at_col), &cell.text, locale);
+                    plain.input.unwrap_or(EditInput::Clear)
+                } else if let Some(number) = cell.number {
                     EditInput::Value(CalcValue::Number(number))
                 } else if cell.text.is_empty() {
                     EditInput::Clear
@@ -851,6 +859,7 @@ impl Session {
                     today: self.today,
                     invalid: None,
                     errors: 0,
+                    erp: None,
                 };
                 cells.push(crate::tile::display_text(
                     &input,

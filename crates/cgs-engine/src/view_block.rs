@@ -39,7 +39,7 @@
 //! Then the heap of UTF-8 text.
 
 pub const MAGIC: [u8; 4] = *b"CGVB";
-pub const VERSION: u16 = 4;
+pub const VERSION: u16 = 5;
 pub const HEADER_BYTES: usize = 40;
 pub const CELL_BYTES: usize = 24;
 pub const STYLE_BYTES: usize = 40;
@@ -122,6 +122,20 @@ pub const CELL_NO_BOTTOM_GRID: u16 = 1 << 5;
 pub const CELL_HASHES: u16 = 1 << 6;
 /// Holds a value that displays as nothing, which still stops text overflowing into it.
 pub const CELL_OCCUPIED: u16 = 1 << 7;
+/// ERP data (Phase 16): an editable field whose value differs from what the ERP sent.
+pub const CELL_ERP_MODIFIED: u16 = 1 << 8;
+/// ERP data: a local rule refuses the value.
+pub const CELL_ERP_INVALID: u16 = 1 << 9;
+/// ERP data: a formula or a spilled value, left out of commits until converted to values.
+pub const CELL_ERP_FORMULA: u16 = 1 << 10;
+/// ERP data: a read-only field's value.
+pub const CELL_ERP_READ_ONLY: u16 = 1 << 11;
+/// ERP data: the ERP's version moved and the field clashes. Reserved for Phase 18.
+pub const CELL_ERP_CONFLICT: u16 = 1 << 12;
+/// ERP data: committed. Reserved for Phase 17.
+pub const CELL_ERP_COMMITTED: u16 = 1 << 13;
+/// ERP data: the heading of a read-only column, which carries a lock.
+pub const CELL_ERP_LOCK: u16 = 1 << 14;
 
 pub const FONT_BOLD: u8 = 1;
 pub const FONT_ITALIC: u8 = 2;

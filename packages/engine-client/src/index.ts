@@ -3,7 +3,7 @@ export { decodeLayout, type SheetLayout } from './layout';
 export { localeData } from './locale';
 export { drawIcon, ICON_SETS } from './icons';
 export { TileCache, type TileAddress, type TileStyle } from './tile-cache';
-export { devicePx, TILE_COLS, TILE_ROWS } from './tile-draw';
+export { devicePx, LOCK_PX, TILE_COLS, TILE_ROWS } from './tile-draw';
 export {
   Recording,
   RecordingContext,
@@ -42,6 +42,13 @@ export type {
   Answers,
   Applied,
   ErpBinding,
+  ErpCellInfo,
+  ErpChangeset,
+  ErpCounts,
+  ErpFieldInfo,
+  ErpRuleInfo,
+  ErpStateColors,
+  ErpWireValue,
   ErpPageInfo,
   ErpRefreshSummary,
   HeaderFooterTexts,

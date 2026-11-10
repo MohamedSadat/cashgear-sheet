@@ -52,7 +52,7 @@ export function encodeTile(options: {
   const fixed = extrasAt + extras.length * 40;
   const scratch = new DataView(new ArrayBuffer(fixed));
   scratch.setUint32(0, 0x42564743, true);
-  scratch.setUint16(4, 4, true);
+  scratch.setUint16(4, 5, true);
   scratch.setUint16(6, rowPx.length, true);
   scratch.setUint16(8, colPx.length, true);
   scratch.setUint16(10, flags, true);

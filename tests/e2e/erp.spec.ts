@@ -1,10 +1,10 @@
-// Phase 15's read-only ERP slice in the browser, against the mock ERP on its own origin
-// (playwright.config.ts starts it on 127.0.0.1:4180, the sheet's preview on :4173). The page opens
-// a launch link as Cash Gear ERP's button would, so the handoff, CORS, cross-origin isolation and
-// the identity guard run as they will in production.
+// ERP data in the browser, against the mock ERP on its own origin (playwright.config.ts starts it
+// on 127.0.0.1:4180, the sheet's preview on :4173). The page opens a launch link as Cash Gear ERP's
+// button would, so the handoff, CORS, cross-origin isolation and the identity guard run as they
+// will in production. Phase 15's read-only slice comes first, then Phase 16's editing.
 import { expect, test, type Page } from '@playwright/test';
 import { readZip } from '../fixtures/workbooks.mjs';
-import { FONT_OVERRIDE, waitForGrid } from './helpers.mjs';
+import { expectGolden, FONT_OVERRIDE, waitForGrid } from './helpers.mjs';
 
 const MOCK = 'http://127.0.0.1:4180';
 const SHEET_ORIGIN = 'http://127.0.0.1:4173';
@@ -175,10 +175,7 @@ test('opens vendors from a launch, leaving no trace of its ticket, sorts, filter
   const expected = await records(filter);
   const { url, ticket: value } = await ticket(filter);
   await launch(page, url);
-  await bound(
-    page,
-    `Vendors · ${expected.length.toLocaleString('en-US')} · Read-only · Sara @ Kit`,
-  );
+  await bound(page, `Vendors · ${expected.length.toLocaleString('en-US')} · Sara @ Kit`);
 
   // The fragment is gone from the address bar and from history.
   expect(page.url()).toBe(`${SHEET_ORIGIN}/`);
@@ -199,7 +196,7 @@ test('opens every active vendor in English, and keeps each key with its record t
   const filter = { blocked: false };
   const expected = await records(filter);
   await launch(page, (await ticket(filter)).url);
-  const badge = `Vendors · ${expected.length.toLocaleString('en-US')} · Read-only · Sara @ Kit`;
+  const badge = `Vendors · ${expected.length.toLocaleString('en-US')} · Sara @ Kit`;
   await bound(page, badge);
   await expect(page).toHaveTitle('Vendors – Kit – CashGear Sheet');
   const { headings, binding } = await rows(page);
@@ -283,7 +280,7 @@ test('opens in Arabic, right to left, with the ERP user’s headings', async ({ 
   const expected = await records(filter);
   expect(expected.map((r) => r.key)).toEqual(['V-1001', 'V-1006']);
   await launch(page, (await ticket(filter, 'ar')).url);
-  await bound(page, 'Vendors · 2 · Read-only · Sara @ Kit');
+  await bound(page, 'Vendors · 2 · Sara @ Kit');
   const { headings } = await rows(page);
   expect(headings.slice(0, 4)).toEqual(['الحساب', 'الاسم', 'المجموعة', 'الجوال']);
   expect(await page.evaluate(() => window.cgsTest.grid()!.rightToLeft)).toBe(true);
@@ -293,12 +290,12 @@ test('opens in Arabic, right to left, with the ERP user’s headings', async ({ 
 
 test('refuses edits to ERP data with its own message', async ({ page }) => {
   await launch(page, (await ticket({ search: 'noor' })).url);
-  await bound(page, 'Vendors · 2 · Read-only · Sara @ Kit');
+  await bound(page, 'Vendors · 2 · Sara @ Kit');
   const message = page.getByTestId('protect-message-text');
 
-  // Typing into a bound cell is refused at the first key.
+  // Typing into a read-only cell, the key here, is refused at the first key.
   await page.evaluate(() =>
-    window.cgsTest.grid()!.selectArea({ top: 1, left: 1, bottom: 1, right: 1 }),
+    window.cgsTest.grid()!.selectArea({ top: 1, left: 0, bottom: 1, right: 0 }),
   );
   await page.getByTestId('sheet-canvas').focus();
   await page.keyboard.press('x');
@@ -375,7 +372,7 @@ test('Save As writes an ordinary workbook with no ids, versions or connection', 
 }) => {
   const expected = await records({ search: 'noor' });
   await launch(page, (await ticket({ search: 'noor' })).url);
-  await bound(page, 'Vendors · 2 · Read-only · Sara @ Kit');
+  await bound(page, 'Vendors · 2 · Sara @ Kit');
   const bytes = Buffer.from(
     await page.evaluate(async () => [...(await window.cgsTest.saveBytes())]),
   );
@@ -389,5 +386,175 @@ test('Save As writes an ordinary workbook with no ids, versions or connection', 
   }
   for (const secret of ['recId', 'api/payable', 'X-Sheet-Session', 'u17', '127.0.0.1:4180']) {
     expect(all).not.toContain(secret);
+  }
+});
+
+// ---- Phase 16: editing and change tracking ----
+
+/** What another program's copy looks like: a paste event with its own data. */
+async function pasteFromElsewhere(page: Page, text: string) {
+  await page.evaluate((text) => {
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    const target = document.querySelector('[data-testid="sheet-canvas"]')!;
+    target.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  }, text);
+}
+
+/** Selects a range by 0-based rows and columns, and gives the grid the keyboard. */
+async function select(page: Page, top: number, left: number, bottom = top, right = left) {
+  await page.evaluate((area) => window.cgsTest.grid()!.selectArea(area), {
+    top,
+    left,
+    bottom,
+    right,
+  });
+  await page.getByTestId('sheet-canvas').focus();
+}
+
+const cellText = (page: Page, row: number, col: number) =>
+  page.evaluate(([r, c]) => window.cgsTest.cellText(r!, c!), [row, col]);
+
+const counts = async (page: Page) => (await page.evaluate(() => window.cgsTest.binding()))!.counts;
+
+/** The canvas's colour at a cell's leading edge, where Modified draws its bar. 0-based. */
+async function leadingEdge(page: Page, row: number, col: number) {
+  return page.evaluate(
+    ([r, c]) => {
+      const canvas = document.querySelector<HTMLCanvasElement>('[data-testid="sheet-canvas"]')!;
+      const box = window.cgsTest.grid()!.cellBox(r!, c!);
+      const rect = canvas.getBoundingClientRect();
+      const ratio = canvas.width / rect.width;
+      const x = Math.round((box.left - rect.left + 1) * ratio);
+      const y = Math.round((box.top - rect.top + box.height / 2) * ratio);
+      const [red, green, blue] = canvas.getContext('2d')!.getImageData(x, y, 1, 1).data;
+      return '#' + [red, green, blue].map((v) => v!.toString(16).padStart(2, '0')).join('');
+    },
+    [row, col],
+  );
+}
+
+test.describe('editing ERP data', () => {
+  test('types, pastes and fills down in editable columns, keeping text as typed', async ({
+    page,
+  }) => {
+    await launch(page, (await ticket({ search: 'noor' })).url);
+    await bound(page, 'Vendors · 2 · Sara @ Kit');
+
+    // Typing a mobile keeps its leading zero.
+    await select(page, 1, 3);
+    await page.keyboard.type('0100555');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => cellText(page, 2, 4)).toBe('0100555');
+    await expect
+      .poll(async () => plain(await page.getByTestId('erp-status').textContent()))
+      .toBe('Vendors · 2 · 1 changed · Sara @ Kit');
+
+    // Text from another program keeps its zeros too.
+    await select(page, 1, 6);
+    await pasteFromElsewhere(page, '0012\t001\r\n');
+    await expect.poll(() => cellText(page, 2, 7)).toBe('0012');
+    await expect.poll(() => cellText(page, 2, 8)).toBe('001');
+
+    // Fill down, Ctrl+D, from the first name to the second.
+    await select(page, 1, 1, 2, 1);
+    await page.keyboard.press('Control+d');
+    const first = await cellText(page, 2, 2);
+    await expect.poll(() => cellText(page, 3, 2)).toBe(first);
+
+    // A lookup typed in lower case takes its list's spelling.
+    await select(page, 2, 2);
+    await page.keyboard.type('services');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => cellText(page, 3, 3)).toBe('SERVICES');
+    const changed = await counts(page);
+    expect(changed.changed).toBeGreaterThanOrEqual(4);
+    expect(changed.invalid).toBe(0);
+
+    // The changeset holds each changed field with what the ERP sent.
+    const set = await page.evaluate(() => window.cgsTest.erpChanges());
+    const v1001 = set!.records.find((r) => r.key === 'V-1001')!;
+    expect(v1001.changes['mobile']).toEqual({ from: '01001234567', to: '0100555' });
+    expect(v1001.changes['taxFile']!.to).toBe('001');
+  });
+
+  test('refuses a paste into a read-only column with its message', async ({ page }) => {
+    await launch(page, (await ticket({ search: 'noor' })).url);
+    await bound(page, 'Vendors · 2 · Sara @ Kit');
+    const message = page.getByTestId('protect-message-text');
+    // From another program, into the key.
+    await select(page, 2, 0);
+    await pasteFromElsewhere(page, 'V-9999\r\n');
+    await expect(message).toHaveText('This column is read-only in Cash Gear ERP.');
+    await page.getByRole('button', { name: 'OK' }).click();
+    // Copied in the sheet, from Name into Currency.
+    await select(page, 1, 1);
+    await page.keyboard.press('Control+c');
+    await select(page, 1, 4);
+    await page.keyboard.press('Control+v');
+    await expect(message).toHaveText('This column is read-only in Cash Gear ERP.');
+    await page.getByRole('button', { name: 'OK' }).click();
+    await expectRecords(page, await records({ search: 'noor' }));
+    expect((await counts(page)).changed).toBe(0);
+  });
+
+  test('undo back to the original clears Modified, and Discard Changes puts originals back', async ({
+    page,
+  }) => {
+    await launch(page, (await ticket({ search: 'noor' })).url);
+    await bound(page, 'Vendors · 2 · Sara @ Kit');
+    const before = await leadingEdge(page, 1, 1);
+    await select(page, 1, 1);
+    await page.keyboard.type('Renamed');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => leadingEdge(page, 1, 1)).toBe('#d97706');
+    expect((await counts(page)).changed).toBe(1);
+    await select(page, 5, 5);
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => leadingEdge(page, 1, 1)).toBe(before);
+    expect((await counts(page)).changed).toBe(0);
+    // Discard Changes from the ERP Data tab writes the originals back, and undo returns them.
+    await select(page, 1, 1);
+    await page.keyboard.type('Again');
+    await page.keyboard.press('Enter');
+    await page.getByRole('tab', { name: 'ERP Data' }).click();
+    await page.getByRole('button', { name: 'Discard Changes' }).click();
+    await page.getByText('Discard All Changes').click();
+    await expect.poll(async () => (await counts(page)).changed).toBe(0);
+    await expectRecords(page, await records({ search: 'noor' }));
+    await select(page, 5, 5);
+    await page.keyboard.press('Control+z');
+    await expect.poll(async () => (await counts(page)).changed).toBe(1);
+  });
+
+  for (const [name, theme, language] of [
+    ['light', 'light', 'en'],
+    ['dark', 'dark', 'en'],
+    ['rtl', 'light', 'ar'],
+  ] as const) {
+    test(`draws cell states, in ${name}`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await launch(page, (await ticket({ search: 'noor' }, language)).url);
+      await bound(page, 'Vendors · 2 · Sara @ Kit');
+      // Modified, invalid (a required name emptied, and an unknown group) and a formula.
+      for (const command of [
+        { kind: 'input', sheet: 0, row: 2, col: 2, text: 'Al Noor Trading Co' },
+        { kind: 'input', sheet: 0, row: 2, col: 4, text: '0100' },
+        { kind: 'clear', sheet: 0, areas: [{ top: 3, left: 2, bottom: 3, right: 2 }] },
+        { kind: 'input', sheet: 0, row: 3, col: 3, text: 'NOPE' },
+        { kind: 'input', sheet: 0, row: 3, col: 7, text: '=B2' },
+      ] as const) {
+        await page.evaluate((c) => window.cgsTest.command(c), command);
+      }
+      await expect
+        .poll(async () => plain(await page.getByTestId('erp-status').textContent()))
+        .toBe('Vendors · 2 · 4 changed · 2 invalid · 1 formula · Sara @ Kit');
+      // The selection away from the states, so that it covers none of them.
+      await select(page, 9, 9);
+      await waitForGrid(page, theme);
+      await expectGolden(page, `erp-states-${name}`, 0.002, { fromRight: language === 'ar' });
+    });
   }
 });

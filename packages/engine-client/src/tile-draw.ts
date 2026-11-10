@@ -2,7 +2,7 @@
 // the tile worker today. Pure apart from the context: no DOM, no engine.
 import { drawIcon } from './icons';
 import { shortenGeneral, singleLine, wrapLines } from './text-fit';
-import type { TilePalette } from './types';
+import type { ErpStateColors, TilePalette } from './types';
 import {
   BAR_AXIS,
   BAR_BORDER,
@@ -20,6 +20,11 @@ import {
   ALIGN_JUSTIFY,
   ALIGN_LEFT,
   ALIGN_RIGHT,
+  CELL_ERP_FORMULA,
+  CELL_ERP_INVALID,
+  CELL_ERP_LOCK,
+  CELL_ERP_MODIFIED,
+  CELL_ERP_READ_ONLY,
   CELL_HASHES,
   CELL_MERGED,
   CELL_NO_BOTTOM_GRID,
@@ -66,6 +71,9 @@ export const TILE_ROWS = 64;
 export const TILE_COLS = 16;
 const CELL_INSET = 2;
 const INDENT_PX = 9;
+/** Room a read-only ERP column's heading leaves before its text for the lock, at 100%. */
+export const LOCK_PX = 11;
+const ERP_STATES = CELL_ERP_MODIFIED | CELL_ERP_INVALID | CELL_ERP_FORMULA | CELL_ERP_LOCK;
 const EMPTY_STYLE: TileStyle = {
   font: '',
   size: 11,
@@ -139,6 +147,12 @@ export function cssColor(rgba: number): string {
 }
 
 const hasAlpha = (rgba: number) => (rgba & 0xff) !== 0;
+
+/** Whether an `0xRRGGBBAA` fill is pale, by its luma. */
+const isLight = (rgba: number) =>
+  (((rgba >>> 24) & 0xff) * 299 + ((rgba >>> 16) & 0xff) * 587 + ((rgba >>> 8) & 0xff) * 114) /
+    1000 >
+  140;
 
 /** What a font falls back on. Calibri has Carlito, whose widths match. */
 export function fontStack(name: string, palette: TilePalette): string {
@@ -328,18 +342,121 @@ class Painter {
           context.fillStyle = hasAlpha(fill) ? cssColor(fill) : palette.background;
           context.fillRect(left, top, width, height);
           this.fillPattern(pattern, this.styleOf(style).patternColor, left, top, width, height);
+          this.tint(flags, fill, left, top, width, height);
         } else if (hasAlpha(fill)) {
           context.fillStyle = cssColor(fill);
           context.fillRect(left, top, width, height);
+          this.tint(flags, fill, left, top, width, height);
         } else if (palette.showGrid !== false) {
+          this.tint(flags, fill, left, top, width, height);
           context.fillStyle = palette.gridline;
           if (!(flags & CELL_NO_RIGHT_GRID))
             context.fillRect(this.rtl ? left : left + width - pixel, top, pixel, height);
           if (!(flags & CELL_NO_BOTTOM_GRID))
             context.fillRect(left, top + height - pixel, width, pixel);
+        } else {
+          this.tint(flags, fill, left, top, width, height);
         }
       }
     }
+  }
+
+  /**
+   * The colours of a cell's ERP states: the light ones on a pale fill whatever the theme, so they
+   * show on a table's light bands in dark mode. None on pages, which never show states.
+   */
+  private erpColors(fill: number): ErpStateColors | null {
+    const erp = this.palette.erp;
+    if (!erp || this.edges) return null;
+    if (hasAlpha(fill)) return isLight(fill) ? erp.light : erp.dark;
+    return this.palette.dark ? erp.dark : erp.light;
+  }
+
+  /** A modified value's tint, or a read-only one's wash, under its text. */
+  private tint(flags: number, fill: number, left: number, top: number, w: number, h: number) {
+    if (!(flags & (CELL_ERP_MODIFIED | CELL_ERP_READ_ONLY))) return;
+    const colors = this.erpColors(fill);
+    if (!colors) return;
+    this.context.fillStyle = flags & CELL_ERP_MODIFIED ? colors.modifiedTint : colors.readOnly;
+    this.context.fillRect(left, top, w, h);
+  }
+
+  /** Room before a heading's text for a read-only column's lock. */
+  private lockRoom(flags: number) {
+    return flags & CELL_ERP_LOCK && this.palette.erp && !this.edges
+      ? devicePx(LOCK_PX, this.scale)
+      : 0;
+  }
+
+  /**
+   * ERP states over the text: Modified's bar and a formula's dotted one on the cell's leading
+   * edge, which is its right on a right-to-left sheet; Invalid's border; a read-only column's
+   * lock in its heading. Never on pages.
+   */
+  drawStates() {
+    const { context, block, xs, ys, scale } = this;
+    if (!this.palette.erp || this.edges) return;
+    const pixel = Math.max(1, Math.round(scale));
+    const bar = Math.max(2, Math.round(3 * scale));
+    for (let row = 0; row < block.rows; row++) {
+      const top = ys[row]!;
+      const height = ys[row + 1]! - top;
+      if (!height) continue;
+      for (let col = 0; col < block.cols; col++) {
+        const { flags, fill, color } = this.cell(row, col);
+        if (!(flags & ERP_STATES)) continue;
+        const left = xs[col]!;
+        const width = xs[col + 1]! - left;
+        const colors = this.erpColors(fill);
+        if (!width || !colors) continue;
+        const lead = this.rtl ? left + width - bar : left;
+        if (flags & CELL_ERP_FORMULA) {
+          context.fillStyle = colors.formula;
+          for (let y = top; y < top + height - pixel; y += 2 * bar)
+            context.fillRect(lead, y, bar, Math.min(bar, top + height - pixel - y));
+        } else if (flags & CELL_ERP_MODIFIED) {
+          context.fillStyle = colors.modified;
+          context.fillRect(lead, top, bar, height - pixel);
+        }
+        if (flags & CELL_ERP_INVALID) {
+          const line = 2 * pixel;
+          context.strokeStyle = colors.invalid;
+          context.lineWidth = line;
+          context.strokeRect(
+            left + line / 2,
+            top + line / 2,
+            width - line - pixel,
+            height - line - pixel,
+          );
+        }
+        if (flags & CELL_ERP_LOCK) {
+          this.drawLock(
+            this.rtl ? left + width - devicePx(LOCK_PX, scale) : left,
+            top,
+            height,
+            hasAlpha(color) ? cssColor(color) : this.palette.text,
+          );
+        }
+      }
+    }
+  }
+
+  /** A small padlock in the room a heading leaves before its text. */
+  private drawLock(left: number, top: number, height: number, color: string) {
+    const { context, scale } = this;
+    const room = devicePx(LOCK_PX, scale);
+    const body = Math.max(5, Math.round(7 * scale));
+    const bodyHeight = Math.max(4, Math.round(5 * scale));
+    const x = left + Math.round((room - body) / 2) + Math.round(scale);
+    const y = top + Math.round((height - bodyHeight) / 2) + Math.round(2 * scale);
+    const stroke = Math.max(1, Math.round(1.5 * scale));
+    context.fillStyle = color;
+    context.fillRect(x, y, body, bodyHeight);
+    context.strokeStyle = color;
+    context.lineWidth = stroke;
+    context.beginPath();
+    context.arc(x + body / 2, y, body / 2 - stroke / 2, Math.PI, 0);
+    context.stroke();
   }
 
   /** Data bars and icons under the text, and notes' corners and invalid cells' rings over it. */
@@ -719,8 +836,15 @@ class Painter {
   }
 
   /** Where a line of this width starts in a cell, by its alignment. */
-  private textStart(style: TileStyle, left: number, right: number, width: number, inset: number) {
-    const indent = devicePx(style.indent * INDENT_PX, this.scale);
+  private textStart(
+    style: TileStyle,
+    left: number,
+    right: number,
+    width: number,
+    inset: number,
+    flags = 0,
+  ) {
+    const indent = devicePx(style.indent * INDENT_PX, this.scale) + this.lockRoom(flags);
     switch (style.horizontal) {
       case ALIGN_RIGHT:
         return right - inset - indent - width - this.gridRight;
@@ -821,7 +945,7 @@ class Painter {
       else right = xs[last + 1]!;
     }
     const inset = devicePx(CELL_INSET, scale);
-    const indent = devicePx(style.indent * INDENT_PX, scale);
+    const indent = devicePx(style.indent * INDENT_PX, scale) + this.lockRoom(cell.flags);
     const room = Math.max(1, right - left - inset * 2 - indent - 1);
     const kind = cell.flags & KIND_MASK;
     const wrap =
@@ -896,7 +1020,7 @@ class Painter {
     // Measuring rich text left another font current.
     if (!rich) metrics = this.fontFor(cell.style, style, shrink);
     const measured = rich ? rich.width : this.width(line);
-    const start = this.textStart(style, left, right, measured, inset);
+    const start = this.textStart(style, left, right, measured, inset, cell.flags);
     let clipLeft = left + this.gridLeft;
     let clipRight = right - this.gridRight;
     const overflowEnd = left + width;
@@ -1225,6 +1349,7 @@ export function drawTile(
   painter.drawExtras();
   painter.drawBorders();
   painter.drawMarks(true);
+  painter.drawStates();
 }
 
 export { ALIGN_CENTER };

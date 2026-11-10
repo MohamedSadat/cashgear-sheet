@@ -1,4 +1,4 @@
-import type { TilePalette } from '@cgs/engine-client';
+import type { ErpStateColors, TilePalette } from '@cgs/engine-client';
 import type { GridColors } from './grid/draw';
 import type { SheetPlatform } from './platform';
 
@@ -123,6 +123,28 @@ function fontOverride() {
   }
 }
 
+/**
+ * ERP cell states, as chosen from the mock-up (decisions, 2026-11-10, Phase 16): amber for edits,
+ * which shows against a table's blue bands, red for invalid, violet for formulas and a faint wash
+ * for read-only. The tile worker picks the light set on a pale fill in dark mode too.
+ */
+export const ERP_STATE_COLORS: { light: ErpStateColors; dark: ErpStateColors } = {
+  light: {
+    modified: '#d97706',
+    modifiedTint: 'rgba(245, 165, 36, 0.2)',
+    invalid: '#d92d20',
+    formula: '#7a5af8',
+    readOnly: 'rgba(16, 24, 40, 0.05)',
+  },
+  dark: {
+    modified: '#f5a524',
+    modifiedTint: 'rgba(245, 165, 36, 0.2)',
+    invalid: '#f97066',
+    formula: '#a48afb',
+    readOnly: 'rgba(255, 255, 255, 0.05)',
+  },
+};
+
 /** The tile worker can't read CSS, so this turns the current theme's tokens into colours. */
 export function readPalette(dark: boolean, root: Element = document.documentElement): TilePalette {
   const style = getComputedStyle(root);
@@ -134,6 +156,7 @@ export function readPalette(dark: boolean, root: Element = document.documentElem
     text: plainColor(token('--cg-text'), dark ? '#e6e6e6' : '#000000'),
     fontFamily: token('--cg-font-family'),
     fontOverride: fontOverride(),
+    erp: ERP_STATE_COLORS,
   };
 }
 

@@ -33,7 +33,7 @@ fn content_of_value(value: &CalcValue) -> Content {
     }
 }
 
-fn content_of_input(input: &CellInput) -> Content {
+pub(crate) fn content_of_input(input: &CellInput) -> Content {
     match input {
         CellInput::Clear => Content::Empty,
         CellInput::Value(value) => content_of_value(value),
@@ -59,7 +59,7 @@ fn content_of_cell(value: &CellValue) -> Content {
     }
 }
 
-fn edit_of_cell(value: &CellValue) -> EditInput {
+pub(crate) fn edit_of_cell(value: &CellValue) -> EditInput {
     match value {
         CellValue::Empty => EditInput::Clear,
         CellValue::Text(text) => EditInput::Value(CalcValue::Text(text.clone())),
@@ -91,6 +91,8 @@ fn table_name_for(entity: &str) -> String {
 struct FieldSummary<'a> {
     name: &'a str,
     label: &'a str,
+    /// `text`, `lookup`, `integer`, `decimal`, `boolean`, `date` or `dateTime`.
+    kind: &'static str,
     editable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     edit_reason: Option<&'a str>,
@@ -121,6 +123,8 @@ struct BindingSummary<'a> {
     max_records: u32,
     max_page_size: u32,
     fields: Vec<FieldSummary<'a>>,
+    /// What the status badge counts: changed fields and records, invalid fields, formulas.
+    counts: cgs_bind::Counts,
 }
 
 #[derive(Serialize)]
@@ -161,6 +165,23 @@ impl Session {
             .any(|(_, table)| areas.iter().any(|area| area_meets(table, area)))
     }
 
+    /// Whether areas reach a bound table's heading or a read-only column's data: what typing,
+    /// paste, fill, clear and the rest may not change. Editable columns change freely.
+    fn read_only_meets(&self, sheet: u32, areas: &[Area]) -> bool {
+        self.bound_areas(sheet).iter().any(|(binding, table)| {
+            areas.iter().any(|area| {
+                if !area_meets(table, area) {
+                    return false;
+                }
+                if area.top <= table.header {
+                    return true;
+                }
+                (area.left.max(table.left)..=area.right.min(table.right))
+                    .any(|col| !binding.editable_in_sheet((col - table.left) as usize))
+            })
+        })
+    }
+
     fn bound_table_named(&self, name: &str) -> Option<&Binding> {
         self.bindings
             .iter()
@@ -187,7 +208,7 @@ impl Session {
             return None;
         }
         let read_only = |sheet: u32, areas: &[Area]| {
-            self.bound_meets(sheet, areas)
+            self.read_only_meets(sheet, areas)
                 .then_some(Refusal::ReadOnly.message())
         };
         let refusal = match command {
@@ -209,21 +230,32 @@ impl Session {
             | C::ReplaceOne {
                 sheet, row, col, ..
             }
-            | C::IncludeCells { sheet, row, col }
-            | C::PasteExternal {
-                sheet, row, col, ..
-            } => return read_only(*sheet, &[Area::cell(*row, *col)]),
+            | C::IncludeCells { sheet, row, col } => {
+                return read_only(*sheet, &[Area::cell(*row, *col)])
+            }
+            C::PasteExternal {
+                sheet,
+                row,
+                col,
+                text,
+                ..
+            } => return read_only(*sheet, &[crate::clip::external_area(*row, *col, text)]),
             C::Clear { sheet, areas } | C::ConvertToNumber { sheet, areas } => {
                 return read_only(*sheet, areas)
             }
             C::Fill { sheet, to, .. } => return read_only(*sheet, &[*to]),
             C::Paste {
-                sheet, to, mode, ..
+                sheet,
+                from,
+                to,
+                mode,
+                ..
             } => {
                 if *mode == PasteMode::Formats {
                     return None;
                 }
-                return read_only(*sheet, &[*to]);
+                // The area the paste writes, which grows to the source's size.
+                return read_only(*sheet, &[crate::command::paste_area(*from, *to)]);
             }
             C::Move {
                 from_sheet,
@@ -687,6 +719,8 @@ impl Session {
         if let Some(as_of) = as_of {
             binding.as_of = as_of;
         }
+        // The originals moved, so every record is compared again.
+        self.restate_all();
         // As Excel's data refresh does, so undo never brings old ERP values back.
         self.history.forget();
         Ok(summary)
@@ -719,13 +753,28 @@ impl Session {
             fields: binding
                 .fields
                 .iter()
-                .map(|field| FieldSummary {
+                .enumerate()
+                .map(|(index, field)| FieldSummary {
                     name: &field.name,
                     label: &field.label,
-                    editable: false,
-                    edit_reason: field.edit_reason.as_deref(),
+                    kind: match field.kind {
+                        cgs_bind::FieldKind::Text => "text",
+                        cgs_bind::FieldKind::Lookup(_) => "lookup",
+                        cgs_bind::FieldKind::Integer => "integer",
+                        cgs_bind::FieldKind::Decimal(_) => "decimal",
+                        cgs_bind::FieldKind::Boolean => "boolean",
+                        cgs_bind::FieldKind::Date => "date",
+                        cgs_bind::FieldKind::DateTime => "dateTime",
+                    },
+                    editable: binding.editable_in_sheet(index),
+                    edit_reason: if index == binding.key_index {
+                        Some("key")
+                    } else {
+                        field.edit_reason.as_deref()
+                    },
                 })
                 .collect(),
+            counts: self.erp_counts(binding),
         };
         serde_json::to_string(&summary).ok()
     }

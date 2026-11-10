@@ -65,6 +65,12 @@ export interface DataToolsHost {
   cellFormat?: CellFormat | null;
   /** Format Cells on a style's look, for Modify's Format…. */
   formatStyle?: (format: CellFormat, done: (change: FormatChange) => void) => void;
+  /** What hovering over a cell with no note or link shows, such as an ERP field's details. */
+  hoverDetails?: (
+    sheet: number,
+    row: number,
+    col: number,
+  ) => Promise<{ title?: string; text: string } | null>;
 }
 
 /** Where Excel 2016 puts a new note's box: see `Note::default_anchor` in cgs-model. 1-based. */
@@ -116,6 +122,8 @@ interface ListMenu {
   row: number;
   col: number;
   items: string[];
+  /** An ERP lookup's labels beside its codes. */
+  labels?: string[];
   anchor: ClientBox;
 }
 
@@ -566,6 +574,7 @@ export function useDataTools(host: DataToolsHost) {
               row: button.row + 1,
               col: button.col + 1,
               items: validation.items,
+              labels: validation.labels,
               anchor: box,
             });
           }
@@ -604,7 +613,14 @@ export function useDataTools(host: DataToolsHost) {
             text: link.tooltip ?? `${target} - Click once to follow.`,
           });
         } else {
-          setHoverTip(null);
+          const details = hostRef.current.hoverDetails;
+          if (!details) {
+            setHoverTip(null);
+            return;
+          }
+          void details(sheet, at.row, at.col)
+            .then((tip) => setHoverTip(tip ? { ...near, ...tip } : null))
+            .catch(() => setHoverTip(null));
         }
       })
       .catch(() => setHoverTip(null));
@@ -1008,13 +1024,14 @@ export function useDataTools(host: DataToolsHost) {
           }}
           onMouseLeave={() => undefined}
         >
-          {listMenu.items.map((item) => (
+          {listMenu.items.map((item, index) => (
             <div
               key={item}
               role="option"
               aria-selected={false}
+              aria-label={listMenu.labels ? `${item} · ${listMenu.labels[index] ?? ''}` : item}
               tabIndex={-1}
-              style={{ padding: '2px 6px', cursor: 'default' }}
+              style={{ padding: '2px 6px', cursor: 'default', whiteSpace: 'nowrap' }}
               onMouseDown={(event) => {
                 event.preventDefault();
                 const { sheet: at, row, col } = listMenu;
@@ -1024,6 +1041,9 @@ export function useDataTools(host: DataToolsHost) {
               }}
             >
               {item}
+              {listMenu.labels?.[index] && listMenu.labels[index] !== item && (
+                <span className="cgs-list-label">{` · ${listMenu.labels[index]}`}</span>
+              )}
             </div>
           ))}
         </div>

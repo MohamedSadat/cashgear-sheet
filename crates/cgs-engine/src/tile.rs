@@ -707,6 +707,9 @@ pub struct TileInput<'a> {
     pub invalid: Option<Vec<(u32, u32)>>,
     /// Error checking's rules that draw a green triangle: none for pages and copies.
     pub errors: u16,
+    /// ERP bindings, whose cell states the screen shows: `None` for pages and copies, so states
+    /// are never printed or copied (plan B.3, item 6).
+    pub erp: Option<&'a cgs_bind::Bindings>,
 }
 
 fn row_span(info: &SheetInfo, from: u32, to: u32) -> i32 {
@@ -927,6 +930,16 @@ pub fn build_tile(
         by_name: HashMap::new(),
     };
     let mut text = String::new();
+    // ERP data's cell states: one read of each bound table's key column for the tile's rows.
+    let erp_states = input.erp.filter(|b| !b.is_empty()).and_then(|bindings| {
+        crate::erp_edit::tile_states(
+            bindings,
+            input.book,
+            input.calc,
+            sheet,
+            (top, left, bottom, right),
+        )
+    });
 
     // Merged areas: which cells they cover, and the text each shows.
     let merges: Vec<Rect> = info.merges_in_tile(top, left).copied().collect();
@@ -1123,6 +1136,9 @@ pub fn build_tile(
                 right_line,
                 bottom_line,
             );
+            if let Some(states) = &erp_states {
+                record.flags |= states.flags(row, col);
+            }
             let offset = writer.cell(&text, record);
             if let Some(value) = value_here {
                 add_runs(
@@ -1349,7 +1365,7 @@ pub fn build_tile(
     if input.errors != 0 && top <= info.used.0 {
         for row in top..=bottom.min(info.used.0) {
             for col in left..=right.min(info.used.1) {
-                let found = crate::errors::shown_errors(
+                let mut found = crate::errors::shown_errors(
                     input.book,
                     input.calc,
                     input.options,
@@ -1357,6 +1373,13 @@ pub fn build_tile(
                     input.errors,
                     (sheet, row, col),
                 );
+                // ERP text fields hold numbers as text on purpose: no triangle for that.
+                if erp_states
+                    .as_ref()
+                    .is_some_and(|states| states.text_field(row, col))
+                {
+                    found &= !cgs_model::checks::NUMBER_AS_TEXT;
+                }
                 if found != 0 {
                     writer.mark(
                         row - top,

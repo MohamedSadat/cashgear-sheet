@@ -15,6 +15,7 @@ pub mod duplicates;
 pub mod dv;
 pub mod edit;
 mod erp;
+mod erp_edit;
 pub mod errors;
 mod fill;
 pub mod filter;
@@ -435,6 +436,7 @@ impl Engine {
                         .contains(&sheet)
                         .then(|| session.invalid_cells(sheet)),
                     errors: session.error_rules,
+                    erp: Some(&session.bindings),
                 };
                 tile::build_tile(
                     &input,
@@ -779,6 +781,7 @@ impl Engine {
             today: session.today,
             invalid: None,
             errors: 0,
+            erp: None,
         };
         tile::display_text(&input, &mut session.cache, sheet, row, col)
     }
@@ -815,6 +818,7 @@ impl Engine {
             today: session.today,
             invalid: None,
             errors: 0,
+            erp: None,
         };
         tile::edit_text(&input, &mut session.cache, sheet, row, col)
     }

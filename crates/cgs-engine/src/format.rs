@@ -1384,6 +1384,7 @@ impl Session {
                         today: self.today,
                         invalid: None,
                         errors: 0,
+                        erp: None,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1446,6 +1447,7 @@ impl Session {
                         today: self.today,
                         invalid: None,
                         errors: 0,
+                        erp: None,
                     };
                     crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                 };
@@ -1471,6 +1473,7 @@ impl Session {
                             today: self.today,
                             invalid: None,
                             errors: 0,
+                            erp: None,
                         };
                         crate::tile::display_text(&input, &mut self.cache, sheet, row, col)
                     };

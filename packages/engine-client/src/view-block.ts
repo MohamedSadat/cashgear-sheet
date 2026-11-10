@@ -2,7 +2,7 @@
 // it and describes the layout, so keep the two in step.
 
 const MAGIC = 0x42564743; // "CGVB", little-endian
-const VERSION = 4;
+const VERSION = 5;
 const HEADER_BYTES = 40;
 const CELL_BYTES = 24;
 const STYLE_BYTES = 40;
@@ -47,6 +47,16 @@ export const CELL_NO_RIGHT_GRID = 1 << 4;
 export const CELL_NO_BOTTOM_GRID = 1 << 5;
 export const CELL_HASHES = 1 << 6;
 export const CELL_OCCUPIED = 1 << 7;
+/** ERP data (Phase 16): an editable field whose value differs from what the ERP sent. */
+export const CELL_ERP_MODIFIED = 1 << 8;
+/** ERP data: a local rule refuses the value. */
+export const CELL_ERP_INVALID = 1 << 9;
+/** ERP data: a formula or a spilled value, left out of commits until converted to values. */
+export const CELL_ERP_FORMULA = 1 << 10;
+/** ERP data: a read-only field's value. */
+export const CELL_ERP_READ_ONLY = 1 << 11;
+/** ERP data: the heading of a read-only column, which carries a lock. */
+export const CELL_ERP_LOCK = 1 << 14;
 
 export const FONT_BOLD = 1;
 export const FONT_ITALIC = 2;

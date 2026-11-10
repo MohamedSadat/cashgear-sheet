@@ -1016,3 +1016,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* An ERP lookup's label beside its code in the dropdown (Phase 16). */
+.cgs-list-label {
+  color: var(--cg-text-secondary, #667085);
+}

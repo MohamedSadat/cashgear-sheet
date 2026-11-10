@@ -239,6 +239,7 @@ impl Session {
             today: self.today,
             invalid: None,
             errors: 0,
+            erp: None,
         };
         if formulas {
             tile::edit_text(&input, &mut self.cache, sheet, row, col)
@@ -422,6 +423,10 @@ impl Session {
         if let crate::input::Typed::Formula(formula) = &typed {
             let fixed = self.calc.check_formula(formula).ok()?;
             typed = crate::input::Typed::Formula(fixed);
+        }
+        // ERP text and lookup fields keep the replaced text as text.
+        if let Some(bound) = self.bound_text_typed(sheet, row, col, &next, &typed) {
+            typed = bound;
         }
         Some(self.typed_edit_at(sheet, (row, col), &typed))
     }

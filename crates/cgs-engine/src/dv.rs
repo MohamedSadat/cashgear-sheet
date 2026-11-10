@@ -429,7 +429,8 @@ impl Session {
     /// What the dialog and the cell show of a cell's rule.
     pub(crate) fn validation_json(&self, sheet: u32, row: u32, col: u32) -> Value {
         let Some(validation) = self.validation_at(sheet, row, col) else {
-            return Value::Null;
+            // An ERP lookup's dropdown, with no rule in the file.
+            return self.erp_list_json(sheet, row, col).unwrap_or(Value::Null);
         };
         let items = if validation.kind == DvKind::List {
             self.list_items(sheet, validation, row, col)

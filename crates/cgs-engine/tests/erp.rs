@@ -237,7 +237,9 @@ fn every_path_that_would_break_a_record_is_refused() {
 }
 
 /// The commands refused before they run, which the guards inside the engine must refuse too.
-const GUARDED: [&str; 26] = [
+/// Convert to Number isn't among them: it leaves bound text fields alone (Phase 16), so with the
+/// command checks off it writes nothing for the guards to refuse.
+const GUARDED: [&str; 25] = [
     r#"{"kind":"input","sheet":0,"row":3,"col":1,"text":"V-99999"}"#,
     r#"{"kind":"input","sheet":0,"row":3,"col":5,"text":"USD"}"#,
     r#"{"kind":"input","sheet":0,"row":1,"col":2,"text":"Heading"}"#,
@@ -250,7 +252,6 @@ const GUARDED: [&str; 26] = [
     r#"{"kind":"move","fromSheet":0,"from":{"top":40,"left":1,"bottom":40,"right":1},"sheet":0,"row":2,"col":1}"#,
     r#"{"kind":"pasteExternal","sheet":0,"row":4,"col":1,"text":"a\tb"}"#,
     r#"{"kind":"replaceOne","query":{"text":"V-","sheet":0},"with":"W-","sheet":0,"row":2,"col":1}"#,
-    r#"{"kind":"convertToNumber","sheet":0,"areas":[{"top":2,"left":10,"bottom":13,"right":10}]}"#,
     r#"{"kind":"axis","sheet":0,"axis":"row","at":5,"count":1,"delete":false}"#,
     r#"{"kind":"axis","sheet":0,"axis":"row","at":13,"count":2,"delete":true}"#,
     r#"{"kind":"axis","sheet":0,"axis":"col","at":3,"count":1,"delete":false}"#,

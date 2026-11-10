@@ -58,6 +58,7 @@ interface Window {
     cellFormat(row: number, col: number): Promise<import('@cgs/engine-client').CellFormat | null>;
     saveBytes(): Promise<Uint8Array>;
     binding(): Promise<import('@cgs/engine-client').ErpBinding | null>;
+    erpChanges(): Promise<import('@cgs/engine-client').ErpChangeset | null>;
     shownText(area: { top: number; left: number; bottom: number; right: number }): Promise<string>;
     pdf(choice?: {
       what?: 'active' | 'workbook' | 'selection';

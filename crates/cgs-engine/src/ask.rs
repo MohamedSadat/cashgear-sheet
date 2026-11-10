@@ -98,6 +98,19 @@ enum Question {
     },
     /// A sheet's page setup, print area and titles, for the Page Layout tab and Page Setup.
     PageSetup { sheet: u32 },
+    /// ERP data's changeset: each changed record's fields from and to, and the formulas and
+    /// cells local rules refuse, apart.
+    ErpChanges,
+    /// A bound cell's field, state, original and new values and broken rule, for hover details.
+    ErpCell { sheet: u32, row: u32, col: u32 },
+    /// The next bound cell a local rule refuses, round the table, or before with `back`.
+    ErpNextError {
+        sheet: u32,
+        row: u32,
+        col: u32,
+        #[serde(default)]
+        back: bool,
+    },
     /// Where a sheet's pages break and what each shows, for printing and Normal view.
     Pages {
         sheet: u32,
@@ -184,6 +197,14 @@ impl Session {
     fn answer(&self, question: Question, locale: &cgs_numfmt::Locale) -> Result<Value, String> {
         Ok(match question {
             Question::PageSetup { sheet } => self.page_setup_json(sheet)?,
+            Question::ErpChanges => self.changeset_json(),
+            Question::ErpCell { sheet, row, col } => self.erp_cell_json(sheet, row, col, locale),
+            Question::ErpNextError {
+                sheet,
+                row,
+                col,
+                back,
+            } => self.erp_next_error_json(sheet, row, col, back),
             Question::Pages { sheet, request } => self.pages_json(sheet, &request)?,
             Question::TableAt { sheet, row, col } => {
                 let Some(info) = self.table_at(sheet, row, col) else {

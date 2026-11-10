@@ -513,6 +513,12 @@ pub enum Command {
         sheet: u32,
         areas: Vec<Area>,
     },
+    /// Discard Changes on ERP data: the edited cells in `areas`, or all of them, take back what
+    /// the ERP sent.
+    ErpDiscard {
+        #[serde(default)]
+        areas: Option<Vec<Area>>,
+    },
     /// Update Formula to Include Cells: the formula's range grows over the numbers beside it.
     IncludeCells {
         sheet: u32,
@@ -1219,7 +1225,7 @@ impl Session {
         })
     }
 
-    pub(crate) fn apply_cells(&mut self, edits: Vec<EditCell>) -> Result<Op, String> {
+    pub(crate) fn apply_cells(&mut self, mut edits: Vec<EditCell>) -> Result<Op, String> {
         for edit in &edits {
             let sheet = self
                 .book
@@ -1238,7 +1244,9 @@ impl Session {
                 return Err("That cell is off the sheet.".to_string());
             }
         }
-        // ERP records keep their keys: every cell write passes the identity guard.
+        // ERP text fields stay text, and records keep their keys: every cell write is coerced
+        // and passes the identity guard.
+        self.coerce_bound_values(&mut edits);
         self.guard_cells(&edits)?;
         let mut inputs = Vec::with_capacity(edits.len());
         let mut before_styles = Vec::with_capacity(edits.len());
@@ -1309,6 +1317,8 @@ impl Session {
             });
             self.note_cell_patch(edit);
         }
+        // ERP records' states follow their cells, undo and redo included.
+        self.note_bound_writes(&edits);
         undo.reverse();
         if was_rich.is_empty() {
             return Ok(Op::Cells(undo));
@@ -2805,9 +2815,14 @@ impl Session {
             if self.cuts_an_array(sheet, Area::cell(row, col)) {
                 return Err("You can't change part of an array.".to_string());
             }
-            match as_text(self, row, col) {
-                Some(edit) => edits.push(edit),
-                None => edits.push(self.typed_edit(sheet, row, col, &typed, (row, col))),
+            // ERP text and lookup fields keep what's typed as text, formulas apart.
+            if let Some(bound) = self.bound_text_typed(sheet, row, col, text, &typed) {
+                edits.push(self.typed_edit(sheet, row, col, &bound, (row, col)));
+            } else {
+                match as_text(self, row, col) {
+                    Some(edit) => edits.push(edit),
+                    None => edits.push(self.typed_edit(sheet, row, col, &typed, (row, col))),
+                }
             }
         } else {
             for area in areas {
@@ -2819,6 +2834,10 @@ impl Session {
                 }
                 for r in area.top..=area.bottom {
                     for c in area.left..=area.right {
+                        if let Some(bound) = self.bound_text_typed(sheet, r, c, text, &typed) {
+                            edits.push(self.typed_edit(sheet, r, c, &bound, (row, col)));
+                            continue;
+                        }
                         match as_text(self, r, c) {
                             Some(edit) => edits.push(edit),
                             None => edits.push(self.typed_edit(sheet, r, c, &typed, (row, col))),
@@ -3847,6 +3866,7 @@ impl Session {
             Command::ConvertToNumber { sheet, areas } => {
                 self.convert_to_number(sheet, &areas, locale)
             }
+            Command::ErpDiscard { areas } => self.erp_discard(areas.as_deref()),
             Command::IncludeCells { sheet, row, col } => {
                 self.include_cells(sheet, row, col, locale)
             }

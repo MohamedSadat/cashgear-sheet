@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { cssColor, drawTile, fontStack, tileEdges, type TileContext } from './tile-draw';
 import type { TilePalette } from './types';
 import {
+  CELL_ERP_FORMULA,
+  CELL_ERP_INVALID,
+  CELL_ERP_LOCK,
+  CELL_ERP_MODIFIED,
+  CELL_ERP_READ_ONLY,
   CELL_HASHES,
   CELL_NO_RIGHT_GRID,
   CELL_OCCUPIED,
@@ -55,6 +60,10 @@ function recorder() {
     fillRect(x: number, y: number, width: number, height: number) {
       rects.push([String(this.fillStyle), x, y, width, height]);
     },
+    strokeRect(x: number, y: number, width: number, height: number) {
+      rects.push(['stroke ' + String(this.strokeStyle), x, y, width, height]);
+    },
+    arc() {},
     fillText(text: string, x: number, y: number) {
       texts.push({ text, color: String(this.fillStyle), x, y, direction: this.direction });
     },
@@ -323,5 +332,124 @@ describe('drawTile on a right-to-left sheet', () => {
       styles: [{ horizontal: 1, vertical: 1 }],
     });
     expect(texts[0]!.x).toBe(64 + (128 - 18) / 2);
+  });
+});
+
+describe('ERP cell states', () => {
+  const erp = {
+    light: {
+      modified: 'amber',
+      modifiedTint: 'amber-tint',
+      invalid: 'red',
+      formula: 'violet',
+      readOnly: 'wash',
+    },
+    dark: {
+      modified: 'AMBER',
+      modifiedTint: 'AMBER-TINT',
+      invalid: 'RED',
+      formula: 'VIOLET',
+      readOnly: 'WASH',
+    },
+  };
+  const states = {
+    rowPx: [20],
+    colPx: [64, 64, 64, 64],
+    cells: [
+      { flags: CELL_ERP_MODIFIED },
+      { flags: CELL_ERP_MODIFIED | CELL_ERP_INVALID },
+      { flags: CELL_ERP_FORMULA },
+      { flags: CELL_ERP_READ_ONLY },
+    ],
+  };
+  const drawn = (
+    tile: Parameters<typeof encodeTile>[0],
+    more: Partial<TilePalette>,
+    edges?: Parameters<typeof drawTile>[4],
+  ) => {
+    const recording = recorder();
+    drawTile(
+      recording.context,
+      decodeViewBlock(encodeTile(tile)),
+      { ...palette, erp, ...more },
+      1,
+      edges,
+    );
+    return recording.rects;
+  };
+
+  it('tints, bars and rings cells on their leading edge', () => {
+    const rects = drawn(states, {});
+    expect(rects).toContainEqual(['amber-tint', 0, 0, 64, 20]);
+    expect(rects).toContainEqual(['amber', 0, 0, 3, 19]);
+    expect(rects).toContainEqual(['amber', 64, 0, 3, 19]);
+    expect(rects).toContainEqual(['stroke red', 65, 1, 61, 17]);
+    expect(rects).toContainEqual(['wash', 192, 0, 64, 20]);
+    // A formula's bar is dotted, and its cell keeps its own background.
+    expect(rects.filter(([color]) => color === 'violet')).toEqual([
+      ['violet', 128, 0, 3, 3],
+      ['violet', 128, 6, 3, 3],
+      ['violet', 128, 12, 3, 3],
+      ['violet', 128, 18, 3, 1],
+    ]);
+  });
+
+  it('puts the bar on the right of a right-to-left sheet, its leading edge', () => {
+    const rects = drawn(states, { rightToLeft: true });
+    // Column A is the rightmost on screen.
+    expect(rects).toContainEqual(['amber', 253, 0, 3, 19]);
+  });
+
+  it('takes the light colours on a pale fill in dark mode, and the dark ones elsewhere', () => {
+    const rects = drawn(
+      {
+        rowPx: [20],
+        colPx: [64, 64],
+        cells: [{ fill: 0xd9e1f2ff, flags: CELL_ERP_MODIFIED }, { flags: CELL_ERP_MODIFIED }],
+      },
+      { dark: true, background: '#151b24' },
+    );
+    expect(rects).toContainEqual(['amber', 0, 0, 3, 19]);
+    expect(rects).toContainEqual(['AMBER', 64, 0, 3, 19]);
+  });
+
+  it("leaves room for a read-only heading's lock before its text", () => {
+    const plain = recorder();
+    drawTile(
+      plain.context,
+      decodeViewBlock(encodeTile({ rowPx: [20], colPx: [64], cells: [{ text: 'Account' }] })),
+      { ...palette, erp },
+      1,
+    );
+    const locked = recorder();
+    drawTile(
+      locked.context,
+      decodeViewBlock(
+        encodeTile({
+          rowPx: [20],
+          colPx: [64],
+          cells: [{ text: 'Account', flags: CELL_ERP_LOCK }],
+        }),
+      ),
+      { ...palette, erp },
+      1,
+    );
+    expect(locked.texts[0]!.x - plain.texts[0]!.x).toBe(11);
+  });
+
+  it('draws nothing without the palette’s colours, or on pages', () => {
+    const none = drawn(states, { erp: undefined });
+    expect(none.some(([color]) => /amber|violet|red|wash/i.test(color))).toBe(false);
+    const page = drawn(
+      states,
+      {},
+      {
+        xs: [0, 64, 128, 192, 256],
+        ys: [0, 20],
+        perPixelX: 1,
+        perPixelY: 1,
+      },
+    );
+    expect(page.some(([color]) => /amber|violet|red|wash/i.test(color))).toBe(false);
   });
 });

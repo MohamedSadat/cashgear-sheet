@@ -295,7 +295,8 @@ export function ValidationDialog(props: ValidationDialogProps) {
     if (engine) {
       engine
         .query({ kind: 'validationAt', sheet, row, col })
-        .then((info) => live && setForm(formOf(info)))
+        // An ERP lookup's dropdown is no rule of the file's, so there is none to edit.
+        .then((info) => live && setForm(formOf(info?.lookup ? null : info)))
         .catch((reason: unknown) => {
           if (live) setError(reason instanceof Error ? reason.message : String(reason));
         });
