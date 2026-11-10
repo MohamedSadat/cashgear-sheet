@@ -4,6 +4,34 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.8.0] - 2026-11-10
+
+Changes to Cash Gear ERP's vendors now reach the ERP: they can be validated, reviewed and
+committed from the sheet, all of them or none, and a commit that loses its answer is sent again
+without being saved twice. Normal workbooks are unchanged, and the ERP's button stays hidden for
+every company until Phase 18.
+
+- **Validate** on the ERP Data tab asks Cash Gear ERP to check every change without saving
+  anything. What it refuses goes on its cell with the red border, counts in the status bar and is
+  reached by Next Error, with the reason in hover details; editing the cell clears it.
+- **Review Changes** lists every changed field with its record, original and new value, status
+  and message, filtered to the invalid, the conflicting, those in rows a filter hides, or
+  formulas. Go to Cell selects one, and Discard Selected puts the ERP's values back.
+- **Commit** sends every change, or with Commit Changes in Visible Rows only those the filter
+  shows, after a confirmation that states the counts. Up to 500 vendors go at once; past that it
+  asks to commit in smaller filtered groups. Edits wait while it runs. Cells that still hold what
+  was sent take the values the ERP saved and show a green bar until they change, read-only
+  columns such as Modified by follow, and undo clears.
+- **Refused commits write nothing:** the ERP's errors go on their cells, and vendors someone else
+  changed since they were opened show an orange hatch with "!", with who changed them and when.
+  Commit waits until those changes are discarded or refreshed.
+- **A lost answer:** a commit with no answer is sent again under the same id, which Cash Gear ERP
+  saves only once; if the answer still doesn't come, Try again sends the same commit.
+- **Cash Gear ERP:** UnifiedAPI's vendor Commit, with dry runs, strict row versions, one
+  transaction per commit, idempotency by commit id, an audit row per changed field and a SystemLog
+  summary (Track E2, in the ERP's repository). `Create_SheetCommit.sql` runs in each tenant
+  database before Commit is used there.
+
 ## [1.7.0] - 2026-11-10
 
 Cash Gear ERP's vendors can now be edited in the sheet, with every change tracked against what the

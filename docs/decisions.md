@@ -863,3 +863,19 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | Inactive currencies (E1's open note) | Sent with `active: false`, as vendor groups are: a record may keep one, a change can't choose one |
 | Audit | `SheetChangeAudit.OldValue` is the database's value before the write, read under the lock, not the request's `from`; one SystemLog row per commit, of at most 250 characters, naming the commitId and counts |
 | Track E2's tests | SQLite with a RowVersion stamped on every vendor write for logic, and LocalDB behind `CASHGEAR_SHEET_SQL_TESTS=1` for locks, conflicts, rollback and idempotency; the contract suite against UnifiedAPI on LocalDB with `ERP_TEST_STAGE=E2` |
+
+**Defaults picked during the phase (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Validate past the batch limit | Sent as dry runs of at most `maxCommitRecords` records each, one after another, each with its own id. A dry run stores nothing, so splitting it is harmless where a commit's would not be |
+| Answers that leave a commit's outcome unknown | No answer and a 500 keep writes held and offer Try again with the same id ("Cash Gear ERP couldn't finish the commit, so it isn't known whether the changes were saved…" for a 500), since Track E2 found the database's own COMMIT can fail that way. A 429 or 503 still refused after waiting says "Cash Gear ERP is busy, so nothing was saved. Try again in a moment." A 400 or 409 drops the id, since nothing was written; an answer the sheet can't read keeps it for the same payload |
+| Other failures of a commit | An ended session: "Your Cash Gear ERP session has ended, so nothing was sent. Open the sheet again from Cash Gear ERP." No Edit privilege: "Your Cash Gear ERP account can't edit vendors, so nothing was saved." An answer the sheet can't read: "…so it isn't known what was saved. Refresh to see what Cash Gear ERP holds." Batch errors by code: `schema.changed` asks to open the sheet again, `company.mismatch`, `commit.reused` and `batch.tooLarge` have their own lines, and any other code shows the ERP's message |
+| The ERP's errors on cells | Worded by code: "Payment method can't be empty in Cash Gear ERP.", "…is longer than Cash Gear ERP takes.", "NOPE isn't in Cash Gear ERP's list for Payment method.", "Cash Gear ERP doesn't let Mobile be edited from the sheet.", "Editing Blocked needs a privilege your Cash Gear ERP account doesn't have.", "This vendor isn't in Cash Gear ERP any more.", "This vendor is locked in Cash Gear ERP."; a code the sheet doesn't know shows the ERP's message |
+| Conflicts in hover details and Review | "Changed in Cash Gear ERP by omar on Nov 10, 2026, 10:04 AM · now NET60". The badge counts records in conflict: "1 conflict" |
+| Committed in hover details | "Committed to Cash Gear ERP." |
+| The new states' colours | Conflict: an orange hatch (`#e04f16` at 35%, dark `#f38744` at 40%) with a "!" in the trailing top corner, over Modified's bar. Committed: a green bar on the leading edge (`#079455`, dark `#47cd89`), no tint |
+| The ERP Data tab | The Changes group holds Validate (the check icon), Review Changes (the eye), Commit (save) with Commit All Changes… and Commit Changes in Visible Rows…, Discard Changes and Next Error. Validate and Commit need changed values, an open session and nothing in flight; Review needs changes, errors or conflicts |
+| The Review dialog's details | Go to Cell (and double-click or Enter on a row) closes the dialog and selects the cell, as Excel's Go To does; a hidden row says "This row is hidden by a filter." Filters show their counts ("In hidden rows (412)"). Selection is by checkbox, for Discard Selected. The list follows the sheet while it's open |
+| The confirmation's button | "Commit 37 changes"; the confirmation's Review Changes opens the dialog instead |
+| Connection Info | "Changes stay in this sheet until you commit them." |

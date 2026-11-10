@@ -197,6 +197,16 @@ Found in Phase 16:
 - The dev server in the browser pane offers to recover working copies from earlier sessions on each load. Close the prompts; don't discard them.
 - From Chrome 157, an installed web app can't read a file Open with launches from a folder File System Access counts as the system's, such as `%LOCALAPPDATA%\Temp`: `getFile()` throws a SecurityError. The PWA test launches its file from its own output folder.
 
+Found in Phase 17:
+
+- What the ERP answered lives in `Binding::marks` (`cgs-bind/src/marks.rs`): errors by key and slot with the value sent, conflicts by key, and the last commit's saved fields. `note_record` lays them over the states and drops those the cells outgrew. Anything that replaces originals must take or clear them: `apply_refresh` clears all, `take_commit` one record.
+- A commit freezes the bound table (`erp_frozen`): `guard_cells` refuses every write into it and `command()` refuses undo and redo, until `erp_apply_commit` lets go or the shell calls `erpFreeze(false)`. The network call runs outside the shell's command queue; only the freeze, the states and the result go through it.
+- A commit is safe to send again only with the same `commitId` and payload. After no answer, a 500 (the ERP's own COMMIT can fail with its outcome unknown) or a 503, keep the id; `payloadKey` tells whether the next commit is the same payload.
+- `cgs-bind` decodes versions as strict base64: the last character before `=` must leave the unused bits zero. `AAAAAAAACQ0=` reads, `AAAAAAAACQ1=` is refused as no version.
+- The mock's `/__mock/fault` appends faults and takes the first that matches; one with `times: 0` lasts until `/__mock/reset`. A lost answer for a commit needs `times: 4`: the request and the HTTP layer's three retries.
+- Python here writes `\r\n` in text mode, and some docs check out with CRLF. Read with universal newlines and write with `newline=''`, or Prettier and diffs see every line changed. Git normalises on commit (`eol=lf`).
+- The Bash tool can refuse a heredoc whose text holds apostrophes ("unexpected EOF while looking for matching"). Write the script with the Write tool and run it.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
