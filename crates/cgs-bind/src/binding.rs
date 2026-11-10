@@ -315,8 +315,9 @@ impl Binding {
     }
 
     /// Takes in what Cash Gear ERP answered to a dry run or a commit of `sent`: its errors (400)
-    /// by id and field, and its conflicts (409) by id. Marks the sent records had before are
-    /// replaced, others are kept. A record's own error marks each field it sent; errors that name
+    /// by id and field, and its conflicts (409) by id. The sent records' errors are replaced, and
+    /// their conflicts too unless the answer has errors, since the ERP checks versions only after
+    /// them; other records' marks are kept. A record's own error marks each field it sent; errors that name
     /// nothing the commit carried are given back, since no cell can show them. The engine then
     /// compares the records' rows again, which lays the marks over their states.
     pub fn set_marks(
@@ -330,9 +331,13 @@ impl Binding {
             .iter()
             .filter_map(|record| Some((self.key_of(record.id)?.to_string(), record)))
             .collect();
+        // Every answer is a verdict on errors. Versions are checked only once there are none, so
+        // a 400 says nothing of conflicts, and those the records had stay.
         for key in sent_by_key.keys() {
             self.marks.errors.remove(key);
-            self.marks.conflicts.remove(key);
+            if errors.is_empty() {
+                self.marks.conflicts.remove(key);
+            }
         }
         let mut records = HashSet::new();
         for error in errors {
@@ -788,6 +793,23 @@ mod tests {
         binding.note_record("V-2", &[text("B2"), text("NET30")]);
         let fields = binding.states.get("V-2").unwrap();
         assert_ne!(fields[0].bits & fields[1].bits & CONFLICT, 0);
+        // A 400 says nothing of versions, so the conflict stays; an answer without errors ends it.
+        let sent_two = sent(
+            2,
+            &[("vendorName", "B2".into()), ("payMethod", "NET30".into())],
+        );
+        binding.set_marks(
+            std::slice::from_ref(&sent_two),
+            &[error(Some(2), Some("payMethod"), "lookup.notFound")],
+            &[],
+        );
+        binding.note_record("V-2", &[text("B2"), text("NET30")]);
+        assert_eq!(binding.states.counts().conflicts, 1);
+        assert!(binding.marks.errors.contains_key("V-2"));
+        binding.set_marks(std::slice::from_ref(&sent_two), &[], &[conflict(&[])]);
+        binding.note_record("V-2", &[text("B2"), text("NET30")]);
+        assert!(binding.marks.errors.is_empty());
+        assert_eq!(binding.states.counts().conflicts, 1);
         // Discarding the record's changes ends its conflict.
         binding.note_record("V-2", &[text("B"), text("CASH")]);
         assert!(binding.states.get("V-2").is_none());

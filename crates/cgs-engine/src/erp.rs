@@ -125,6 +125,8 @@ struct BindingSummary<'a> {
     as_of: &'a str,
     max_records: u32,
     max_page_size: u32,
+    /// The most records one commit takes (Phase 17).
+    max_commit_records: u32,
     fields: Vec<FieldSummary<'a>>,
     /// What the status badge counts: changed fields and records, invalid fields, formulas.
     counts: cgs_bind::Counts,
@@ -756,6 +758,7 @@ impl Session {
             as_of: &binding.as_of,
             max_records: binding.max_records,
             max_page_size: binding.max_page_size,
+            max_commit_records: binding.max_commit_records,
             fields: binding
                 .fields
                 .iter()
