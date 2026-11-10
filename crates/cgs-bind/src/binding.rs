@@ -2,13 +2,15 @@
 //! values. They live in the engine beside the cells and never in them, so no saved file holds
 //! ids, versions or originals (plan B.3, items 1 and 9).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
 use crate::base64::encode_version;
-use crate::guard::TableArea;
-use crate::schema::{BoundField, EntitySchema, Language};
+use crate::guard::{Content, TableArea};
+use crate::rules::{check, Rule};
+use crate::schema::{BoundField, EntitySchema, FieldKind, Language, LookupEntry};
+use crate::state::{field_state, FieldState, States};
 use crate::value::CellValue;
 use crate::wire::{StagedRecord, Staging};
 
@@ -63,6 +65,12 @@ pub struct Binding {
     pub key_index: usize,
     /// The columns, by field index, whose originals are kept.
     pub editable: Vec<usize>,
+    /// For each field, its place in `editable`, if it has one.
+    slots: Vec<Option<usize>>,
+    /// The schema's lookup lists, with labels in the session's language.
+    pub lookups: BTreeMap<String, Vec<LookupEntry>>,
+    /// The records whose editable fields differ from the ERP's.
+    pub states: States,
     records: HashMap<String, RecordMeta>,
     keys_by_id: HashMap<i64, String>,
     /// Records the last refresh didn't find in the ERP any more.
@@ -95,15 +103,20 @@ impl Binding {
             .fields
             .iter()
             .enumerate()
-            .filter(|(_, field)| field.editable)
+            .filter(|&(index, field)| field.editable && index != staging.key_index)
             .map(|(index, _)| index)
             .collect();
+        let mut slots = vec![None; staging.fields.len()];
+        for (slot, &index) in editable.iter().enumerate() {
+            slots[index] = Some(slot);
+        }
         let mut binding = Self {
             table_id,
             table_name,
             sheet,
             entity_label: schema.label.get(session.language()).to_string(),
             entity_label_en: schema.label.en.clone(),
+            lookups: schema.lookup_lists(session.language()),
             session,
             schema_version: schema.schema_version.clone(),
             key_field: schema.key_field.clone(),
@@ -113,6 +126,8 @@ impl Binding {
             fields: staging.fields.clone(),
             key_index: staging.key_index,
             editable,
+            slots,
+            states: States::default(),
             records: HashMap::with_capacity(staging.records.len()),
             keys_by_id: HashMap::with_capacity(staging.records.len()),
             missing: BTreeSet::new(),
@@ -173,9 +188,64 @@ impl Binding {
         area.left..=area.right
     }
 
-    /// Whether a field may be edited in the sheet. Phase 15 keeps every bound column read-only.
-    pub fn editable_in_sheet(&self, _field: usize) -> bool {
-        false
+    /// Whether a field may be edited in the sheet: what the schema says for this caller. The key
+    /// never is, whatever the schema says, since it keeps each row with its record.
+    pub fn editable_in_sheet(&self, field: usize) -> bool {
+        self.slots.get(field).is_some_and(Option::is_some)
+    }
+
+    /// A field's place among the editable fields, whose originals and states are kept.
+    pub fn slot(&self, field: usize) -> Option<usize> {
+        self.slots.get(field).copied().flatten()
+    }
+
+    /// A lookup field's list.
+    pub fn lookup_list(&self, field: usize) -> Option<&[LookupEntry]> {
+        match &self.fields.get(field)?.kind {
+            FieldKind::Lookup(list) => self.lookups.get(list).map(Vec::as_slice),
+            _ => None,
+        }
+    }
+
+    /// A lookup's code as its list spells it, for text typed in another case.
+    pub fn lookup_spelling(&self, field: usize, text: &str) -> Option<&str> {
+        let list = self.lookup_list(field)?;
+        if list.iter().any(|item| item.code == text) {
+            return None;
+        }
+        list.iter()
+            .find(|item| item.code.to_lowercase() == text.to_lowercase())
+            .map(|item| item.code.as_str())
+    }
+
+    /// The rule an editable field's value breaks, compared with its record's original.
+    pub fn rule(&self, field: usize, original: &CellValue, now: &Content) -> Option<Rule> {
+        check(&self.fields[field], now, original, self.lookup_list(field))
+    }
+
+    /// A record's editable fields compared with what the ERP sent, given what its cells hold now
+    /// in `editable`'s order. `None` for a key the binding doesn't know.
+    pub fn record_states(&self, key: &str, now: &[Content]) -> Option<Vec<FieldState>> {
+        let record = self.records.get(key)?;
+        Some(
+            self.editable
+                .iter()
+                .zip(record.originals.iter())
+                .zip(now)
+                .map(|((&field, original), now)| {
+                    field_state(&self.fields[field].kind, original, now, || {
+                        self.rule(field, original, now)
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Takes a record's cells in, as they are now.
+    pub fn note_record(&mut self, key: &str, now: &[Content]) {
+        if let Some(fields) = self.record_states(key, now) {
+            self.states.set(key, fields);
+        }
     }
 
     /// A staging for a refresh of this binding's records.

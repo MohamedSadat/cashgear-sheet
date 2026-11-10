@@ -207,6 +207,10 @@ mod tests {
             kind,
             editable: false,
             edit_reason: Some("notEditable".into()),
+            required: false,
+            max_length: None,
+            min: None,
+            max: None,
         };
         vec![
             field("vendorAccount", "Account", FieldKind::Text),

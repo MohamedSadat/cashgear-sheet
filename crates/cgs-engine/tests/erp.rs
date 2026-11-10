@@ -1,317 +1,12 @@
 //! ERP-bound tables through the engine (Phase 15): typed binding, the identity guard on every
 //! refused path, refresh by id, and a property test over random sorts, filters, undo and redo
-//! that every key stays with its own record's values.
+//! that every key stays with its own record's values. Phase 16's editing is in `erp_edit.rs`.
 
-use std::collections::HashMap;
-use std::rc::Rc;
+mod erp_harness;
 
-use cgs_calc::{CalcValue, CellSink, Rect, SheetRect};
-use cgs_engine::{Engine, LoadPhase};
-
-const READ_ONLY: &str = "This column is read-only in Cash Gear ERP.";
-const ROWS: &str = "Rows can't be added or deleted in ERP data.";
-const COLUMNS: &str = "Columns can't be added or deleted in ERP data.";
-const TABLE: &str = "The table that holds ERP data can't be resized, renamed or reshaped.";
-const SIDEWAYS: &str = "ERP data can only be sorted top to bottom.";
-const WHOLE: &str = "ERP data is sorted as a whole table. Select a cell in it and sort again.";
-const SHEET: &str = "A sheet that holds ERP data can't be deleted.";
-
-/// mulberry32, so every run sees the same records and steps.
-struct Random(u32);
-
-impl Random {
-    fn next(&mut self) -> f64 {
-        self.0 = self.0.wrapping_add(0x6d2b_79f5);
-        let mut t = self.0;
-        t = (t ^ (t >> 15)).wrapping_mul(t | 1);
-        t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(t | 61));
-        f64::from(t ^ (t >> 14)) / 4_294_967_296.0
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() * n as f64) as usize % n.max(1)
-    }
-}
-
-const FIELDS: [(&str, &str, &str); 14] = [
-    (
-        "vendorAccount",
-        "Account",
-        r#""type":"text","maxLength":50"#,
-    ),
-    ("vendorName", "Name", r#""type":"text","maxLength":150"#),
-    (
-        "vendorGroup",
-        "Group",
-        r#""type":"lookup","lookup":"vendorGroups""#,
-    ),
-    ("mobile", "Mobile", r#""type":"text","maxLength":50"#),
-    (
-        "currency",
-        "Currency",
-        r#""type":"lookup","lookup":"currencies""#,
-    ),
-    (
-        "payMethod",
-        "Payment method",
-        r#""type":"lookup","lookup":"paymentModes""#,
-    ),
-    ("address", "Address", r#""type":"text""#),
-    ("taxFile", "Tax file", r#""type":"text""#),
-    ("blocked", "Blocked", r#""type":"boolean""#),
-    ("bankAccount", "Bank account", r#""type":"text""#),
-    (
-        "debitLimit",
-        "Credit limit",
-        r#""type":"decimal","scale":2"#,
-    ),
-    ("since", "Since", r#""type":"date""#),
-    ("modifiedBy", "Modified by", r#""type":"text""#),
-    ("modifiedDate", "Modified", r#""type":"dateTime""#),
-];
-
-fn schema(max_records: u32) -> String {
-    let fields: Vec<String> = FIELDS
-        .iter()
-        .map(|(name, label, kind)| {
-            let editable = matches!(*name, "vendorName" | "mobile");
-            let reason = if editable { "" } else { r#","editReason":"notEditable""# };
-            format!(
-                r#"{{"name":"{name}","label":{{"en":"{label}","ar":"{label} ع"}},{kind},"editable":{editable}{reason}}}"#
-            )
-        })
-        .collect();
-    format!(
-        r#"{{"entity":"vendors","schemaVersion":"vendors.1","label":{{"en":"Vendors","ar":"الموردون"}},
-        "keyField":"vendorAccount","idField":"recId","maxPageSize":1000,"maxRecords":{max_records},"maxCommitRecords":500,
-        "fields":[{}],
-        "lookups":{{"vendorGroups":[{{"code":"LOCAL","label":{{"en":"Local","ar":"محلي"}}}},{{"code":"IMPORT","label":{{"en":"Import","ar":"Import"}}}},{{"code":"SERVICES","label":{{"en":"Services","ar":"خدمات"}}}}],
-          "paymentModes":[{{"code":"CASH","label":{{"en":"Cash","ar":"نقدي"}}}},{{"code":"NET30","label":{{"en":"30 days","ar":"30 days"}}}}],
-          "currencies":[{{"code":"EGP","label":{{"en":"EGP","ar":"EGP"}}}},{{"code":"USD","label":{{"en":"USD","ar":"USD"}}}}]}}}}"#,
-        fields.join(",")
-    )
-}
-
-const SESSION: &str = r#"{"company":"Kit","userId":"u17","userName":"Sara","language":"en","entity":"vendors","entityRoute":"api/payable/VendorSheet","filter":null,"idleExpiresAt":"x"}"#;
-
-/// One record as the ERP sends it, and what its cells must hold.
-#[derive(Clone)]
-struct Record {
-    id: i64,
-    key: String,
-    wire: Vec<String>,
-    cells: Vec<CalcValue>,
-}
-
-fn quoted(text: &str) -> String {
-    serde_json::to_string(text).unwrap()
-}
-
-fn records(n: usize, seed: u32) -> Vec<Record> {
-    let mut pick = Random(seed);
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let id = 900_001 + (i as i64) * 3;
-        let key = format!("V-{:05}", i + 1);
-        let arabic = pick.next() < 0.4;
-        let name = if arabic {
-            format!("شركة النيل {}", i + 1)
-        } else {
-            format!("Nile Trading {}", i + 1)
-        };
-        let group = ["LOCAL", "IMPORT", "SERVICES"][pick.below(3)];
-        let mobile = (pick.next() < 0.85).then(|| format!("01{:09}", pick.below(1_000_000_000)));
-        let currency = ["EGP", "USD"][pick.below(2)];
-        let pay = ["CASH", "NET30"][pick.below(2)];
-        let address = (pick.next() < 0.5).then(|| format!("{} St", pick.below(200)));
-        let tax = (pick.next() < 0.7).then(|| format!("{:04}", pick.below(10_000)));
-        let blocked = pick.next() < 0.1;
-        let cents = pick.below(5_000_000);
-        let limit = format!("{}.{:02}", cents / 100, cents % 100);
-        let day = 1 + pick.below(28);
-        let since = format!("2024-{:02}-{day:02}", 1 + pick.below(12));
-        let wire = vec![
-            quoted(&key),
-            quoted(&name),
-            quoted(group),
-            mobile.as_deref().map_or("null".into(), quoted),
-            quoted(currency),
-            quoted(pay),
-            address.as_deref().map_or("null".into(), quoted),
-            tax.as_deref().map_or("null".into(), quoted),
-            blocked.to_string(),
-            "null".to_string(),
-            quoted(&limit),
-            quoted(&since),
-            quoted("seed"),
-            quoted("2026-10-30T08:12:00+02:00"),
-        ];
-        let text = |t: Option<&str>| t.map_or(CalcValue::Empty, |t| CalcValue::Text(t.to_string()));
-        let since_serial = {
-            // Days from 2024-01-01 (serial 45292), months of 2024, a leap year.
-            let month: usize = since[5..7].parse().unwrap();
-            let lengths = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-            45292.0 + lengths[..month - 1].iter().sum::<u32>() as f64 + day as f64 - 1.0
-        };
-        let cells = vec![
-            text(Some(&key)),
-            text(Some(&name)),
-            text(Some(group)),
-            text(mobile.as_deref()),
-            text(Some(currency)),
-            text(Some(pay)),
-            text(address.as_deref()),
-            text(tax.as_deref()),
-            CalcValue::Bool(blocked),
-            CalcValue::Empty,
-            CalcValue::Number(limit.parse().unwrap()),
-            CalcValue::Number(since_serial),
-            text(Some("seed")),
-            CalcValue::Number(46325.0 + (8.0 * 3600.0 + 12.0 * 60.0) / 86400.0),
-        ];
-        out.push(Record {
-            id,
-            key,
-            wire,
-            cells,
-        });
-    }
-    out
-}
-
-fn wire_record(record: &Record) -> String {
-    let values: Vec<String> = FIELDS
-        .iter()
-        .zip(&record.wire)
-        .map(|((name, _, _), value)| format!("{}:{value}", quoted(name)))
-        .collect();
-    format!(
-        r#"{{"id":{},"key":{},"version":"AAAAAAAAB9E=","values":{{{}}}}}"#,
-        record.id,
-        quoted(&record.key),
-        values.join(",")
-    )
-}
-
-fn pages(records: &[Record], size: usize, total: usize) -> Vec<Vec<u8>> {
-    let chunks: Vec<&[Record]> = records.chunks(size.max(1)).collect();
-    if chunks.is_empty() {
-        return vec![format!(
-            r#"{{"records":[],"nextAfterId":null,"total":{total},"asOf":"2026-11-09T10:00:05Z"}}"#
-        )
-        .into_bytes()];
-    }
-    chunks
-        .iter()
-        .enumerate()
-        .map(|(i, chunk)| {
-            let next = if i + 1 < chunks.len() {
-                chunk.last().unwrap().id.to_string()
-            } else {
-                "null".to_string()
-            };
-            let list: Vec<String> = chunk.iter().map(wire_record).collect();
-            format!(
-                r#"{{"records":[{}],"nextAfterId":{next},"total":{total},"asOf":"2026-11-09T10:00:05Z"}}"#,
-                list.join(",")
-            )
-            .into_bytes()
-        })
-        .collect()
-}
-
-fn blank() -> Engine {
-    let mut engine = Engine::new();
-    engine
-        .open(Rc::new(cgs_xlsx::blank::blank_workbook().unwrap()))
-        .unwrap();
-    while engine.load_step(1000.0).unwrap().phase == LoadPhase::Reading {}
-    engine
-}
-
-fn bound(records: &[Record]) -> Engine {
-    let mut engine = blank();
-    engine.erp_begin(&schema(10_000)).unwrap();
-    for page in pages(records, 1000, records.len()) {
-        engine.erp_page(&page).unwrap();
-    }
-    engine.erp_bind(SESSION).unwrap();
-    settle(&mut engine);
-    engine
-}
-
-fn settle(engine: &mut Engine) {
-    while engine.calc_step(1000, &[]).unwrap() {}
-    engine.take_dirty();
-}
-
-#[derive(Default)]
-struct Grid(HashMap<(u32, u32), CalcValue>);
-
-impl CellSink for Grid {
-    fn cell(&mut self, row: u32, col: u32, value: &CalcValue) {
-        self.0.insert((row, col), value.clone());
-    }
-}
-
-fn grid(engine: &Engine, top: u32, bottom: u32) -> Grid {
-    let mut grid = Grid::default();
-    engine.read_cells(
-        SheetRect {
-            sheet: 0,
-            rect: Rect {
-                top,
-                left: 1,
-                bottom,
-                right: FIELDS.len() as u32 + 2,
-            },
-        },
-        &mut grid,
-    );
-    grid
-}
-
-fn cell(grid: &Grid, row: u32, col: u32) -> CalcValue {
-    grid.0.get(&(row, col)).cloned().unwrap_or(CalcValue::Empty)
-}
-
-fn binding(engine: &Engine) -> serde_json::Value {
-    serde_json::from_str(&engine.binding_json()).unwrap()
-}
-
-/// Every data row's key holds exactly its own record's values, each key once, and the binding
-/// still knows each key's id.
-fn assert_keys_with_records(engine: &Engine, records: &[Record]) {
-    let summary = binding(engine);
-    let (top, bottom) = (
-        summary["top"].as_u64().unwrap() as u32,
-        summary["bottom"].as_u64().unwrap() as u32,
-    );
-    assert_eq!(
-        (bottom - top) as usize,
-        records.len(),
-        "the table keeps its rows"
-    );
-    let by_key: HashMap<&str, &Record> = records.iter().map(|r| (r.key.as_str(), r)).collect();
-    let cells = grid(engine, top + 1, bottom);
-    let mut seen = std::collections::HashSet::new();
-    for row in top + 1..=bottom {
-        let CalcValue::Text(key) = cell(&cells, row, 1) else {
-            panic!("row {row} has no key");
-        };
-        assert!(seen.insert(key.clone()), "{key} twice");
-        let record = by_key[key.as_str()];
-        for (index, expected) in record.cells.iter().enumerate() {
-            assert_eq!(
-                &cell(&cells, row, index as u32 + 1),
-                expected,
-                "{key}'s {}",
-                FIELDS[index].0
-            );
-        }
-        assert_eq!(engine.bound_record(&key).unwrap().0, record.id);
-    }
-}
+use cgs_calc::CalcValue;
+use cgs_engine::Engine;
+use erp_harness::*;
 
 #[test]
 fn records_bind_as_a_typed_table_in_a_new_workbook() {
@@ -327,7 +22,7 @@ fn records_bind_as_a_typed_table_in_a_new_workbook() {
     );
     assert_eq!(summary["right"], FIELDS.len());
     let cells = grid(&engine, 1, 1);
-    for (index, (_, label, _)) in FIELDS.iter().enumerate() {
+    for (index, (_, label, _, _)) in FIELDS.iter().enumerate() {
         assert_eq!(
             cell(&cells, 1, index as u32 + 1),
             CalcValue::Text(label.to_string())
@@ -433,11 +128,11 @@ fn every_path_that_would_break_a_record_is_refused() {
     let data = r#"{"top":2,"left":1,"bottom":13,"right":14}"#;
     for json in [
         r#"{"kind":"input","sheet":0,"row":3,"col":1,"text":"V-99999"}"#.to_string(),
-        r#"{"kind":"input","sheet":0,"row":3,"col":2,"text":"Renamed"}"#.to_string(),
+        r#"{"kind":"input","sheet":0,"row":3,"col":5,"text":"USD"}"#.to_string(),
         r#"{"kind":"input","sheet":0,"row":1,"col":2,"text":"Heading"}"#.to_string(),
-        r#"{"kind":"input","sheet":0,"row":20,"col":20,"text":"x","areas":[{"top":5,"left":5,"bottom":6,"right":6}]}"#.to_string(),
-        r#"{"kind":"arrayInput","sheet":0,"area":{"top":2,"left":2,"bottom":3,"right":2},"text":"=1"}"#.to_string(),
-        r#"{"kind":"clear","sheet":0,"areas":[{"top":4,"left":3,"bottom":4,"right":3}]}"#.to_string(),
+        r#"{"kind":"input","sheet":0,"row":20,"col":20,"text":"x","areas":[{"top":5,"left":4,"bottom":6,"right":5}]}"#.to_string(),
+        r#"{"kind":"arrayInput","sheet":0,"area":{"top":2,"left":5,"bottom":3,"right":5},"text":"=1"}"#.to_string(),
+        r#"{"kind":"clear","sheet":0,"areas":[{"top":4,"left":4,"bottom":4,"right":5}]}"#.to_string(),
         r#"{"kind":"fill","sheet":0,"from":{"top":2,"left":1,"bottom":2,"right":14},"to":{"top":2,"left":1,"bottom":5,"right":14}}"#.to_string(),
         r#"{"kind":"paste","fromSheet":0,"from":{"top":2,"left":1,"bottom":2,"right":14},"sheet":0,"to":{"top":5,"left":1,"bottom":5,"right":14}}"#.to_string(),
         r#"{"kind":"paste","fromSheet":0,"from":{"top":30,"left":1,"bottom":30,"right":1},"sheet":0,"to":{"top":5,"left":1,"bottom":5,"right":1},"mode":"values"}"#.to_string(),
@@ -445,7 +140,7 @@ fn every_path_that_would_break_a_record_is_refused() {
         r#"{"kind":"move","fromSheet":0,"from":{"top":40,"left":1,"bottom":40,"right":1},"sheet":0,"row":2,"col":1}"#.to_string(),
         r#"{"kind":"pasteExternal","sheet":0,"row":4,"col":1,"text":"a\tb"}"#.to_string(),
         r#"{"kind":"replaceOne","query":{"text":"V-","sheet":0},"with":"W-","sheet":0,"row":2,"col":1}"#.to_string(),
-        r#"{"kind":"convertToNumber","sheet":0,"areas":[{"top":2,"left":4,"bottom":13,"right":4}]}"#.to_string(),
+        r#"{"kind":"convertToNumber","sheet":0,"areas":[{"top":2,"left":10,"bottom":13,"right":10}]}"#.to_string(),
     ] {
         refused(&mut engine, &records, &json, READ_ONLY);
     }
@@ -544,18 +239,18 @@ fn every_path_that_would_break_a_record_is_refused() {
 /// The commands refused before they run, which the guards inside the engine must refuse too.
 const GUARDED: [&str; 26] = [
     r#"{"kind":"input","sheet":0,"row":3,"col":1,"text":"V-99999"}"#,
-    r#"{"kind":"input","sheet":0,"row":3,"col":2,"text":"Renamed"}"#,
+    r#"{"kind":"input","sheet":0,"row":3,"col":5,"text":"USD"}"#,
     r#"{"kind":"input","sheet":0,"row":1,"col":2,"text":"Heading"}"#,
-    r#"{"kind":"input","sheet":0,"row":20,"col":20,"text":"x","areas":[{"top":5,"left":5,"bottom":6,"right":6}]}"#,
-    r#"{"kind":"arrayInput","sheet":0,"area":{"top":2,"left":2,"bottom":3,"right":2},"text":"=1"}"#,
-    r#"{"kind":"clear","sheet":0,"areas":[{"top":4,"left":3,"bottom":4,"right":3}]}"#,
+    r#"{"kind":"input","sheet":0,"row":20,"col":20,"text":"x","areas":[{"top":5,"left":4,"bottom":6,"right":5}]}"#,
+    r#"{"kind":"arrayInput","sheet":0,"area":{"top":2,"left":5,"bottom":3,"right":5},"text":"=1"}"#,
+    r#"{"kind":"clear","sheet":0,"areas":[{"top":4,"left":4,"bottom":4,"right":5}]}"#,
     r#"{"kind":"fill","sheet":0,"from":{"top":2,"left":1,"bottom":2,"right":14},"to":{"top":2,"left":1,"bottom":5,"right":14}}"#,
     r#"{"kind":"paste","fromSheet":0,"from":{"top":2,"left":1,"bottom":2,"right":14},"sheet":0,"to":{"top":5,"left":1,"bottom":5,"right":14}}"#,
     r#"{"kind":"move","fromSheet":0,"from":{"top":2,"left":1,"bottom":3,"right":14},"sheet":0,"row":40,"col":1}"#,
     r#"{"kind":"move","fromSheet":0,"from":{"top":40,"left":1,"bottom":40,"right":1},"sheet":0,"row":2,"col":1}"#,
     r#"{"kind":"pasteExternal","sheet":0,"row":4,"col":1,"text":"a\tb"}"#,
     r#"{"kind":"replaceOne","query":{"text":"V-","sheet":0},"with":"W-","sheet":0,"row":2,"col":1}"#,
-    r#"{"kind":"convertToNumber","sheet":0,"areas":[{"top":2,"left":4,"bottom":13,"right":4}]}"#,
+    r#"{"kind":"convertToNumber","sheet":0,"areas":[{"top":2,"left":10,"bottom":13,"right":10}]}"#,
     r#"{"kind":"axis","sheet":0,"axis":"row","at":5,"count":1,"delete":false}"#,
     r#"{"kind":"axis","sheet":0,"axis":"row","at":13,"count":2,"delete":true}"#,
     r#"{"kind":"axis","sheet":0,"axis":"col","at":3,"count":1,"delete":false}"#,

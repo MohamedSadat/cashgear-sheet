@@ -43,8 +43,35 @@ pub struct FieldSchema {
     pub max_length: Option<u32>,
     #[serde(default)]
     pub scale: Option<u32>,
+    /// A number, or a decimal's text as decimals travel (contract, `min?: number | string`).
+    #[serde(default, deserialize_with = "number_or_text")]
+    pub min: Option<f64>,
+    #[serde(default, deserialize_with = "number_or_text")]
+    pub max: Option<f64>,
     #[serde(default)]
     pub lookup: Option<String>,
+}
+
+/// A limit given as a number or as a decimal's text, such as `"0"`.
+fn number_or_text<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Limit {
+        Number(f64),
+        Text(String),
+    }
+    match Option::<Limit>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Limit::Number(n)) => Ok(Some(n)),
+        Some(Limit::Text(text)) => {
+            text.trim().parse::<f64>().map(Some).map_err(|_| {
+                serde::de::Error::custom(format!("a limit that isn't a number: {text}"))
+            })
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,16 +129,30 @@ impl FieldKind {
     }
 }
 
-/// A field as a binding keeps it: its column, in the schema's order.
+/// One item of a lookup list, as a binding keeps it: its code, its label in the session's
+/// language, and whether a change may choose it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupEntry {
+    pub code: String,
+    pub label: String,
+    pub active: bool,
+}
+
+/// A field as a binding keeps it: its column, in the schema's order.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoundField {
     pub name: String,
     /// The heading, in the session's language.
     pub label: String,
     pub kind: FieldKind,
-    /// What the schema says for this caller. Phase 15 keeps every bound cell read-only anyway.
+    /// What the schema says for this caller: whether the sheet lets its cells be edited.
     pub editable: bool,
     pub edit_reason: Option<String>,
+    /// The constraints local rules check (contract, "Schema").
+    pub required: bool,
+    pub max_length: Option<u32>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
 }
 
 impl EntitySchema {
@@ -184,6 +225,28 @@ impl EntitySchema {
                 kind: self.kind_of(field).expect("checked when parsed"),
                 editable: field.editable,
                 edit_reason: field.edit_reason.clone(),
+                required: field.required.unwrap_or(false),
+                max_length: field.max_length,
+                min: field.min,
+                max: field.max,
+            })
+            .collect()
+    }
+
+    /// Each lookup list, with labels in `language`, for the fields that name it.
+    pub fn lookup_lists(&self, language: Language) -> BTreeMap<String, Vec<LookupEntry>> {
+        self.lookups
+            .iter()
+            .map(|(name, items)| {
+                let entries = items
+                    .iter()
+                    .map(|item| LookupEntry {
+                        code: item.code.clone(),
+                        label: item.label.get(language).to_string(),
+                        active: item.active.unwrap_or(true),
+                    })
+                    .collect();
+                (name.clone(), entries)
             })
             .collect()
     }
@@ -193,5 +256,35 @@ impl EntitySchema {
             .iter()
             .position(|field| field.name == self.key_field)
             .expect("checked when parsed")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_limits(limits: &str) -> Result<EntitySchema, String> {
+        EntitySchema::parse(&format!(
+            r#"{{"entity":"vendors","schemaVersion":"vendors.1","label":{{"en":"Vendors","ar":"x"}},
+            "keyField":"vendorAccount","idField":"recId","maxPageSize":1000,"maxRecords":10000,"maxCommitRecords":500,
+            "fields":[
+              {{"name":"vendorAccount","label":{{"en":"Account","ar":"x"}},"type":"text","editable":false}},
+              {{"name":"debitLimit","label":{{"en":"Credit limit","ar":"x"}},"type":"decimal","scale":2,"editable":true{limits}}}],
+            "lookups":{{}}}}"#
+        ))
+    }
+
+    #[test]
+    fn limits_come_as_numbers_or_as_a_decimals_text() {
+        let schema = with_limits(r#","min":"0","max":"1000000.50""#).unwrap();
+        let fields = schema.bound_fields(Language::En);
+        assert_eq!(fields[1].min, Some(0.0));
+        assert_eq!(fields[1].max, Some(1_000_000.5));
+        let schema = with_limits(r#","min":-5,"max":null"#).unwrap();
+        let fields = schema.bound_fields(Language::En);
+        assert_eq!((fields[1].min, fields[1].max), (Some(-5.0), None));
+        let schema = with_limits("").unwrap();
+        assert_eq!(schema.bound_fields(Language::En)[1].min, None);
+        assert!(with_limits(r#","min":"zero""#).is_err());
     }
 }
