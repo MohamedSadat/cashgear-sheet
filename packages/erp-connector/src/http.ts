@@ -3,7 +3,7 @@
 // `X-Sheet-Session` header; it never goes in a URL, an error or a log.
 
 import { CORRELATION_HEADER, SESSION_HEADER, STATUS } from './contract.ts';
-import { ContractError, readErrorBody } from './validate.ts';
+import { ContractError, readConflictBody, readErrorBody } from './validate.ts';
 
 /** What went wrong, as the sheet tells the user. */
 export type ErpErrorKind =
@@ -19,6 +19,8 @@ export type ErpErrorKind =
   | 'tooMany'
   /** The request was refused as it was (400). */
   | 'invalid'
+  /** Records changed in the ERP since they were read (409). */
+  | 'conflict'
   /** Still 429 or 503 after waiting. */
   | 'busy'
   /** The ERP failed (500 and others). */
@@ -35,11 +37,18 @@ export class ErpError extends Error {
   readonly status: number | null;
   readonly code: string | null;
   readonly correlationId: string | null;
+  /** The answer's JSON body, unchecked: a 400's errors or a 409's conflicts, for the caller. */
+  readonly body: unknown;
 
   constructor(
     kind: ErpErrorKind,
     message: string,
-    details: { status?: number; code?: string; correlationId?: string | null } = {},
+    details: {
+      status?: number;
+      code?: string;
+      correlationId?: string | null;
+      body?: unknown;
+    } = {},
   ) {
     super(message);
     this.name = 'ErpError';
@@ -47,6 +56,7 @@ export class ErpError extends Error {
     this.status = details.status ?? null;
     this.code = details.code ?? null;
     this.correlationId = details.correlationId ?? null;
+    this.body = details.body;
   }
 }
 
@@ -100,6 +110,7 @@ export function kindOf(status: number, code: string | null): ErpErrorKind {
   if (status === STATUS.unauthorized) return code === 'ticket.invalid' ? 'ticket' : 'session';
   if (status === STATUS.forbidden) return code === 'origin.denied' ? 'origin' : 'privilege';
   if (status === STATUS.tooLarge) return 'tooMany';
+  if (status === STATUS.conflict) return 'conflict';
   if (status === STATUS.tooManyRequests || status === STATUS.unavailable) return 'busy';
   if (status === STATUS.invalid) return 'invalid';
   return 'server';
@@ -222,12 +233,18 @@ export class ErpHttp {
     const correlationId = response.headers.get(CORRELATION_HEADER);
     let message = `Cash Gear ERP answered ${response.status}.`;
     let code: string | null = null;
+    let body: unknown;
     try {
       const text = await response.text();
       if (text !== '') {
-        const body = readErrorBody(JSON.parse(text));
-        message = body.message || message;
-        code = body.errors[0]?.code ?? null;
+        body = JSON.parse(text);
+        if (response.status === STATUS.conflict) {
+          message = readConflictBody(body).message || message;
+        } else {
+          const errors = readErrorBody(body);
+          message = errors.message || message;
+          code = errors.errors[0]?.code ?? null;
+        }
       }
     } catch (error) {
       // An answer without the ERP's error body: the status alone says what it means.
@@ -237,6 +254,7 @@ export class ErpHttp {
       status: response.status,
       code: code ?? undefined,
       correlationId,
+      body,
     });
   }
 }

@@ -7,3 +7,4 @@ export * from './http.ts';
 export * from './session.ts';
 export * from './launch.ts';
 export * from './connector.ts';
+export * from './commit.ts';
