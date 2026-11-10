@@ -838,3 +838,28 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | The changeset | `erpChanges` answers the contract's commit records with each record's row now (for Phase 17's Review), and lists formulas and local rules' refusals apart. Records go in id order |
 | Query answers | Cross from the engine worker as text, which the page parses, so a large answer isn't structured-cloned object by object |
 | The Schema's `min` and `max` | Taken as numbers or as a decimal's text, as the contract allows and the mock sends |
+
+## 2026-11-10: Phase 17
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| The batch limit | The schema's `maxCommitRecords` (500). Commit All Changes refuses past it, before sending: "612 vendors have changes, and Cash Gear ERP takes at most 500 in one commit. Filter the table to fewer of them, then choose Commit Changes in Visible Rows." The Commit button's menu has Commit All Changes and Commit Changes in Visible Rows, which sends only the rows the filter shows. Batches past 500 stay a later extension (plan I.3) |
+| The confirmation's wording | "Commit to Cash Gear ERP": "Commit 37 changes to 12 vendors in Cash Gear ERP (Kit)?", then "Cash Gear ERP checks them again and saves all of them or none. Undo is cleared once they're saved.", with "3 of these changes are in rows the filter hides." and "2 formulas are left out: convert them to values to commit them." when they apply. Buttons: Commit 37 changes, Review Changes, Cancel. While it runs, "Committing 37 changes to 12 vendors…"; after, "Committed 37 changes to 12 vendors." English until Phase 18's catalogue |
+| How the server's errors, conflicts and committed fields show | On cells. A dry run's or a commit's 400 errors are set by id and field beside local rules: the red Invalid border, counted in the badge, reached by Next Error, worded by the sheet from the code with the server's message as fallback, and cleared when that cell changes. A record's own error (`record.notFound`, `record.locked`, `version.missing`) marks its changed fields. A 409 shows Conflict (an orange hatch and "!") on the fields the ERP lists, or on every changed field of the record when it lists none, with who changed it, when, and the value now in the hover; Commit waits until those records are discarded or refreshed, since Resolve is Phase 18. Committed is a green bar on the leading edge of each committed field, until that cell is edited, a Refresh, or the next commit |
+| Whether every tenant database has `Vendors.RowVersion` | Not yet. Track E2's Commit reads and checks `Vendors.RowVersion` with its own SQL under `UPDLOCK, HOLDLOCK`, as E1's Query reads it, and `VendorModel` stays unchanged until you say every database is scripted |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Validate | Sends the server's dry run of every change, including those a local rule already refuses, so one Validate shows every problem; local rules keep running as you edit. Formulas are left out, as in every commit |
+| Commit and local problems | Refused before anything is sent while a cell breaks a local rule or a record is in conflict, with the count and Next Error. Commit runs no dry run of its own first, since the commit makes every check itself |
+| The Review dialog | A `CgWindow` with a `CgGrid`: Record (key · name), Field, Original, New, Status and Message. Filters All, Invalid, Conflicts, In hidden rows and Formulas. Go to cell (and double-click) selects the cell, and says so when a filter hides its row; Discard Selected writes the originals back as one step undo takes back. Its footer commits: "Commit 37 changes to 12 vendors" |
+| Edits during a commit | A modal panel while it runs, and an engine flag (`erpFreeze`) that refuses any write to the bound table until the commit's answer is applied |
+| `commitId` and retries | A new UUID v4 per commit. After no answer the same request is sent again with the same id, up to three times; then "Cash Gear ERP didn't answer, so it isn't known whether the changes were saved. Try again sends the same commit, which Cash Gear ERP saves only once." with Try again and Close. While an outcome is unknown, the next Commit reuses that id if the payload is the same, so a commit that did land is answered from the ERP's store |
+| Applying a commit's result | Persisted values go only into cells that still hold what was sent, typed as binding types them; versions and originals move to the persisted ones; those fields show Committed; undo is cleared |
+| Inactive currencies (E1's open note) | Sent with `active: false`, as vendor groups are: a record may keep one, a change can't choose one |
+| Audit | `SheetChangeAudit.OldValue` is the database's value before the write, read under the lock, not the request's `from`; one SystemLog row per commit, of at most 250 characters, naming the commitId and counts |
+| Track E2's tests | SQLite with a RowVersion stamped on every vendor write for logic, and LocalDB behind `CASHGEAR_SHEET_SQL_TESTS=1` for locks, conflicts, rollback and idempotency; the contract suite against UnifiedAPI on LocalDB with `ERP_TEST_STAGE=E2` |
