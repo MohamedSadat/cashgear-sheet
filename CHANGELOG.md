@@ -4,6 +4,32 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.10.0] - 2026-11-11
+
+ERP data is ready to turn on per company: it opens several times faster, Cash Gear ERP's side is
+hardened, and both are checked against the live API. Normal workbooks are unchanged, and their
+tiles build faster.
+
+- **Opening ERP data is faster:** from Cash Gear ERP's answer to the sheet on screen, 1,000
+  vendors take under 0.3 s and 10,000 about 0.75 s (they took 0.8 s and 2.8 s). The new workbook
+  opens while the records download, they go into it as a file's sheet loads, and the grid draws
+  them once, at their fitted widths.
+- **Tiles build faster** on every sheet with table styles, fills or conditional formats.
+- **Connection Info** shows the last request Cash Gear ERP refused or didn't answer, with its
+  reference, which finds it in Cash Gear ERP's log.
+- A launch whose records fail to load leaves nothing open.
+- **Security:** the web app sends a content security policy and is never framed; links in a
+  workbook open only web and mail addresses; ERP requests refuse redirects, so a session can't
+  follow one.
+- **Desktop:** the app may reach Cash Gear ERP's API, ready for opening ERP data from the ERP in a
+  later release (`docs/desktop-deep-link.md`).
+- **Cash Gear ERP (Track E4, in the ERP's repository):** only `https://sheet.cashgearerp.com` may
+  call the sheet's routes; launches and sessions are rate-limited per client address, answering
+  429 with `Retry-After`; each sheet request is logged once with its correlation id; API keys no
+  longer reach the logs; a company taken off `SheetLaunch:Companies` loses its sessions at once;
+  Dot is turned on beside Kit; and `Seed_SheetTestVendors.sql` makes the test tenant's vendors.
+  `docs/DEPLOYMENT.md` lists what to run before deploying UnifiedAPI.
+
 ## [1.9.0] - 2026-11-11
 
 ERP data now copes with other people's edits, long sessions and crashes, speaks Arabic to Arabic

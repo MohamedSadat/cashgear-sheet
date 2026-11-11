@@ -27,8 +27,8 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 16: Editing and change tracking | Done 2026-11-10 | `v1.7.0` |
 | Phase 17: Validate, review and commit | Done 2026-11-10 | `v1.8.0` |
 | Phase 18: Conflicts, refresh, sessions and recovery | Done 2026-11-11, with your sign-off on the Arabic texts | `v1.9.0` |
-| Phase 19: ERP hardening | Not started | `v1.10.0` |
-| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only. E1 done 2026-11-09: tickets, sessions, Schema and Query in UnifiedAPI, and the hidden button in `ERPClient_React`. E2 done 2026-11-10: Commit with dry runs, RowVersion, idempotency and audit. E3 done 2026-11-11: Renew, End and CommitStatus, and Kit turned on | |
+| Phase 19: ERP hardening | In progress 2026-11-11: B.6's targets met and the checks green; the tenant runs and your sign-off wait on the test tenant's setup | `v1.10.0` |
+| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only. E1 done 2026-11-09: tickets, sessions, Schema and Query in UnifiedAPI, and the hidden button in `ERPClient_React`. E2 done 2026-11-10: Commit with dry runs, RowVersion, idempotency and audit. E3 done 2026-11-11: Renew, End and CommitStatus, and Kit turned on. E4 done 2026-11-11: CORS narrowed to the live sheet, rate limits, a log line per request, API keys out of the logs, the per-company switch ending sessions, Dot turned on, and the test vendors' seed | |
 
 ## Planning
 
@@ -1045,3 +1045,74 @@ The plan's tests also ask for every C/O/S case with key renames and records gone
 - Edits outside the ERP data made before a draft restarts (after everything was committed, discarded, refreshed or resolved) aren't in the restarted draft.
 - Binding speed still misses B.6 (Phase 15's 0.70 s and 2.56 s), carried to Phase 19.
 - Before UnifiedAPI with E3 is deployed to ASTDataTest: `Create_SheetSessions.sql` (CGService), `Add_VendorsRowVersion.sql` and `Create_SheetCommit.sql`. `[Timestamp]` on `VendorModel` is still yours to commit.
+
+## Phase 19: ERP hardening
+
+ERP data is ready to turn on per company against the real API: binding meets plan B.6, the sheet and Track E are reviewed for security and hardened, and Track E4 is built. Started 2026-11-11. Answers and defaults are in `docs/decisions.md` (2026-11-11, Phase 19): Kit on the live API as the test tenant, dedicated `SHT-` test vendors, the keys in a file outside the repo, the deep link designed and built later, and Dot turned on during the phase.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| The performance targets in plan B.6 are met, and every standing check is green | Pass locally; CI on the final commit below | **B.6** (`bench/erp-speed.mjs`, release build in Chrome 157, the reference machine): binding 1,000 records of 20 fields from the response to the first paint, median of 7, **274 ms** (target 300; a second run of 9 gave 286), and 10,000 **744 ms** (target 1,500), with the workbook opened while the records download as a launch opens it; the changeset **4.8 ms** for 1,000 × 20 (target 10; 29.8 with every field changed) and **51.5 ms** for 10,000 (target 100); local rules after a 1,000-row paste add nothing measurable (the bound paste was 13 ms quicker; target 50); key to paint p99 **39.3 ms bound, 37.5 unbound** (within 10%); tiles with states p99 **5.4 ms bound, 13.7 unbound** in the engine, and drawn **57.7 / 64.1**; memory for originals **46.3 bytes an editable value** (52.6 with keys and maps; target 64), counted with wasm32's sizes. **Normal sheets**, against v1.9.0 built from its tag and served beside this build in the same hour, alternating: the 1M-row filter's medians 211 to 254 ms over eight rounds (v1.9.0: 206 to 253), with no CSP effect (the same build without its policy: 237 to 273); key to paint during the 1M-formula recalculation p99 77.4 and 83.7 ms (v1.9.0: 84.7 and 83.3), and once settled 34.5 and 37.1 (40.2 and 38.6); wheel scrolling 93.2% to 96.7% of frames within 17 ms over five rounds (v1.9.0: 95.6% to 96.7%), dragging 88.1% to 91.4% (89.4% to 91.4%); opening the 333k-row book 4.8 to 5.0 s to show (4.7 to 4.9). Everything else is in "What else was checked" |
+| You sign off after trying it on the test tenant | Waiting | The live API at `api.cashgearerp.com` doesn't yet show the test tenant's setup: no `SHT-` vendors in Kit, the editor and viewer test users with more than their privileges, Dot off and no rate limits counted, so the build at ERP `d394b092` isn't the one serving it yet. **Contract suite against it** (`pnpm erp:tenant suite`, five keys, the live sheet's Origin, real commits only on `SHT-` vendors, so none were made): 22 passed, 24 failed on that setup (every write case finds no `SHT-` vendor; the privilege cases; Dot's 403; no 429 after 400 requests), 14 skipped (the mock's clock and faults). The tenant e2e (`pnpm erp:tenant e2e`) needs the `SHT-` vendors and wasn't run; it passes 12 of 12 in Chrome and Edge against the mock (`ERP_TENANT_ON_MOCK=1`) |
+
+**What the tenant runs check, once its setup is in place**
+
+- `pnpm erp:tenant suite`: the 58 contract cases against the live API, and the two rate-limit cases with `ERP_TEST_RATE_LIMITS=1`, waiting out each 429; it puts back every value it changed, and checks it.
+- `pnpm erp:tenant e2e`: the deployed sheet in Chrome and Edge, as Kit's editor: opening the test vendors cross-origin isolated, editing, Validate and Commit, an edit made elsewhere conflicting and resolved, a commit whose answers are all lost found by CommitStatus and written once, a session ending, Connection Info naming the failure, and a new launch handing over, and an Arabic session right to left.
+
+**Found and fixed on the way**
+
+- **Binding** wrote each cell through Formualizer's `set_cells`, with a pre-image read per cell: 94 ms of 135 natively for 1,000 records. It now loads the new sheet as a file's sheet loads (20 ms).
+- **Pages** were parsed through an untagged serde enum and a `HashMap` a record, with every text copied twice: 68 ms natively for 1,000 records, now 6.
+- **Fitting** formatted every cell's display text only to rank candidates by length: 28 ms natively for 1,000 records, now 11, choosing the same cells.
+- **Tile builds** keyed derived styles with `Debug` formatting per cell, and read every bound text cell as a number for a triangle bound text never shows: 148 ms of engine time for a bind's tiles, now 53, and every sheet with table styles or conditional formats gains.
+- **Every engine change during a bind** made the grid rebuild and redraw its tiles at the unfitted widths; the grid now holds its redraws until the bind settles.
+- **Screen tiles** set a fill and drew it per cell, 88 ms over five tiles on a table; neighbouring cells of one colour are one rectangle now, with the same pixels.
+- **Each column's number format** was made once a field, reading the workbook's styles again each time; each format is made once.
+- **The recovery draft** was written before the bind answered, 33 ms ahead of the first tiles; it now starts once the sheet shows, or before the first edit. An Edge e2e found that an edit made sooner than that waited in memory, so the first edit or ERP step after the bind now writes the draft first.
+- **Raw API keys reached UnifiedAPI's logs** (Track E4's monitoring test found it): the API-key cache's entry key was the key itself, and FusionCache logs cache keys at Information. It's the key's SHA-256 now, and the handler logs a masked key (ERP `611a95ea`).
+- **The security review** (an independent read of the sheet's ERP code and Track E): no high or medium findings. Fixed now: the connector followed redirects with `X-Sheet-Session` (L5, `redirect: 'error'`, with a test that fails without it); workbook links opened any scheme, `javascript:` included (I5, only `http`, `https` and `mailto` now); the web sent no CSP (L1, one now, and every browser test runs under it, with `csp.spec.ts` failing on any violation and passing against the live site in Chrome and Edge); a company taken off `SheetLaunch:Companies` kept its sessions for up to 10 hours (L3, ERP `658f4d68`). Known gaps below.
+- The bind benches left their preview server running (killing the shell left its child), so a later test run reused a server with old headers; they stop it as the edit bench does.
+- The tenant runner blanked only keys of 6 or more characters out of what it printed; it blanks any length.
+- CI's typecheck failed on the first push: the redirect test imported `node:http`, and the connector has no Node types. Its servers moved into the mock's typed module.
+
+**Delivered**
+
+- `cgs-bind`: `WireValue` read straight from the token, pages' values borrowed by name, text moved into cells, and `Binding::memory`.
+- `cgs-engine`: `load_fresh_sheet`, each format made once, faster fitting, derived styles compared rather than keyed, no number-as-text reading for bound text, `erp_memory_json`, and `tests/erp_speed.rs` (ignored) timing a bind natively.
+- `@cgs/engine-client`: background runs, `warmText`, the draft started after the bind shows (`erpStartDraft`, held lines, arming before the first edit), and `erpMemory`.
+- `@cgs/erp-connector`: redirects refused, the last failure with its correlation id, `onSchema`.
+- `@cgs/ui`: `prepareFor` (the workbook and fonts while the records download), `closeBlank`, `holdView`, Connection Info's last failed request in English and Arabic, and links opening only web and mail addresses.
+- `apps/web`: the content security policy (`src/csp.ts`) in `staticwebapp.config.json` and the preview, with `nosniff`.
+- The desktop: `connect-src` adds `https://api.cashgearerp.com`, and `docs/desktop-deep-link.md` designs the `cashgear-sheet://` launch with PKCE.
+- The contract: `rate.limited`, the mock's rate limits (`/__mock/limits`), the suite's rate-limit cases, writes kept to `ERP_TEST_WRITE_SEARCH` and put back on a real server, and 429s waited out there.
+- `pnpm erp:tenant` (`scripts/erp-tenant.mjs`), `tests/tenant/erp-tenant.spec.ts` and `playwright.tenant.config.ts`.
+- `bench/erp-speed.mjs`, `bench/erp-pages.mjs`, `bench/profile-erp-bind.mjs`.
+- Docs: `DEPLOYMENT.md`'s ERP section, the contract's rate limits, and CLAUDE.md's Phase 19 notes.
+
+**Track E4.** Built by a fork of this session in `D:\CashGear\Projects\CashGear` and checked here (the commits on `origin/main`, your `VendorModel.cs` and `CommissionStatementPDF.cs` still uncommitted and untouched).
+- `main`, pushed `65699ea1..d394b092`: API keys out of the logs (`611a95ea`), `rate.limited` (`c3ab2055`), rate limits, CORS narrowed to the live sheet and one log line per sheet request (`2627d1a5`), `Seed_SheetTestVendors.sql` (`2487406f`), their tests and `SheetContractRun.md` at E4 (`8d21794e`), a company taken off the list losing its sessions (`658f4d68`, `cafb469a`), and Dot turned on (`d394b092`).
+- `CashGear.UnifiedAPI.Tests`: **92 passed, 15 skipped** on SQLite after the switch fix; with LocalDB at `8d21794e`, **105 passed, 1 failed**, the known `UpdateEx_today_overwrites…` your uncommitted `[Timestamp]` flips. The launch settings' 16 pass with Dot on. The whole solution builds.
+- The contract suite against UnifiedAPI on LocalDB at `ERP_TEST_STAGE=E3`, all five keys: **44 passed, 16 skipped, 0 failed**; its rate-limit cases against a host with the live limits: **2 of 2**, in 123 s.
+
+**What else was checked**
+
+- Unit tests: 319 in Vitest (13 new) and 723 in Rust (1 new, and the native bind timing ignored). Clippy is clean natively and for WASM; `cargo fmt`, typecheck, lint and format checks are clean.
+- The full e2e suite on the release build: **338 of 340** in Chrome and Edge; of the two that failed, one timed out while the save checks shared the machine, and one was the draft's race above, fixed; then the ERP and CSP specs **52 of 52**, and the draft-recovery cases 10 of 10 repeated in Edge.
+- Saving: `pnpm test:save`, 11 fixtures: an unedited save is identical in all 11, 49 of 49 entries checked after edits match, and 3,786 of 3,786 cells match, as in Phase 18.
+- `bench/run-edit-fuzz.mjs`: 906 of 1,000 steps match Excel, **0 diverged**, 76 not reached; 166 of 166 saves open with no repair and match Excel's own result, as in Phase 15.
+- `bench/run-excel-matrix.mjs`: 116 edits on each of 11 fixtures, **1,276 of 1,276 saved files open with no repair**, all 12 broken controls are refused, 22 of 22 scenarios and 22 of 22 generated books are clean, the feature checks (charts, pivot tables and macros kept after rows go in, pivot refreshes) pass, and 4 of 4 large books open clean, as in Phase 15. Its first run stopped when Excel failed to start over COM (`CO_E_SERVER_EXEC_FAILURE`), with no Excel process left; the second ran through
+- `pnpm desktop:build` and `pnpm desktop:smoke`: the desktop app builds, and its smoke run passes (goldens within tolerance, overwrite and Save As, recent files, the theme kept).
+- Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.10.0 everywhere and its changelog notes. Release WASM: 4,680,760 bytes gzipped, of the 5,000,000 budget.
+- The live site after the push: it sends the content security policy and `nosniff`, and `csp.spec.ts`'s drawing, printing and PDF test passes against it in Chrome and Edge.
+
+**Known gaps**
+
+- The tenant runs and your sign-off wait on the test tenant's setup (above).
+- The security review's open lows: Query reads a company's whole Vendors table on every page and the data routes aren't rate-limited (L2, a Track E change); key and company deactivation take up to `KeyCheckSeconds` (60 s) to bite; a launch link works in any browser it reaches (L4), which shows the company and user it opened.
+- The rate limiter counts per process, so a host with several worker processes, or behind a proxy, needs another key for it.
+- Binding's first paint waits on one tile worker drawing two tiles in turn; a second tile worker is the next lever.
+- Desktop still has no ERP launch until the deep link is built.
+

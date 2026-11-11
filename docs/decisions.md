@@ -953,3 +953,21 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | `bench/erp-speed.mjs` | One script for every B.6 row: binding 1,000 and 10,000 records of 20 fields, the changeset at 1,000 × 20 and 10,000 × 20, local rules after pasting 1,000 rows, key to paint and tile build bound against unbound, and memory for originals. Release build in Chrome, with network time reported apart. Normal sheets use the existing benches |
 | Where the tenant runs live | `pnpm erp:tenant suite` and `pnpm erp:tenant e2e` load the keys file and run the contract suite and a Playwright spec of their own against the tenant. Neither is part of `pnpm test` or `pnpm test:e2e`, since CI has no keys |
 | Track E4 | Built by a fork of this session in `D:\CashGear\Projects\CashGear` on `main`, tested with WebApplicationFactory on SQLite and LocalDB only. Your uncommitted `VendorModel.cs` and `CommissionStatementPDF.cs` stay out of it |
+
+**Answered during the phase**
+
+| Question | Answer |
+| --- | --- |
+| Dot's cases in the tenant runs (another company's records, commit ids per company) need Dot turned on, since the live `SheetLaunch:Companies` listed only Kit | Turn Dot on: `SheetLaunch:Companies` ships as Kit and Dot, which share ASTDataTest (ERP repo `d394b092`) |
+
+**Defaults picked during the phase (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| How a binding's records reach the engine | Loaded into the new workbook's empty sheet in one pass, as a file's sheet loads, and noted for saving and drawing in one go. Undo is cleared after a bind anyway, so no pre-images are kept |
+| When a bound workbook opens | As soon as the schema arrives, while the records download; the tile worker readies its fonts then too. If the records then fail, the workbook is put away again and the load panel says "Nothing was opened." as before |
+| The recovery draft's start | 300 ms after the bound sheet shows, or before the first edit or ERP step, whichever comes first, so it never delays the first tiles and no change waits in memory |
+| How B.6's binding rows are timed | From the records' hand-over (the response) to the first paint, with the workbook opened while they download, as a launch does; the bench waits 150 ms for that download, and the tenant run measures the real one |
+| The security review's lows (an independent read of both sides) | Fixed now: the connector refuses redirects (L5), workbook links open only `http`, `https` and `mailto` (I5), the web gets a content security policy with `nosniff` (L1), and taking a company off `SheetLaunch:Companies` ends its sessions at once (L3, ERP repo `658f4d68`). Left as known gaps: Query reads a company's whole Vendors table each page and the data routes aren't rate-limited (L2), key and company deactivation lag up to `KeyCheckSeconds` (60 s), and a ticket works in any browser it reaches (L4) |
+| The web's content security policy | Everything from the app itself, WebAssembly compiled (`wasm-unsafe-eval`), inline styles, never framed, `form-action 'none'`, and the ERP API the only other origin it connects to. One module (`apps/web/src/csp.ts`) feeds the preview and is checked against `staticwebapp.config.json`, so every browser test runs under it |
+| Connection Info's new row | "Last failed request": the status (or no answer), the time, and the reference (the correlation id), in English and Arabic: آخر طلب لم ينجح، لم يصل رد، الرد، الساعة، المرجع. These texts weren't in the catalogue you signed off, so they're part of this phase's sign-off |

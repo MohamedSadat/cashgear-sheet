@@ -67,7 +67,7 @@ the wire is `erp-contract.md`, and the ERP side is Track E in `D:\CashGear\Proje
 
 | Setting | Live value | What it is |
 | --- | --- | --- |
-| `Companies` | `["Kit"]` | Companies whose Vendors list shows "Edit in Cash Gear Sheet"; `CreateTicket` refuses the rest |
+| `Companies` | `["Kit", "Dot"]` | Companies whose Vendors list shows "Edit in Cash Gear Sheet"; `CreateTicket` refuses the rest |
 | `SheetUrl` | `https://sheet.cashgearerp.com` | Where the button sends the launch |
 | `Origins` | `["https://sheet.cashgearerp.com"]` | Who may redeem tickets and call the sheet's routes. `appsettings.Development.json` adds the localhost dev and preview servers. Lists merge by index, so an override must start with the live origin |
 | `TicketSeconds`, `IdleMinutes`, `MaxHours` | 120, 30, 10 | A ticket's life; a session's idle and longest life |
