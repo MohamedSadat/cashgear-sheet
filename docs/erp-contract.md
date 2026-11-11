@@ -25,10 +25,10 @@ Routes are module first, as the ERP's are. Every route takes and returns JSON
 | Route | Method | Who calls it | Authentication | Success |
 | --- | --- | --- | --- | --- |
 | `api/system/SheetLaunch/Status?entity=vendors` | GET | `ERPClient_React`'s Vendors list, to show its button | `X-API-Key` | 200 `LaunchStatusResponse` |
-| `api/system/SheetLaunch/CreateTicket` | POST | `ERPClient_React`'s Vendors list | `X-API-Key`, the Vendors unit's View, and a company the sheet is on for | 200 `CreateTicketResponse` |
-| `api/sheet/Session/Redeem` | POST | The sheet, once, on launch | Anonymous; allow-listed `Origin`; rate-limited per IP | 200 `SheetSession` |
-| `api/sheet/Session/Renew` | POST | The sheet, while its user works | `X-Sheet-Session` | 200 `RenewResponse` |
-| `api/sheet/Session/End` | POST | The sheet, on close | `X-Sheet-Session` | 204 |
+| `api/system/SheetLaunch/CreateTicket` | POST | `ERPClient_React`'s Vendors list | `X-API-Key`, the Vendors unit's View, and a company the sheet is on for; rate-limited per IP with Redeem | 200 `CreateTicketResponse` |
+| `api/sheet/Session/Redeem` | POST | The sheet, once, on launch | Anonymous; allow-listed `Origin`; rate-limited per IP with CreateTicket | 200 `SheetSession` |
+| `api/sheet/Session/Renew` | POST | The sheet, while its user works | `X-Sheet-Session`; rate-limited per IP with End | 200 `RenewResponse` |
+| `api/sheet/Session/End` | POST | The sheet, on close | `X-Sheet-Session`; rate-limited per IP with Renew | 204 |
 | `{entityRoute}/Schema` | GET | The sheet | `X-Sheet-Session`, View | 200 `EntitySchema` |
 | `{entityRoute}/Query` | POST | The sheet | `X-Sheet-Session`, View | 200 `QueryResponse` |
 | `{entityRoute}/Commit` | POST | The sheet; Validate is `dryRun: true` | `X-Sheet-Session`, Edit | 200 `CommitResponse` |
@@ -47,7 +47,7 @@ Routes are module first, as the ERP's are. Every route takes and returns JSON
 | `X-Company-Id` | Response | On every response with a session |
 | `Cache-Control: no-store` | Response | On every sheet response, because `UseResponseCaching` runs between authentication and authorization |
 | `Retry-After` | Response | With 429 and 503, in seconds |
-| CORS | Both | The session's routes (`api/sheet/*` and the entity routes) allow the sheet's origins only: `https://sheet.cashgearerp.com`, `http://localhost:4173`, `http://127.0.0.1:4173`, `http://localhost:5173` and `http://127.0.0.1:5173`. Preflight allows `GET`, `POST`, `Content-Type` and `X-Sheet-Session`, and responses expose `X-Correlation-Id`, `X-Company-Id` and `Retry-After`. No credentials. CreateTicket and Status keep the host's own CORS, since the ERP client calls them from its own origin (Track E1) |
+| CORS | Both | The session's routes (`api/sheet/*` and the entity routes) allow the sheet's origins only. The live host lists `https://sheet.cashgearerp.com` alone (Track E4); development and test hosts add `http://localhost:4173`, `http://127.0.0.1:4173`, `http://localhost:5173` and `http://127.0.0.1:5173`, and the mock allows those five. Preflight allows `GET`, `POST`, `Content-Type` and `X-Sheet-Session`, and responses expose `X-Correlation-Id`, `X-Company-Id` and `Retry-After`. No credentials. CreateTicket and Status keep the host's own CORS, since the ERP client calls them from its own origin (Track E1) |
 
 ## Launch and session
 
@@ -262,9 +262,18 @@ fallback, since the sheet shows its own text by code.
 | `company.mismatch`, `schema.changed`, `commit.reused`, `request.invalid` | Batch | 400 |
 | `session.expired`, `ticket.invalid` | Batch | 401 |
 | `origin.denied` | Batch | 403 |
+| `rate.limited` | Batch | 429 |
 
 Phase 14 added `ticket.invalid`, `origin.denied`, `commit.reused` and `request.invalid` to plan
-C.8's list.
+C.8's list, and Track E4 `rate.limited`.
+
+**Rate limits** (Track E4). Counted per client address (the connection's, never
+`X-Forwarded-For`) over fixed one-minute windows: launches (CreateTicket and Redeem together) up
+to `SheetLaunch:RateLimits`' launch setting (20), and the session's own calls (Renew and End
+together) up to its session setting (120). Past a limit the server answers 429 with an `ErrorBody`
+holding one `rate.limited` error, `Retry-After` in whole seconds until the window ends, `no-store`,
+the correlation id and the sheet's CORS headers. It refuses before the route runs, so a refused
+Redeem leaves its ticket usable. The sheet waits as `Retry-After` asks, as it does for 503.
 
 ## C# DTOs
 
@@ -592,11 +601,14 @@ ERP_BASE_URL=http://localhost:5000 ERP_TEST_KEY_EDITOR=… ERP_TEST_KEY_ADV=… 
 | `ERP_TEST_KEY_OTHER` | An editor in Dot, which shares Kit's database |
 | `ERP_TEST_ORIGIN` | The Origin sent, `http://localhost:4173` by default; it must be allow-listed |
 | `ERP_TEST_SKIP_KEYS` | Vendor accounts the suite must not write to, comma-separated |
+| `ERP_TEST_WRITE_SEARCH` | A search (Query's `search`) that finds the only records real commits may change: `SHT-` on the test tenant. Reads and dry runs still use any record. On any server but the mock, the suite puts back every value it changed when it ends, and fails if it can't |
+| `ERP_TEST_RATE_LIMITS=1` | Runs the rate-limit cases on a real server. They ask until the server refuses, so this machine's launches wait out a window. On the mock they always run, with limits they set |
 | `ERP_ALLOW_WRITES=1` | Needed when the server isn't on this machine, because the suite writes to the vendors it reads |
 | `ERP_BASE_IS_MOCK=1` | The server is the mock started by hand, so its clock and fault cases run too |
-| `ERP_TEST_STAGE` | The Track E stage the server has reached, `E1` to `E4` (default `E4`). E1 serves tickets, Status, Redeem, Schema and Query; E2 Commit; E3 Renew, End and CommitStatus. Cases of a later stage skip |
+| `ERP_TEST_STAGE` | The Track E stage the server has reached, `E1` to `E4` (default `E4`). E1 serves tickets, Status, Redeem, Schema and Query; E2 Commit; E3 Renew, End and CommitStatus; E4 rate limits. Cases of a later stage skip |
 
-A case whose key is missing skips. So do the cases that need the mock's clock (ticket and session
+On a real server the suite waits out a 429 as `Retry-After` asks, up to three times a request,
+since the server's limits count every session it opens. A case whose key is missing skips. So do the cases that need the mock's clock (ticket and session
 expiry) or its failure injection (lost responses, a locked record, Retry-After); Track E covers
 those in its own WebApplicationFactory tests (plan I.4), with its LocalDB cases behind
 `CASHGEAR_SHEET_SQL_TESTS=1`, as each ERP suite has its own `CASHGEAR_<AREA>_SQL_TESTS`.
@@ -632,6 +644,7 @@ the suite starts its own on a free port.
 | `POST /__mock/edit` `{company, key, values, by}` | Another ERP user's edit, moving the version |
 | `POST /__mock/key` `{key, active?, privileges?}` | Revokes a key or changes its privileges |
 | `POST /__mock/launch` `{companies}` | The companies the sheet is on for, as `SheetLaunch:Companies` lists them; every company after a reset |
+| `POST /__mock/limits` `{launchPerMinute?, sessionPerMinute?}` | Rate limits per client address over one-minute windows of the mock's clock, as Track E4's are; `null` turns one off, as a reset does. Answers the limits |
 | `GET /__mock/state?company=` | `{now, vendors, writes, commits, audit}` |
 | `GET /__mock/vendor?company=&key=` | One vendor as stored, `Token` and version included |
 

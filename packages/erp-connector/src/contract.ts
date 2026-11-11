@@ -240,7 +240,8 @@ export interface CommitRequest {
 
 /**
  * Every error's code, so the sheet can show its own English or Arabic text. The server's
- * `message` is the fallback. Plan C.8's list, with the four codes Phase 14 added at the end.
+ * `message` is the fallback. Plan C.8's list, with the four codes Phase 14 added, then Track E4's
+ * `rate.limited` (a 429).
  */
 export const ERROR_CODES = [
   'required',
@@ -263,6 +264,7 @@ export const ERROR_CODES = [
   'origin.denied',
   'commit.reused',
   'request.invalid',
+  'rate.limited',
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

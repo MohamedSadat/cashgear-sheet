@@ -11,6 +11,9 @@
 // ERP_BASE_IS_MOCK=1 says the server is the mock. ERP_TEST_STAGE=E1 (to E4) names the Track E
 // stage a server has reached, and the cases of later stages skip. The suite writes to the
 // records it reads, so it refuses a server that isn't on this machine unless ERP_ALLOW_WRITES=1.
+// ERP_TEST_WRITE_SEARCH keeps its real commits to the records a search finds (`SHT-`, the test
+// tenant's own vendors), and on any server but the mock it puts back every value it changed.
+// ERP_TEST_RATE_LIMITS=1 runs the rate-limit cases on a real server, whose limits they reach.
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LIMITS, startMockErp } from '../../../tests/erp-mock/server.mjs';
@@ -74,7 +77,9 @@ const lacks = (...roles: Role[]) => roles.some((role) => !KEYS[role]);
  */
 const STAGE = onMock ? 4 : Number(/^E([1-4])$/.exec(env.ERP_TEST_STAGE ?? 'E4')?.[1]);
 if (!Number.isInteger(STAGE)) throw new Error('ERP_TEST_STAGE must be E1, E2, E3 or E4.');
-const serves = (stage: 'E2' | 'E3') => STAGE >= Number(stage.slice(1));
+const serves = (stage: 'E2' | 'E3' | 'E4') => STAGE >= Number(stage.slice(1));
+/** The search that finds the records real commits may change; any record when unset. */
+const WRITE_SEARCH = onMock ? undefined : env.ERP_TEST_WRITE_SEARCH || undefined;
 /** Records the suite leaves alone: the mock's locked vendor, or `ERP_TEST_SKIP_KEYS`. */
 const SKIP = new Set(
   onMock ? ['V-1005'] : (env.ERP_TEST_SKIP_KEYS ?? '').split(',').filter(Boolean),
@@ -106,6 +111,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!onMock) await putBack();
   await stopMock?.();
 });
 
@@ -129,7 +135,12 @@ interface SendOptions {
   /** The Origin sent; the sheet's by default, and none with `null`. */
   readonly origin?: string | null;
   readonly headers?: Record<string, string>;
+  /** Answer a rate limit's 429 rather than waiting it out, for the cases that test it. */
+  readonly limited?: boolean;
 }
+
+/** How many times a real server's 429 is waited out before the suite takes it as the answer. */
+const MAX_LIMIT_WAITS = 3;
 
 /**
  * Sends one request and checks what every response must carry: a correlation id, `no-store`
@@ -146,11 +157,20 @@ async function send(
   if (options.apiKey !== undefined) headers[API_KEY_HEADER] = options.apiKey;
   const origin = options.origin === undefined ? ORIGIN : options.origin;
   if (origin) headers.Origin = origin;
-  const response = await fetch(`${base}/${route}`, {
-    method,
-    headers,
-    body: options.body === undefined ? undefined : JSON.stringify(options.body),
-  });
+  let response: Response;
+  for (let waits = 0; ; waits++) {
+    response = await fetch(`${base}/${route}`, {
+      method,
+      headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    });
+    // A real server's limits count every request this machine makes, and the suite opens many
+    // sessions: it waits as the 429 asks, as the sheet does, rather than failing the case.
+    if (onMock || response.status !== 429 || options.limited || waits >= MAX_LIMIT_WAITS) break;
+    const seconds = Number(response.headers.get('Retry-After'));
+    await response.arrayBuffer();
+    await new Promise((done) => setTimeout(done, (seconds > 0 ? seconds : 5) * 1000));
+  }
   const raw = await response.text();
   const json: unknown = raw === '' ? null : JSON.parse(raw);
   if (method !== 'OPTIONS') {
@@ -253,10 +273,18 @@ async function byIds(
   return new Map(found.records.map((r) => [r.id, r]));
 }
 
-/** `n` records the suite may write to, in id order. */
-async function pick(session: SheetSession, n: number): Promise<RecordSnapshot[]> {
+/**
+ * `n` records the suite may write to, in id order: those `ERP_TEST_WRITE_SEARCH` finds, unless
+ * `any` says they're only read or sent as dry runs.
+ */
+async function pick(
+  session: SheetSession,
+  n: number,
+  { any = false }: { any?: boolean } = {},
+): Promise<RecordSnapshot[]> {
+  const search = any ? undefined : WRITE_SEARCH;
   const found = await page(session, {
-    filter: { blocked: false },
+    filter: search === undefined ? { blocked: false } : { blocked: false, search },
     pageSize: Math.min(1000, n + 20),
   });
   const records = found.records.filter((r) => !SKIP.has(r.key)).slice(0, n);
@@ -266,12 +294,12 @@ async function pick(session: SheetSession, n: number): Promise<RecordSnapshot[]>
 
 let schemaVersion = 'vendors.1';
 
-function commit(
+async function commit(
   session: SheetSession,
   records: readonly RecordChange[],
   request: Partial<Omit<CommitRequest, 'records'>> = {},
 ): Promise<Answer> {
-  return send('POST', at(session, 'Commit'), {
+  const answer = await send('POST', at(session, 'Commit'), {
     session: session.token,
     body: {
       commitId: crypto.randomUUID(),
@@ -282,6 +310,82 @@ function commit(
       ...request,
     },
   });
+  if (!onMock && answer.status === 200 && request.dryRun !== true) noteWritten(session, records);
+  return answer;
+}
+
+/**
+ * The values real commits replaced on a server that isn't the mock, by company and id: each
+ * field's first `from`, which a 200 proves was the stored value, since versions are strict.
+ */
+const written = new Map<string, Map<number, { key: string; values: Record<string, WireValue> }>>();
+
+function noteWritten(session: SheetSession, records: readonly RecordChange[]): void {
+  const company = written.get(session.company) ?? new Map();
+  written.set(session.company, company);
+  for (const record of records) {
+    const seen = company.get(record.id) ?? { key: record.key, values: {} };
+    company.set(record.id, seen);
+    for (const [field, { from }] of Object.entries(record.changes)) {
+      if (!(field in seen.values)) seen.values[field] = from;
+    }
+  }
+}
+
+/** Writes back every value the run changed, at each record's version now. */
+async function putBack(): Promise<void> {
+  const failures: string[] = [];
+  for (const [company, records] of written) {
+    // AdvEdit first, since Blocked and Currency need it.
+    let session: SheetSession | undefined;
+    for (const role of ['adv', 'editor', 'other'] as const) {
+      if (!KEYS[role]) continue;
+      const opened = await open(role);
+      if (opened.company === company) {
+        session = opened;
+        break;
+      }
+    }
+    if (!session) {
+      failures.push(`${company}: no key opens a session there`);
+      continue;
+    }
+    for (let round = 0; round < 3 && records.size > 0; round++) {
+      const now = await byIds(
+        session,
+        [...records.keys()].map((id) => ({ id })),
+      );
+      const back: RecordChange[] = [];
+      for (const [id, { key, values }] of records) {
+        const current = now.get(id);
+        const changes = Object.fromEntries(
+          Object.entries(values)
+            .filter(([field, value]) => current && (current.values[field] ?? null) !== value)
+            .map(([field, value]) => [field, { from: current!.values[field] ?? null, to: value }]),
+        );
+        if (!current || Object.keys(changes).length === 0) records.delete(id);
+        else back.push({ id, key, version: current.version, changes });
+      }
+      if (back.length === 0) break;
+      const answer = await send('POST', at(session, 'Commit'), {
+        session: session.token,
+        body: {
+          commitId: crypto.randomUUID(),
+          company,
+          schemaVersion,
+          dryRun: false,
+          records: back,
+        },
+      });
+      if (answer.status === 200) records.clear();
+      else if (answer.status !== 409) {
+        failures.push(`${company}: ${answer.status} ${JSON.stringify(answer.json)}`);
+        break;
+      }
+    }
+    for (const { key } of records.values()) failures.push(`${company}: ${key} not put back`);
+  }
+  if (failures.length > 0) throw new Error(`Couldn't put back:\n${failures.join('\n')}`);
 }
 
 /** A change to some of a record's fields, from the values it was read with. */
@@ -1148,7 +1252,7 @@ describe.skipIf(!serves('E2'))('commit', () => {
     expect(answer.status).toBe(413);
     expect(codes(answer)).toEqual(['batch.tooLarge']);
 
-    const all = await pick(session, schema.maxCommitRecords);
+    const all = await pick(session, schema.maxCommitRecords, { any: true });
     const full = await commit(
       session,
       all.map((r) => change(r, { mobile: freshMobile() })),
@@ -1234,3 +1338,65 @@ describe.skipIf(!onMock)('the mock’s failure injection', () => {
     expect(after.commits - before.commits).toBe(1);
   });
 });
+
+describe.skipIf(!serves('E4') || (!onMock && env.ERP_TEST_RATE_LIMITS !== '1'))(
+  'rate limits',
+  () => {
+    // Per client address over one-minute windows: launches (CreateTicket and Redeem) apart from
+    // the session's own calls (Renew and End). The mock's are off until set; a real server's are
+    // its settings, reached by asking until it refuses.
+    const setLimit = async (name: 'launchPerMinute' | 'sessionPerMinute', value: number) => {
+      if (onMock) await control('limits', { [name]: value });
+    };
+
+    /** Sends `request` until it is refused with 429, and answers that refusal. */
+    async function until429(request: () => Promise<Answer>): Promise<Answer> {
+      for (let i = 0; i < 400; i++) {
+        const answer = await request();
+        if (answer.status === 429) return answer;
+      }
+      throw new Error('No 429 after 400 requests.');
+    }
+
+    /** Checks a limit's refusal, and answers how many seconds it asks to wait. */
+    function expectLimited(answer: Answer): number {
+      expect(answer.status).toBe(429);
+      expect(codes(answer)).toEqual(['rate.limited']);
+      const seconds = Number(answer.headers.get('Retry-After'));
+      expect(Number.isInteger(seconds) && seconds >= 1 && seconds <= 60, `${seconds}`).toBe(true);
+      expect(answer.headers.get('Access-Control-Allow-Origin')).toBe(ORIGIN);
+      expect((answer.headers.get('Access-Control-Expose-Headers') ?? '').toLowerCase()).toContain(
+        'retry-after',
+      );
+      return seconds;
+    }
+
+    const waitOut = async (seconds: number) => {
+      if (onMock) await advance(60_000);
+      else await new Promise((done) => setTimeout(done, seconds * 1000));
+    };
+
+    it('refuse launches past the limit per client with 429, and leave the ticket usable', async () => {
+      await setLimit('launchPerMinute', 3);
+      const made = (await ticket()).ticket;
+      const refused = await until429(() =>
+        send('POST', ROUTES.redeem, { body: { ticket: 'A'.repeat(43) }, limited: true }),
+      );
+      const seconds = expectLimited(refused);
+      expectLimited(await send('POST', ROUTES.redeem, { body: { ticket: made }, limited: true }));
+      await waitOut(seconds);
+      expect((await redeem(made)).status).toBe(200);
+    });
+
+    it('count Renew and End apart from launches', async () => {
+      const session = await open();
+      await setLimit('sessionPerMinute', 4);
+      const renew = () => send('POST', ROUTES.renew, { session: session.token, limited: true });
+      const seconds = expectLimited(await until429(renew));
+      expectLimited(await send('POST', ROUTES.end, { session: session.token, limited: true }));
+      expect((await redeem((await ticket()).ticket)).status).toBe(200);
+      await waitOut(seconds);
+      expect(readRenewResponse((await renew()).json).idleExpiresAt).toBeTruthy();
+    });
+  },
+);

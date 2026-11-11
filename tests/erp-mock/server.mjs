@@ -5,7 +5,7 @@
 // sessions on a clock the tests can move, versions that move on every write, idempotent commits
 // keyed by (company, commitId), and CORS with preflight. `/__mock/*` routes reset it, move its
 // clock, inject failures, revoke keys, turn the sheet off for a company and make concurrent
-// ERP edits.
+// ERP edits, and turn on rate limits.
 //
 //   node tests/erp-mock/server.mjs [--port 4180] [--host 127.0.0.1] [--sheet-url http://localhost:4173]
 
@@ -67,6 +67,7 @@ const TEXT = {
       'This link has expired or has already been used. Open it again from Cash Gear ERP.',
     'origin.denied': () => 'This site can’t connect to Cash Gear ERP.',
     'commit.reused': () => 'This commit id was already used for other changes.',
+    'rate.limited': () => 'Too many requests. Try again in a moment.',
     'request.invalid': (_, x) => x.why,
     errors: (n) => (n === 1 ? '1 vendor has errors.' : `${n} vendors have errors.`),
     conflicts: (n) =>
@@ -95,6 +96,7 @@ const TEXT = {
       'انتهت صلاحية هذا الرابط أو استخدم من قبل. افتحه من جديد من Cash Gear ERP.',
     'origin.denied': () => 'لا يمكن لهذا الموقع الاتصال بـ Cash Gear ERP.',
     'commit.reused': () => 'استخدم رقم هذا الحفظ من قبل لتعديلات أخرى.',
+    'rate.limited': () => 'طلبات كثيرة. حاول مرة أخرى بعد قليل.',
     'request.invalid': (_, x) => x.why,
     errors: (n) => `${n} من الموردين بهم أخطاء.`,
     conflicts: (n) => `عدّل مستخدم آخر ${n} من الموردين.`,
@@ -248,6 +250,11 @@ export class MockErp {
     this.tickets = new Map();
     this.sessions = new Map();
     this.faults = [];
+    // Rate limits per client address over fixed one-minute windows, as UnifiedAPI's
+    // `SheetLaunch:RateLimits` sets them (Track E4): off until `/__mock/limits` sets them, so the
+    // suite and the browser tests can open as many sheets as they like.
+    this.limits = { launchPerMinute: null, sessionPerMinute: null };
+    this.windows = new Map();
     this.databases = new Map();
     for (const name of new Set(Object.values(COMPANIES))) {
       this.databases.set(name, {
@@ -350,9 +357,12 @@ export class MockErp {
     if (fault?.latencyMs) await sleep(fault.latencyMs);
     if (fault?.drop === 'before') return void req.socket.destroy();
     if (fault?.status) {
-      const code = { 401: 'session.expired', 403: 'privilege.denied', 413: 'batch.tooLarge' }[
-        fault.status
-      ];
+      const code = {
+        401: 'session.expired',
+        403: 'privilege.denied',
+        413: 'batch.tooLarge',
+        429: 'rate.limited',
+      }[fault.status];
       const reply = code
         ? this.fail(ctx, fault.status, code, null, { max: LIMITS.maxCommitRecords })
         : new Reply(fault.status, {
@@ -363,9 +373,39 @@ export class MockErp {
       if (fault.retryAfter !== undefined) reply.headers['Retry-After'] = String(fault.retryAfter);
       return send(res, reply);
     }
+    const limited = this.rateLimit(ctx);
+    if (limited) return send(res, limited);
     const reply = this.route(ctx);
     if (fault?.drop === 'after') return void req.socket.destroy();
     send(res, reply);
+  }
+
+  /**
+   * A 429 once a client address has made more launch (CreateTicket, Redeem) or session (Renew,
+   * End) requests this minute than `limits` allows, as Track E4's limiter answers: before the
+   * route runs, so a refused Redeem leaves its ticket usable.
+   */
+  rateLimit(ctx) {
+    const policy = {
+      'api/system/sheetlaunch/createticket': 'launchPerMinute',
+      'api/sheet/session/redeem': 'launchPerMinute',
+      'api/sheet/session/renew': 'sessionPerMinute',
+      'api/sheet/session/end': 'sessionPerMinute',
+    }[ctx.lower];
+    const limit = policy ? this.limits[policy] : null;
+    if (!Number.isSafeInteger(limit)) return null;
+    const now = this.now();
+    const window = Math.floor(now / 60_000);
+    const key = `${policy}|${ctx.req.socket.remoteAddress ?? ''}`;
+    const counted = this.windows.get(key);
+    const count = counted?.window === window ? counted.count + 1 : 1;
+    this.windows.set(key, { window, count });
+    if (count <= limit) return null;
+    const reply = this.fail(ctx, 429, 'rate.limited', null);
+    reply.headers['Retry-After'] = String(
+      Math.max(1, Math.ceil(((window + 1) * 60_000 - now) / 1000)),
+    );
+    return reply;
   }
 
   takeFault(path) {
@@ -828,6 +868,17 @@ export class MockErp {
         if (typeof body.active === 'boolean') caller.active = body.active;
         if (Array.isArray(body.privileges)) caller.privileges = body.privileges;
         return ok();
+      }
+      case 'limits': {
+        for (const name of ['launchPerMinute', 'sessionPerMinute']) {
+          if (!(name in body)) continue;
+          const value = body[name];
+          if (value !== null && !(Number.isSafeInteger(value) && value >= 0))
+            return bad(`${name} must be a whole number or null.`);
+          this.limits[name] = value;
+        }
+        this.windows.clear();
+        return ok({ ...this.limits });
       }
       case 'launch':
         if (!Array.isArray(body.companies)) return bad('companies must be a list.');
