@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { chromium, expect, test, type BrowserContext, type Page } from '@playwright/test';
@@ -300,6 +301,13 @@ foreach ($id in $ids) {
 }`);
 }
 
+/** The command Windows runs for a class's Open. */
+function openCommand(progId: string): string {
+  return powershell(
+    `(Get-ItemProperty -LiteralPath 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\${progId}\\shell\\open\\command').'(default)'`,
+  );
+}
+
 /** The names in the app's recent files, which it adds to once a workbook has opened. */
 const recentNames = (page: Page) =>
   page.evaluate(
@@ -337,8 +345,6 @@ test('the installed web app opens a workbook from Open with', async () => {
       headless: false,
       viewport: { width: 1280, height: 800 },
       serviceWorkers: 'allow',
-      // Chrome's own log, in the profile's chrome_debug.log, says what it made of a launch.
-      args: ['--enable-logging', '--v=0'],
     });
   const manifestId = base + '/';
   let running: BrowserContext | undefined;
@@ -404,79 +410,45 @@ test('the installed web app opens a workbook from Open with', async () => {
     expect(await app.evaluate(() => window.cgsTest.cellText(1, 1))).toBe('Item 1');
     expect(await app.evaluate(() => matchMedia('(display-mode: standalone)').matches)).toBe(true);
   };
-  const appeared = context.waitForEvent('page', { timeout: 60_000 }).catch(() => null);
-  shellOpen(file, progIds[0]);
+  if (channel !== 'msedge') {
+    // The launcher Chrome made for the app, which its registration names. Edge's is a package's.
+    const launcher = /^"([^"]+)"/.exec(openCommand(progIds[0]!))?.[1] ?? '';
+    await expect.poll(() => existsSync(launcher), { timeout: 60_000 }).toBe(true);
+  }
+  const appeared = context.waitForEvent('page', { timeout: 120_000 }).catch(() => null);
+  shellOpen(file, progIds[0]!);
   if (channel !== 'msedge') {
     // The first launch with files asks whether the app may open them, as it asks anyone. The app
-    // adds a workbook to its recent files once it has opened it.
+    // adds a workbook to its recent files once it has opened it. A launch that comes while Chrome
+    // is still finishing the install goes unanswered, with no question and no window (CI's Chrome
+    // 156, 2026-11-11), so until the question shows Open with is chosen again, as anyone would.
     let asked = false;
+    let launches = 1;
+    let launched = Date.now();
     try {
       await expect
         .poll(
           async () => {
             if (!asked) asked = answerFilePrompt(profile, channel);
+            if (!asked && launches < 4 && Date.now() - launched > 20_000) {
+              shellOpen(file, progIds[0]!);
+              launches++;
+              launched = Date.now();
+            }
             return recentNames(page);
           },
-          { timeout: 90_000 },
+          { timeout: 120_000 },
         )
         .toContain('Launched.xlsx');
     } catch (error) {
       // What the browser's windows show, so a failure on CI says why the file didn't open.
       await testInfo.attach('browser-windows.txt', {
-        body: `prompt answered: ${asked}\n${windowTexts(profile, channel, progIds[0])}`,
+        body: `launches: ${launches}, question answered: ${asked}\n${windowTexts(profile, channel, progIds[0])}`,
         contentType: 'text/plain',
       });
-      await testInfo.attach('browser-commands.txt', {
-        body: powershell(
-          `Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*chrome*' -or $_.Name -like 'CashGear*' } | ` +
-            `Where-Object { $_.CommandLine -notlike '*--type=*' } | ForEach-Object { "$($_.ProcessId) <- $($_.ParentProcessId) $($_.CommandLine)" }`,
-        ),
-        contentType: 'text/plain',
-      });
-      // The shell's launch once more: a second try that works says the first came too early.
-      const lists = powershell(
-        `Get-ChildItem 'HKCU:/Software/Classes' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like 'chrome*' } | ` +
-          `ForEach-Object { "$($_.PSChildName) => $((Get-ItemProperty -LiteralPath (Join-Path $_.PSPath 'shell/open/command') -ErrorAction SilentlyContinue).'(default)')" }`,
-      );
-      shellOpen(file, progIds[0]);
-      await new Promise((done) => setTimeout(done, 15_000));
-      await testInfo.attach('shell-again.txt', {
-        body:
-          `progIds: ${JSON.stringify(progIds)}\nnow: ${JSON.stringify(openWithProgIds(profile, 'xlsx'))}\n` +
-          `chrome classes:\n${lists}\nprompt answered: ${answerFilePrompt(profile, channel)}\n` +
-          windowTexts(profile, channel),
-        contentType: 'text/plain',
-      });
-      // The launch again, straight through the command Windows holds, then what shows.
-      const command = powershell(
-        `(Get-ItemProperty -LiteralPath 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\${progIds[0]}\\shell\\open\\command').'(default)'`,
-      );
-      const exe = /^"([^"]+)"/.exec(command)?.[1] ?? '';
-      const args = (command.slice(exe.length + 2).match(/"[^"]*"|\S+/g) ?? []).map((arg) =>
-        arg === '%1' ? file : arg.replace(/^(--[^=]+=)"(.*)"$/, '$1$2').replace(/^"|"$/g, ''),
-      );
-      let direct = `exe: ${exe}\nargs: ${JSON.stringify(args)}\n`;
-      try {
-        execFileSync(exe, args, { timeout: 20_000 });
-        direct += 'exit: 0\n';
-      } catch (failure) {
-        direct += `exit: ${String((failure as { status?: number }).status)} ${String(failure)}\n`;
-      }
-      await new Promise((done) => setTimeout(done, 15_000));
-      direct += `prompt answered now: ${answerFilePrompt(profile, channel)}\n`;
-      direct += windowTexts(profile, channel);
-      await testInfo.attach('direct-launch.txt', { body: direct, contentType: 'text/plain' });
-      try {
-        const log = await readFile(join(profile, 'chrome_debug.log'), 'utf8');
-        await testInfo.attach('chrome_debug.log', {
-          body: log.split(/\r?\n/).slice(-400).join('\n'),
-          contentType: 'text/plain',
-        });
-      } catch {
-        // No log written.
-      }
       throw error;
     }
+    testInfo.annotations.push({ type: 'launches', description: String(launches) });
     const app = await appeared;
     expect(app?.url().startsWith(base)).toBe(true);
     await showsWorkbook(app!);
