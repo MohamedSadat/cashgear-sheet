@@ -82,8 +82,14 @@ jobs:
       - run: pnpm test:save
       # Diagnostic (Phase 17), removed once known: the PWA's Open with test alone, before the
       # suite, tells whether what runs before it there is why it fails on CI.
-      - name: PWA Open with alone (diagnostic)
-        run: pnpm exec playwright test tests/e2e/pwa.spec.ts --project=chrome -g "Open with" --retries=0 --output=test-results-alone
+      - name: PWA spec alone (diagnostic A)
+        run: pnpm exec playwright test tests/e2e/pwa.spec.ts --project=chrome --retries=0 --output=test-results-alone/a
+        continue-on-error: true
+      - name: ERP commit tests, then Open with (diagnostic B)
+        run: pnpm exec playwright test tests/e2e/erp.spec.ts tests/e2e/pwa.spec.ts --project=chrome -g "committing ERP data|Open with" --retries=0 --output=test-results-alone/b
+        continue-on-error: true
+      - name: ERP spec, then PWA spec (diagnostic C)
+        run: pnpm exec playwright test tests/e2e/erp.spec.ts tests/e2e/pwa.spec.ts --project=chrome --retries=0 --output=test-results-alone/c
         continue-on-error: true
       # Browser tests use the runner's installed Chrome and Edge.
       - run: pnpm test:e2e

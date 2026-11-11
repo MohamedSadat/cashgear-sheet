@@ -433,6 +433,20 @@ test('the installed web app opens a workbook from Open with', async () => {
         ),
         contentType: 'text/plain',
       });
+      // The shell's launch once more: a second try that works says the first came too early.
+      const lists = powershell(
+        `Get-ChildItem 'HKCU:/Software/Classes' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like 'chrome*' } | ` +
+          `ForEach-Object { "$($_.PSChildName) => $((Get-ItemProperty -LiteralPath (Join-Path $_.PSPath 'shell/open/command') -ErrorAction SilentlyContinue).'(default)')" }`,
+      );
+      shellOpen(file, progIds[0]);
+      await new Promise((done) => setTimeout(done, 15_000));
+      await testInfo.attach('shell-again.txt', {
+        body:
+          `progIds: ${JSON.stringify(progIds)}\nnow: ${JSON.stringify(openWithProgIds(profile, 'xlsx'))}\n` +
+          `chrome classes:\n${lists}\nprompt answered: ${answerFilePrompt(profile, channel)}\n` +
+          windowTexts(profile, channel),
+        contentType: 'text/plain',
+      });
       // The launch again, straight through the command Windows holds, then what shows.
       const command = powershell(
         `(Get-ItemProperty -LiteralPath 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\${progIds[0]}\\shell\\open\\command').'(default)'`,
