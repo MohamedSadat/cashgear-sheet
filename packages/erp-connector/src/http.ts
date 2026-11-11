@@ -60,6 +60,16 @@ export class ErpError extends Error {
   }
 }
 
+/**
+ * The last request Cash Gear ERP refused, failed or didn't answer: its status (null for no
+ * answer), when, and the correlation id it answered with, which finds it in the ERP's log.
+ */
+export interface ErpFailure {
+  readonly status: number | null;
+  readonly at: number;
+  readonly correlationId: string | null;
+}
+
 export interface HttpOptions {
   /** The ERP API's origin, without a trailing slash. */
   readonly baseUrl: string;
@@ -218,10 +228,14 @@ export class ErpHttp {
         credentials: 'omit',
         cache: 'no-store',
         mode: 'cors',
+        // A redirect would carry X-Sheet-Session to wherever it points: the ERP's routes never
+        // redirect, so one is refused (Phase 19's security review).
+        redirect: 'error',
         ...(options.keepalive ? { keepalive: true } : {}),
       });
     } catch {
       if (options.signal?.aborted) throw cancelled();
+      this.#lastFailure = { status: null, at: Date.now(), correlationId: null };
       if (timeout.signal.aborted) {
         throw new ErpError('network', 'Cash Gear ERP took too long to answer.');
       }
@@ -232,8 +246,16 @@ export class ErpHttp {
     }
   }
 
+  #lastFailure: ErpFailure | null = null;
+
+  /** The last request that failed, for Connection Info (Phase 19's monitoring). */
+  get lastFailure(): ErpFailure | null {
+    return this.#lastFailure;
+  }
+
   async #failure(response: Response): Promise<ErpError> {
     const correlationId = response.headers.get(CORRELATION_HEADER);
+    this.#lastFailure = { status: response.status, at: Date.now(), correlationId };
     let message = `Cash Gear ERP answered ${response.status}.`;
     let code: string | null = null;
     let body: unknown;

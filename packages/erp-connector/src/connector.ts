@@ -42,6 +42,11 @@ export interface OpenOptions {
   /** Hears the session as soon as Redeem answers, so a retry can use it. */
   readonly onSession?: (session: ErpSession) => void;
   readonly sink: RecordSink;
+  /**
+   * Hears the schema before the first page is asked for, so that what binding needs ready, such
+   * as the new workbook, can be made while the records download (Phase 19, plan B.6).
+   */
+  readonly onSchema?: (schema: EntitySchema, session: ErpSession) => void;
   readonly onProgress?: (progress: LoadProgress) => void;
   readonly signal?: AbortSignal;
 }
@@ -112,6 +117,7 @@ export async function openRecords(options: OpenOptions): Promise<Opened> {
     } catch (error) {
       throw asSinkError(error);
     }
+    options.onSchema?.(schema, session);
     onProgress?.({ stage: 'loading', loaded: 0, total: null });
     const loaded = await pages(
       session,

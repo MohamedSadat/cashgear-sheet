@@ -165,6 +165,34 @@ describe('HTTP', () => {
     expect(error.kind).toBe('network');
   });
 
+  it('refuses a redirect, so the session header never follows one', async () => {
+    const { createServer } = await import('node:http');
+    const seen: (string | undefined)[] = [];
+    const target = createServer((req, res) => {
+      seen.push(req.headers['x-sheet-session'] as string | undefined);
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+    });
+    await new Promise<void>((done) => target.listen(0, '127.0.0.1', done));
+    const to = `http://127.0.0.1:${(target.address() as { port: number }).port}/stolen`;
+    const redirecting = createServer((_req, res) => res.writeHead(307, { Location: to }).end());
+    await new Promise<void>((done) => redirecting.listen(0, '127.0.0.1', done));
+    try {
+      const client = new ErpHttp({
+        baseUrl: `http://127.0.0.1:${(redirecting.address() as { port: number }).port}`,
+        retries: 0,
+      });
+      const error = (await client
+        .json('GET', 'api/payable/VendorSheet/Schema', { session: 'secret-token' })
+        .catch((e: unknown) => e)) as ErpError;
+      expect(error).toBeInstanceOf(ErpError);
+      expect(error.kind).toBe('network');
+      expect(seen).toEqual([]);
+    } finally {
+      redirecting.close();
+      target.close();
+    }
+  });
+
   it('times out and cancels', async () => {
     await fetch(`${base}/__mock/fault`, {
       method: 'POST',

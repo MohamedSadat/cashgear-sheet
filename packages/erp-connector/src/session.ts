@@ -95,6 +95,11 @@ export class ErpSession {
   }
 
   /** When the session ends if nothing renews it, in milliseconds since 1970. */
+  /** The last request of this session's connection that failed, with its correlation id. */
+  get lastFailure() {
+    return this.#http.lastFailure;
+  }
+
   get expiresAt(): number {
     return Math.min(this.#idleExpiresAt, this.#maxExpiresAt);
   }
