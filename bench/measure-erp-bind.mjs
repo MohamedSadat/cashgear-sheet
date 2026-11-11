@@ -5,11 +5,12 @@
 // (`cgsTest.bindPages`), then waits for the grid's first paint. It runs against `pnpm preview`, so
 // build first.
 // Usage: node bench/measure-erp-bind.mjs [--out=file] [--runs=5]
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { chromium } from '@playwright/test';
 import { root } from '../scripts/lib.mjs';
+import { FIELDS, pages, schema, session } from './erp-pages.mjs';
 
 const option = (name) =>
   process.argv.find((arg) => arg.startsWith('--' + name + '='))?.slice(name.length + 3);
@@ -18,96 +19,6 @@ const origin = option('origin') ?? 'http://127.0.0.1:4173';
 const RUNS = Number(option('runs') ?? 5);
 const SIZES = [1000, 10000];
 const TARGETS = { 1000: 300, 10000: 1500 };
-
-/** The vendors' 13 fields and 7 more text fields: 20 in all, as B.6 measures. */
-const FIELDS = [
-  ['vendorAccount', 'text'],
-  ['vendorName', 'text'],
-  ['vendorGroup', 'lookup'],
-  ['mobile', 'text'],
-  ['currency', 'lookup'],
-  ['payMethod', 'lookup'],
-  ['address', 'text'],
-  ['taxFile', 'text'],
-  ['blocked', 'boolean'],
-  ['bankAccount', 'text'],
-  ['debitLimit', 'decimal'],
-  ['modifiedBy', 'text'],
-  ['modifiedDate', 'dateTime'],
-  ...Array.from({ length: 7 }, (_, i) => [`extra${i + 1}`, 'text']),
-];
-
-const schema = JSON.stringify({
-  entity: 'vendors',
-  schemaVersion: 'vendors.1',
-  label: { en: 'Vendors', ar: 'الموردون' },
-  keyField: 'vendorAccount',
-  idField: 'recId',
-  maxPageSize: 1000,
-  maxRecords: 10000,
-  maxCommitRecords: 500,
-  fields: FIELDS.map(([name, type]) => ({
-    name,
-    label: { en: name, ar: name },
-    type,
-    editable: !['vendorAccount', 'debitLimit', 'modifiedDate'].includes(name),
-    ...(type === 'decimal' ? { scale: 2 } : {}),
-    ...(type === 'lookup' ? { lookup: 'codes' } : {}),
-  })),
-  lookups: { codes: [{ code: 'LOCAL', label: { en: 'Local', ar: 'محلي' } }] },
-});
-
-const session = JSON.stringify({
-  company: 'Kit',
-  userId: 'u17',
-  userName: 'Sara',
-  language: 'en',
-  entity: 'vendors',
-  entityRoute: 'api/payable/VendorSheet',
-});
-
-function value(type, i, name) {
-  switch (type) {
-    case 'boolean':
-      return i % 11 === 0;
-    case 'decimal':
-      return `${(i * 37) % 100000}.${String(i % 100).padStart(2, '0')}`;
-    case 'dateTime':
-      return '2026-10-30T08:12:00+02:00';
-    case 'lookup':
-      return 'LOCAL';
-    default:
-      return name === 'vendorAccount'
-        ? `V-${String(i).padStart(6, '0')}`
-        : i % 3 === 0
-          ? `شركة النيل ${i} ${name}`
-          : `0${100000000 + i} ${name}`;
-  }
-}
-
-/** Query pages of `n` records, 1,000 a page, as the ERP sends them. */
-function pages(n) {
-  const list = [];
-  for (let start = 0; start < n; start += 1000) {
-    const records = [];
-    for (let i = start; i < Math.min(n, start + 1000); i++) {
-      const values = Object.fromEntries(FIELDS.map(([name, type]) => [name, value(type, i, name)]));
-      records.push({ id: i + 1, key: values.vendorAccount, version: 'AAAAAAAAB9E=', values });
-    }
-    const last = start + 1000 >= n;
-    list.push(
-      Buffer.from(
-        JSON.stringify({
-          records,
-          nextAfterId: last ? null : records.at(-1).id,
-          total: n,
-          asOf: '2026-11-09T10:00:05Z',
-        }),
-      ).toString('base64'),
-    );
-  }
-  return list;
-}
 
 async function serverIsUp() {
   try {
@@ -142,8 +53,10 @@ try {
       const timing = await page.evaluate(
         async ({ schema, encoded, session }) => {
           const bytes = encoded.map((text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)));
-          const started = performance.now();
           const steps = await window.cgsTest.bindPages(schema, bytes, session);
+          // From the response (the records handed over) to the first paint, as plan B.6 measures;
+          // the new workbook opened meanwhile, as a launch opens it while the records download.
+          const started = steps.startedAt;
           // The grid's first paint of the bound sheet.
           await new Promise((done) => {
             const check = () => {
@@ -151,7 +64,8 @@ try {
               if (canvas?.dataset.ready === 'true') requestAnimationFrame(() => done());
               else setTimeout(check, 1);
             };
-            check();
+            // A frame first, so the flag says what the bound sheet's tiles are, not the blank's.
+            requestAnimationFrame(check);
           });
           const at = (name) => performance.getEntriesByName(`erp:${name}`).at(-1)?.startTime ?? NaN;
           return {
@@ -162,6 +76,7 @@ try {
             fitMs: at('fitted') - at('bound'),
             showMs: at('shown') - at('fitted'),
             paintMs: performance.now() - started - steps.stageMs - steps.bindMs,
+            overlappedOpenMs: steps.openMs,
           };
         },
         { schema, encoded, session },
@@ -169,7 +84,7 @@ try {
       const memory = await page.evaluate(() => window.cgsTest.memoryBytes());
       const ms = (n) => n.toFixed(0);
       console.log(
-        `${size} records: ${ms(timing.totalMs)} ms (stage ${ms(timing.stageMs)}, open ${ms(timing.openMs)}, bind ${ms(timing.engineBindMs)}, fit ${ms(timing.fitMs)}, show ${ms(timing.showMs)}, paint ${ms(timing.paintMs)}), ${timing.records} bound`,
+        `${size} records: ${ms(timing.totalMs)} ms (stage ${ms(timing.stageMs)}, open while downloading ${ms(timing.overlappedOpenMs)}, bind ${ms(timing.engineBindMs)}, fit ${ms(timing.fitMs)}, show ${ms(timing.showMs)}, paint ${ms(timing.paintMs)}), ${timing.records} bound`,
       );
       if (timing.records !== size) throw new Error(`Bound ${timing.records} of ${size} records.`);
       runs.push({ ...timing, memoryBytes: memory });
@@ -188,7 +103,8 @@ try {
   }
 } finally {
   await browser.close();
-  server?.kill();
+  // The server is a shell's grandchild, which killing the shell would leave running.
+  if (server) spawnSync('taskkill', ['/pid', String(server.pid), '/t', '/f'], { stdio: 'ignore' });
 }
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify({ measuredAt: new Date().toISOString(), results }, null, 2));
