@@ -83,6 +83,8 @@ export interface RequestOptions {
    * the ERP may have used the ticket up before the answer was lost.
    */
   readonly idempotent?: boolean;
+  /** Sent even as the page closes, as End is (`fetch`'s `keepalive`). */
+  readonly keepalive?: boolean;
 }
 
 function wait(ms: number, signal?: AbortSignal): Promise<void> {
@@ -216,6 +218,7 @@ export class ErpHttp {
         credentials: 'omit',
         cache: 'no-store',
         mode: 'cors',
+        ...(options.keepalive ? { keepalive: true } : {}),
       });
     } catch {
       if (options.signal?.aborted) throw cancelled();

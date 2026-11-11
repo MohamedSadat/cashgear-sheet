@@ -1,16 +1,20 @@
 // The sheet session: Redeem's answer, with its token held here and nowhere else. The token is a
 // private field, so it can't be read off the object, serialised with it or logged by accident; it
-// leaves only as the `X-Sheet-Session` header (plan F). Idle expiry is tracked from the answer,
-// since only Renew slides it and Renew comes with Phase 18.
+// leaves only as the `X-Sheet-Session` header (plan F), and once, in memory, when Reconnect hands
+// the session to the tab that waits for it (`handover`). Renew slides the idle expiry while the
+// user works (decisions, 2026-11-11, Phase 18); End ends it.
 
 import { ENTITY_ROUTES, ROUTES, type QueryFilter, type SheetSession } from './contract.ts';
 import { ErpError, type ErpHttp, type RequestOptions } from './http.ts';
-import { readSheetSession } from './validate.ts';
+import { readRenewResponse, readSheetSession } from './validate.ts';
 
 /** What a session may show of itself: everything Redeem answered but the token. */
 export type SessionInfo = Omit<SheetSession, 'token'>;
 
 export type SessionState = 'open' | 'expired';
+
+/** Renew at most this often, however busy the user is (decisions, 2026-11-11). */
+export const RENEW_EVERY_MS = 5 * 60_000;
 
 export class ErpSession {
   readonly info: SessionInfo;
@@ -21,6 +25,8 @@ export class ErpSession {
   #ended = false;
   readonly #now: () => number;
   readonly #listeners = new Set<(state: SessionState) => void>();
+  #renewedAt: number;
+  #renewing: Promise<void> | null = null;
 
   private constructor(http: ErpHttp, session: SheetSession, now: () => number) {
     const { token, ...info } = session;
@@ -30,6 +36,7 @@ export class ErpSession {
     this.#idleExpiresAt = Date.parse(session.idleExpiresAt);
     this.#maxExpiresAt = Date.parse(session.maxExpiresAt);
     this.#now = now;
+    this.#renewedAt = now();
   }
 
   /** Redeems a launch ticket, once. Redeem is never sent twice, since a lost answer may have
@@ -51,6 +58,32 @@ export class ErpSession {
       throw new ErpError('contract', 'Cash Gear ERP sent a session the sheet can’t read.');
     }
     return new ErpSession(http, session, options.now ?? Date.now);
+  }
+
+  /**
+   * Takes over a session another tab redeemed and handed over (Reconnect, plan B.4). The answer
+   * is checked as Redeem's is.
+   */
+  static adopt(http: ErpHttp, given: unknown, now: () => number = Date.now): ErpSession {
+    let session: SheetSession;
+    try {
+      session = readSheetSession(given);
+    } catch {
+      throw new ErpError('contract', 'The session handed over can’t be read.');
+    }
+    return new ErpSession(http, session, now);
+  }
+
+  /**
+   * Redeem's answer with its token, for Reconnect's handover to another tab of this origin over
+   * `BroadcastChannel`, in memory only. Nothing else may call it.
+   */
+  handover(): SheetSession {
+    return {
+      token: this.#token,
+      ...this.info,
+      idleExpiresAt: new Date(this.#idleExpiresAt).toISOString(),
+    };
   }
 
   get company(): string {
@@ -102,6 +135,55 @@ export class ErpSession {
   #unwatch() {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#timer = undefined;
+  }
+
+  /**
+   * The user did something in the tab: renews the session if it last renewed `RENEW_EVERY_MS`
+   * ago or more, so it stays open while they work, whether or not anything is sent.
+   */
+  touch(): void {
+    if (this.state === 'expired' || this.#renewing) return;
+    if (this.#now() - this.#renewedAt < RENEW_EVERY_MS) return;
+    void this.renew().catch(() => undefined);
+  }
+
+  /** Slides the idle expiry, never past the maximum. A 401 ends the session here too. */
+  async renew(): Promise<void> {
+    if (this.#renewing) return this.#renewing;
+    this.#renewedAt = this.#now();
+    const renewing = (async () => {
+      const answer = await this.json('POST', ROUTES.renew, { idempotent: true });
+      let idle: number;
+      try {
+        idle = Date.parse(readRenewResponse(answer).idleExpiresAt);
+      } catch {
+        throw new ErpError('contract', 'Cash Gear ERP sent a renewal the sheet can’t read.');
+      }
+      this.#idleExpiresAt = Math.min(idle, this.#maxExpiresAt);
+      // The timer goes again from the new expiry.
+      if (this.#listeners.size > 0) {
+        this.#unwatch();
+        this.#watch();
+      }
+    })();
+    this.#renewing = renewing;
+    try {
+      await renewing;
+    } finally {
+      this.#renewing = null;
+    }
+  }
+
+  /**
+   * Ends the session in the ERP and here. Sent with `keepalive`, so it goes even as the page
+   * closes; its answer doesn't matter, since an unended session expires anyway.
+   */
+  end(): void {
+    if (this.#ended) return;
+    void this.#http
+      .json('POST', ROUTES.end, { session: this.#token, keepalive: true, idempotent: false })
+      .catch(() => undefined);
+    this.#end();
   }
 
   /** An entity route, such as `api/payable/VendorSheet/Query`. */

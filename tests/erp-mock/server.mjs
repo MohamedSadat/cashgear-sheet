@@ -779,6 +779,9 @@ export class MockErp {
   }
 
   commitStatus(ctx, commitId) {
+    // As UnifiedAPI does (Track E3): an id that isn't a UUID is refused, as Commit refuses one.
+    if (!UUID.test(commitId))
+      return this.fail(ctx, 400, 'request.invalid', null, { why: 'commitId must be a UUID.' });
     const db = this.database(ctx.session.company);
     const stored = db.commits.get(`${ctx.session.company}\u0000${commitId.toLowerCase()}`);
     return new Reply(200, stored ? { status: 'committed', ...stored.body } : { status: 'unknown' });

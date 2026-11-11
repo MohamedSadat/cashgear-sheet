@@ -9,12 +9,18 @@ import {
   type ApiError,
   type CommitRequest,
   type CommitResponse,
+  type CommitStatusResponse,
   type Conflict,
   type RecordChange,
 } from './contract.ts';
 import { ErpError } from './http.ts';
 import type { ErpSession } from './session.ts';
-import { readCommitResponse, readConflictBody, readErrorBody } from './validate.ts';
+import {
+  readCommitResponse,
+  readCommitStatus,
+  readConflictBody,
+  readErrorBody,
+} from './validate.ts';
 
 /** What Cash Gear ERP made of a commit or a dry run. Other failures throw an `ErpError`. */
 export type CommitOutcome =
@@ -102,4 +108,33 @@ export async function sendCommit(
     throw new ErpError('contract', 'Cash Gear ERP answered another commit.', { status: 200 });
   }
   return { kind: 'ok', response };
+}
+
+/**
+ * Asks Cash Gear ERP whether a commit whose outcome isn't known was saved (Phase 18, plan B.4),
+ * before anything sends it again: `committed` carries the stored answer, `unknown` means nothing
+ * was written under that id, so sending it again is safe.
+ */
+export async function commitStatus(
+  session: ErpSession,
+  commitId: string,
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<CommitStatusResponse> {
+  const answer = await session.json(
+    'GET',
+    `${session.route(ENTITY_ROUTES.commitStatus)}/${encodeURIComponent(commitId)}`,
+    { signal: options.signal, idempotent: true },
+  );
+  let status: CommitStatusResponse;
+  try {
+    status = readCommitStatus(answer);
+  } catch {
+    throw new ErpError('contract', 'Cash Gear ERP sent an answer the sheet can’t read.', {
+      status: 200,
+    });
+  }
+  if (status.status === 'committed' && status.commitId.toLowerCase() !== commitId) {
+    throw new ErpError('contract', 'Cash Gear ERP answered another commit.', { status: 200 });
+  }
+  return status;
 }

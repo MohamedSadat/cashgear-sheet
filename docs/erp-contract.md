@@ -13,8 +13,9 @@ the reference for Track E in `D:\CashGear\Projects\CashGear`.
 
 Contract version: `vendors.1`, Phase 14 (2026-11-09), with Phase 15's changes (2026-11-09): the
 Status route and its per-company switch, Query's search over what the ERP's Vendors list searches,
-and the columns' order and labels; and Phase 17's notes (2026-11-10): retries after a 500, and
-versions in canonical base64.
+and the columns' order and labels; Phase 17's notes (2026-11-10): retries after a 500, and
+versions in canonical base64; and Phase 18's (2026-11-11): CommitStatus refuses an id that isn't a
+UUID, Kit is turned on, and when the sheet renews and ends its session.
 
 ## Routes
 
@@ -51,7 +52,8 @@ Routes are module first, as the ERP's are. Every route takes and returns JSON
 ## Launch and session
 
 **Turned on per company.** UnifiedAPI's setting `SheetLaunch:Companies` lists the companies the
-sheet is on for, and is empty until Phase 18 turns companies on (decisions, 2026-11-09, Phase 15).
+sheet is on for: Kit, from Phase 18 (decisions, 2026-11-11), once `Create_SheetSessions.sql` has run
+in CGService and `Add_VendorsRowVersion.sql` and `Create_SheetCommit.sql` in ASTDataTest.
 Status needs a valid API key (401 without) and answers `{enabled}`: true when the key's company is
 listed and an active tenant, and its user passes the entity module's policy (`Payable`) with the
 Vendors unit's View in that company (Track E1). The ERP's list shows "Edit in Cash Gear Sheet" only then, and CreateTicket refuses
@@ -84,7 +86,10 @@ every company, and `/__mock/launch` changes that.
 - An opaque 256-bit token, stored as a SHA-256 hash in CGService.
 - 30 minutes idle and 10 hours at most. Only Renew slides the idle time, never past
   `maxExpiresAt`. The sheet renews while its user is working, whether or not it is sending
-  requests, so the server writes the session row only on Renew.
+  requests, so the server writes the session row only on Renew: after a key, a click or a scroll in
+  its tab, at most every 5 minutes (decisions, 2026-11-11, Phase 18).
+- The sheet sends End, as a `keepalive` request, when its tab closes cleanly, when its workbook
+  closes, and for a session a waiting tab refused on Reconnect.
 - Every request checks that the session hasn't ended or expired, and that its API key and company
   are still active.
 - Scoped to `api/sheet/*` and the session's `entityRoute`. Any other entity route answers 403
@@ -202,7 +207,10 @@ is `{id, key, version, changes}`, and each change `{from, to}`. Only changed fie
   mock takes any version it can decode, and refuses only a stale one).
 - **CommitStatus** answers `{status: "committed", …the stored 200 body}` or `{status: "unknown"}`.
   Unknown means nothing was written under that id in the session's company, so a retry is safe. A
-  refused commit stores nothing, so it is unknown too.
+  refused commit stores nothing, so it is unknown too, as is a dry run's id and another company's.
+  An id that isn't a UUID is refused with 400 `request.invalid`, as Commit refuses one (Track E3).
+  The sheet asks it after any commit whose outcome isn't known (no answer, a 500, or a 401, since a
+  browser can resend a POST by itself), before it sends anything again (Phase 18).
 - **Audit.** One `SheetChangeAudit` row per changed field, and a SystemLog summary row, in the same
   transaction.
 - **After commit.** `cache.RemoveByTag("Vendors")`, as `UpdateEx` does, outside the transaction's

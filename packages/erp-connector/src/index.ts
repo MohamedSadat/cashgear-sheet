@@ -1,5 +1,6 @@
 // The sheet's side of the Cash Gear ERP contract: the types and their guards (Phase 14), and the
-// launch, HTTP, session and record loading (Phase 15). No React, and no cells.
+// launch, HTTP, session and record loading (Phase 15), commits (Phase 17), and Renew, End,
+// CommitStatus and Reconnect (Phase 18). No React, and no cells.
 
 export * from './contract.ts';
 export * from './validate.ts';
@@ -8,3 +9,4 @@ export * from './session.ts';
 export * from './launch.ts';
 export * from './connector.ts';
 export * from './commit.ts';
+export * from './reconnect.ts';
