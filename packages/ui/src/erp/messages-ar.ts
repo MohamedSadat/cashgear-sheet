@@ -604,6 +604,10 @@ export const AR: ErpTexts = {
   openUntil: (at) =>
     `مفتوحة حتى ${new Date(at).toLocaleTimeString('ar-EG-u-nu-latn', { timeStyle: 'short' })}`,
   readAt: (iso) => new Date(iso).toLocaleString('ar-EG-u-nu-latn'),
+  INFO_PROBLEM: 'آخر طلب لم ينجح',
+  NO_PROBLEM: 'لا يوجد',
+  problemText: (status, at, reference) =>
+    `${status === null ? 'لم يصل رد' : `الرد ${status}`} الساعة ${new Date(at).toLocaleTimeString('ar-EG-u-nu-latn', { timeStyle: 'short' })}${reference ? ` · المرجع ${isolate(reference)}` : ''}`,
   editingText: (editable, all) =>
     editable === 0
       ? 'كل الأعمدة للقراءة فقط بالنسبة لك.'

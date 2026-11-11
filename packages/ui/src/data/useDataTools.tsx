@@ -3,6 +3,7 @@
 // message when validation refuses what was typed. Everything is asked of the engine, and every
 // change is a command through the shell's queue.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { linkToOpen } from './links';
 import { CgButton, CgWindow } from '@cashgear/ui';
 import type {
   Applied,
@@ -634,7 +635,9 @@ export function useDataTools(host: DataToolsHost) {
     void engine.query({ kind: 'linkAt', sheet, row: row + 1, col: col + 1 }).then(async (link) => {
       if (!link) return;
       if (link.address) {
-        window.open(link.address, '_blank', 'noopener,noreferrer');
+        const address = linkToOpen(link.address);
+        if (address) window.open(address, '_blank', 'noopener,noreferrer');
+        else hostRef.current.notice('Only web and mail addresses open from a link here.');
         return;
       }
       if (!link.location) return;

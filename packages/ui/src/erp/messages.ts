@@ -620,6 +620,10 @@ export const EN = {
   openUntil: (at: number) =>
     `Open until ${new Date(at).toLocaleTimeString('en-US', { timeStyle: 'short' })}`,
   readAt: (iso: string) => new Date(iso).toLocaleString('en-US'),
+  INFO_PROBLEM: 'Last failed request',
+  NO_PROBLEM: 'None',
+  problemText: (status: number | null, at: number, reference: string | null) =>
+    `${status === null ? 'No answer' : `Answered ${status}`} at ${new Date(at).toLocaleTimeString('en-US', { timeStyle: 'short' })}${reference ? ` · Reference ${isolate(reference)}` : ''}`,
   editingText: (editable: number, all: number) =>
     editable === 0
       ? 'Every column is read-only for you.'

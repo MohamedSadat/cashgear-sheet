@@ -369,6 +369,24 @@ test('refuses a replayed or expired launch link', async ({ page }) => {
   await expect(page.getByTestId('erp-load-text')).toHaveText(refused, { timeout: 60_000 });
 });
 
+test('a launch whose records fail leaves nothing open, and Try again opens them', async ({
+  page,
+}) => {
+  // The new workbook opens while the records download (Phase 19); every Query fails.
+  await mock('fault', { match: 'VendorSheet/Query$', status: 500, times: 0 });
+  await launch(page, (await ticket({ search: 'V-100' })).url);
+  await expect(page.getByTestId('erp-load-text')).toHaveText(
+    "Cash Gear ERP couldn't answer. Try again in a moment.",
+    { timeout: 60_000 },
+  );
+  // Nothing was opened, so that workbook is put away again.
+  await expect(page.locator('h1.cgs-title')).toHaveText('CashGear Sheet');
+  await mock('fault', { clear: true });
+  await page.getByTestId('erp-load-retry').click();
+  await bound(page, 'Vendors · 8 · Sara @ Kit');
+  await expect(page.locator('h1.cgs-title')).toHaveText('Vendors – Kit.xlsx');
+});
+
 test('Save As writes an ordinary workbook with no ids, versions or connection', async ({
   page,
 }) => {

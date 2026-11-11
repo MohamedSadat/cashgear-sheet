@@ -420,6 +420,11 @@ test('a session that ends shows Reconnect, and a new launch hands over to the wa
     .toBe(
       `Vendors · ${baseline.length} · 1 changed · Session ended · ${me.userName} @ ${me.company}`,
     );
+  // Connection Info names the failed request by the reference it answered with.
+  await ribbonButton(page, 'Connection Info');
+  await expect(page.getByTestId('erp-info-last-problem')).toContainText('Answered 401');
+  await expect(page.getByTestId('erp-info-last-problem')).toContainText('tenant-e2e');
+  await page.getByTestId('erp-info-close').click();
   await ribbonButton(page, 'Reconnect');
   await expect(page.getByTestId('erp-reconnect')).toBeVisible();
   const tab = await launchTab(context, (await ticket(KEYS.editor!)).url);

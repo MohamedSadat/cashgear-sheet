@@ -41,6 +41,7 @@ import {
   sendCommit,
   waitForHandover,
   type CommitRequest,
+  type EntitySchema,
   type ErpLaunch,
   type RecordChange,
   type RecordSink,
@@ -52,12 +53,43 @@ import { ReviewChangesDialog } from './ReviewChangesDialog';
 import { textsFor, type ErpTexts } from './texts';
 import { LOCK_PX } from '@cgs/engine-client';
 
+/** The new workbook a binding goes into, named for the data and company. */
+function openBlankFor(h: ErpToolsHost, session: SessionInfo, label: string): Promise<void> {
+  return h.openBlank(
+    `${textsFor(session.language).workbookTitle(label, session.company)}.xlsx`,
+    session.language === 'ar',
+  );
+}
+
+/** Text in both scripts and digits, beside the headings, for the tile worker to ready its fonts. */
+const WARM_SAMPLES = ['شركة النيل للتجارة 0123456789', 'Al Noor Trading 0123456789'];
+
+/**
+ * What a binding needs ready before its records arrive, made while they download: the new
+ * workbook, and the tile worker's fonts for its headings and text (Phase 19, plan B.6).
+ */
+function prepareFor(h: ErpToolsHost, session: SessionInfo, schema: EntitySchema): Promise<void> {
+  const headings = schema.fields.map((field) => field.label[session.language] ?? field.name);
+  void h
+    .engine()
+    ?.warmText([...headings, ...WARM_SAMPLES])
+    .catch(() => undefined);
+  return openBlankFor(h, session, schema.label[session.language]);
+}
+
 export interface ErpToolsHost {
   engine: () => EngineClient | null;
   /** Runs a job in the shell's command queue, after whatever is queued. */
   queue: <T>(job: (engine: EngineClient) => Promise<T>) => Promise<T>;
   /** Opens a new blank workbook named `name`, resolving once its sheet can be written. */
   openBlank: (name: string, rightToLeft: boolean) => Promise<void>;
+  /** Puts away the blank workbook a launch opened, when its records then failed to load. */
+  closeBlank: () => void;
+  /**
+   * Holds the grid's redrawing while a binding writes, fits and settles the new workbook, so its
+   * tiles are made once, at their fitted widths; letting go draws the sheet afresh.
+   */
+  holdView: (held: boolean) => void;
   /** The binding changed the workbook: its tabs, its sheet and its undo list. */
   afterBind: () => Promise<void>;
   notice: (message: string | null) => void;
@@ -148,7 +180,9 @@ export interface ErpTools {
   /** The texts of an ERP draft offered back, in its own language. */
   textsFor: (language: string | null | undefined) => ErpTexts;
   /** For the bind bench: binds records already staged in the engine, as opening does. */
-  bindStaged: (session: SessionInfo, label: string) => Promise<ErpBinding>;
+  bindStaged: (session: SessionInfo, label: string, opened?: Promise<void>) => Promise<ErpBinding>;
+  /** Readies what a binding needs, as a launch does while its records download. */
+  prepare: (session: SessionInfo, schema: EntitySchema) => Promise<void>;
 }
 
 function sinkOf(engine: EngineClient): RecordSink {
@@ -181,6 +215,8 @@ const HEADING_ROOM_PX = 17 + LOCK_PX;
 
 /** The longest texts by characters measured in each column: enough for its widest, and quick. */
 const FIT_SAMPLE = 16;
+/** How long after a binding shows its recovery draft starts. */
+const DRAFT_START_MS = 300;
 
 export function useErpTools(host: ErpToolsHost): ErpTools {
   const hostRef = useRef(host);
@@ -266,32 +302,41 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
    * columns and leaves nothing to undo. The last step of opening, and what the bind bench times.
    */
   const bindStaged = useCallback(
-    async (session: SessionInfo, label: string): Promise<ErpBinding> => {
+    async (session: SessionInfo, label: string, opened?: Promise<void>): Promise<ErpBinding> => {
       const h = hostRef.current;
       // Marks for bench/measure-erp-bind.mjs, which reads where binding's time goes.
       const mark = (name: string) => performance.mark(`erp:${name}`);
       mark('begin');
-      await h.openBlank(
-        `${textsFor(session.language).workbookTitle(label, session.company)}.xlsx`,
-        session.language === 'ar',
-      );
+      await (opened ?? openBlankFor(h, session, label));
       mark('opened');
-      const bound = await h.queue((e) => e.erpBind(JSON.stringify(session)));
-      mark('bound');
-      // Fitted to their values and headings, with room for each heading's filter button.
-      await h
-        .queue((e) =>
-          e.autoFitColumns(bound.sheet, bound.left, bound.right, {
-            room: { row: bound.top, px: HEADING_ROOM_PX },
-            keep: FIT_SAMPLE,
-          }),
-        )
-        .catch(() => null);
-      mark('fitted');
-      await h.queue((e) => e.erpSettle());
+      h.holdView(true);
+      let bound: ErpBinding;
+      try {
+        bound = await h.queue((e) => e.erpBind(JSON.stringify(session)));
+        mark('bound');
+        // Fitted to their values and headings, with room for each heading's filter button.
+        await h
+          .queue((e) =>
+            e.autoFitColumns(bound.sheet, bound.left, bound.right, {
+              room: { row: bound.top, px: HEADING_ROOM_PX },
+              keep: FIT_SAMPLE,
+            }),
+          )
+          .catch(() => null);
+        mark('fitted');
+        await h.queue((e) => e.erpSettle());
+      } finally {
+        h.holdView(false);
+      }
       await h.afterBind();
-      setDraft(await h.queue((e) => e.erpDraftState()).catch(() => 'none' as const));
       mark('shown');
+      // The recovery draft starts once the sheet is drawn, out of the way of its first tiles.
+      setTimeout(() => {
+        void h
+          .queue((e) => e.erpStartDraft())
+          .then(setDraft)
+          .catch(() => undefined);
+      }, DRAFT_START_MS);
       return bound;
     },
     [],
@@ -468,20 +513,45 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
       const engine = h.engine();
       if (!engine) return;
       let n: string = nounOf(session.info.entity);
-      const opened = await openRecords({
-        http: new ErpHttp({ baseUrl: launch.apiBase }),
-        ticket: launch.ticket,
-        session,
-        sink: sinkOf(engine),
-        signal: controller.signal,
-        onProgress: (progress) => {
-          if (progress.stage !== 'loading') return;
-          setPanel({ phase: 'loading', noun: n, loaded: progress.loaded, total: progress.total });
-        },
-      });
+      // The new workbook opens while the records download, so binding starts as they arrive.
+      let blank: Promise<void> | undefined;
+      let opened: Awaited<ReturnType<typeof openRecords>>;
+      try {
+        opened = await openRecords({
+          http: new ErpHttp({ baseUrl: launch.apiBase }),
+          ticket: launch.ticket,
+          session,
+          sink: sinkOf(engine),
+          signal: controller.signal,
+          onSchema: (schema, given) => {
+            blank = prepareFor(h, given.info, schema);
+            blank.catch(() => undefined);
+          },
+          onProgress: (progress) => {
+            if (progress.stage !== 'loading') return;
+            setPanel({
+              phase: 'loading',
+              noun: n,
+              loaded: progress.loaded,
+              total: progress.total,
+            });
+          },
+        });
+      } catch (error) {
+        // Nothing was opened, so the blank workbook goes too.
+        if (blank) {
+          await blank.catch(() => undefined);
+          h.closeBlank();
+        }
+        throw error;
+      }
       n = opened.schema.label.en.toLowerCase();
       setPanel({ phase: 'binding', noun: n, total: opened.loaded });
-      const bound = await bindStaged(session.info, opened.schema.label[session.info.language]);
+      const bound = await bindStaged(
+        session.info,
+        opened.schema.label[session.info.language],
+        blank,
+      );
       attach(session);
       setBinding(bound);
       setPanel(null);
@@ -1360,6 +1430,17 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
         ],
         ['server', t.INFO_SERVER, apiBase],
         [
+          'last-problem',
+          t.INFO_PROBLEM,
+          session?.lastFailure
+            ? t.problemText(
+                session.lastFailure.status,
+                session.lastFailure.at,
+                session.lastFailure.correlationId,
+              )
+            : t.NO_PROBLEM,
+        ],
+        [
           'editing',
           t.INFO_EDITING,
           t.editingText(
@@ -1719,5 +1800,7 @@ export function useErpTools(host: ErpToolsHost): ErpTools {
     recovered,
     textsFor,
     bindStaged,
+    prepare: (session: SessionInfo, schema: EntitySchema) =>
+      prepareFor(hostRef.current, session, schema),
   };
 }

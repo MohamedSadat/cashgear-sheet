@@ -107,7 +107,7 @@ import {
 import { RULE_LABELS } from './errors/error-text';
 import { cellName } from './grid/geometry';
 import { PROTECTED_MESSAGE, useProtectTools } from './sheets/useProtectTools';
-import type { SessionInfo } from '@cgs/erp-connector';
+import type { EntitySchema, SessionInfo } from '@cgs/erp-connector';
 import { isErpRefusal, READ_ONLY_MESSAGE } from './erp/messages';
 import { useErpTools } from './erp/useErpTools';
 
@@ -266,9 +266,14 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const erpHoverRef = useRef<
     (sheet: number, row: number, col: number) => Promise<{ title: string; text: string } | null>
   >(() => Promise.resolve(null));
-  const erpBindRef = useRef<(session: SessionInfo, label: string) => Promise<ErpBinding>>(() =>
+  const erpBindRef = useRef<
+    (session: SessionInfo, label: string, opened?: Promise<void>) => Promise<ErpBinding>
+  >(() => Promise.reject(new Error('Not ready.')));
+  const erpPrepareRef = useRef<(session: SessionInfo, schema: EntitySchema) => Promise<void>>(() =>
     Promise.reject(new Error('Not ready.')),
   );
+  /** A binding is writing the new workbook: the grid draws it once it's done (Phase 19). */
+  const viewHeldRef = useRef<{ held: boolean; changed: boolean }>({ held: false, changed: false });
   const refusedRef = useRef<(error: unknown) => void>(() => undefined);
   /**
    * A protected sheet that keeps locked cells, or every cell, from being selected moves the
@@ -1116,6 +1121,25 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       }
       await loaded;
     },
+    closeBlank: () => {
+      openToken.current += 1;
+      fileRef.current = null;
+      setBook(null);
+      setFileName(null);
+      setLoad({ phase: 'idle', done: 0, total: 0 });
+      controller.current?.reset();
+    },
+    holdView: (held) => {
+      const view = viewHeldRef.current;
+      if (held) {
+        viewHeldRef.current = { held: true, changed: false };
+        return;
+      }
+      view.held = false;
+      // What changed meanwhile is drawn at once, with the layout and summary afterBind reads.
+      if (view.changed) controller.current?.invalidate([sheetRef.current], []);
+      view.changed = false;
+    },
     afterBind: async () => {
       const engine = clientRef.current;
       if (!engine) return;
@@ -1151,6 +1175,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   });
   erpSyncRef.current = erpTools.sync;
   erpBindRef.current = erpTools.bindStaged;
+  erpPrepareRef.current = erpTools.prepare;
   erpReadOnlyAtRef.current = erpTools.readOnlyAt;
   erpHoverRef.current = erpTools.hoverDetails;
   // A double-click on a pivot table's value shows its details, as in Excel.
@@ -1237,6 +1262,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   useEffect(() => {
     if (!client || !engineReady) return;
     const onChanges = (changes: WorkbookChanges) => {
+      if (viewHeldRef.current.held) {
+        viewHeldRef.current.changed = true;
+        return;
+      }
       controller.current?.invalidate(changes.sheets, changes.tiles);
       // A chart can read any sheet, so any change may be one it shows.
       chartRefreshRef.current?.();
@@ -1421,6 +1450,12 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         cellText: (row: number, col: number) => Promise<string>;
         loadPhase: () => LoadState['phase'];
         memoryBytes: () => Promise<number>;
+        /** What the ERP binding keeps in memory (plan B.6). */
+        erpMemory: () => Promise<{
+          editableValues: number;
+          originalsBytes: number;
+          bindingBytes: number;
+        } | null>;
         calculateNow: (all: boolean) => Promise<void>;
         calculating: () => boolean;
         edit: (
@@ -1458,7 +1493,15 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           schema: string,
           pages: Uint8Array[],
           session: string,
-        ) => Promise<{ stageMs: number; bindMs: number; records: number }>;
+        ) => Promise<{
+          /** Opening the new workbook, which a launch does while the records download. */
+          openMs: number;
+          /** When the records were handed over: the response, as plan B.6 measures from it. */
+          startedAt: number;
+          stageMs: number;
+          bindMs: number;
+          records: number;
+        }>;
       };
     };
     hooks.cgsTest = {
@@ -1471,6 +1514,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       },
       loadPhase: () => loadRef.current,
       memoryBytes: () => clientRef.current?.memoryBytes() ?? Promise.resolve(0),
+      erpMemory: () => clientRef.current?.erpMemory() ?? Promise.resolve(null),
       calculateNow: (all) => clientRef.current?.calculateNow(all) ?? Promise.resolve(),
       calculating: () => calcRef.current.calculating,
       edit: async (sheet, row, col, content) => {
@@ -1522,14 +1566,25 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       bindPages: async (schema, pages, session) => {
         const engine = clientRef.current;
         if (!engine) throw new Error('The engine isn’t running.');
-        const started = performance.now();
+        const info = JSON.parse(session) as SessionInfo;
+        const parsed = JSON.parse(schema) as EntitySchema;
+        const label = parsed.label;
+        // As a launch does: the schema comes first, and the new workbook opens, and the tile
+        // worker readies its fonts, while the records download, which here is before they're
+        // handed over.
+        const opening = performance.now();
         await engine.erpBegin(schema);
+        await erpPrepareRef.current(info, parsed);
+        // The records' download, kept short: a Query page of 1,000 records takes longer than this
+        // on any network, and the tenant run measures it (Phase 19).
+        await new Promise((done) => setTimeout(done, 150));
+        const started = performance.now();
         for (const page of pages) await engine.erpPage(page);
         const staged = performance.now();
-        const info = JSON.parse(session) as SessionInfo;
-        const label = (JSON.parse(schema) as { label: { en: string; ar: string } }).label;
-        const bound = await erpBindRef.current(info, label[info.language]);
+        const bound = await erpBindRef.current(info, label[info.language], Promise.resolve());
         return {
+          openMs: started - opening,
+          startedAt: started,
           stageMs: staged - started,
           bindMs: performance.now() - staged,
           records: bound.records,
