@@ -930,3 +930,26 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | The tab that hands its session over | Says the connection went to the waiting sheet and closes itself; a browser that keeps it open leaves that message |
 | Open Afresh on a launch's draft offer | Leaves the draft, which is offered again; the prompt at start can discard it |
 | CommitStatus with an id that isn't a UUID | 400 `request.invalid`, in UnifiedAPI (Track E3) and now the mock, as Commit refuses one |
+
+## 2026-11-11: Phase 19
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Which test tenant, deployed by you | Kit on the live UnifiedAPI host (`https://api.cashgearerp.com`), in ASTDataTest, already listed in `SheetLaunch:Companies`. You run `Create_SheetSessions.sql` in CGService, then `Add_VendorsRowVersion.sql` and `Create_SheetCommit.sql` in ASTDataTest, then deploy UnifiedAPI once Track E4 is pushed. Tests and runs never touch any other database |
+| What the contract suite and the scripted e2e may write on the tenant | Dedicated test vendors only: `Seed_SheetTestVendors.sql` adds 12 vendors (`SHT-…`) in Kit and 2 in Dot, and you run it in ASTDataTest. Real commits touch only those vendors. Reads and dry runs may use any vendor, and every value a run changes is put back at its end |
+| How the test API keys reach the runs | You create five test users with their keys (a Kit editor, a Kit user with AdvEdit, a Kit viewer, a Kit user without Vendors, a Dot editor) and put the keys in `%USERPROFILE%\.cashgear\sheet-erp-test.env`. The scripts load that file. The keys are never printed, read out or committed |
+| The desktop deep link | Designed now and built later, as planned. `connect-src` is widened in this phase, and the `cashgear-sheet://` design (a PKCE-style verifier, the ticket bound to its challenge) is written down. The desktop app keeps working with normal workbooks only |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| CORS on the live host | `SheetLaunch:Origins` in `appsettings.json` lists only `https://sheet.cashgearerp.com`. The localhost origins move to the Development settings and the test hosts. Runs against the tenant send the live sheet's Origin, and the scripted e2e drives the deployed sheet |
+| Rate limits (Track E4) | `AddRateLimiter`, counted per client IP (`RemoteIpAddress`, since hosting is in-process IIS and `X-Forwarded-For` comes from the caller) over fixed one-minute windows: 20 for CreateTicket and Redeem, and 120 for Renew and End. Both numbers are settings. Past a limit: 429 with the `ErrorBody`, a new batch code `rate.limited`, `Retry-After` in seconds, `no-store` and the correlation id, with CORS headers so the sheet can read it. The contract, the mock and the suite change together |
+| Monitoring | UnifiedAPI logs every sheet request once, with its method, route, status, time taken, company, user and correlation id, and never a token, ticket, key or body. Failures log at Warning or Error with the same id. The sheet's Connection Info shows the last failed request's correlation id, in both languages |
+| The desktop's `connect-src` | Adds `https://api.cashgearerp.com`. The API doesn't allow the desktop's origin until the deep link is built |
+| `bench/erp-speed.mjs` | One script for every B.6 row: binding 1,000 and 10,000 records of 20 fields, the changeset at 1,000 × 20 and 10,000 × 20, local rules after pasting 1,000 rows, key to paint and tile build bound against unbound, and memory for originals. Release build in Chrome, with network time reported apart. Normal sheets use the existing benches |
+| Where the tenant runs live | `pnpm erp:tenant suite` and `pnpm erp:tenant e2e` load the keys file and run the contract suite and a Playwright spec of their own against the tenant. Neither is part of `pnpm test` or `pnpm test:e2e`, since CI has no keys |
+| Track E4 | Built by a fork of this session in `D:\CashGear\Projects\CashGear` on `main`, tested with WebApplicationFactory on SQLite and LocalDB only. Your uncommitted `VendorModel.cs` and `CommissionStatementPDF.cs` stay out of it |
