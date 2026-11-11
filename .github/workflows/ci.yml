@@ -80,6 +80,11 @@ jobs:
       # Saves the fixtures, and compares them with their sources and the Open XML SDK. Excel
       # isn't on the runner, so the COM-open matrix runs on the reference machine.
       - run: pnpm test:save
+      # Diagnostic (Phase 17), removed once known: the PWA's Open with test alone, before the
+      # suite, tells whether what runs before it there is why it fails on CI.
+      - name: PWA Open with alone (diagnostic)
+        run: pnpm exec playwright test tests/e2e/pwa.spec.ts --project=chrome -g "Open with" --retries=0 --output=test-results-alone
+        continue-on-error: true
       # Browser tests use the runner's installed Chrome and Edge.
       - run: pnpm test:e2e
       - run: pnpm --filter @cgs/desktop build
@@ -92,3 +97,4 @@ jobs:
             bench/results/
             playwright-report/
             test-results/
+            test-results-alone/

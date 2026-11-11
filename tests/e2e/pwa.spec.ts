@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { chromium, expect, test, type BrowserContext, type Page } from '@playwright/test';
@@ -337,6 +337,8 @@ test('the installed web app opens a workbook from Open with', async () => {
       headless: false,
       viewport: { width: 1280, height: 800 },
       serviceWorkers: 'allow',
+      // Chrome's own log, in the profile's chrome_debug.log, says what it made of a launch.
+      args: ['--enable-logging', '--v=0'],
     });
   const manifestId = base + '/';
   let running: BrowserContext | undefined;
@@ -424,6 +426,41 @@ test('the installed web app opens a workbook from Open with', async () => {
         body: `prompt answered: ${asked}\n${windowTexts(profile, channel, progIds[0])}`,
         contentType: 'text/plain',
       });
+      await testInfo.attach('browser-commands.txt', {
+        body: powershell(
+          `Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*chrome*' -or $_.Name -like 'CashGear*' } | ` +
+            `Where-Object { $_.CommandLine -notlike '*--type=*' } | ForEach-Object { "$($_.ProcessId) <- $($_.ParentProcessId) $($_.CommandLine)" }`,
+        ),
+        contentType: 'text/plain',
+      });
+      // The launch again, straight through the command Windows holds, then what shows.
+      const command = powershell(
+        `(Get-ItemProperty -LiteralPath 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\${progIds[0]}\\shell\\open\\command').'(default)'`,
+      );
+      const exe = /^"([^"]+)"/.exec(command)?.[1] ?? '';
+      const args = (command.slice(exe.length + 2).match(/"[^"]*"|\S+/g) ?? []).map((arg) =>
+        arg === '%1' ? file : arg.replace(/^(--[^=]+=)"(.*)"$/, '$1$2').replace(/^"|"$/g, ''),
+      );
+      let direct = `exe: ${exe}\nargs: ${JSON.stringify(args)}\n`;
+      try {
+        execFileSync(exe, args, { timeout: 20_000 });
+        direct += 'exit: 0\n';
+      } catch (failure) {
+        direct += `exit: ${String((failure as { status?: number }).status)} ${String(failure)}\n`;
+      }
+      await new Promise((done) => setTimeout(done, 15_000));
+      direct += `prompt answered now: ${answerFilePrompt(profile, channel)}\n`;
+      direct += windowTexts(profile, channel);
+      await testInfo.attach('direct-launch.txt', { body: direct, contentType: 'text/plain' });
+      try {
+        const log = await readFile(join(profile, 'chrome_debug.log'), 'utf8');
+        await testInfo.attach('chrome_debug.log', {
+          body: log.split(/\r?\n/).slice(-400).join('\n'),
+          contentType: 'text/plain',
+        });
+      } catch {
+        // No log written.
+      }
       throw error;
     }
     const app = await appeared;
