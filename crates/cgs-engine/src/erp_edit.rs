@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use cgs_bind::guard::{Content, TableArea};
 use cgs_bind::marks::wire_of_json;
 use cgs_bind::state::{
-    same, wire_of, FieldState, Wire, COMMITTED, CONFLICT, FORMULA, INVALID, MODIFIED, SERVER,
+    same, wire_of, FieldState, Wire, COMMITTED, CONFLICT, FORMULA, GONE, INVALID, MODIFIED, SERVER,
 };
 use cgs_bind::{ApiConflict, ApiError, Binding, Bindings, FieldKind, Rule, SentRecord, WireRecord};
 use cgs_calc::{CalcEngine, CalcValue, CellRef, Rect as CalcRect, SheetRect};
@@ -23,8 +23,8 @@ use crate::edit::{EditCell, EditInput};
 use crate::erp::content_of_input;
 use crate::input::Typed;
 use crate::view_block::{
-    CELL_ERP_COMMITTED, CELL_ERP_CONFLICT, CELL_ERP_FORMULA, CELL_ERP_INVALID, CELL_ERP_LOCK,
-    CELL_ERP_MODIFIED, CELL_ERP_READ_ONLY,
+    CELL_ERP_COMMITTED, CELL_ERP_CONFLICT, CELL_ERP_FORMULA, CELL_ERP_GONE, CELL_ERP_INVALID,
+    CELL_ERP_LOCK, CELL_ERP_MODIFIED, CELL_ERP_READ_ONLY,
 };
 use crate::Session;
 
@@ -168,12 +168,16 @@ pub(crate) fn tile_states(
             .collect();
         for row in first_row..=last_row {
             let fields = keys.get(row).and_then(|key| binding.states.get(key));
+            let gone = fields.is_some_and(|fields| fields.iter().any(|f| f.bits & GONE != 0));
             for col in first_col..=last_col {
                 let field = (col - area.left) as usize;
                 let index = at(row, col);
                 states.text_fields[index] = is_text_kind(&binding.fields[field].kind);
                 let Some(slot) = binding.slot(field) else {
                     states.flags[index] |= CELL_ERP_READ_ONLY;
+                    if gone {
+                        states.flags[index] |= CELL_ERP_GONE;
+                    }
                     continue;
                 };
                 let spilled = spills
@@ -189,8 +193,22 @@ pub(crate) fn tile_states(
 }
 
 fn flags_of(bits: u8) -> u16 {
+    if bits & GONE != 0 {
+        return CELL_ERP_GONE
+            | if bits & MODIFIED != 0 {
+                CELL_ERP_MODIFIED
+            } else {
+                0
+            };
+    }
     if bits & FORMULA != 0 {
-        return CELL_ERP_FORMULA;
+        // A formula that clashes with the ERP's value still shows the clash.
+        return CELL_ERP_FORMULA
+            | if bits & CONFLICT != 0 {
+                CELL_ERP_CONFLICT
+            } else {
+                0
+            };
     }
     let mut flags = 0;
     if bits & MODIFIED != 0 {
@@ -210,7 +228,11 @@ fn flags_of(bits: u8) -> u16 {
 
 /// A field's state as hover details and the Review dialog name it, the first that applies.
 fn state_name(bits: u8, spilled: bool) -> Option<&'static str> {
-    Some(if bits & FORMULA != 0 || spilled {
+    Some(if bits & GONE != 0 {
+        "gone"
+    } else if bits & CONFLICT != 0 && (bits & FORMULA != 0 || spilled) {
+        "conflict"
+    } else if bits & FORMULA != 0 || spilled {
         "formula"
     } else if bits & CONFLICT != 0 {
         "conflict"
@@ -603,7 +625,7 @@ impl Session {
     }
 
     /// Each data row of the first binding's table by key.
-    fn rows_by_key(&self, binding: &Binding, table: &TableArea) -> HashMap<String, u32> {
+    pub(crate) fn rows_by_key(&self, binding: &Binding, table: &TableArea) -> HashMap<String, u32> {
         let mut keys = KeyColumn::new(table.first_data_row(), table.bottom - table.header);
         let key_col = table.left + binding.key_index as u32;
         self.calc.read_block(
@@ -626,7 +648,7 @@ impl Session {
     }
 
     /// Spilled cells in a bound table's editable columns, which count as formulas.
-    fn spilled_cells(&self, binding: &Binding, table: &TableArea) -> Vec<(u32, u32)> {
+    pub(crate) fn spilled_cells(&self, binding: &Binding, table: &TableArea) -> Vec<(u32, u32)> {
         let mut out = Vec::new();
         for spill in self.calc.spill_areas() {
             if spill.sheet != binding.sheet {
@@ -648,7 +670,7 @@ impl Session {
 
     /// The data rows of a binding's table whose keys `wanted` takes, by key: one read of the key
     /// column, keeping only those keys.
-    fn rows_of(
+    pub(crate) fn rows_of(
         &self,
         binding: &Binding,
         table: &TableArea,
@@ -725,6 +747,10 @@ impl Session {
             let (Some(meta), Some(fields)) = (binding.record(key), binding.states.get(key)) else {
                 continue;
             };
+            // A record the ERP no longer has is left out of commits.
+            if fields.iter().any(|field| field.bits & GONE != 0) {
+                continue;
+            }
             let hidden = hidden(row);
             if visible && hidden {
                 continue;
@@ -794,6 +820,9 @@ impl Session {
             let Some(key) = self.key_at(binding, &table, row) else {
                 continue;
             };
+            if binding.is_gone(&key) {
+                continue;
+            }
             formulas.push(PlaceOut {
                 key,
                 field: &binding.fields[(col - table.left) as usize].name,
@@ -810,6 +839,7 @@ impl Session {
             invalid: errors.len(),
             formulas: formulas.len(),
             conflicts,
+            gone: binding.states.counts().gone,
         };
         Some(f(&ChangesetOut {
             company: &binding.session.company,
@@ -831,7 +861,7 @@ impl Session {
     }
 
     /// Whether a row is hidden, by a filter or by hand.
-    fn row_hidden(&self, sheet: u32, row: u32) -> bool {
+    pub(crate) fn row_hidden(&self, sheet: u32, row: u32) -> bool {
         self.book
             .sheets
             .get(sheet as usize)
@@ -853,7 +883,7 @@ impl Session {
     }
 
     /// What a cell shows of a bound value, in its column's format.
-    fn erp_shown(
+    pub(crate) fn erp_shown(
         &self,
         binding: &Binding,
         field: usize,
@@ -934,6 +964,9 @@ impl Session {
         let Some((key, now)) = self.row_now(binding, &table, row) else {
             return serde_json::to_value(details).unwrap_or(Value::Null);
         };
+        if binding.is_gone(&key) {
+            details.state = Some("gone");
+        }
         if let (Some(slot), Some(meta)) = (binding.slot(field), binding.record(&key)) {
             let state = binding
                 .states
@@ -959,16 +992,30 @@ impl Session {
 
     /// The next cell a local rule refuses after `(row, col)` in reading order, round the table,
     /// or before it with `back`.
-    pub(crate) fn erp_next_error_json(&self, sheet: u32, row: u32, col: u32, back: bool) -> Value {
+    pub(crate) fn erp_next_error_json(
+        &self,
+        sheet: u32,
+        row: u32,
+        col: u32,
+        back: bool,
+        conflict: bool,
+    ) -> Value {
         let Some(binding) = self.bindings.on_sheet(sheet).next() else {
             return Value::Null;
         };
         let Some(table) = self.bound_area(binding) else {
             return Value::Null;
         };
-        if binding.states.counts().invalid == 0 {
+        let counts = binding.states.counts();
+        if (if conflict {
+            counts.conflicts
+        } else {
+            counts.invalid
+        }) == 0
+        {
             return Value::Null;
         }
+        let mask = if conflict { CONFLICT } else { INVALID };
         let rows = self.rows_by_key(binding, &table);
         let mut places: Vec<(u32, u32)> = Vec::new();
         for key in binding.states.keys() {
@@ -976,7 +1023,7 @@ impl Session {
                 continue;
             };
             for (slot, state) in fields.iter().enumerate() {
-                if state.bits & INVALID != 0 {
+                if state.bits & mask != 0 {
                     places.push((at, table.left + binding.editable[slot] as u32));
                 }
             }
@@ -1172,7 +1219,12 @@ impl Session {
         if self.bindings.is_empty() {
             return Err("This workbook has no ERP data.".to_string());
         }
-        let summary = self.bindings.0[0].set_marks(&input.sent, &input.errors, &input.conflicts);
+        let mut summary = self.bindings.0[0].set_marks(&input.sent, &input.errors);
+        if !input.conflicts.is_empty() {
+            let counts = self.merge_conflicts(&input.conflicts)?;
+            summary.conflicts = counts.conflicts;
+            summary.merged = counts.merged;
+        }
         let binding = &self.bindings.0[0];
         let keys: HashSet<String> = input
             .sent

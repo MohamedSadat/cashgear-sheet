@@ -25,6 +25,9 @@ pub const SERVER: u8 = 8;
 pub const CONFLICT: u8 = 16;
 /// The last commit saved this field, and it hasn't changed since.
 pub const COMMITTED: u8 = 32;
+/// The last refresh didn't find the record in Cash Gear ERP (Phase 18): it is left out of
+/// commits and counts, and shows Not in ERP.
+pub const GONE: u8 = 64;
 
 /// One editable field of one record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -58,10 +61,16 @@ pub struct Counts {
     pub formulas: usize,
     /// Records in conflict with Cash Gear ERP.
     pub conflicts: usize,
+    /// Records Cash Gear ERP no longer has.
+    pub gone: usize,
 }
 
 impl Counts {
     fn add(&mut self, fields: &[FieldState], sign: isize) {
+        if fields.iter().any(|field| field.bits & GONE != 0) {
+            self.gone = self.gone.wrapping_add_signed(sign);
+            return;
+        }
         let mut changed = 0;
         for field in fields {
             changed += usize::from(field.bits & MODIFIED != 0);
@@ -342,7 +351,8 @@ mod tests {
                 changed_records: 1,
                 invalid: 1,
                 formulas: 1,
-                conflicts: 0
+                conflicts: 0,
+                gone: 0
             }
         );
         states.set("V-1", vec![FieldState::default(), modified]);
@@ -353,7 +363,8 @@ mod tests {
                 changed_records: 1,
                 invalid: 0,
                 formulas: 1,
-                conflicts: 0
+                conflicts: 0,
+                gone: 0
             }
         );
         states.set("V-1", vec![FieldState::default(); 2]);

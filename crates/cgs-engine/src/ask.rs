@@ -108,14 +108,19 @@ enum Question {
     ErpReview,
     /// A bound cell's field, state, original and new values and broken rule, for hover details.
     ErpCell { sheet: u32, row: u32, col: u32 },
-    /// The next bound cell a local rule refuses, round the table, or before with `back`.
+    /// The next bound cell a local rule refuses, round the table, or before with `back`. With
+    /// `conflict`, the next one in conflict with the ERP (Next Conflict).
     ErpNextError {
         sheet: u32,
         row: u32,
         col: u32,
         #[serde(default)]
         back: bool,
+        #[serde(default)]
+        conflict: bool,
     },
+    /// Every clashing field of every record in conflict, for the Resolve Conflicts dialog.
+    ErpConflicts,
     /// Where a sheet's pages break and what each shows, for printing and Normal view.
     Pages {
         sheet: u32,
@@ -203,14 +208,17 @@ impl Session {
         Ok(match question {
             Question::PageSetup { sheet } => self.page_setup_json(sheet)?,
             // Answered as text by `Engine::query`, without building a JSON tree.
-            Question::ErpChanges { .. } | Question::ErpReview => Value::Null,
+            Question::ErpChanges { .. } | Question::ErpReview | Question::ErpConflicts => {
+                Value::Null
+            }
             Question::ErpCell { sheet, row, col } => self.erp_cell_json(sheet, row, col, locale),
             Question::ErpNextError {
                 sheet,
                 row,
                 col,
                 back,
-            } => self.erp_next_error_json(sheet, row, col, back),
+                conflict,
+            } => self.erp_next_error_json(sheet, row, col, back, conflict),
             Question::Pages { sheet, request } => self.pages_json(sheet, &request)?,
             Question::TableAt { sheet, row, col } => {
                 let Some(info) = self.table_at(sheet, row, col) else {
@@ -361,6 +369,7 @@ impl Engine {
         match question {
             Question::ErpChanges { visible } => return Ok(session.changeset_text(visible)),
             Question::ErpReview => return Ok(session.erp_review_text(&self.locale)),
+            Question::ErpConflicts => return Ok(session.erp_conflicts_text(&self.locale)),
             _ => {}
         }
         Ok(session.answer(question, &self.locale)?.to_string())

@@ -79,14 +79,15 @@ pub struct ServerError {
     pub sent: Wire,
 }
 
-/// A record the ERP says changed since it was read. Its version and values now are kept for
-/// Phase 18's Resolve; the binding keeps its own version, so no commit can pass the ERP's check.
+/// A record whose fields clash with what the ERP holds now, from a refresh or a 409. The ERP's
+/// version and values now are kept for Resolve; the binding keeps its own version until no field
+/// clashes, so no commit can pass the ERP's check.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConflictMark {
     pub version: Option<[u8; 8]>,
     /// The record now, in column order; `None` where the ERP sent nothing readable.
     pub values: Vec<Option<CellValue>>,
-    /// The editable fields, by slot, whose value now differs from what was sent as `from`.
+    /// The editable fields, by slot, that clash, or changed ones the ERP's answer didn't carry.
     pub fields: Vec<usize>,
     pub modified_by: Option<String>,
     pub modified_at: Option<String>,
@@ -128,8 +129,10 @@ pub struct MarkSummary {
     pub errors: usize,
     /// Records with an error on a field.
     pub error_records: usize,
-    /// Records in conflict.
+    /// Records left in conflict once a 409 was merged.
     pub conflicts: usize,
+    /// Records a 409 named that merged with the sheet's changes, and so took the ERP's version.
+    pub merged: usize,
     pub unplaced: Vec<Unplaced>,
 }
 

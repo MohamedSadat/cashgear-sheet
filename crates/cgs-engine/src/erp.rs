@@ -1,6 +1,6 @@
 //! ERP-bound tables (Phases 15 to 19, `docs/ERP_SHEET_INTEGRATION_PLAN.md`). Record pages are
 //! staged as they arrive, then bound into a new workbook as one table with typed values; a refresh
-//! replaces the bound records by id. The identity guard is called on every path that changes cells
+//! merges the bound records by id, three ways (`erp_merge`). The identity guard is called on every path that changes cells
 //! (`apply_cells`), tables (`Op::Tables`, `Op::BookTables`) or the sheet's shape (`apply_axis`),
 //! and before commands so that each refusal has its own message. Undo, redo and rollback replay
 //! only what was allowed, so they run unguarded.
@@ -23,7 +23,9 @@ pub(crate) const FROZEN: &str = "Wait until the commit to Cash Gear ERP finishes
 /// Pages on their way in: for a new binding with its schema, or for a refresh of the one there.
 pub(crate) struct ErpStaging {
     schema: Option<EntitySchema>,
-    staging: Staging,
+    /// The schema as the ERP sent it, which a recovery draft binds again from.
+    schema_json: String,
+    pub(crate) staging: Staging,
 }
 
 fn content_of_value(value: &CalcValue) -> Content {
@@ -50,15 +52,6 @@ fn content_of_edit(input: &EditInput) -> Content {
         EditInput::Clear => Content::Empty,
         EditInput::Value(value) => content_of_value(value),
         EditInput::Formula(text) | EditInput::Array(text, _) => Content::Formula(text.clone()),
-    }
-}
-
-fn content_of_cell(value: &CellValue) -> Content {
-    match value {
-        CellValue::Empty => Content::Empty,
-        CellValue::Text(text) => Content::Text(text.clone()),
-        CellValue::Number(n) => Content::number(*n),
-        CellValue::Bool(b) => Content::Bool(*b),
     }
 }
 
@@ -130,15 +123,6 @@ struct BindingSummary<'a> {
     fields: Vec<FieldSummary<'a>>,
     /// What the status badge counts: changed fields and records, invalid fields, formulas.
     counts: cgs_bind::Counts,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshSummary {
-    updated: usize,
-    changed: usize,
-    renamed: usize,
-    missing: usize,
 }
 
 impl Session {
@@ -665,76 +649,7 @@ impl Session {
         Ok(())
     }
 
-    /// Replaces the bound records' cells with what the ERP has now, found by id.
-    fn refresh_records(&mut self, staging: Staging) -> Result<RefreshSummary, String> {
-        let binding = self
-            .bindings
-            .0
-            .first()
-            .ok_or_else(|| "This workbook has no ERP data.".to_string())?;
-        let table = self
-            .bound_area(binding)
-            .ok_or_else(|| "The ERP data's table isn't there any more.".to_string())?;
-        let sheet = binding.sheet;
-        let key_col = table.left + binding.key_index as u32;
-        let mut rows = std::collections::HashMap::new();
-        for row in table.first_data_row()..=table.bottom {
-            if let Content::Text(key) = content_of_input(&self.calc.cell_input(CellRef {
-                sheet,
-                row,
-                col: key_col,
-            })) {
-                rows.insert(key, row);
-            }
-        }
-        let as_of = staging.as_of.clone();
-        let plan = binding.plan_refresh(staging, &|key| rows.get(key).copied())?;
-        let mut edits = Vec::new();
-        let mut changed = 0;
-        for (row, values) in &plan.rows {
-            let mut differs = false;
-            for (index, value) in values.iter().enumerate() {
-                let col = table.left + index as u32;
-                let now = content_of_input(&self.calc.cell_input(CellRef {
-                    sheet,
-                    row: *row,
-                    col,
-                }));
-                if now != content_of_cell(value) {
-                    differs = true;
-                    edits.push(EditCell {
-                        sheet,
-                        row: *row,
-                        col,
-                        input: Some(edit_of_cell(value)),
-                        style: None,
-                    });
-                }
-            }
-            changed += usize::from(differs);
-        }
-        let summary = RefreshSummary {
-            updated: plan.updated,
-            changed,
-            renamed: plan.renamed,
-            missing: plan.missing.len(),
-        };
-        if !edits.is_empty() {
-            self.unguarded(|session| session.apply_cells(edits))?;
-        }
-        let binding = &mut self.bindings.0[0];
-        binding.apply_refresh(plan);
-        if let Some(as_of) = as_of {
-            binding.as_of = as_of;
-        }
-        // The originals moved, so every record is compared again.
-        self.restate_all();
-        // As Excel's data refresh does, so undo never brings old ERP values back.
-        self.history.forget();
-        Ok(summary)
-    }
-
-    fn binding_summary(&self) -> Option<String> {
+    pub(crate) fn binding_summary(&self) -> Option<String> {
         let binding = self.bindings.0.first()?;
         let table = self.bound_area(binding)?;
         let summary = BindingSummary {
@@ -808,6 +723,7 @@ impl Engine {
         );
         self.erp = Some(ErpStaging {
             schema: Some(schema),
+            schema_json: schema_json.to_string(),
             staging,
         });
         Ok(())
@@ -826,6 +742,7 @@ impl Engine {
             .ok_or_else(|| "This workbook has no ERP data.".to_string())?;
         self.erp = Some(ErpStaging {
             schema: None,
+            schema_json: String::new(),
             staging: binding.refresh_staging(),
         });
         Ok(())
@@ -875,10 +792,14 @@ impl Engine {
             .as_mut()
             .ok_or_else(|| "No workbook is open.".to_string())?;
         session.bind_records(schema, session_info, staging, &locale)?;
+        if let Some(binding) = session.bindings.0.last_mut() {
+            binding.schema_json = erp.schema_json;
+        }
         Ok(session.binding_summary().unwrap_or_default())
     }
 
-    /// Replaces the bound records with the staged refresh.
+    /// Merges the staged refresh with the bound records, three ways. Answers what it did, with
+    /// what a recovery draft needs to replay it (`journal`).
     pub fn erp_refresh(&mut self) -> Result<String, String> {
         let erp = self
             .erp
@@ -894,8 +815,7 @@ impl Engine {
             .session
             .as_mut()
             .ok_or_else(|| "No workbook is open.".to_string())?;
-        let summary = session.refresh_records(erp.staging)?;
-        serde_json::to_string(&summary).map_err(|error| error.to_string())
+        session.refresh_records(erp.staging)
     }
 
     /// After opening ERP data, nothing done to set it up is a step to undo: the widths fitted to

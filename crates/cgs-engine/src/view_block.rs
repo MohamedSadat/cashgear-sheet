@@ -130,12 +130,14 @@ pub const CELL_ERP_INVALID: u16 = 1 << 9;
 pub const CELL_ERP_FORMULA: u16 = 1 << 10;
 /// ERP data: a read-only field's value.
 pub const CELL_ERP_READ_ONLY: u16 = 1 << 11;
-/// ERP data: the ERP's version moved and the field clashes. Reserved for Phase 18.
+/// ERP data: the ERP's version moved and the field clashes (Phase 17's 409, Phase 18's merge).
 pub const CELL_ERP_CONFLICT: u16 = 1 << 12;
-/// ERP data: committed. Reserved for Phase 17.
+/// ERP data: committed (Phase 17).
 pub const CELL_ERP_COMMITTED: u16 = 1 << 13;
 /// ERP data: the heading of a read-only column, which carries a lock.
 pub const CELL_ERP_LOCK: u16 = 1 << 14;
+/// ERP data: the record isn't in the ERP any more (Phase 18), on every cell of its row.
+pub const CELL_ERP_GONE: u16 = 1 << 15;
 
 pub const FONT_BOLD: u8 = 1;
 pub const FONT_ITALIC: u8 = 2;

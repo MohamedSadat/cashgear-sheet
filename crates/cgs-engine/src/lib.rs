@@ -16,6 +16,7 @@ pub mod dv;
 pub mod edit;
 mod erp;
 mod erp_edit;
+mod erp_merge;
 pub mod errors;
 mod fill;
 pub mod filter;

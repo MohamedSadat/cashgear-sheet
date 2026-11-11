@@ -152,6 +152,8 @@ pub const SESSION: &str = r#"{"company":"Kit","userId":"u17","userName":"Sara","
 pub struct Record {
     pub id: i64,
     pub key: String,
+    /// Its row version, as the ERP sends it in base64.
+    pub version: [u8; 8],
     pub wire: Vec<String>,
     pub cells: Vec<CalcValue>,
 }
@@ -228,6 +230,7 @@ pub fn records(n: usize, seed: u32) -> Vec<Record> {
         out.push(Record {
             id,
             key,
+            version: [0, 0, 0, 0, 0, 0, 7, 209],
             wire,
             cells,
         });
@@ -242,9 +245,10 @@ pub fn wire_record(record: &Record) -> String {
         .map(|((name, _, _, _), value)| format!("{}:{value}", quoted(name)))
         .collect();
     format!(
-        r#"{{"id":{},"key":{},"version":"AAAAAAAAB9E=","values":{{{}}}}}"#,
+        r#"{{"id":{},"key":{},"version":"{}","values":{{{}}}}}"#,
         record.id,
         quoted(&record.key),
+        cgs_bind::base64::encode_version(&record.version),
         values.join(",")
     )
 }

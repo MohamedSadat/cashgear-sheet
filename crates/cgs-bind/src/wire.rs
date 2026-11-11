@@ -90,6 +90,16 @@ impl Staging {
         self.done
     }
 
+    /// Takes the records it holds as the whole list, as a last page does.
+    pub(crate) fn finish(&mut self) {
+        self.keys = self
+            .records
+            .iter()
+            .map(|record| record.key.clone())
+            .collect();
+        self.done = true;
+    }
+
     /// Reads one page's bytes and keeps its records. The first page's `total` past the cap
     /// refuses the whole list, before anything else loads.
     pub fn page(&mut self, bytes: &[u8]) -> Result<PageInfo, String> {

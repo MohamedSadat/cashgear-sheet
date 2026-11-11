@@ -627,9 +627,42 @@ impl Engine {
             .map_err(|error| JsError::new(&error))
     }
 
-    /// Replaces the bound records with the staged refresh. Answers what changed, as JSON.
+    /// Merges the staged refresh with the bound records, three ways. Answers what it did, as
+    /// JSON, with `journal`, what a recovery draft needs to replay it.
     pub fn erp_refresh(&mut self) -> Result<String, JsError> {
         self.0.erp_refresh().map_err(|error| JsError::new(&error))
+    }
+
+    /// Resolve Conflicts: `{choices: [{key, field, take}]}` or `{all}`, `take` and `all` being
+    /// `mine` or `erp`. Answers `{fields, records, left}`.
+    pub fn erp_resolve(&mut self, json: &str) -> Result<String, JsError> {
+        self.0
+            .erp_resolve(json)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// The open workbook's binding as a recovery draft's bind payload, if it has one.
+    pub fn erp_draft(&self) -> Option<String> {
+        self.0.erp_draft()
+    }
+
+    /// Whether the bound table holds changes, formulas or conflicts that wait on the ERP.
+    pub fn erp_pending(&self) -> bool {
+        self.0.erp_pending()
+    }
+
+    /// Binds a recovery draft's records into the open, new workbook. Answers the binding.
+    pub fn erp_restore(&mut self, json: &str) -> Result<String, JsError> {
+        self.0
+            .erp_restore(json)
+            .map_err(|error| JsError::new(&error))
+    }
+
+    /// Replays a refresh a recovery draft kept.
+    pub fn erp_replay_refresh(&mut self, json: &str) -> Result<(), JsError> {
+        self.0
+            .erp_replay_refresh(json)
+            .map_err(|error| JsError::new(&error))
     }
 
     /// Leaves nothing to undo from setting ERP data up, such as its fitted column widths.
@@ -643,7 +676,7 @@ impl Engine {
     }
 
     /// Takes in what Cash Gear ERP answered to a dry run or a commit, `{sent, errors,
-    /// conflicts}`: errors on their cells, conflicts on their records.
+    /// conflicts}`: errors on their cells, and conflicts merged three ways with the cells.
     pub fn erp_set_states(&mut self, json: &str) -> Result<String, JsError> {
         self.0
             .erp_set_states(json)

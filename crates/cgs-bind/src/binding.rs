@@ -12,11 +12,12 @@ use crate::marks::{
     wire_of_json, ApiConflict, ApiError, ConflictMark, MarkSummary, Marks, SentRecord, ServerError,
     Unplaced,
 };
+use crate::merge::{is_change, merge_field, merged_originals, FieldMerge};
 use crate::rules::{check, Rule};
 use crate::schema::{BoundField, EntitySchema, FieldKind, Language, LookupEntry};
 use crate::state::{
-    field_state, wire_of, FieldState, States, Wire, COMMITTED, CONFLICT, FORMULA, INVALID,
-    MODIFIED, SERVER,
+    field_state, same, wire_of, FieldState, States, Wire, COMMITTED, CONFLICT, FORMULA, GONE,
+    INVALID, SERVER,
 };
 use crate::value::{cell_value, CellValue};
 use crate::wire::{StagedRecord, Staging};
@@ -64,6 +65,8 @@ pub struct Binding {
     /// Its English name, for the app's own messages until they come in Arabic too.
     pub entity_label_en: String,
     pub schema_version: String,
+    /// The schema as the ERP sent it, for a recovery draft to bind again from.
+    pub schema_json: String,
     pub key_field: String,
     pub max_page_size: u32,
     pub max_records: u32,
@@ -85,17 +88,6 @@ pub struct Binding {
     /// Records the last refresh didn't find in the ERP any more.
     pub missing: BTreeSet<i64>,
     pub as_of: String,
-}
-
-/// What a refresh writes, row by row, and how the records' bookkeeping changes with it.
-#[derive(Debug, Clone, Default)]
-pub struct RefreshPlan {
-    /// A data row and the whole record's values for it, in column order.
-    pub rows: Vec<(u32, Vec<CellValue>)>,
-    pub updated: usize,
-    pub renamed: usize,
-    pub missing: Vec<i64>,
-    records: Vec<(String, StagedRecord)>,
 }
 
 impl Binding {
@@ -128,6 +120,7 @@ impl Binding {
             lookups: schema.lookup_lists(session.language()),
             session,
             schema_version: schema.schema_version.clone(),
+            schema_json: String::new(),
             key_field: schema.key_field.clone(),
             max_page_size: schema.max_page_size,
             max_records: schema.max_records,
@@ -255,6 +248,12 @@ impl Binding {
     pub fn note_record(&mut self, key: &str, now: &[Content]) {
         if let Some(mut fields) = self.record_states(key, now) {
             self.overlay_marks(key, now, &mut fields);
+            // A record the ERP no longer has shows so on every field, whatever its cells hold.
+            if self.is_gone(key) {
+                for field in &mut fields {
+                    field.bits |= GONE;
+                }
+            }
             self.states.set(key, fields);
         }
     }
@@ -282,18 +281,20 @@ impl Binding {
         }
         if let Some(mark) = self.marks.conflicts.get(key) {
             let modified: Vec<usize> = (0..fields.len())
-                .filter(|&slot| fields[slot].bits & MODIFIED != 0)
+                .filter(|&slot| fields[slot].has_change())
                 .collect();
             if modified.is_empty() {
                 self.marks.conflicts.remove(key);
             } else {
-                let listed: Vec<usize> = mark
-                    .fields
-                    .iter()
-                    .copied()
-                    .filter(|slot| modified.contains(slot))
-                    .collect();
-                for slot in if listed.is_empty() { modified } else { listed } {
+                // The fields that clashed stay marked until resolved, even typed back to their
+                // originals, since the ERP holds another value there; with none listed, every
+                // change is.
+                let listed = if mark.fields.is_empty() {
+                    &modified
+                } else {
+                    &mark.fields
+                };
+                for &slot in listed {
                     fields[slot].bits |= CONFLICT;
                 }
             }
@@ -314,18 +315,14 @@ impl Binding {
         self.fields.iter().position(|field| field.name == name)
     }
 
-    /// Takes in what Cash Gear ERP answered to a dry run or a commit of `sent`: its errors (400)
-    /// by id and field, and its conflicts (409) by id. The sent records' errors are replaced, and
-    /// their conflicts too unless the answer has errors, since the ERP checks versions only after
-    /// them; other records' marks are kept. A record's own error marks each field it sent; errors that name
-    /// nothing the commit carried are given back, since no cell can show them. The engine then
-    /// compares the records' rows again, which lays the marks over their states.
-    pub fn set_marks(
-        &mut self,
-        sent: &[SentRecord],
-        errors: &[ApiError],
-        conflicts: &[ApiConflict],
-    ) -> MarkSummary {
+    /// Takes in the errors (400) Cash Gear ERP answered a dry run or a commit of `sent` with, by
+    /// id and field. The sent records' errors are replaced, and their conflicts too unless the
+    /// answer has errors, since the ERP checks versions only after them; other records' marks are
+    /// kept. A record's own error marks each field it sent; errors that name nothing the commit
+    /// carried are given back, since no cell can show them. A 409's conflicts are merged by the
+    /// engine (`conflict_records`, `plan_merge`), which then compares the records' rows again and
+    /// so lays the marks over their states.
+    pub fn set_marks(&mut self, sent: &[SentRecord], errors: &[ApiError]) -> MarkSummary {
         let mut summary = MarkSummary::default();
         let sent_by_key: HashMap<String, &SentRecord> = sent
             .iter()
@@ -392,35 +389,6 @@ impl Binding {
             records.insert(key);
         }
         summary.error_records = records.len();
-        for conflict in conflicts {
-            let Some(key) = self.key_of(conflict.id).map(str::to_string) else {
-                continue;
-            };
-            let values = self
-                .fields
-                .iter()
-                .map(|field| {
-                    let wire = conflict.values.get(&field.name)?;
-                    cell_value(&field.kind, wire.as_ref()).ok()
-                })
-                .collect();
-            let fields = conflict
-                .fields
-                .iter()
-                .filter_map(|name| self.slot(self.field_index(name)?))
-                .collect();
-            self.marks.conflicts.insert(
-                key,
-                ConflictMark {
-                    version: decode_version(&conflict.version),
-                    values,
-                    fields,
-                    modified_by: conflict.modified_by.clone(),
-                    modified_at: conflict.modified_at.clone(),
-                },
-            );
-            summary.conflicts += 1;
-        }
         summary
     }
 
@@ -466,67 +434,377 @@ impl Binding {
         )
     }
 
-    /// Plans a refresh as a plain replace by id (Phase 15: nothing can be edited yet). `row_of`
-    /// finds a key's data row in the table now. Records the ERP no longer has stay in place and
-    /// are counted as missing.
-    pub fn plan_refresh(
+    /// What a 409's conflicts say the ERP holds now, record by record. A field the answer left
+    /// out, or sent in a form the sheet can't read, is unknown, so its record can't be merged.
+    pub fn conflict_records(&self, conflicts: &[ApiConflict]) -> Vec<ServerRecord> {
+        conflicts
+            .iter()
+            .map(|conflict| ServerRecord {
+                id: conflict.id,
+                key: conflict.key.clone(),
+                version: decode_version(&conflict.version),
+                values: self
+                    .fields
+                    .iter()
+                    .map(|field| match conflict.values.get(&field.name) {
+                        None => None,
+                        Some(wire) => cell_value(&field.kind, wire.as_ref()).ok(),
+                    })
+                    .collect(),
+                modified_by: conflict.modified_by.clone(),
+                modified_at: conflict.modified_at.clone(),
+            })
+            .collect()
+    }
+
+    /// What a record's conflict mark says the ERP holds now, for Resolve to merge with.
+    pub fn conflict_record(&self, key: &str) -> Option<ServerRecord> {
+        let mark = self.marks.conflicts.get(key)?;
+        let id = self.records.get(key)?.id;
+        Some(ServerRecord {
+            id,
+            key: None,
+            version: mark.version,
+            values: mark.values.clone(),
+            modified_by: mark.modified_by.clone(),
+            modified_at: mark.modified_at.clone(),
+        })
+    }
+
+    /// Moves one editable field's original, as Keep Mine does with the ERP's value: the cell's
+    /// change then stays pending against what the ERP holds.
+    pub fn set_original(&mut self, key: &str, slot: usize, value: CellValue) {
+        if let Some(meta) = self.records.get_mut(key) {
+            if let Some(original) = meta.originals.get_mut(slot) {
+                *original = value;
+            }
+        }
+    }
+
+    /// Plans a three-way merge of what the ERP holds now with the sheet's cells and originals
+    /// (plan B.3, item 8). `now_of` finds a key's data row in the table now and what each of its
+    /// fields' cells holds, in column order. With `complete`, `records` are every record the ERP
+    /// still has, as a refresh asks for them, so any other bound record is missing.
+    pub fn plan_merge(
         &self,
-        staging: Staging,
-        row_of: &dyn Fn(&str) -> Option<u32>,
-    ) -> Result<RefreshPlan, String> {
-        let mut plan = RefreshPlan::default();
+        records: Vec<ServerRecord>,
+        now_of: &dyn Fn(&str) -> Option<RowCells>,
+        complete: bool,
+    ) -> Result<MergePlan, String> {
+        let mut plan = MergePlan::default();
         let mut seen = BTreeSet::new();
-        for record in staging.records {
-            let Some(old_key) = self.keys_by_id.get(&record.id) else {
+        for server in records {
+            let Some(old_key) = self.keys_by_id.get(&server.id) else {
                 continue;
             };
-            seen.insert(record.id);
-            let row =
-                row_of(old_key).ok_or_else(|| format!("{old_key} isn't in the table any more."))?;
-            if *old_key != record.key {
-                plan.renamed += 1;
+            let Some(meta) = self.records.get(old_key) else {
+                continue;
+            };
+            if server.values.len() != self.fields.len() {
+                return Err(format!(
+                    "The ERP sent {old_key} with other fields than its schema's."
+                ));
             }
-            plan.updated += 1;
-            plan.rows.push((row, record.values.clone()));
-            plan.records.push((old_key.clone(), record));
+            seen.insert(server.id);
+            let (row, now) =
+                now_of(old_key).ok_or_else(|| format!("{old_key} isn't in the table any more."))?;
+            let key = server
+                .key
+                .clone()
+                .or_else(|| match &server.values[self.key_index] {
+                    Some(CellValue::Text(key)) => Some(key.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| old_key.clone());
+            let mut fields = Vec::with_capacity(self.editable.len());
+            let mut blocking = Vec::new();
+            let mut had_changes = false;
+            for (slot, &field) in self.editable.iter().enumerate() {
+                let kind = &self.fields[field].kind;
+                let original = &meta.originals[slot];
+                let merge = merge_field(kind, original, &now[field], server.values[field].as_ref());
+                let changed = is_change(kind, original, &now[field]);
+                had_changes |= changed;
+                if merge == FieldMerge::Clash || (merge == FieldMerge::Unknown && changed) {
+                    blocking.push(slot);
+                }
+                fields.push(merge);
+            }
+            let mut writes = Vec::new();
+            for (field, bound) in self.fields.iter().enumerate() {
+                let value = if field == self.key_index {
+                    CellValue::Text(key.clone())
+                } else {
+                    match &server.values[field] {
+                        Some(value) => value.clone(),
+                        None => continue,
+                    }
+                };
+                let write = match self.slot(field) {
+                    // Read-only cells and the key always show what the ERP has.
+                    None => now[field] != Content::of_cell(&value),
+                    Some(slot) => {
+                        fields[slot] == FieldMerge::Take && !same(&bound.kind, &value, &now[field])
+                    }
+                };
+                if write {
+                    writes.push((field, value));
+                }
+            }
+            // The ERP changed it: its version or key moved, or a value differs from what the
+            // sheet read, which a cell takes or a change meets.
+            let changed = server.version != Some(meta.version)
+                || key != *old_key
+                || !writes.is_empty()
+                || fields
+                    .iter()
+                    .any(|field| matches!(field, FieldMerge::Clash | FieldMerge::Converged));
+            let merge = RecordMerge {
+                id: server.id,
+                old_key: old_key.clone(),
+                key,
+                row,
+                writes,
+                fields,
+                blocking,
+                changed,
+                had_changes,
+                server,
+            };
+            let renamed = merge.key != merge.old_key;
+            plan.counts.records += 1;
+            plan.counts.renamed += usize::from(renamed);
+            plan.counts.changed += usize::from(merge.changed);
+            if merge.adopts() {
+                if merge.changed && merge.had_changes {
+                    plan.counts.merged += 1;
+                }
+            } else {
+                plan.counts.conflicts += 1;
+            }
+            plan.records.push(merge);
         }
-        plan.missing = self
-            .keys_by_id
-            .keys()
-            .filter(|id| !seen.contains(id))
-            .copied()
-            .collect();
-        plan.missing.sort_unstable();
+        if complete {
+            let mut missing: Vec<i64> = self
+                .keys_by_id
+                .keys()
+                .filter(|id| !seen.contains(id))
+                .copied()
+                .collect();
+            missing.sort_unstable();
+            plan.counts.missing = missing.len();
+            plan.missing = Some(missing);
+        }
         // Keys stay unique once every rename is in.
         let mut keys: HashMap<&str, i64> = self
             .keys_by_id
             .iter()
             .map(|(id, key)| (key.as_str(), *id))
             .collect();
-        for (old, _) in &plan.records {
-            keys.remove(old.as_str());
+        for merge in &plan.records {
+            keys.remove(merge.old_key.as_str());
         }
-        for (_, record) in &plan.records {
-            if keys.insert(record.key.as_str(), record.id).is_some() {
-                return Err(format!("The ERP sent {} for two records.", record.key));
+        for merge in &plan.records {
+            if keys.insert(merge.key.as_str(), merge.id).is_some() {
+                return Err(format!("The ERP sent {} for two records.", merge.key));
             }
         }
         Ok(plan)
     }
 
-    /// Takes a refresh's records in, after its rows were written.
-    pub fn apply_refresh(&mut self, plan: RefreshPlan) {
-        for (old_key, _) in &plan.records {
-            self.records.remove(old_key);
+    /// Takes a merge in, after its cells were written: originals move to the ERP's values
+    /// wherever they don't clash, a record with no clash adopts the ERP's version, and one with a
+    /// clash keeps its own and a conflict mark that holds the ERP's version and record now. Marks
+    /// follow a renamed key. A refresh also forgets which fields the last commit saved, and
+    /// replaces the records missing from the ERP.
+    pub fn apply_merge(&mut self, plan: MergePlan, refresh: bool) {
+        let mut taken = Vec::with_capacity(plan.records.len());
+        for merge in &plan.records {
+            let meta = self.records.remove(&merge.old_key);
+            let errors = self.marks.errors.remove(&merge.old_key);
+            let committed = self.marks.committed.remove(&merge.old_key);
+            let conflict = self.marks.conflicts.remove(&merge.old_key);
+            taken.push((meta, errors, committed, conflict));
         }
-        for (_, record) in plan.records {
-            self.keep(record);
+        for (merge, (meta, errors, committed, conflict)) in plan.records.into_iter().zip(taken) {
+            let Some(mut meta) = meta else {
+                continue;
+            };
+            let server: Vec<Option<CellValue>> = self
+                .editable
+                .iter()
+                .map(|&field| merge.server.values[field].clone())
+                .collect();
+            meta.originals = merged_originals(&merge.fields, &meta.originals, &server).into();
+            let adopts = merge.adopts();
+            if adopts {
+                if let Some(version) = merge.server.version {
+                    meta.version = version;
+                }
+            } else {
+                // Who changed it is kept from an earlier answer about the same version.
+                let earlier = conflict.filter(|mark| mark.version == merge.server.version);
+                let by = merge
+                    .server
+                    .modified_by
+                    .clone()
+                    .or_else(|| earlier.as_ref().and_then(|mark| mark.modified_by.clone()));
+                let at = merge
+                    .server
+                    .modified_at
+                    .clone()
+                    .or_else(|| earlier.as_ref().and_then(|mark| mark.modified_at.clone()));
+                self.marks.conflicts.insert(
+                    merge.key.clone(),
+                    ConflictMark {
+                        version: merge.server.version,
+                        values: merge.server.values,
+                        fields: merge.blocking,
+                        modified_by: by,
+                        modified_at: at,
+                    },
+                );
+            }
+            if let Some(errors) = errors {
+                self.marks.errors.insert(merge.key.clone(), errors);
+            }
+            if let Some(committed) = committed.filter(|_| !refresh) {
+                self.marks.committed.insert(merge.key.clone(), committed);
+            }
+            self.keys_by_id.insert(merge.id, merge.key.clone());
+            self.records.insert(merge.key, meta);
         }
-        self.missing = plan.missing.into_iter().collect();
-        // Until Phase 18 merges, a refresh replaces every change, so nothing the ERP said of
-        // them still applies.
-        self.marks = Marks::default();
+        if refresh {
+            self.marks.committed.clear();
+            if let Some(missing) = plan.missing {
+                self.missing = missing.into_iter().collect();
+                for id in &self.missing {
+                    if let Some(key) = self.keys_by_id.get(id) {
+                        self.marks.conflicts.remove(key);
+                    }
+                }
+            }
+        }
     }
+
+    /// Whether the last refresh didn't find a record in the ERP.
+    pub fn is_gone(&self, key: &str) -> bool {
+        self.records
+            .get(key)
+            .is_some_and(|meta| self.missing.contains(&meta.id))
+    }
+
+    /// Every record as the binding knows it, for a recovery draft: id, key, version and each
+    /// field's value, the originals for editable fields and `read_only(key, field)` for the rest.
+    pub fn snapshot(
+        &self,
+        read_only: &dyn Fn(&str, usize) -> Option<CellValue>,
+    ) -> Vec<StagedRecord> {
+        let mut out: Vec<StagedRecord> = self
+            .records
+            .iter()
+            .map(|(key, meta)| StagedRecord {
+                id: meta.id,
+                key: key.clone(),
+                version: meta.version,
+                values: (0..self.fields.len())
+                    .map(|field| match self.slot(field) {
+                        Some(slot) => meta.originals[slot].clone(),
+                        None if field == self.key_index => CellValue::Text(key.clone()),
+                        None => read_only(key, field).unwrap_or(CellValue::Empty),
+                    })
+                    .collect(),
+            })
+            .collect();
+        out.sort_unstable_by_key(|record| record.id);
+        out
+    }
+}
+
+/// A key's data row in the table now, and what each of its fields' cells holds, in column order.
+pub type RowCells = (u32, Vec<Content>);
+
+/// What Cash Gear ERP holds now for one bound record, from a refresh or a 409.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerRecord {
+    pub id: i64,
+    /// Its key now, when the answer says.
+    pub key: Option<String>,
+    /// Its version now; `None` where the answer's can't be read, so it can't be adopted.
+    pub version: Option<[u8; 8]>,
+    /// Its values in column order; `None` where the answer didn't carry a field.
+    pub values: Vec<Option<CellValue>>,
+    pub modified_by: Option<String>,
+    pub modified_at: Option<String>,
+}
+
+impl From<StagedRecord> for ServerRecord {
+    fn from(record: StagedRecord) -> Self {
+        Self {
+            id: record.id,
+            key: Some(record.key),
+            version: Some(record.version),
+            values: record.values.into_iter().map(Some).collect(),
+            modified_by: None,
+            modified_at: None,
+        }
+    }
+}
+
+/// One record's merge.
+#[derive(Debug, Clone)]
+pub struct RecordMerge {
+    pub id: i64,
+    pub old_key: String,
+    pub key: String,
+    pub row: u32,
+    /// Cells to write, by field index: read-only fields and the key where they differ, and
+    /// editable fields that take the ERP's value.
+    pub writes: Vec<(usize, CellValue)>,
+    /// Each editable field's case, in `Binding::editable`'s order.
+    pub fields: Vec<FieldMerge>,
+    /// The editable fields, by slot, that keep the record in conflict: those that clash, and
+    /// changed ones the ERP's answer didn't carry.
+    pub blocking: Vec<usize>,
+    /// The ERP's version or key moved since the sheet read it.
+    pub changed: bool,
+    /// The record had changes in the sheet.
+    pub had_changes: bool,
+    pub server: ServerRecord,
+}
+
+impl RecordMerge {
+    /// Whether the record takes the ERP's version: no field clashes, and the ERP's answer
+    /// carried every field and a version the sheet can read.
+    pub fn adopts(&self) -> bool {
+        self.server.version.is_some() && !self.fields.iter().any(|field| field.blocks())
+    }
+}
+
+/// What a merge found, for the status line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeCounts {
+    /// Records the ERP answered for.
+    pub records: usize,
+    /// Records whose version or key the ERP moved since the sheet read them.
+    pub changed: usize,
+    /// Of those, records with changes in the sheet that merged without a clash.
+    pub merged: usize,
+    /// Records left in conflict.
+    pub conflicts: usize,
+    pub renamed: usize,
+    /// Bound records the ERP no longer has.
+    pub missing: usize,
+}
+
+/// A planned merge: what each record's cells take, and how the bookkeeping changes.
+#[derive(Debug, Clone, Default)]
+pub struct MergePlan {
+    pub records: Vec<RecordMerge>,
+    /// Every bound record the ERP no longer has, for a refresh.
+    pub missing: Option<Vec<i64>>,
+    pub counts: MergeCounts,
 }
 
 /// Every bound table in a workbook.
@@ -569,6 +847,7 @@ impl Bindings {
 mod tests {
     use super::*;
     use crate::schema::FieldKind;
+    use crate::state::MODIFIED;
 
     fn schema() -> EntitySchema {
         EntitySchema::parse(
@@ -642,32 +921,157 @@ mod tests {
         assert_eq!(binding.ids(), vec![1, 2, 3]);
     }
 
-    #[test]
-    fn a_refresh_replaces_by_id_follows_renames_and_counts_the_missing() {
-        let mut binding = bound();
-        let mut staging = binding.refresh_staging();
-        staging
-            .page(&page(&[(1, "V-1", "A2"), (3, "V-30", "C")]))
-            .unwrap();
-        let rows: HashMap<&str, u32> = [("V-1", 4), ("V-2", 2), ("V-3", 3)].into_iter().collect();
+    const V2: [u8; 8] = [0, 0, 0, 0, 0, 0, 9, 9];
+
+    fn server(id: i64, key: &str, name: &str, pay: &str) -> ServerRecord {
+        ServerRecord {
+            id,
+            key: Some(key.into()),
+            version: Some(V2),
+            values: vec![
+                Some(CellValue::Text(key.into())),
+                Some(CellValue::Text(name.into())),
+                Some(CellValue::Text(pay.into())),
+            ],
+            modified_by: None,
+            modified_at: None,
+        }
+    }
+
+    /// The table's rows as cells now: key, name and pay method.
+    type Rows = HashMap<String, (u32, Vec<Content>)>;
+
+    fn rows(list: &[(&str, u32, &str, &str)]) -> Rows {
+        list.iter()
+            .map(|&(key, row, name, pay)| {
+                (
+                    key.to_string(),
+                    (row, vec![text(key), text(name), text(pay)]),
+                )
+            })
+            .collect()
+    }
+
+    fn merge(
+        binding: &mut Binding,
+        records: Vec<ServerRecord>,
+        rows: &Rows,
+        complete: bool,
+    ) -> MergeCounts {
         let plan = binding
-            .plan_refresh(staging, &|key| rows.get(key).copied())
+            .plan_merge(records, &|key| rows.get(key).cloned(), complete)
             .unwrap();
-        assert_eq!(plan.updated, 2);
-        assert_eq!(plan.renamed, 1);
-        assert_eq!(plan.missing, vec![2]);
-        assert_eq!(plan.rows[0].0, 4);
-        assert_eq!(plan.rows[0].1[1], CellValue::Text("A2".into()));
-        assert_eq!(plan.rows[1].0, 3);
-        binding.apply_refresh(plan);
+        let counts = plan.counts;
+        binding.apply_merge(plan, complete);
+        counts
+    }
+
+    #[test]
+    fn a_refresh_merges_by_id_follows_renames_and_counts_the_missing() {
+        let mut binding = bound();
+        let now = rows(&[
+            ("V-1", 4, "A", "CASH"),
+            ("V-2", 2, "B", "CASH"),
+            ("V-3", 3, "C", "CASH"),
+        ]);
+        let plan = binding
+            .plan_merge(
+                vec![
+                    server(1, "V-1", "A2", "CASH"),
+                    server(3, "V-30", "C", "CASH"),
+                ],
+                &|key| now.get(key).cloned(),
+                true,
+            )
+            .unwrap();
+        assert_eq!(plan.counts.records, 2);
+        assert_eq!(plan.counts.renamed, 1);
+        assert_eq!(plan.counts.changed, 2);
+        assert_eq!(plan.counts.merged, 0, "neither had changes in the sheet");
+        assert_eq!(plan.missing, Some(vec![2]));
+        assert_eq!(plan.records[0].row, 4);
+        assert_eq!(
+            plan.records[0].writes,
+            vec![(1, CellValue::Text("A2".into()))]
+        );
+        assert_eq!(
+            plan.records[1].writes,
+            vec![(0, CellValue::Text("V-30".into()))]
+        );
+        binding.apply_merge(plan, true);
         assert!(binding.record("V-3").is_none());
         assert_eq!(binding.record("V-30").unwrap().id, 3);
         assert_eq!(binding.key_of(3), Some("V-30"));
+        assert_eq!(binding.record("V-1").unwrap().version, V2);
         assert_eq!(
             &binding.record("V-1").unwrap().originals[..1],
             &[CellValue::Text("A2".into())]
         );
         assert_eq!(binding.missing.iter().copied().collect::<Vec<_>>(), vec![2]);
+        assert!(binding.is_gone("V-2"));
+        // A record gone from the ERP shows so, and counts as nothing else.
+        binding.note_record("V-2", &[text("B9"), text("CASH")]);
+        let fields = binding.states.get("V-2").unwrap();
+        assert!(fields.iter().all(|field| field.bits & GONE != 0));
+        assert_eq!(binding.states.counts().gone, 1);
+        assert_eq!(binding.states.counts().changed, 0);
+    }
+
+    #[test]
+    fn edits_the_erp_didnt_touch_rebase_and_clashes_keep_the_old_version() {
+        let mut binding = bound();
+        // The sheet changed V-1's name and V-2's pay method; the ERP changed V-1's pay method
+        // and V-2's pay method too, to another value.
+        let now = rows(&[
+            ("V-1", 2, "A mine", "CASH"),
+            ("V-2", 3, "B", "NET30"),
+            ("V-3", 4, "C", "CASH"),
+        ]);
+        for (key, (_, cells)) in &now {
+            binding.note_record(key, &cells[1..]);
+        }
+        let counts = merge(
+            &mut binding,
+            vec![
+                server(1, "V-1", "A", "NET60"),
+                server(2, "V-2", "B", "NET60"),
+                server(3, "V-3", "C", "CASH"),
+            ],
+            &now,
+            true,
+        );
+        assert_eq!(counts.merged, 1);
+        assert_eq!(counts.conflicts, 1);
+        // V-1 merged: the ERP's version, its pay method as the original, the name pending.
+        let one = binding.record("V-1").unwrap();
+        assert_eq!(one.version, V2);
+        assert_eq!(
+            &*one.originals,
+            &[CellValue::Text("A".into()), CellValue::Text("NET60".into())]
+        );
+        assert!(!binding.marks.conflicts.contains_key("V-1"));
+        // V-2 clashes: its own version, its pay method's original kept, and a mark.
+        let two = binding.record("V-2").unwrap();
+        assert_eq!(binding.version_text("V-2").as_deref(), Some("AAAAAAAAB9E="));
+        assert_eq!(two.originals[1], CellValue::Text("CASH".into()));
+        let mark = &binding.marks.conflicts["V-2"];
+        assert_eq!(mark.version, Some(V2));
+        assert_eq!(mark.fields, vec![1]);
+        binding.note_record("V-2", &[text("B"), text("NET30")]);
+        assert_ne!(binding.states.get("V-2").unwrap()[1].bits & CONFLICT, 0);
+        // Keep Mine moves the original to the ERP's value; merged again, the record adopts its
+        // version and the change stays pending.
+        binding.set_original("V-2", 1, CellValue::Text("NET60".into()));
+        let again = binding.conflict_record("V-2").unwrap();
+        let counts = merge(&mut binding, vec![again], &now, false);
+        assert_eq!(counts.conflicts, 0);
+        assert_eq!(binding.record("V-2").unwrap().version, V2);
+        assert!(binding.marks.conflicts.is_empty());
+        binding.note_record("V-2", &[text("B"), text("NET30")]);
+        assert_eq!(
+            binding.states.get("V-2").unwrap()[1].bits & (MODIFIED | CONFLICT),
+            MODIFIED
+        );
     }
 
     fn text(s: &str) -> Content {
@@ -711,7 +1115,6 @@ mod tests {
                 error(None, None, "schema.changed"),
                 error(Some(2), Some("vendorName"), "required"),
             ],
-            &[],
         );
         assert_eq!(summary.errors, 2);
         assert_eq!(summary.error_records, 1);
@@ -739,45 +1142,54 @@ mod tests {
         binding.note_record("V-1", &[text("A2"), text("NOPE")]);
         assert_eq!(binding.states.get("V-1").unwrap()[0].bits, MODIFIED);
         // A dry run that passes clears what the sent records had.
-        binding.set_marks(&[sent(1, &[("payMethod", "NOPE".into())])], &[], &[]);
+        binding.set_marks(&[sent(1, &[("payMethod", "NOPE".into())])], &[]);
         binding.note_record("V-1", &[text("A2"), text("NOPE")]);
         assert_eq!(binding.states.get("V-1").unwrap()[1].bits & SERVER, 0);
     }
 
     #[test]
-    fn conflicts_mark_their_fields_until_the_record_has_no_changes() {
+    fn a_409_merges_what_it_carries_and_marks_only_what_clashes() {
         let mut binding = bound();
-        let conflict = |fields: &[&str]| ApiConflict {
+        let conflict = |name: Option<&str>, pay: Option<Option<&str>>| ApiConflict {
             id: 2,
             key: Some("V-2".into()),
             version: "AAAAAAAACQ0=".into(),
             values: [
-                (
+                Some((
                     "vendorAccount".to_string(),
                     Some(crate::wire::WireValue::Text("V-2".into())),
-                ),
-                (
-                    "vendorName".to_string(),
-                    Some(crate::wire::WireValue::Text("B by Omar".into())),
-                ),
-                ("payMethod".to_string(), None),
+                )),
+                name.map(|name| {
+                    (
+                        "vendorName".to_string(),
+                        Some(crate::wire::WireValue::Text(name.into())),
+                    )
+                }),
+                pay.map(|pay| {
+                    (
+                        "payMethod".to_string(),
+                        pay.map(|pay| crate::wire::WireValue::Text(pay.into())),
+                    )
+                }),
             ]
             .into_iter()
+            .flatten()
             .collect(),
-            fields: fields.iter().map(|f| f.to_string()).collect(),
+            fields: vec!["vendorName".into()],
             modified_by: Some("omar".into()),
             modified_at: Some("2026-11-09T10:04:11Z".into()),
         };
+        let now = rows(&[("V-2", 3, "B2", "NET30")]);
+        binding.note_record("V-2", &[text("B2"), text("NET30")]);
         let both = sent(
             2,
             &[("vendorName", "B2".into()), ("payMethod", "NET30".into())],
         );
-        let summary = binding.set_marks(
-            std::slice::from_ref(&both),
-            &[],
-            &[conflict(&["vendorName"])],
-        );
-        assert_eq!(summary.conflicts, 1);
+        // Omar changed the name too: it clashes, the pay method merges.
+        binding.set_marks(std::slice::from_ref(&both), &[]);
+        let records = binding.conflict_records(&[conflict(Some("B by Omar"), Some(Some("CASH")))]);
+        let counts = merge(&mut binding, records, &now, false);
+        assert_eq!((counts.conflicts, counts.merged), (1, 0));
         binding.note_record("V-2", &[text("B2"), text("NET30")]);
         let fields = binding.states.get("V-2").unwrap();
         assert_ne!(fields[0].bits & CONFLICT, 0);
@@ -785,32 +1197,39 @@ mod tests {
         assert_eq!(binding.states.counts().conflicts, 1);
         let mark = &binding.marks.conflicts["V-2"];
         assert_eq!(mark.values[1], Some(CellValue::Text("B by Omar".into())));
-        assert_eq!(mark.values[2], Some(CellValue::Empty));
+        assert_eq!(mark.modified_by.as_deref(), Some("omar"));
         // The binding keeps its own version, so no commit passes the ERP's check.
         assert_eq!(binding.version_text("V-2").as_deref(), Some("AAAAAAAAB9E="));
-        // None of the commit's fields clash: every changed field shows it.
-        binding.set_marks(&[both], &[], &[conflict(&[])]);
-        binding.note_record("V-2", &[text("B2"), text("NET30")]);
-        let fields = binding.states.get("V-2").unwrap();
-        assert_ne!(fields[0].bits & fields[1].bits & CONFLICT, 0);
+        // A field the answer didn't carry can't be compared, so the record stays in conflict.
+        let mut fresh = bound();
+        fresh.note_record("V-2", &[text("B2"), text("NET30")]);
+        let records = fresh.conflict_records(&[conflict(Some("B"), None)]);
+        assert_eq!(merge(&mut fresh, records, &now, false).conflicts, 1);
+        assert_eq!(fresh.marks.conflicts["V-2"].fields, vec![1]);
+        // Nothing clashes: the record takes the ERP's version, and the next commit sends it.
+        let mut clean = bound();
+        clean.note_record("V-2", &[text("B2"), text("NET30")]);
+        let records = clean.conflict_records(&[conflict(Some("B"), Some(Some("CASH")))]);
+        let counts = merge(&mut clean, records, &now, false);
+        assert_eq!((counts.conflicts, counts.merged), (0, 1));
+        assert_eq!(clean.version_text("V-2").as_deref(), Some("AAAAAAAACQ0="));
         // A 400 says nothing of versions, so the conflict stays; an answer without errors ends it.
-        let sent_two = sent(
-            2,
-            &[("vendorName", "B2".into()), ("payMethod", "NET30".into())],
-        );
         binding.set_marks(
-            std::slice::from_ref(&sent_two),
+            std::slice::from_ref(&both),
             &[error(Some(2), Some("payMethod"), "lookup.notFound")],
-            &[],
         );
         binding.note_record("V-2", &[text("B2"), text("NET30")]);
         assert_eq!(binding.states.counts().conflicts, 1);
         assert!(binding.marks.errors.contains_key("V-2"));
-        binding.set_marks(std::slice::from_ref(&sent_two), &[], &[conflict(&[])]);
+        binding.set_marks(std::slice::from_ref(&both), &[]);
         binding.note_record("V-2", &[text("B2"), text("NET30")]);
         assert!(binding.marks.errors.is_empty());
+        assert_eq!(binding.states.counts().conflicts, 0);
+        // Discarding a conflicting record's changes ends its conflict.
+        let records = binding.conflict_records(&[conflict(Some("B by Omar"), Some(Some("CASH")))]);
+        merge(&mut binding, records, &now, false);
+        binding.note_record("V-2", &[text("B2"), text("NET30")]);
         assert_eq!(binding.states.counts().conflicts, 1);
-        // Discarding the record's changes ends its conflict.
         binding.note_record("V-2", &[text("B"), text("CASH")]);
         assert!(binding.states.get("V-2").is_none());
         assert!(binding.marks.conflicts.is_empty());
@@ -824,7 +1243,6 @@ mod tests {
         binding.set_marks(
             &[sent(3, &[("vendorName", "C2".into())])],
             &[error(Some(3), Some("vendorName"), "maxLength")],
-            &[],
         );
         let persisted = [
             CellValue::Text("V-3".into()),
@@ -847,33 +1265,47 @@ mod tests {
         assert_eq!(binding.states.get("V-3").unwrap()[0].bits, MODIFIED);
         binding.note_record("V-3", &[text("C2"), text("CASH")]);
         assert!(binding.states.get("V-3").is_none());
-        // A refresh forgets every mark.
+        // A refresh forgets what the last commit saved; an error stays while its cell holds
+        // what was sent.
         binding.take_commit("V-3", [0; 8], &persisted, vec![0, 1]);
+        binding.note_record("V-1", &[text("A2"), text("CASH")]);
         binding.set_marks(
             &[sent(1, &[("vendorName", "A2".into())])],
             &[error(Some(1), None, "record.locked")],
-            &[],
         );
-        let mut staging = binding.refresh_staging();
-        staging
-            .page(&page(&[(1, "V-1", "A"), (2, "V-2", "B"), (3, "V-3", "C2")]))
-            .unwrap();
-        let rows: HashMap<&str, u32> = [("V-1", 2), ("V-2", 3), ("V-3", 4)].into_iter().collect();
-        let plan = binding
-            .plan_refresh(staging, &|key| rows.get(key).copied())
-            .unwrap();
-        binding.apply_refresh(plan);
-        assert!(binding.marks.is_empty());
+        let now = rows(&[
+            ("V-1", 2, "A2", "CASH"),
+            ("V-2", 3, "B", "CASH"),
+            ("V-3", 4, "C2", "CASH"),
+        ]);
+        merge(
+            &mut binding,
+            vec![
+                server(1, "V-1", "A", "CASH"),
+                server(2, "V-2", "B", "CASH"),
+                server(3, "V-3", "C2", "CASH"),
+            ],
+            &now,
+            true,
+        );
+        assert!(binding.marks.committed.is_empty());
+        assert!(binding.marks.errors.contains_key("V-1"));
     }
 
     #[test]
     fn a_refresh_that_would_repeat_a_key_is_refused() {
         let binding = bound();
-        let mut staging = binding.refresh_staging();
-        staging.page(&page(&[(1, "V-2", "A")])).unwrap();
-        let rows: HashMap<&str, u32> = [("V-1", 2), ("V-2", 3), ("V-3", 4)].into_iter().collect();
+        let now = rows(&[
+            ("V-1", 2, "A", "CASH"),
+            ("V-2", 3, "B", "CASH"),
+            ("V-3", 4, "C", "CASH"),
+        ]);
         assert!(binding
-            .plan_refresh(staging, &|key| rows.get(key).copied())
+            .plan_merge(
+                vec![server(1, "V-2", "A", "CASH")],
+                &|key| now.get(key).cloned(),
+                true
+            )
             .is_err());
     }
 }

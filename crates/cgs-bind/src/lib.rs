@@ -7,17 +7,22 @@
 
 pub mod base64;
 pub mod binding;
+pub mod draft;
 pub mod guard;
 pub mod marks;
+pub mod merge;
 pub mod rules;
 pub mod schema;
 pub mod state;
 pub mod value;
 pub mod wire;
 
-pub use binding::{Binding, Bindings, RecordMeta, RefreshPlan, SessionInfo};
+pub use binding::{
+    Binding, Bindings, MergeCounts, MergePlan, RecordMerge, RecordMeta, ServerRecord, SessionInfo,
+};
 pub use guard::{check_writes, Content, Refusal, TableArea};
 pub use marks::{ApiConflict, ApiError, ConflictMark, MarkSummary, Marks, SentRecord, ServerError};
+pub use merge::FieldMerge;
 pub use rules::Rule;
 pub use schema::{
     BoundField, EntitySchema, FieldKind, FieldSchema, Language, Localized, LookupEntry,

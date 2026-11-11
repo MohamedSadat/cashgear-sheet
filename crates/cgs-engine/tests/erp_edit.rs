@@ -302,7 +302,7 @@ fn each_changed_field_is_tracked_and_a_value_changed_back_drops_out() {
     assert_eq!(list[2]["changes"]["vendorGroup"]["to"], other_group);
     assert_eq!(
         counts(&engine),
-        json!({"changed": 3, "changedRecords": 3, "invalid": 0, "formulas": 0, "conflicts": 0})
+        json!({"changed": 3, "changedRecords": 3, "invalid": 0, "formulas": 0, "conflicts": 0, "gone": 0})
     );
     // Typing the original back drops the field.
     let name: String = serde_json::from_str(&records[0].wire[1]).unwrap();
@@ -579,7 +579,7 @@ fn discard_changes_writes_the_originals_back_as_one_step() {
     ok(&mut engine, r#"{"kind":"erpDiscard"}"#);
     assert_eq!(
         counts(&engine),
-        json!({"changed": 0, "changedRecords": 0, "invalid": 0, "formulas": 0, "conflicts": 0})
+        json!({"changed": 0, "changedRecords": 0, "invalid": 0, "formulas": 0, "conflicts": 0, "gone": 0})
     );
     assert_keys_with_records(&engine, &records);
     ok(&mut engine, r#"{"kind":"undo"}"#);
@@ -762,7 +762,7 @@ fn tiles_show_states_and_hide_number_as_text_triangles_on_text_fields() {
 }
 
 #[test]
-fn a_refresh_after_edits_takes_the_erps_values_and_compares_again() {
+fn a_refresh_after_edits_keeps_them_where_the_erp_changed_nothing() {
     let records = records(10, 32);
     let mut engine = bound(&records);
     typed(&mut engine, 2, 2, "Edited");
@@ -774,11 +774,12 @@ fn a_refresh_after_edits_takes_the_erps_values_and_compares_again() {
     }
     engine.erp_refresh().unwrap();
     settle(&mut engine);
+    // Phase 18's merge: the ERP changed neither record, so both edits stay pending.
     assert_eq!(
         counts(&engine),
-        json!({"changed": 0, "changedRecords": 0, "invalid": 0, "formulas": 0, "conflicts": 0})
+        json!({"changed": 2, "changedRecords": 2, "invalid": 0, "formulas": 0, "conflicts": 0, "gone": 0})
     );
-    assert_keys_with_records(&engine, &records);
+    assert!(engine.undo_state().undo.is_none(), "a refresh clears undo");
 }
 
 // ---- The property test ----
@@ -1055,6 +1056,7 @@ fn assert_changeset_is_the_oracles(engine: &mut Engine, records: &[Record], step
             "invalid": expected.errors.len(),
             "formulas": expected.formulas.len(),
             "conflicts": 0,
+            "gone": 0,
         }),
         "step {step} ({op}): counts"
     );
