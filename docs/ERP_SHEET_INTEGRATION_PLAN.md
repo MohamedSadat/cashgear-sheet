@@ -323,7 +323,7 @@ The calculation engine itself (Formualizer, `cgs-calc`) is unchanged. ERP networ
 **Desktop**
 - The same connector runs in the WebView, with `connect-src` widened to the API's origin (Phase 19).
 - Launching from the ERP needs a `cashgear-sheet://` deep link. The desktop app starts the flow and keeps a PKCE-style verifier, and the ERP binds the ticket to its challenge, so an intercepted link can't be redeemed.
-- That design is written in Phase 19 and built later. Until then the desktop app keeps working with normal workbooks.
+- That design is written in Phase 19 (`desktop-deep-link.md`) and built later. Until then the desktop app keeps working with normal workbooks.
 
 **Offline**
 - Normal sheets work offline as today.

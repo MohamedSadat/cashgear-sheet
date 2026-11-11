@@ -222,6 +222,22 @@ Found in Phase 18:
 - Playwright's `page.close({ runBeforeUnload: false })` leaves a page's OPFS draft for the next page of the same context, which is how the recovery e2e kills a page.
 - A mock fault list answers the first match: `drop: 'after', times: 1` then `status: 401, times: 0` on `VendorSheet/Commit$` gives a commit that landed with a 401 on every resend, Chrome's own included.
 
+Found in Phase 19:
+
+- Binding loads the new workbook's sheet as a file's sheet loads (`load_fresh_sheet` in `crates/cgs-engine/src/erp.rs`: `begin_sheet`, `load_rows`, `finish_sheet`), then notes each cell's patch, style and row itself. Through `set_cells` it cost about 10 µs a cell in WASM. Anything that writes a whole new sheet at once can do the same, but only into an empty sheet with nothing to undo.
+- A launch opens the blank workbook and readies the tile worker's fonts (`warmText`) as soon as the schema arrives, while the records download (`prepareFor` in `useErpTools.tsx`). `bindStaged` takes that promise. If the load then fails, `closeBlank` puts the workbook away.
+- The grid holds its redraws while a binding writes, fits and settles (`holdView`), so its tiles are made once at their fitted widths. Every change in between used to rebuild and redraw them.
+- A binding's recovery draft starts 300 ms after the sheet shows (`erpStartDraft`), or before the first edit or ERP step after the bind settles, whichever comes first. Journal lines from before then wait in memory and follow the draft's base, which is the records as the ERP sent them; anything that journals waits while the base is written.
+- Tile builds once keyed derived styles with `format!("{dxf:?}")`, which cost more than the tile's text. Never key a per-cell cache with `Debug`.
+- Screen tiles fill each row's neighbouring cells of one colour as one rectangle, and draw gridlines after tints (`drawBackgroundRuns`). Edges are whole pixels, so the picture is the same. Pages keep cell-by-cell drawing.
+- `bench/profile-erp-bind.mjs` profiles the main thread and both workers. For readable main-thread names, build the web app with `pnpm --filter @cgs/web exec vite build --minify false`.
+- Setting `fillStyle` or `font` on a software `OffscreenCanvas` costs microseconds each time. The first text in a font pays its loading and its script's shaping, about 30 ms for Calibri with Arabic.
+- The `ready` load phase comes only once reads go quiet (`QUIET_MS`), long after `loaded`. Don't wait for it to time anything.
+- The live API accepts only `Origin: https://sheet.cashgearerp.com` (Track E4), so a localhost sheet can't talk to it. Runs against the test tenant drive the deployed sheet with `pnpm erp:tenant`, which loads the keys from `%USERPROFILE%\.cashgear\sheet-erp-test.env` and blanks them out of its output.
+- The live API counts 20 launches a minute per client address. The contract suite opens a session in nearly every case, so on a real server it waits out 429s; `pnpm erp:tenant` gives it a 300 s timeout per test.
+- Playwright's `keyboard.type` sends characters that aren't on the keyboard, such as Arabic, without keydown events, so the grid never starts editing. Type ASCII, or use `cgsTest.command`.
+- FusionCache logs its cache keys at Information, so UnifiedAPI's API-key cache key is now the key's SHA-256 (Track E4). Never put a secret in a cache key there.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
