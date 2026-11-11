@@ -46,7 +46,7 @@ export function parseEnvFile(text) {
 
 /** A filter over text the run prints that blanks out every secret in it, across chunks. */
 export function redactor(secrets) {
-  const values = secrets.filter((s) => s && s.length >= 6).sort((a, b) => b.length - a.length);
+  const values = secrets.filter((s) => s).sort((a, b) => b.length - a.length);
   let held = '';
   const blank = (text) => values.reduce((out, value) => out.split(value).join('[key]'), text);
   return {

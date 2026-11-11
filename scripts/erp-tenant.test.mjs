@@ -18,4 +18,9 @@ describe('erp-tenant', () => {
     expect(out).toBe('sent [key] and [key]\nnext [key]');
     expect(out).not.toContain('secret');
   });
+
+  it('blanks short keys too', () => {
+    const filter = redactor(['ab1', '']);
+    expect(filter.push('key ab1 sent\n') + filter.end()).toBe('key [key] sent\n');
+  });
 });
