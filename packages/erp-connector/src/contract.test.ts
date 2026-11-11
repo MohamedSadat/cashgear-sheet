@@ -280,7 +280,7 @@ async function byIds(
 async function pick(
   session: SheetSession,
   n: number,
-  { any = false }: { any?: boolean } = {},
+  { any = false, upTo = false }: { any?: boolean; upTo?: boolean } = {},
 ): Promise<RecordSnapshot[]> {
   const search = any ? undefined : WRITE_SEARCH;
   const found = await page(session, {
@@ -288,7 +288,7 @@ async function pick(
     pageSize: Math.min(1000, n + 20),
   });
   const records = found.records.filter((r) => !SKIP.has(r.key)).slice(0, n);
-  expect(records.length, `the server has ${n} vendors to write to`).toBe(n);
+  if (!upTo) expect(records.length, `the server has ${n} vendors to write to`).toBe(n);
   return records;
 }
 
@@ -1252,14 +1252,15 @@ describe.skipIf(!serves('E2'))('commit', () => {
     expect(answer.status).toBe(413);
     expect(codes(answer)).toEqual(['batch.tooLarge']);
 
-    const all = await pick(session, schema.maxCommitRecords, { any: true });
+    // A dry run of the whole limit, or of every record a real server with fewer has.
+    const all = await pick(session, schema.maxCommitRecords, { any: true, upTo: !onMock });
     const full = await commit(
       session,
       all.map((r) => change(r, { mobile: freshMobile() })),
       { dryRun: true },
     );
     expect(full.status).toBe(200);
-    expect(readCommitResponse(full.json).records.length).toBe(schema.maxCommitRecords);
+    expect(readCommitResponse(full.json).records.length).toBe(all.length);
   });
 });
 

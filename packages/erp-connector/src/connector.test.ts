@@ -1,7 +1,7 @@
 // The connector against the mock ERP: launch, HTTP, session and record loading (Phase 15).
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { startMockErp } from '../../../tests/erp-mock/server.mjs';
+import { startMockErp, startRedirectPair } from '../../../tests/erp-mock/server.mjs';
 import { openRecords, refreshRecords, type RecordSink, type StagedPage } from './connector.ts';
 import { ErpError, ErpHttp, kindOf, retryAfterMs } from './http.ts';
 import { erpApiBase, readErpLaunch } from './launch.ts';
@@ -166,30 +166,17 @@ describe('HTTP', () => {
   });
 
   it('refuses a redirect, so the session header never follows one', async () => {
-    const { createServer } = await import('node:http');
-    const seen: (string | undefined)[] = [];
-    const target = createServer((req, res) => {
-      seen.push(req.headers['x-sheet-session'] as string | undefined);
-      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
-    });
-    await new Promise<void>((done) => target.listen(0, '127.0.0.1', done));
-    const to = `http://127.0.0.1:${(target.address() as { port: number }).port}/stolen`;
-    const redirecting = createServer((_req, res) => res.writeHead(307, { Location: to }).end());
-    await new Promise<void>((done) => redirecting.listen(0, '127.0.0.1', done));
+    const pair = await startRedirectPair();
     try {
-      const client = new ErpHttp({
-        baseUrl: `http://127.0.0.1:${(redirecting.address() as { port: number }).port}`,
-        retries: 0,
-      });
+      const client = new ErpHttp({ baseUrl: pair.url, retries: 0 });
       const error = (await client
         .json('GET', 'api/payable/VendorSheet/Schema', { session: 'secret-token' })
         .catch((e: unknown) => e)) as ErpError;
       expect(error).toBeInstanceOf(ErpError);
       expect(error.kind).toBe('network');
-      expect(seen).toEqual([]);
+      expect(pair.seen).toEqual([]);
     } finally {
-      redirecting.close();
-      target.close();
+      await pair.close();
     }
   });
 

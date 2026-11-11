@@ -1015,6 +1015,31 @@ function send(res, reply) {
 }
 
 /** Starts a mock on `port` (0 picks a free one). Resolves once it listens. */
+/**
+ * A server that answers every request with a redirect to a second one, which notes the
+ * `X-Sheet-Session` each request reaching it carries: for the connector's test that a redirect is
+ * refused, so the session header never follows one (Phase 19's security review).
+ */
+export async function startRedirectPair() {
+  const seen = [];
+  const target = createServer((req, res) => {
+    seen.push(req.headers['x-sheet-session'] ?? null);
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+  });
+  await new Promise((done) => target.listen(0, '127.0.0.1', done));
+  const to = `http://127.0.0.1:${target.address().port}/stolen`;
+  const redirecting = createServer((_req, res) => res.writeHead(307, { Location: to }).end());
+  await new Promise((done) => redirecting.listen(0, '127.0.0.1', done));
+  return {
+    url: `http://127.0.0.1:${redirecting.address().port}`,
+    seen,
+    close: async () => {
+      redirecting.close();
+      target.close();
+    },
+  };
+}
+
 export async function startMockErp({ port = 0, host = '127.0.0.1', origins, sheetUrl } = {}) {
   const mock = new MockErp({ origins, sheetUrl });
   const server = createServer((req, res) => {

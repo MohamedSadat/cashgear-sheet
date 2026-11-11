@@ -17,6 +17,13 @@ export interface MockErpServer {
 
 export function startMockErp(options?: MockErpOptions): Promise<MockErpServer>;
 
+/** A server that redirects every request to another, which notes each request's session header. */
+export function startRedirectPair(): Promise<{
+  readonly url: string;
+  readonly seen: (string | null)[];
+  close(): Promise<void>;
+}>;
+
 export const LIMITS: {
   readonly ticketMs: number;
   readonly idleMs: number;
