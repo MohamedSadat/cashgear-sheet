@@ -1332,7 +1332,7 @@ impl Session {
         Ok(Op::Many(list))
     }
 
-    fn note_cell_patch(&mut self, edit: &EditCell) {
+    pub(crate) fn note_cell_patch(&mut self, edit: &EditCell) {
         let patches = self.edits.cells.entry(edit.sheet).or_default();
         let patch = patches.entry((edit.row, edit.col)).or_insert(CellPatch {
             change: CellChange::Keep,

@@ -6,11 +6,14 @@
 //! only what was allowed, so they run unguarded.
 
 use cgs_bind::guard::{check_writes, Content, Refusal, TableArea};
-use cgs_bind::wire::Staging;
+use cgs_bind::wire::{StagedRecord, Staging};
 use cgs_bind::{Binding, CellValue, EntitySchema, SessionInfo};
-use cgs_calc::{CalcEngine, CalcValue, CellInput, CellRef, TableInfo};
+use cgs_calc::{
+    CalcEngine, CalcValue, CellInput, CellRef, LoadEntry, LoadValue, SheetShape, TableInfo,
+};
 use cgs_model::Table;
 use cgs_refs::{Axis, AxisEdit};
+use cgs_xlsx::patch_sheet::{CellChange, CellPatch};
 use serde::Serialize;
 
 use crate::command::{Area, AxisName, Command, PasteMode};
@@ -547,19 +550,25 @@ impl Session {
                 locale,
             )?;
         }
-        // Each column's number format, made once.
+        // Each column's number format, each format made once: making a style reads the
+        // workbook's styles again, which 20 fields' worth of took 10 ms in WASM.
+        let mut made: Vec<(String, u32)> = Vec::new();
         let styles: Vec<Option<u32>> = fields
             .iter()
             .map(|field| {
-                field.kind.number_format().map(|code| {
-                    self.add_style(
-                        0,
-                        &NewStyle {
-                            number_format: Some(code),
-                            ..Default::default()
-                        },
-                    )
-                })
+                let code = field.kind.number_format()?;
+                if let Some(&(_, style)) = made.iter().find(|(known, _)| *known == code) {
+                    return Some(style);
+                }
+                let style = self.add_style(
+                    0,
+                    &NewStyle {
+                        number_format: Some(code.clone()),
+                        ..Default::default()
+                    },
+                );
+                made.push((code, style));
+                Some(style)
             })
             .collect();
         // Headings must differ, as a table's do.
@@ -582,31 +591,7 @@ impl Session {
             headings.push(heading);
         }
         let rows = staging.records.len() as u32;
-        let mut edits = Vec::with_capacity((rows as usize + 1) * fields.len());
-        for (index, heading) in headings.iter().enumerate() {
-            edits.push(EditCell {
-                sheet,
-                row: 1,
-                col: index as u32 + 1,
-                input: Some(EditInput::Value(CalcValue::Text(heading.clone()))),
-                style: None,
-            });
-        }
-        for (r, record) in staging.records.iter().enumerate() {
-            for (index, value) in record.values.iter().enumerate() {
-                if *value == CellValue::Empty && styles[index].is_none() {
-                    continue;
-                }
-                edits.push(EditCell {
-                    sheet,
-                    row: r as u32 + 2,
-                    col: index as u32 + 1,
-                    input: (*value != CellValue::Empty).then(|| edit_of_cell(value)),
-                    style: styles[index],
-                });
-            }
-        }
-        self.apply_loaded(edits)?;
+        self.load_fresh_sheet(sheet, &headings, &staging.records, &styles)?;
         let name = {
             let base = table_name_for(&schema.entity);
             let mut name = base.clone();
@@ -646,6 +631,100 @@ impl Session {
         ));
         // Opening ERP data is no step to undo, as opening a file isn't.
         self.history.forget();
+        Ok(())
+    }
+
+    /// Writes the headings and records into a new workbook's empty sheet in one pass, as a sheet
+    /// loads from a file: the engine's column store is built whole, with no pre-images to read,
+    /// since opening ERP data is no step to undo. Cell by cell, that cost about 10 µs a cell in
+    /// WASM (Phase 19, plan B.6). Each cell is then noted for saving and drawing as `apply_cells`
+    /// notes it, with its column's number format.
+    fn load_fresh_sheet(
+        &mut self,
+        sheet: u32,
+        headings: &[String],
+        records: &[StagedRecord],
+        styles: &[Option<u32>],
+    ) -> Result<(), String> {
+        let rows = records.len() as u32 + 1;
+        let cols = headings.len() as u32;
+        let mut entries = Vec::with_capacity(rows as usize * cols as usize);
+        for (index, heading) in headings.iter().enumerate() {
+            entries.push(LoadEntry {
+                row: 1,
+                col: index as u32 + 1,
+                value: LoadValue::Text(heading),
+            });
+        }
+        for (r, record) in records.iter().enumerate() {
+            for (index, value) in record.values.iter().enumerate() {
+                let value = match value {
+                    CellValue::Empty => continue,
+                    CellValue::Text(text) => LoadValue::Text(text),
+                    CellValue::Number(n) => LoadValue::Number(*n),
+                    CellValue::Bool(b) => LoadValue::Bool(*b),
+                };
+                entries.push(LoadEntry {
+                    row: r as u32 + 2,
+                    col: index as u32 + 1,
+                    value,
+                });
+            }
+        }
+        let shape = SheetShape {
+            rows,
+            cols,
+            sparse: false,
+        };
+        self.calc
+            .begin_sheet(sheet, shape)
+            .and_then(|()| self.calc.load_rows(sheet, &entries))
+            .and_then(|()| self.calc.finish_sheet(sheet, &[]))
+            .map_err(|error| error.0)?;
+        drop(entries);
+        // What `note_cell_patch` notes cell by cell, noted for the whole area at once: each
+        // cell's patch for saving, each column's number format as one run, each row once, the
+        // used area, and the sheet to draw again.
+        let patches = self.edits.cells.entry(sheet).or_default();
+        for (index, heading) in headings.iter().enumerate() {
+            patches.insert(
+                (1, index as u32 + 1),
+                CellPatch {
+                    change: CellChange::Value(CalcValue::Text(heading.clone())),
+                    style: None,
+                },
+            );
+        }
+        for (r, record) in records.iter().enumerate() {
+            for (index, value) in record.values.iter().enumerate() {
+                let change = match value {
+                    CellValue::Empty if styles[index].is_none() => continue,
+                    CellValue::Empty => CellChange::Keep,
+                    CellValue::Text(text) => CellChange::Value(CalcValue::Text(text.clone())),
+                    CellValue::Number(n) => CellChange::Value(CalcValue::Number(*n)),
+                    CellValue::Bool(b) => CellChange::Value(CalcValue::Bool(*b)),
+                };
+                patches.insert(
+                    (r as u32 + 2, index as u32 + 1),
+                    CellPatch {
+                        change,
+                        style: styles[index],
+                    },
+                );
+            }
+        }
+        let info = &mut self.book.sheets[sheet as usize];
+        for (index, style) in styles.iter().enumerate() {
+            if let Some(style) = *style {
+                info.replace_styles(index as u32 + 1, 2, rows, &[(2, rows, style)]);
+            }
+        }
+        info.used.0 = info.used.0.max(rows);
+        info.used.1 = info.used.1.max(cols);
+        for row in 1..=rows {
+            self.touch_row(sheet, row);
+        }
+        self.dirty.sheets.insert(sheet);
         Ok(())
     }
 
@@ -855,6 +934,15 @@ impl Engine {
             .as_mut()
             .ok_or_else(|| "No workbook is open.".to_string())?
             .erp_apply_commit(json)
+    }
+
+    /// What the open workbook's binding keeps in memory, as JSON (`BindingMemory`), or `null`.
+    pub fn erp_memory_json(&self) -> String {
+        self.session
+            .as_ref()
+            .and_then(|session| session.bindings.0.first())
+            .and_then(|binding| serde_json::to_string(&binding.memory()).ok())
+            .unwrap_or_else(|| "null".to_string())
     }
 
     /// The open workbook's binding, as JSON, or `null`.

@@ -161,7 +161,20 @@ pub fn cell_errors(
     calc: &dyn CalcEngine,
     options: &cgs_numfmt::Options<'_>,
     today: f64,
+    at: (u32, u32, u32),
+) -> u16 {
+    rules_broken(book, calc, options, today, at, u16::MAX)
+}
+
+/// The rules among `wanted` a cell breaks, and perhaps others: a rule not wanted may go
+/// unchecked, as reading a text as a number does, which costs the most.
+fn rules_broken(
+    book: &Book,
+    calc: &dyn CalcEngine,
+    options: &cgs_numfmt::Options<'_>,
+    today: f64,
     (sheet, row, col): (u32, u32, u32),
+    wanted: u16,
 ) -> u16 {
     let at = CellRef { sheet, row, col };
     let mut found = 0;
@@ -170,7 +183,7 @@ pub fn cell_errors(
         Held::Value(CalcValue::Text(text)) => {
             if two_digit_year(&text) {
                 found |= TEXT_DATE;
-            } else {
+            } else if wanted & NUMBER_AS_TEXT != 0 {
                 let typed = parse_input(text.trim(), options.locale, options.date1904, today);
                 let date = match &typed {
                     // Built-in date and time formats.
@@ -295,9 +308,11 @@ pub fn shown_errors(
     if rules == 0 {
         return 0;
     }
-    cell_errors(book, calc, options, today, (sheet, row, col))
-        & rules
-        & !ignored(book, sheet, row, col)
+    let wanted = rules & !ignored(book, sheet, row, col);
+    if wanted == 0 {
+        return 0;
+    }
+    rules_broken(book, calc, options, today, (sheet, row, col), wanted) & wanted
 }
 
 /// `<ignoredErrors>` for a sheet's list, or nothing when it has none.

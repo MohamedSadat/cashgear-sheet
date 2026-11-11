@@ -1414,8 +1414,12 @@ impl Session {
             return "[]".to_string();
         };
         let used = info.used;
+        // A text in a General or Text format shows as itself, so its length needs no formatting:
+        // the cells such a column holds are ranked from their values (Phase 19: formatting every
+        // cell of 10,000 ERP records took most of fitting them). Each format's answer is kept.
+        let mut shows_itself: HashMap<u32, bool> = HashMap::new();
         for col in first_col..=last_col.min(used.1.max(first_col)) {
-            let mut filled = crate::edit::CollectCells::default();
+            let mut filled = TextLengths::default();
             if used.0 >= 1 {
                 self.calc.read_block(
                     SheetRect {
@@ -1432,13 +1436,34 @@ impl Session {
             }
             // By font, the rows holding the longest text.
             let mut best: HashMap<u32, Vec<(usize, u32)>> = HashMap::new();
-            for (row, _) in filled.0 {
+            for (row, chars) in filled.0 {
                 let info = &self.book.sheets[sheet as usize];
                 if info.merge_at(row, col).is_some() {
                     continue;
                 }
                 let style = info.style_at(row, col);
-                let font = self.book.styles.xf(style).font;
+                let xf = self.book.styles.xf(style);
+                let font = xf.font;
+                let num_fmt = xf.num_fmt;
+                let plain = chars.is_some()
+                    && *shows_itself.entry(num_fmt).or_insert_with(|| {
+                        let code = match self.book.styles.num_fmts.get(&num_fmt) {
+                            Some(code) => code.trim().to_ascii_lowercase(),
+                            None if num_fmt == 0 => "general".to_string(),
+                            None if num_fmt == 49 => "@".to_string(),
+                            None => String::new(),
+                        };
+                        code == "general" || code == "@"
+                    });
+                if let (true, Some(chars)) = (plain, chars) {
+                    let list = best.entry(font).or_default();
+                    list.push((chars, row));
+                    if list.len() >= keep_per_font * 2 {
+                        list.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
+                        list.truncate(keep_per_font);
+                    }
+                    continue;
+                }
                 let text = {
                     let input = crate::tile::TileInput {
                         book: &self.book,
@@ -1700,4 +1725,18 @@ pub(crate) fn join_spans(list: &mut Vec<(u32, u32)>) {
         }
     }
     *list = out;
+}
+
+/// A column's filled rows, with each text's length in characters (`None` for other values).
+#[derive(Default)]
+struct TextLengths(Vec<(u32, Option<usize>)>);
+
+impl cgs_calc::CellSink for TextLengths {
+    fn cell(&mut self, row: u32, _col: u32, value: &CalcValue) {
+        let chars = match value {
+            CalcValue::Text(text) => Some(text.chars().count()),
+            _ => None,
+        };
+        self.0.push((row, chars));
+    }
 }

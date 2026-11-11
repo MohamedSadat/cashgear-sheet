@@ -58,7 +58,9 @@ pub(crate) struct Derived {
     fonts: Vec<cgs_model::Font>,
     fills: Vec<Fill>,
     borders: Vec<cgs_model::Border>,
-    by_key: HashMap<(u32, bool, String), u32>,
+    /// What each derived style was made from. A tile derives a handful, so they're compared
+    /// rather than hashed: a key made with `Debug` cost more than the tile's text (Phase 19).
+    made: Vec<(u32, bool, cgs_model::Dxf, u32)>,
 }
 
 /// Whether a font colour is the one text gets anyway, which a table style may replace.
@@ -71,8 +73,11 @@ impl Derived {
     /// `base` with `dxf` laid under it (what the cell doesn't say, a table style does) or over it
     /// (a conditional format wins).
     fn derive(&mut self, styles: &StyleTable, base: u32, dxf: &cgs_model::Dxf, over: bool) -> u32 {
-        let key = (base, over, format!("{dxf:?}"));
-        if let Some(&index) = self.by_key.get(&key) {
+        if let Some(&(_, _, _, index)) = self
+            .made
+            .iter()
+            .find(|(b, o, d, _)| *b == base && *o == over && d == dxf)
+        {
             return index;
         }
         let xf = *styles.xf(base);
@@ -135,7 +140,7 @@ impl Derived {
             border: DERIVED + at,
             ..xf
         });
-        self.by_key.insert(key, DERIVED + at);
+        self.made.push((base, over, dxf.clone(), DERIVED + at));
         DERIVED + at
     }
 }
@@ -1365,21 +1370,24 @@ pub fn build_tile(
     if input.errors != 0 && top <= info.used.0 {
         for row in top..=bottom.min(info.used.0) {
             for col in left..=right.min(info.used.1) {
-                let mut found = crate::errors::shown_errors(
+                // ERP text fields hold numbers as text on purpose: no triangle for that, and no
+                // reading their text as numbers to find one.
+                let rules = if erp_states
+                    .as_ref()
+                    .is_some_and(|states| states.text_field(row, col))
+                {
+                    input.errors & !cgs_model::checks::NUMBER_AS_TEXT
+                } else {
+                    input.errors
+                };
+                let found = crate::errors::shown_errors(
                     input.book,
                     input.calc,
                     input.options,
                     input.today,
-                    input.errors,
+                    rules,
                     (sheet, row, col),
                 );
-                // ERP text fields hold numbers as text on purpose: no triangle for that.
-                if erp_states
-                    .as_ref()
-                    .is_some_and(|states| states.text_field(row, col))
-                {
-                    found &= !cgs_model::checks::NUMBER_AS_TEXT;
-                }
                 if found != 0 {
                     writer.mark(
                         row - top,

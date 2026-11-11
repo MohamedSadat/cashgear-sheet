@@ -695,6 +695,11 @@ impl Engine {
         self.0.binding_json()
     }
 
+    /// What the binding keeps in memory, as JSON, for `bench/erp-speed.mjs` (plan B.6).
+    pub fn erp_memory(&self) -> String {
+        self.0.erp_memory_json()
+    }
+
     /// The bound records' ERP ids, ascending.
     pub fn binding_ids(&self) -> Vec<f64> {
         self.0.binding_ids()
