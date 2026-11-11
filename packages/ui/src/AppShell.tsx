@@ -315,6 +315,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const erpSyncRef = useRef<() => void>(() => undefined);
   /** Settles when a workbook opened for ERP data can be written, or fails with its open. */
   const erpLoadRef = useRef<{ resolve: () => void; reject: (error: Error) => void } | null>(null);
+  /** Opens a recovered draft, set once `restoreRecovered` is made. */
+  const restoreRef = useRef<(entry: Recoverable) => Promise<void>>(() => Promise.resolve());
+  /** The page was opened from Cash Gear ERP, whose launch offers its own drafts back. */
+  const hadLaunchRef = useRef(false);
   const errorRefreshRef = useRef<() => void>(() => undefined);
   /** Circular References, as the status bar names its first cell, and the cells it knows. */
   const [circular, setCircular] = useState<[number, number, number][]>([]);
@@ -1135,6 +1139,15 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
         bottom: row - 1,
         right: col - 1,
       }),
+    recoverable: () => clientRef.current?.recoverable() ?? Promise.resolve([]),
+    recover: async (entry) => {
+      const loaded = new Promise<void>((resolve, reject) => {
+        erpLoadRef.current = { resolve, reject };
+      });
+      await restoreRef.current(entry);
+      await loaded;
+    },
+    apiBase: () => platform.erpApiBase?.() ?? '',
   });
   erpSyncRef.current = erpTools.sync;
   erpBindRef.current = erpTools.bindStaged;
@@ -1253,7 +1266,10 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   useEffect(() => {
     if (!engineReady || !platform.erpLaunch) return;
     const launch = platform.erpLaunch();
-    if (launch) erpLaunchRef.current(launch);
+    if (launch) {
+      hadLaunchRef.current = true;
+      erpLaunchRef.current(launch);
+    }
   }, [engineReady, platform]);
 
   // The workbook Explorer started this window with: a double-click on the desktop, or Open with
@@ -1325,6 +1341,28 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       );
     },
     [openBook],
+  );
+
+  restoreRef.current = restoreRecovered;
+
+  /**
+   * A bound workbook's draft offered at start: it opens disconnected and waits for a launch from
+   * Cash Gear ERP. One whose ERP connection can't be replayed says so, and a new workbook opens.
+   */
+  const erpRecoveredRef = useRef(erpTools.recovered);
+  erpRecoveredRef.current = erpTools.recovered;
+  const restoreErp = useCallback(
+    async (entry: Recoverable) => {
+      await restoreRecovered(entry);
+      if (await erpRecoveredRef.current()) return;
+      const texts = erpTools.textsFor(entry.erp?.language);
+      await newWorkbook();
+      protectMessageRef.current(
+        texts.recoverFailedText(entry.erp?.labelEn.toLowerCase() ?? 'records'),
+      );
+    },
+    // `erpTools.textsFor` is a module function.
+    [newWorkbook, restoreRecovered],
   );
 
   const discardRecovered = useCallback(
@@ -1666,7 +1704,11 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
     run: runCommand,
     focusGrid,
   });
-  protectMessageRef.current = protectTools.showMessage;
+  // The engine's refusals on ERP data come in English, and show in the session's language.
+  const erpLocalizeRef = useRef(erpTools.localize);
+  erpLocalizeRef.current = erpTools.localize;
+  protectMessageRef.current = (message: string) =>
+    protectTools.showMessage(isErpRefusal(message) ? erpLocalizeRef.current(message) : message);
   const hideSheet = useCallback(
     () => send({ kind: 'sheetState', sheet: sheetRef.current, hidden: true }),
     [send],
@@ -2363,7 +2405,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       }),
     [book],
   );
-  const offered = recoverable[0];
+  // A page opened from Cash Gear ERP leaves ERP drafts to the launch, which offers a matching one.
+  const offered = recoverable.find((entry) => !(entry.erp && hadLaunchRef.current));
+  const offeredTexts = offered?.erp ? erpTools.textsFor(offered.erp.language) : null;
 
   return (
     <div
@@ -3094,7 +3138,34 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
           />
         </CgMessageBox>
       )}
-      {offered && (
+      {offered && offeredTexts && offered.erp && (
+        <CgMessageBox
+          key={offered.id}
+          defaultOpen
+          title={offeredTexts.RECOVER_TITLE}
+          actionLabel={offeredTexts.RECOVER}
+          data-testid="recover"
+          data-erp="true"
+          onClosed={(accepted) => {
+            if (accepted) void restoreErp(offered);
+            else setRecoverable((list) => list.filter((other) => other.id !== offered.id));
+          }}
+        >
+          <p dir={offeredTexts.dir} data-testid="recover-text">
+            {offeredTexts.recoverText(offered.name, offered.erp.labelEn.toLowerCase())}
+          </p>
+          <button
+            type="button"
+            className="cgs-discard"
+            data-testid="recover-discard"
+            dir={offeredTexts.dir}
+            onClick={() => discardRecovered(offered)}
+          >
+            {offeredTexts.RECOVER_DISCARD}
+          </button>
+        </CgMessageBox>
+      )}
+      {offered && !offered.erp && (
         <CgMessageBox
           key={offered.id}
           defaultOpen

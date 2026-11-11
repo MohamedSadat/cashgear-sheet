@@ -348,6 +348,7 @@ describe('ERP cell states', () => {
       conflict: 'orange',
       conflictHatch: 'orange-hatch',
       committed: 'green',
+      goneHatch: 'grey-hatch',
     },
     dark: {
       modified: 'AMBER',
@@ -358,6 +359,7 @@ describe('ERP cell states', () => {
       conflict: 'ORANGE',
       conflictHatch: 'ORANGE-HATCH',
       committed: 'GREEN',
+      goneHatch: 'GREY-HATCH',
     },
   };
   const states = {

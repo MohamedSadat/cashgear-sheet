@@ -18,9 +18,13 @@ import type {
   EngineTilePort,
   ErpBinding,
   ErpCommitApplied,
+  ErpDraftState,
   ErpMarkSummary,
   ErpPageInfo,
+  ErpPendingCommit,
+  ErpRecovered,
   ErpRefreshSummary,
+  ErpResolved,
   FileSource,
   LoadEvent,
   CellFormat,
@@ -71,8 +75,22 @@ let lastCalcStatus = '';
 let recoverables: Recoverable[] | undefined;
 /** Cells a CSV brought, which a recovery has to put back before any edit. */
 let loadedCsv: string | undefined;
-/** The open workbook holds ERP data, which no working copy or journal may keep yet. */
+/** The open workbook holds ERP data, whose recovery draft is its own (Phase 18). */
 let erpBound = false;
+/**
+ * A bound workbook's recovery draft: the blank workbook it began from, and a journal of its bind
+ * payload, edits and ERP steps, capped (decisions, 2026-11-11, Phase 18). `dropped` past the cap
+ * or for want of room, when closing the tab asks first instead.
+ */
+let erpDraft: ErpDraftState = 'none';
+/** What the journal last said of the binding: whether anything waits on the ERP. */
+let erpPendingMark = false;
+/** A commit whose outcome isn't known yet, journalled so a recovered draft asks about it. */
+let erpCommitPending: ErpPendingCommit | null = null;
+/** A recovered draft's replay, which the shell waits on before it reads the binding. */
+let erpRecovering: Promise<ErpRecovered> | undefined;
+/** The draft's cap, the bind payload and the journal together. */
+const ERP_DRAFT_CAP = 16 * 1024 * 1024;
 /**
  * A save being written in slices. Tiles and reads go on meanwhile, and everything that would
  * change the workbook waits for it (see `guarded`), so what is saved is what was there when it
@@ -111,6 +129,7 @@ function todaySerial() {
 interface SyncAccess {
   read(into: Uint8Array, options: { at: number }): number;
   write(from: Uint8Array, options: { at: number }): number;
+  truncate(size: number): void;
   flush(): void;
   close(): void;
   getSize(): number;
@@ -154,10 +173,19 @@ function journalLines(access: SyncAccess) {
 }
 
 function appendJournal(entry: unknown) {
+  appendLine(JSON.stringify(entry));
+}
+
+/** Appends one line of JSON text. A bound workbook's draft past its cap is dropped instead. */
+function appendLine(text: string) {
   const copy = working;
   if (!copy?.journal) return;
   try {
-    const bytes = encoder.encode(JSON.stringify(entry) + '\n');
+    const bytes = encoder.encode(text + '\n');
+    if (erpBound && copy.journalAt + bytes.length > ERP_DRAFT_CAP) {
+      dropErpDraft();
+      return;
+    }
     copy.journal.write(bytes, { at: copy.journalAt });
     copy.journal.flush();
     copy.journalAt += bytes.length;
@@ -215,10 +243,24 @@ async function readRecoverable(
     // Locked means another tab has it open, and it isn't ours to offer.
     access = await (handle as unknown as SyncFileHandle).createSyncAccessHandle();
     const lines = journalLines(access);
+    const head = JSON.parse(lines[0] ?? '{}') as { name: string; erp?: Recoverable['erp'] };
+    const file = await handle.getFile();
+    if (head.erp) {
+      // A bound workbook's draft is worth offering only while something waited on the ERP.
+      let pending = false;
+      let commit = false;
+      let edits = 0;
+      for (const line of lines.slice(1)) {
+        if (line.startsWith('{"c":')) edits++;
+        else if (line.startsWith('{"p":')) pending = (JSON.parse(line) as { p: number }).p === 1;
+        else if (line.startsWith('{"q":')) commit = (JSON.parse(line) as { q: unknown }).q !== null;
+      }
+      if (!pending && !commit) return false;
+      found.push({ id: name, name: head.name, edits, time: file.lastModified, erp: head.erp });
+      return true;
+    }
     const edits = lines.length - 1;
     if (edits <= 0) return false;
-    const head = JSON.parse(lines[0]!) as { name: string };
-    const file = await handle.getFile();
     found.push({ id: name, name: head.name, edits, time: file.lastModified });
     return true;
   } catch {
@@ -226,6 +268,105 @@ async function readRecoverable(
   } finally {
     access?.close();
   }
+}
+
+/** The bound workbook keeps no recovery draft from here on: its cap was passed, or the disk full. */
+function dropErpDraft() {
+  erpDraft = 'dropped';
+  releaseWorkingCopy();
+}
+
+interface BindingScope {
+  company: string;
+  userId: string;
+  userName: string;
+  entity: string;
+  label: string;
+  labelEn: string;
+  language: string;
+}
+
+/** What the draft's head says of the binding: whose and what it is, for offering it back. */
+function scopeOf(wasm: Engine): BindingScope | null {
+  const binding = JSON.parse(wasm.binding_json()) as ErpBinding | null;
+  if (!binding) return null;
+  const { company, userId, userName, entity, label, labelEn, language } = binding;
+  return { company, userId, userName, entity, label, labelEn, language };
+}
+
+/**
+ * Writes the draft from the start: its head, the binding as it is now as the bind payload, and a
+ * commit still waiting on its outcome. Called when binding, and whenever nothing waits on the ERP
+ * after a commit, a refresh, a resolve or a discard, so the journal holds no more than it must.
+ */
+function writeErpBase(wasm: Engine) {
+  const copy = working;
+  if (!copy?.journal) return;
+  const payload = wasm.erp_draft();
+  const scope = scopeOf(wasm);
+  if (!payload || !scope) {
+    dropErpDraft();
+    return;
+  }
+  const head = JSON.stringify({ name: bookName, today: todaySerial(), erp: scope });
+  const pending = erpCommitPending ? JSON.stringify({ q: erpCommitPending }) + '\n' : '';
+  const bytes = encoder.encode(`${head}\n{"b":${payload}}\n${pending}`);
+  if (bytes.length > ERP_DRAFT_CAP) {
+    dropErpDraft();
+    return;
+  }
+  try {
+    copy.journal.truncate(0);
+    copy.journal.write(bytes, { at: 0 });
+    copy.journal.flush();
+    copy.journalAt = bytes.length;
+    erpPendingMark = false;
+    erpDraft = 'kept';
+  } catch (error) {
+    console.warn('The recovery draft stopped:', error);
+    dropErpDraft();
+  }
+}
+
+/** Starts a bound workbook's draft, from the blank workbook it was bound into. */
+async function startErpDraft(wasm: Engine) {
+  releaseWorkingCopy();
+  const from = source;
+  const copy = from ? await copyToWorking(from).catch(() => undefined) : undefined;
+  if (!copy) {
+    erpDraft = 'dropped';
+    return;
+  }
+  // The workbook reads from its own source; this copy only serves recovery.
+  copy.onlyForRecovery = true;
+  working = copy;
+  await openJournal(copy, false);
+  writeErpBase(wasm);
+}
+
+/** Notes in the draft whether anything waits on the ERP, which is when it's worth offering back. */
+function noteErpPending(wasm: Engine) {
+  if (!erpBound || erpDraft !== 'kept') return;
+  const now = wasm.erp_pending();
+  if (now === erpPendingMark) return;
+  appendJournal({ p: now ? 1 : 0 });
+  erpPendingMark = now;
+}
+
+/** After an ERP step: journalled, and the draft starts again if nothing waits on the ERP now. */
+function afterErpStep(wasm: Engine, line: string) {
+  if (!erpBound || erpDraft !== 'kept') return;
+  appendLine(line);
+  if (!wasm.erp_pending() && !erpCommitPending) writeErpBase(wasm);
+  else noteErpPending(wasm);
+}
+
+function resetErp() {
+  erpBound = false;
+  erpDraft = 'none';
+  erpPendingMark = false;
+  erpCommitPending = null;
+  erpRecovering = undefined;
 }
 
 function releaseWorkingCopy() {
@@ -316,6 +457,81 @@ function readerOfWorking(copy: WorkingCopy) {
       return count === bytes.length ? bytes : bytes.subarray(0, count);
     },
   };
+}
+
+/**
+ * Replays a journal's lines after its workbook opened: commands as they ran, any one that fails
+ * now having failed then too, and a bound workbook's draft step by step. A draft whose bind or ERP
+ * steps can't be replayed is dropped whole, rather than replaying later edits onto the wrong state
+ * (plan B.5).
+ */
+function replay(wasm: Engine, lines: string[]): ErpRecovered {
+  let failed = false;
+  for (const line of lines) {
+    if (line.startsWith('{"b":')) {
+      try {
+        wasm.erp_restore(line.slice(5, -1));
+        erpBound = true;
+      } catch (error) {
+        console.warn('The ERP connection could not be recovered:', error);
+        failed = true;
+        break;
+      }
+      continue;
+    }
+    const entry = JSON.parse(line) as {
+      c?: Command;
+      m?: boolean;
+      csv?: string;
+      r?: unknown;
+      s?: unknown;
+      a?: unknown;
+      v?: unknown;
+      p?: number;
+      q?: ErpPendingCommit | null;
+    };
+    if (entry.p !== undefined) {
+      erpPendingMark = entry.p === 1;
+      continue;
+    }
+    if (entry.q !== undefined) {
+      erpCommitPending = entry.q;
+      continue;
+    }
+    // The ERP's steps must replay exactly, or what follows would land on the wrong state.
+    const erpStep = entry.r ?? entry.s ?? entry.a ?? entry.v;
+    if (erpStep !== undefined) {
+      try {
+        const json = JSON.stringify(erpStep);
+        if (entry.r !== undefined) wasm.erp_replay_refresh(json);
+        else if (entry.s !== undefined) wasm.erp_set_states(json);
+        else if (entry.a !== undefined) {
+          wasm.erp_apply_commit(json);
+          erpCommitPending = null;
+        } else wasm.erp_resolve(json);
+      } catch (error) {
+        console.warn('The ERP connection could not be recovered:', error);
+        failed = true;
+        break;
+      }
+      continue;
+    }
+    try {
+      if (entry.csv !== undefined) wasm.load_csv(entry.csv);
+      else if (entry.c) wasm.apply_command(JSON.stringify(entry.c));
+      else if (entry.m !== undefined) wasm.set_manual(entry.m);
+    } catch (error) {
+      console.warn('A recovered edit could not be applied again:', error);
+    }
+  }
+  if (failed) {
+    releaseWorkingCopy();
+    resetErp();
+    return { failed: true, pendingCommit: null };
+  }
+  if (!erpBound) return { failed: false, pendingCommit: null };
+  erpDraft = working?.journal ? 'kept' : 'dropped';
+  return { failed: false, pendingCommit: erpCommitPending };
 }
 
 /** Runs next on the task queue, after any messages already waiting. */
@@ -629,7 +845,7 @@ const api: EngineApi = {
   },
   async open(next, onEvent, name) {
     loadedCsv = undefined;
-    erpBound = false;
+    resetErp();
     opened = false;
     const wasm = await ensureEngine();
     const mine = ++generation;
@@ -649,7 +865,9 @@ const api: EngineApi = {
   async close() {
     generation++;
     (await ensureEngine()).close();
+    // Closing the workbook ends its draft too.
     releaseWorkingCopy();
+    resetErp();
     source = undefined;
   },
   async blankWorkbook(rightToLeft = false) {
@@ -707,6 +925,13 @@ const api: EngineApi = {
       throw friendly(error);
     }
     appendJournal({ c: command });
+    if (erpBound) {
+      if (command.kind === 'erpDiscard' && !wasm.erp_pending() && !erpCommitPending) {
+        writeErpBase(wasm);
+      } else {
+        noteErpPending(wasm);
+      }
+    }
     afterChange(wasm);
     return applied;
   },
@@ -832,6 +1057,7 @@ const api: EngineApi = {
   },
   async openRecovered(id, onEvent) {
     opened = false;
+    resetErp();
     const wasm = await ensureEngine();
     const mine = ++generation;
     releaseWorkingCopy();
@@ -855,30 +1081,37 @@ const api: EngineApi = {
     const { read, size } = readerOfWorking(copy);
     source = undefined;
     lastCalcStatus = '';
+    let recovered: (result: ErpRecovered) => void = () => undefined;
+    if ((head as { erp?: unknown }).erp) {
+      erpRecovering = new Promise((resolve) => {
+        recovered = resolve;
+      });
+    }
     try {
       const summary = JSON.parse(wasm.open(read, size)) as BookSummary;
       if (head.today) wasm.set_today(head.today);
       void pump(wasm, mine, onEvent, () => {
-        // Commands run as they ran, and any one that fails now failed then too.
-        for (const line of lines.slice(1)) {
-          const entry = JSON.parse(line) as { c?: Command; m?: boolean; csv?: string };
-          try {
-            if (entry.csv !== undefined) wasm.load_csv(entry.csv);
-            else if (entry.c) wasm.apply_command(JSON.stringify(entry.c));
-            else if (entry.m !== undefined) wasm.set_manual(entry.m);
-          } catch (error) {
-            console.warn('A recovered edit could not be applied again:', error);
-          }
-        }
+        const result = replay(wasm, lines.slice(1));
         wasm.set_today(todaySerial());
         afterChange(wasm);
         onChanges?.(new Uint32Array([0, 0, 1, 0]));
+        recovered(result);
       });
       recoverables = (recoverables ?? []).filter((entry) => entry.id !== id);
       return summary;
     } catch (error) {
       throw friendly(error);
     }
+  },
+  async erpRecovered() {
+    return (await erpRecovering) ?? null;
+  },
+  async erpDraftState() {
+    return erpDraft;
+  },
+  async erpNoteCommit(pending) {
+    erpCommitPending = pending;
+    if (erpBound && erpDraft === 'kept') appendJournal({ q: pending });
   },
   async discardRecovered(id) {
     const folder = await workingFolder();
@@ -907,6 +1140,8 @@ const api: EngineApi = {
     wasm.commit_saved(read, size);
     source = saved;
     loadedCsv = undefined;
+    // A bound workbook keeps its draft: the saved file can't reconnect (decisions, 2026-11-11).
+    if (erpBound) return;
     // Nothing reads the old source now. The next edit makes a new copy, of this file.
     releaseWorkingCopy();
   },
@@ -967,17 +1202,26 @@ const api: EngineApi = {
   async erpBind(session) {
     const wasm = await ensureEngine();
     const binding = JSON.parse(wasm.erp_bind(session)) as ErpBinding;
-    // ERP data stays off the device until Phase 18's capped recovery draft: no working copy,
-    // so no journal.
     erpBound = true;
+    // The capped draft a crash comes back from, on the device only; never a ticket or a token.
+    await startErpDraft(wasm);
     afterChange(wasm);
     return binding;
   },
   async erpRefresh() {
     const wasm = await ensureEngine();
-    const summary = JSON.parse(wasm.erp_refresh()) as ErpRefreshSummary;
+    const summary = JSON.parse(wasm.erp_refresh()) as ErpRefreshSummary & { journal?: unknown };
+    const { journal, ...shown } = summary;
+    afterErpStep(wasm, `{"r":${JSON.stringify(journal)}}`);
     afterChange(wasm);
-    return summary;
+    return shown;
+  },
+  async erpResolve(json) {
+    const wasm = await ensureEngine();
+    const resolved = JSON.parse(wasm.erp_resolve(json)) as ErpResolved;
+    afterErpStep(wasm, `{"v":${json}}`);
+    afterChange(wasm);
+    return resolved;
   },
   async erpSettle() {
     (await ensureEngine()).erp_settle();
@@ -988,12 +1232,16 @@ const api: EngineApi = {
   async erpSetStates(json) {
     const wasm = await ensureEngine();
     const summary = JSON.parse(wasm.erp_set_states(json)) as ErpMarkSummary;
+    afterErpStep(wasm, `{"s":${json}}`);
     afterChange(wasm);
     return summary;
   },
   async erpApplyCommit(json) {
     const wasm = await ensureEngine();
     const applied = JSON.parse(wasm.erp_apply_commit(json)) as ErpCommitApplied;
+    // Answered: the commit no longer waits on its outcome.
+    erpCommitPending = null;
+    afterErpStep(wasm, `{"a":${json}}`);
     afterChange(wasm);
     return applied;
   },
@@ -1025,6 +1273,7 @@ const WAITS_FOR_SAVE = new Set([
   'addMedia',
   'erpBind',
   'erpRefresh',
+  'erpResolve',
   'erpSetStates',
   'erpApplyCommit',
   'save',

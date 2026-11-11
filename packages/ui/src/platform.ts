@@ -72,6 +72,11 @@ export interface SheetPlatform {
    * always on the desktop until its deep link (plan B.4).
    */
   erpLaunch?(): ErpLaunch | null;
+  /**
+   * The ERP API's origin for this page, configured as the launch's is: what a recovered draft
+   * reconnects to, since it has no launch of its own (Phase 18).
+   */
+  erpApiBase?(): string;
   /** Desktop: newer versions from the release feed. */
   updates?: {
     /** The newer version the feed offers, or null. */

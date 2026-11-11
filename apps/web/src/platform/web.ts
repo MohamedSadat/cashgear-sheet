@@ -224,6 +224,9 @@ export const webPlatform: SheetPlatform = {
     pendingLaunch = null;
     return launch;
   },
+  erpApiBase() {
+    return erpApiBase(window.location.origin, import.meta.env.VITE_ERP_API_URL);
+  },
   askFontAccess() {
     void listLocalFonts();
   },

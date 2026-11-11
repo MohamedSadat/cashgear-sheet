@@ -1,7 +1,8 @@
-// What the ERP features say, in English (decisions, 2026-11-09, Phase 15, and 2026-11-10, Phases
-// 16 and 17). Phase 18 adds the Arabic catalogue; headings and lookups already come in the ERP
-// user's language, and the engine and the ERP name broken rules by the contract's codes so that
-// it can.
+// What the ERP features say, in English and Arabic (decisions, 2026-11-09, Phase 15; 2026-11-10,
+// Phases 16 and 17; 2026-11-11, Phase 18). `textsFor` picks the catalogue for the ERP user's
+// language: the ERP Data tab, its dialogs, the badge, hover details and messages. The rest of the
+// app stays English. Headings and lookups come from the ERP in the user's language, and the engine
+// and the ERP name broken rules and errors by the contract's codes, which the catalogue words.
 
 import type {
   ErpCellInfo,
@@ -30,24 +31,38 @@ export const READ_ONLY_MESSAGE = 'This column is read-only in Cash Gear ERP.';
 export const isErpRefusal = (message: string) => ERP_REFUSALS.has(message);
 
 /** Text set apart from what surrounds it, so Arabic in an English line keeps its place. */
-export const isolate = (text: string) => `\u2068${text}\u2069`;
+export const isolate = (text: string) => `⁨${text}⁩`;
 
-/** `1240` as `1,240`. */
+/** `1240` as `1,240`, in either language: the ERP's own lists show Latin digits. */
 export const count = (n: number) => n.toLocaleString('en-US');
 
-/** The load panel's title, once the entity is known. */
-export const openingTitle = (noun: string | null) =>
-  noun ? `Opening ${noun} from Cash Gear ERP` : 'Opening from Cash Gear ERP';
+/** Whether a binding has changes that would be lost: changed values or formulas in its fields. */
+export const hasChanges = (counts: ErpCounts | undefined) =>
+  Boolean(counts && counts.changed + counts.formulas > 0);
 
-export const CONNECTING = 'Connecting to Cash Gear ERP…';
+/** `1 formula`, `2 formulas`. */
+export const counted = (n: number, one: string, many: string) =>
+  `${count(n)} ${n === 1 ? one : many}`;
 
-export const loadingText = (noun: string, loaded: number, total: number | null) =>
-  total === null ? `Loading ${noun}…` : `Loading ${noun} · ${count(loaded)} of ${count(total)}`;
+/** One of an entity's records, from its plural English noun: `vendors` gives `vendor`. */
+export const singular = (noun: string) => noun.replace(/ies$/, 'y').replace(/s$/, '');
 
-export const CANCELLED = 'Nothing was opened.';
+/** `1 vendor`, `12 vendors`. */
+export const records = (n: number, noun: string) => counted(n, singular(noun), noun);
 
-/** What the panel says when opening fails, and whether Try again can help. */
-export function failureText(
+/** `1 change`, `37 changes`. */
+export const changes = (n: number) => counted(n, 'change', 'changes');
+
+/** The cap on a bound sheet's recovery draft, as the badge and Connection Info name it. */
+export const DRAFT_CAP_MB = 16;
+
+/** What the engine's own English refusals and limits say in English: themselves. */
+function localizedEn(message: string) {
+  return message;
+}
+
+/** The opening panel's failure, and whether Try again can help. */
+function failureText(
   kind: ErpErrorKind,
   message: string,
   noun: string,
@@ -76,67 +91,50 @@ export function failureText(
         retry: false,
       };
     case 'cancelled':
-      return { text: CANCELLED, retry: false };
+      return { text: 'Nothing was opened.', retry: false };
     default:
       // The engine's and the ERP's own words, such as the 10,000-record cap's.
       return { text: message, retry: false };
   }
 }
 
-/** `1 formula`, `2 formulas`. */
-export const counted = (n: number, one: string, many: string) =>
-  `${count(n)} ${n === 1 ? one : many}`;
-
-/** One of an entity's records, from its plural English noun: `vendors` gives `vendor`. */
-export const singular = (noun: string) => noun.replace(/ies$/, 'y').replace(/s$/, '');
-
-/** `1 vendor`, `12 vendors`. */
-export const records = (n: number, noun: string) => counted(n, singular(noun), noun);
-
-/** `1 change`, `37 changes`. */
-export const changes = (n: number) => counted(n, 'change', 'changes');
-
 /**
  * The status badge: "Vendors · 1,240 · 12 changed · 2 invalid · 1 formula · Sara @ Kit", or
- * "Read-only" for an ERP user who may edit no column.
+ * "Read-only" for an ERP user who may edit no column, "Disconnected" for a recovered draft and
+ * "Session ended" once the session has.
  */
-export function badgeText(
+function badgeText(
   label: string,
-  records: number,
-  missing: number,
-  expired: boolean,
+  total: number,
+  state: { expired: boolean; disconnected?: boolean; noDraft?: boolean },
   userName: string,
   company: string,
-  counts: ErpCounts = { changed: 0, changedRecords: 0, invalid: 0, formulas: 0, conflicts: 0 },
+  counts: ErpCounts = {
+    changed: 0,
+    changedRecords: 0,
+    invalid: 0,
+    formulas: 0,
+    conflicts: 0,
+    gone: 0,
+  },
   editable = false,
 ) {
-  const parts = [isolate(label), count(records)];
-  if (missing > 0) parts.push(`${count(missing)} not in ERP`);
+  const parts = [isolate(label), count(total)];
   if (counts.changed > 0) parts.push(`${count(counts.changed)} changed`);
   if (counts.invalid > 0) parts.push(`${count(counts.invalid)} invalid`);
   if (counts.formulas > 0) parts.push(counted(counts.formulas, 'formula', 'formulas'));
   if (counts.conflicts > 0) parts.push(counted(counts.conflicts, 'conflict', 'conflicts'));
-  if (expired) parts.push('Session ended');
+  if (counts.gone > 0) parts.push(`${count(counts.gone)} not in ERP`);
+  if (state.disconnected) parts.push('Disconnected');
+  else if (state.expired) parts.push('Session ended');
   else if (!editable) parts.push('Read-only');
+  if (state.noDraft) parts.push('No recovery copy');
   parts.push(`${isolate(userName)} @ ${isolate(company)}`);
   return parts.join(' · ');
 }
 
-/** Whether a binding has changes that would be lost: changed values or formulas in its fields. */
-export const hasChanges = (counts: ErpCounts | undefined) =>
-  Boolean(counts && counts.changed + counts.formulas > 0);
-
-/** Refresh with changes in the sheet, until Phase 18 merges them. */
-export const refreshReplaces = (changes: number) =>
-  `Refreshing replaces your ${counted(changes, 'change', 'changes')} with the values in Cash Gear ERP.`;
-
-export const REFRESH_ANYWAY = 'Refresh anyway';
-
-export const NO_ERRORS = 'No cells break a rule.';
-export const NOTHING_TO_DISCARD = 'There are no changes to discard.';
-
 /** Why a column is read-only, for hover details. */
-export function reasonText(reason: string | undefined, noun: string) {
+function reasonText(reason: string | undefined, noun: string) {
   switch (reason) {
     case 'key':
       return `The key that keeps each row with its record in Cash Gear ERP.`;
@@ -160,7 +158,7 @@ const KIND_NEEDS: Record<ErpRuleInfo['type'], string> = {
 };
 
 /** What a broken local rule says, by its contract code. */
-export function ruleText(label: string, rule: ErpRuleInfo) {
+function ruleText(label: string, rule: ErpRuleInfo) {
   const field = isolate(label);
   switch (rule.code) {
     case 'required':
@@ -184,12 +182,7 @@ export function ruleText(label: string, rule: ErpRuleInfo) {
 }
 
 /** What an error Cash Gear ERP set on a field says, by its code; its own message otherwise. */
-export function serverText(
-  label: string,
-  error: ErpServerError,
-  noun: string,
-  value?: string,
-): string {
+function serverText(label: string, error: ErpServerError, noun: string, value?: string): string {
   const field = isolate(label);
   const one = singular(noun);
   switch (error.code) {
@@ -223,11 +216,11 @@ export function serverText(
 }
 
 /** When something happened, as a short local date and time. */
-export const when = (iso: string) =>
+const when = (iso: string) =>
   new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 
 /** Who changed a conflicting record in Cash Gear ERP, when, and the field's value there now. */
-export function conflictText(conflict: ErpConflictInfo): string {
+function conflictText(conflict: ErpConflictInfo): string {
   const parts = ['Changed in Cash Gear ERP'];
   if (conflict.by) parts[0] += ` by ${isolate(conflict.by)}`;
   if (conflict.at) parts[0] += ` on ${when(conflict.at)}`;
@@ -236,8 +229,14 @@ export function conflictText(conflict: ErpConflictInfo): string {
 }
 
 /** Hover details for a bound cell: its field, what changed and why it is refused or read-only. */
-export function cellTip(info: ErpCellInfo, noun: string): { title: string; text: string } | null {
+function cellTip(info: ErpCellInfo, noun: string): { title: string; text: string } | null {
   const shown = (value: string | undefined) => (value === undefined ? '(empty)' : isolate(value));
+  if (info.state === 'gone') {
+    return {
+      title: isolate(info.label),
+      text: `This ${singular(noun)} isn't in Cash Gear ERP any more, so its changes can't be committed.`,
+    };
+  }
   if (!info.editable) return { title: isolate(info.label), text: reasonText(info.reason, noun) };
   if (info.heading || !info.state) return null;
   const lines: string[] = [];
@@ -245,7 +244,7 @@ export function cellTip(info: ErpCellInfo, noun: string): { title: string; text:
     lines.push('A formula: convert it to a value to send it to Cash Gear ERP.');
   } else if (info.state === 'committed') {
     lines.push('Committed to Cash Gear ERP.');
-  } else {
+  } else if (info.original !== undefined || info.now !== undefined) {
     lines.push(`Original ${shown(info.original)} → New ${shown(info.now)}`);
   }
   if (info.rule) lines.push(ruleText(info.label, info.rule));
@@ -254,16 +253,8 @@ export function cellTip(info: ErpCellInfo, noun: string): { title: string; text:
   return { title: isolate(info.label), text: lines.join('\n') };
 }
 
-// Validate, Review and Commit (Phase 17, decisions 2026-11-10).
-
-export const NOTHING_TO_VALIDATE = 'There are no changes to validate.';
-export const NOTHING_TO_COMMIT = 'There are no changes to commit.';
-export const NOTHING_VISIBLE = 'There are no changes in the rows shown.';
-
-export const validatingText = (n: number) => `Checking ${changes(n)} with Cash Gear ERP…`;
-
 /** What Validate found, for the status bar. */
-export function validatedText(
+function validatedText(
   noun: string,
   sent: { changes: number; records: number },
   found: { errors: number; errorRecords: number; conflicts: number; batch: string[] },
@@ -283,22 +274,20 @@ export function validatedText(
   return [marked, ...found.batch].filter(Boolean).join(' ');
 }
 
-export const localErrorsText = (n: number) =>
+const localErrorsText = (n: number) =>
   `${counted(n, 'cell breaks', 'cells break')} a rule, so nothing was sent. Fix ${n === 1 ? 'it' : 'them'} or discard ${n === 1 ? 'that change' : 'those changes'}, then commit.`;
 
-export const conflictsWaitText = (n: number, noun: string) =>
+const conflictsWaitText = (n: number, noun: string) =>
   n === 1
-    ? `1 ${singular(noun)} was changed in Cash Gear ERP since you opened it. Discard your changes to it, or Refresh to take Cash Gear ERP's values, then commit.`
-    : `${records(n, noun)} were changed in Cash Gear ERP since you opened them. Discard your changes to them, or Refresh to take Cash Gear ERP's values, then commit.`;
+    ? `1 ${singular(noun)} has fields you and Cash Gear ERP both changed. Choose Resolve Conflicts, then commit.`
+    : `${records(n, noun)} have fields you and Cash Gear ERP both changed. Choose Resolve Conflicts, then commit.`;
 
 /** Past the commit limit (decisions, 2026-11-10, Phase 17). */
-export const tooManyText = (n: number, max: number, noun: string, visible: boolean) =>
+const tooManyText = (n: number, max: number, noun: string, visible: boolean) =>
   `${records(n, noun)}${visible ? ' in the rows shown' : ''} have changes, and Cash Gear ERP takes at most ${count(max)} in one commit. Filter the table to fewer of them, then choose Commit Changes in Visible Rows.`;
 
-export const COMMIT_TITLE = 'Commit to Cash Gear ERP';
-
 /** The confirmation's lines (decisions, 2026-11-10, Phase 17). */
-export function confirmLines(
+function confirmLines(
   noun: string,
   company: string,
   set: { changes: number; records: number; hidden: number; formulas: number },
@@ -322,15 +311,7 @@ export function confirmLines(
   return lines;
 }
 
-export const commitButton = (n: number) => `Commit ${changes(n)}`;
-
-export const reviewCommitButton = (n: number, m: number, noun: string) =>
-  `Commit ${changes(n)} to ${records(m, noun)}`;
-
-export const committingText = (n: number, m: number, noun: string) =>
-  `Committing ${changes(n)} to ${records(m, noun)}…`;
-
-export function committedText(n: number, m: number, noun: string, kept: number) {
+function committedText(n: number, m: number, noun: string, kept: number) {
   const done = `Committed ${changes(n)} to ${records(m, noun)}.`;
   return kept > 0
     ? `${done} ${changes(kept)} made since ${kept === 1 ? 'stays' : 'stay'} in the sheet.`
@@ -338,7 +319,7 @@ export function committedText(n: number, m: number, noun: string, kept: number) 
 }
 
 /** A 400 to a commit: what was refused, and the batch's own errors. */
-export function refusedText(
+function refusedText(
   noun: string,
   found: { errors: number; errorRecords: number },
   batch: string[],
@@ -349,48 +330,43 @@ export function refusedText(
   return [marked, ...batch].join(' ');
 }
 
-/** A 409 to a commit. */
-export const conflictText409 = (n: number, noun: string) =>
-  n === 1
-    ? `1 ${singular(noun)} was changed in Cash Gear ERP since you opened it, so nothing was saved. Its cells are marked. Discard your changes to it, or Refresh to take Cash Gear ERP's values, then commit again.`
-    : `${records(n, noun)} were changed in Cash Gear ERP since you opened them, so nothing was saved. Their cells are marked. Discard your changes to them, or Refresh to take Cash Gear ERP's values, then commit again.`;
+/** A 409 to a commit, merged three ways (Phase 18): what merged, and what's left in conflict. */
+function conflictText409(found: { conflicts: number; merged: number }, noun: string) {
+  const n = found.conflicts + found.merged;
+  const head =
+    n === 1
+      ? `1 ${singular(noun)} was changed in Cash Gear ERP since you opened it, so nothing was saved.`
+      : `${records(n, noun)} were changed in Cash Gear ERP since you opened them, so nothing was saved.`;
+  const parts = [head];
+  if (found.merged > 0)
+    parts.push(
+      `${records(found.merged, noun)} merged with your changes: commit again to send ${found.merged === 1 ? 'it' : 'them'}.`,
+    );
+  if (found.conflicts > 0)
+    parts.push(
+      `${records(found.conflicts, noun)} ${found.conflicts === 1 ? 'has' : 'have'} fields you both changed: choose Resolve Conflicts, then commit again.`,
+    );
+  return parts.join(' ');
+}
 
-export const UNKNOWN_OUTCOME =
-  "Cash Gear ERP didn't answer, so it isn't known whether the changes were saved. Try again sends the same commit, which Cash Gear ERP saves only once.";
-
-/** A 500: the ERP may have failed as it finished, so its outcome isn't known either. */
-export const SERVER_FAILED =
-  "Cash Gear ERP couldn't finish the commit, so it isn't known whether the changes were saved. Try again sends the same commit, which Cash Gear ERP saves only once.";
-
-/** Still 429 or 503 after waiting as asked: refused before anything was done. */
-export const BUSY_FAILED = 'Cash Gear ERP is busy, so nothing was saved. Try again in a moment.';
-
-export const UNREADABLE_ANSWER =
-  "Cash Gear ERP answered in a way the sheet can't read, so it isn't known what was saved. Refresh to see what Cash Gear ERP holds.";
-
-/** A commit's failure other than 400 and 409, and whether Try again can help. */
-export function commitFailureText(
-  kind: ErpErrorKind,
-  message: string,
-  noun: string,
-  max: number,
-): string {
+/** A commit's failure other than 400 and 409. */
+function commitFailureText(kind: ErpErrorKind, message: string, noun: string, max: number) {
   switch (kind) {
     case 'session':
-      return 'Your Cash Gear ERP session has ended, so nothing was sent. Open the sheet again from Cash Gear ERP.';
+      return 'Your Cash Gear ERP session has ended, so it isn’t known whether the changes were saved. Choose Reconnect: the sheet then asks Cash Gear ERP before it sends them again.';
     case 'privilege':
       return `Your Cash Gear ERP account can't edit ${noun}, so nothing was saved.`;
     case 'tooMany':
       return `Cash Gear ERP takes at most ${count(max)} ${noun} in one commit. Filter the table to fewer of them, then choose Commit Changes in Visible Rows.`;
     case 'contract':
-      return UNREADABLE_ANSWER;
+      return EN.UNREADABLE_ANSWER;
     default:
       return message;
   }
 }
 
 /** A batch error from a 400, which no cell can show, by its code. */
-export function batchErrorText(code: string, message: string, noun: string): string {
+function batchErrorText(code: string, message: string, noun: string): string {
   switch (code) {
     case 'schema.changed':
       return `Cash Gear ERP's ${noun} have changed since the sheet opened them. Open the sheet again from Cash Gear ERP.`;
@@ -406,7 +382,7 @@ export function batchErrorText(code: string, message: string, noun: string): str
 }
 
 /** The Review dialog's status for a field. */
-export function statusText(entry: ErpReviewEntry): string {
+function statusText(entry: ErpReviewEntry): string {
   switch (entry.state) {
     case 'formula':
       return 'Formula, not committed';
@@ -414,14 +390,18 @@ export function statusText(entry: ErpReviewEntry): string {
       return 'Conflict';
     case 'invalid':
       return 'Invalid';
+    case 'gone':
+      return 'Not in ERP';
     default:
       return 'Changed';
   }
 }
 
 /** The Review dialog's message for a field: what's wrong with it, if anything. */
-export function reviewMessage(entry: ErpReviewEntry, noun: string): string {
+function reviewMessage(entry: ErpReviewEntry, noun: string): string {
   const lines: string[] = [];
+  if (entry.state === 'gone')
+    lines.push(`This ${singular(noun)} isn't in Cash Gear ERP any more, so it isn't committed.`);
   if (entry.state === 'formula') lines.push('Convert it to a value to commit it.');
   if (entry.rule) lines.push(ruleText(entry.label, entry.rule));
   if (entry.server) lines.push(serverText(entry.label, entry.server, noun, entry.now));
@@ -430,18 +410,248 @@ export function reviewMessage(entry: ErpReviewEntry, noun: string): string {
   return lines.join(' ');
 }
 
-export const HIDDEN_ROW = 'This row is hidden by a filter.';
-
-/** What a refresh did, for the status bar. */
-export function refreshedText(
+/** What a refresh's three-way merge did, for the status bar (decisions, 2026-11-11, Phase 18). */
+function refreshedText(
   noun: string,
-  summary: { updated: number; changed: number; missing: number },
+  summary: { updated: number; changed: number; merged: number; conflicts: number; missing: number },
 ) {
-  const parts = [`Refreshed ${count(summary.updated)} ${noun}`];
-  parts.push(summary.changed === 0 ? 'nothing changed' : `${count(summary.changed)} changed`);
-  if (summary.missing > 0) parts.push(`${count(summary.missing)} not in ERP`);
-  return parts.join(' · ');
+  const parts = [`Refreshed ${records(summary.updated, noun)}.`];
+  if (summary.changed === 0) parts.push('Nothing changed in Cash Gear ERP.');
+  else {
+    const detail: string[] = [];
+    if (summary.merged > 0) detail.push(`${count(summary.merged)} merged with your changes`);
+    if (summary.conflicts > 0) detail.push(`${count(summary.conflicts)} in conflict`);
+    parts.push(
+      `${count(summary.changed)} changed in Cash Gear ERP${detail.length ? `: ${detail.join(', ')}` : ''}.`,
+    );
+  }
+  if (summary.missing > 0)
+    parts.push(
+      summary.missing === 1
+        ? `1 isn't in Cash Gear ERP any more.`
+        : `${count(summary.missing)} aren't in Cash Gear ERP any more.`,
+    );
+  return parts.join(' ');
 }
 
-/** The new workbook's name: "Vendors – Kit". */
-export const workbookTitle = (label: string, company: string) => `${label} – ${company}`;
+/** What Resolve did, for the status bar. */
+function resolvedText(found: { fields: number; records: number; left: number }, noun: string) {
+  const parts = [`Resolved ${counted(found.fields, 'field', 'fields')}.`];
+  if (found.records > 0)
+    parts.push(
+      `${records(found.records, noun)} ${found.records === 1 ? 'is' : 'are'} ready to commit.`,
+    );
+  if (found.left > 0)
+    parts.push(
+      `${records(found.left, noun)} still ${found.left === 1 ? 'has' : 'have'} conflicts.`,
+    );
+  return parts.join(' ');
+}
+
+export const EN = {
+  language: 'en' as 'en' | 'ar',
+  dir: 'ltr' as 'ltr' | 'rtl',
+  /** The engine's English refusal or limit, in this language. */
+  localized: localizedEn,
+  count,
+  records,
+  changes,
+  // Opening
+  openingTitle: (noun: string | null) =>
+    noun ? `Opening ${noun} from Cash Gear ERP` : 'Opening from Cash Gear ERP',
+  CONNECTING: 'Connecting to Cash Gear ERP…',
+  loadingText: (noun: string, loaded: number, total: number | null) =>
+    total === null ? `Loading ${noun}…` : `Loading ${noun} · ${count(loaded)} of ${count(total)}`,
+  CANCELLED: 'Nothing was opened.',
+  failureText,
+  // The badge and hover details
+  badgeText,
+  reasonText,
+  ruleText,
+  serverText,
+  conflictText,
+  cellTip,
+  // The ERP Data tab
+  TAB: 'ERP Data',
+  GROUP_DATA: 'Data',
+  GROUP_CHANGES: 'Changes',
+  GROUP_CONFLICTS: 'Conflicts',
+  GROUP_CONNECTION: 'Connection',
+  REFRESH: 'Refresh',
+  VALIDATE: 'Validate',
+  REVIEW: 'Review Changes',
+  COMMIT: 'Commit',
+  COMMIT_ALL: 'Commit All Changes…',
+  COMMIT_VISIBLE: 'Commit Changes in Visible Rows…',
+  DISCARD: 'Discard Changes',
+  DISCARD_ALL: 'Discard All Changes',
+  DISCARD_SELECTED: 'Discard Changes in Selected Cells',
+  NEXT_ERROR: 'Next Error',
+  RESOLVE: 'Resolve Conflicts',
+  NEXT_CONFLICT: 'Next Conflict',
+  CONNECTION_INFO: 'Connection Info',
+  RECONNECT: 'Reconnect',
+  // Buttons
+  TRY_AGAIN: 'Try again',
+  CANCEL: 'Cancel',
+  CLOSE: 'Close',
+  OK: 'OK',
+  GO_TO_CELL: 'Go to Cell',
+  // Notices
+  NO_ERRORS: 'No cells break a rule.',
+  NO_CONFLICTS: 'No cells are in conflict.',
+  NOTHING_TO_DISCARD: 'There are no changes to discard.',
+  refreshingText: (noun: string) => `Refreshing ${noun}…`,
+  refreshedText,
+  HIDDEN_ROW: 'This row is hidden by a filter.',
+  // Validate, Review and Commit (Phase 17)
+  NOTHING_TO_VALIDATE: 'There are no changes to validate.',
+  NOTHING_TO_COMMIT: 'There are no changes to commit.',
+  NOTHING_VISIBLE: 'There are no changes in the rows shown.',
+  validatingText: (n: number) => `Checking ${changes(n)} with Cash Gear ERP…`,
+  validatedText,
+  localErrorsText,
+  conflictsWaitText,
+  tooManyText,
+  COMMIT_TITLE: 'Commit to Cash Gear ERP',
+  confirmLines,
+  commitButton: (n: number) => `Commit ${changes(n)}`,
+  reviewCommitButton: (n: number, m: number, noun: string) =>
+    `Commit ${changes(n)} to ${records(m, noun)}`,
+  committingText: (n: number, m: number, noun: string) =>
+    `Committing ${changes(n)} to ${records(m, noun)}…`,
+  committedText,
+  refusedText,
+  conflictText409,
+  UNKNOWN_OUTCOME:
+    "Cash Gear ERP didn't answer, so it isn't known whether the changes were saved. Try again asks Cash Gear ERP first, and sends the same commit only if it wasn't saved.",
+  /** A 500: the ERP may have failed as it finished, so its outcome isn't known either. */
+  SERVER_FAILED:
+    "Cash Gear ERP couldn't finish the commit, so it isn't known whether the changes were saved. Try again asks Cash Gear ERP first, and sends the same commit only if it wasn't saved.",
+  /** Still 429 or 503 after waiting as asked: refused before anything was done. */
+  BUSY_FAILED: 'Cash Gear ERP is busy, so nothing was saved. Try again in a moment.',
+  UNREADABLE_ANSWER:
+    "Cash Gear ERP answered in a way the sheet can't read, so it isn't known what was saved. Refresh to see what Cash Gear ERP holds.",
+  ASKING_STATUS: 'Asking Cash Gear ERP whether the commit was saved…',
+  STATUS_UNKNOWN:
+    'Cash Gear ERP has no record of the commit, so nothing was saved. Your changes are still here: commit them again when ready.',
+  commitFailureText,
+  batchErrorText,
+  // The Review dialog
+  REVIEW_TITLE: 'Review Changes',
+  FILTER_ALL: 'All',
+  FILTER_INVALID: 'Invalid',
+  FILTER_CONFLICTS: 'Conflicts',
+  FILTER_HIDDEN: 'In hidden rows',
+  FILTER_FORMULAS: 'Formulas',
+  FILTERS_LABEL: 'Show',
+  COLUMN_RECORD: 'Record',
+  COLUMN_FIELD: 'Field',
+  COLUMN_ORIGINAL: 'Original',
+  COLUMN_NEW: 'New',
+  COLUMN_STATUS: 'Status',
+  COLUMN_MESSAGE: 'Message',
+  NOTHING_HERE: 'Nothing to show here.',
+  DISCARD_CHOSEN: 'Discard Selected',
+  statusText,
+  reviewMessage,
+  // Resolve Conflicts (Phase 18)
+  RESOLVE_TITLE: 'Resolve Conflicts',
+  resolveIntro: (n: number, noun: string) =>
+    `${records(n, noun)} changed in Cash Gear ERP since you loaded ${n === 1 ? 'it' : 'them'}, in fields you changed too.`,
+  COLUMN_MINE: 'Mine',
+  COLUMN_ERP: 'ERP now',
+  COLUMN_BY: 'Changed by',
+  KEEP_MINE: 'Keep Mine',
+  TAKE_ERP: "Take ERP's",
+  KEEP_ALL_MINE: 'Keep All Mine',
+  TAKE_ALL_ERP: "Take All ERP's",
+  UNKNOWN_VALUE: 'Refresh to see what Cash Gear ERP holds.',
+  EMPTY: '(empty)',
+  NO_CONFLICTS_LEFT: 'No conflicts are left.',
+  resolvedText,
+  changedAt: (by: string | undefined, at: string | undefined) =>
+    [by ? isolate(by) : '', at ? when(at) : ''].filter(Boolean).join(' · '),
+  // Sessions and Reconnect (Phase 18)
+  SESSION_ENDED:
+    'Your Cash Gear ERP session has ended. Your changes stay in this sheet: choose Reconnect to carry on.',
+  RECONNECT_TITLE: 'Reconnect to Cash Gear ERP',
+  reconnectText: (noun: string) =>
+    `Open Cash Gear ERP's ${noun} list and choose Edit in Cash Gear Sheet. The new tab hands its connection to this sheet and closes, and this sheet then refreshes. Your changes stay here meanwhile.`,
+  WAITING: 'Waiting for Cash Gear ERP…',
+  RECONNECTED: 'Connected to Cash Gear ERP again.',
+  refusedHandoverText: (company: string, user: string, noun: string) =>
+    `A connection for another company, user or list was refused: this sheet holds ${noun} of ${isolate(company)} for ${isolate(user)}.`,
+  HANDED_OVER: 'This connection went to the sheet that was waiting for it. You can close this tab.',
+  HANDOVER_REFUSED:
+    'The sheet waiting in another tab refused this connection. Open the sheet again from Cash Gear ERP.',
+  // Recovery (Phase 18)
+  RECOVER_TITLE: 'Recover your changes to ERP data?',
+  recoverText: (name: string, noun: string) =>
+    `${isolate(name)} has changes to Cash Gear ERP's ${noun} that weren't committed when its session ended. They open disconnected: reconnect from Cash Gear ERP, then commit them. Nothing is sent by itself.`,
+  RECOVER: 'Recover',
+  RECOVER_DISCARD: 'Discard these changes',
+  RECOVER_LAUNCH_TITLE: 'Recover your earlier changes?',
+  recoverLaunchText: (label: string, company: string) =>
+    `You have changes to ${isolate(label)} – ${isolate(company)} from a session that ended before they were committed. Recover them into this connection, which then refreshes, or open the data afresh.`,
+  RECOVER_CHANGES: 'Recover Changes',
+  OPEN_AFRESH: 'Open Afresh',
+  recoverFailedText: (noun: string) =>
+    `This ERP connection can't be recovered. Open the ${noun} again from Cash Gear ERP.`,
+  RECOVERED:
+    'Recovered disconnected from Cash Gear ERP. Choose Reconnect, then commit your changes.',
+  noDraftText: () =>
+    `This sheet passed ${DRAFT_CAP_MB} MB, so it keeps no recovery copy: commit or save before you close it.`,
+  // Connection Info
+  INFO_TITLE: 'Connection Info',
+  INFO_DATA: 'Data',
+  INFO_COMPANY: 'Company',
+  INFO_USER: 'User',
+  INFO_RECORDS: 'Records',
+  INFO_READ: 'Read from the ERP',
+  INFO_SESSION: 'Session',
+  INFO_SERVER: 'Server',
+  INFO_EDITING: 'Editing',
+  INFO_RECOVERY: 'Recovery copy',
+  infoRecords: (total: number, gone: number) =>
+    gone ? `${count(total)} · ${count(gone)} not in ERP` : count(total),
+  SESSION_ENDED_SHORT: 'Ended',
+  DISCONNECTED: 'Disconnected',
+  openUntil: (at: number) =>
+    `Open until ${new Date(at).toLocaleTimeString('en-US', { timeStyle: 'short' })}`,
+  readAt: (iso: string) => new Date(iso).toLocaleString('en-US'),
+  editingText: (editable: number, all: number) =>
+    editable === 0
+      ? 'Every column is read-only for you.'
+      : `${count(editable)} of ${count(all)} columns can be edited. Changes stay in this sheet until you commit them.`,
+  draftText: (kept: boolean): string =>
+    kept
+      ? 'Kept on this device until you commit, discard or close.'
+      : `None: this sheet passed ${DRAFT_CAP_MB} MB.`,
+  /** The new workbook's name: "Vendors – Kit". */
+  workbookTitle: (label: string, company: string) => `${label} – ${company}`,
+};
+
+export type ErpTexts = typeof EN;
+
+// Kept as named exports for the English wording's tests.
+export {
+  badgeText,
+  batchErrorText,
+  cellTip,
+  committedText,
+  confirmLines,
+  conflictText409,
+  conflictsWaitText,
+  failureText,
+  localErrorsText,
+  refreshedText,
+  refusedText,
+  reviewMessage,
+  serverText,
+  statusText,
+  tooManyText,
+  validatedText,
+};
+
+export const workbookTitle = EN.workbookTitle;

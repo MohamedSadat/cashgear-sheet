@@ -23,6 +23,7 @@ import {
   CELL_ERP_COMMITTED,
   CELL_ERP_CONFLICT,
   CELL_ERP_FORMULA,
+  CELL_ERP_GONE,
   CELL_ERP_INVALID,
   CELL_ERP_LOCK,
   CELL_ERP_MODIFIED,
@@ -81,7 +82,8 @@ const ERP_STATES =
   CELL_ERP_FORMULA |
   CELL_ERP_LOCK |
   CELL_ERP_CONFLICT |
-  CELL_ERP_COMMITTED;
+  CELL_ERP_COMMITTED |
+  CELL_ERP_GONE;
 const EMPTY_STYLE: TileStyle = {
   font: '',
   size: 11,
@@ -382,10 +384,11 @@ class Painter {
 
   /** A modified value's tint, or a read-only one's wash, under its text. */
   private tint(flags: number, fill: number, left: number, top: number, w: number, h: number) {
-    if (!(flags & (CELL_ERP_MODIFIED | CELL_ERP_READ_ONLY))) return;
+    if (!(flags & (CELL_ERP_MODIFIED | CELL_ERP_READ_ONLY | CELL_ERP_GONE))) return;
     const colors = this.erpColors(fill);
     if (!colors) return;
-    this.context.fillStyle = flags & CELL_ERP_MODIFIED ? colors.modifiedTint : colors.readOnly;
+    this.context.fillStyle =
+      flags & CELL_ERP_MODIFIED && !(flags & CELL_ERP_GONE) ? colors.modifiedTint : colors.readOnly;
     this.context.fillRect(left, top, w, h);
   }
 
@@ -440,6 +443,7 @@ class Painter {
           context.fillRect(lead, top, bar, height - pixel);
         }
         if (flags & CELL_ERP_CONFLICT) this.drawConflict(left, top, width, height, colors);
+        if (flags & CELL_ERP_GONE) this.drawGone(left, top, width, height, colors);
         if (flags & CELL_ERP_INVALID) {
           const line = 2 * pixel;
           context.strokeStyle = colors.invalid;
@@ -498,6 +502,35 @@ class Painter {
       this.rtl ? left + inset : left + width - pixel - inset - mark,
       top + pixel,
     );
+    context.restore();
+  }
+
+  /**
+   * A record Cash Gear ERP no longer has: a grey hatch across the cell, leaning the other way from
+   * a conflict's so the two never read alike.
+   */
+  private drawGone(
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+    colors: ErpStateColors,
+  ) {
+    const { context, scale } = this;
+    const pixel = Math.max(1, Math.round(scale));
+    const step = Math.max(4, Math.round(6 * scale));
+    context.save();
+    context.beginPath();
+    context.rect(left, top, width - pixel, height - pixel);
+    context.clip();
+    context.strokeStyle = colors.goneHatch;
+    context.lineWidth = pixel;
+    context.beginPath();
+    for (let x = left - height; x < left + width; x += step) {
+      context.moveTo(x, top);
+      context.lineTo(x + height, top + height);
+    }
+    context.stroke();
     context.restore();
   }
 

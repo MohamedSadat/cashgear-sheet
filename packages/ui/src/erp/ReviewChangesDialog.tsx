@@ -12,26 +12,34 @@ import {
   type CgGridColumnDescriptor,
 } from '@cashgear/ui';
 import type { ErpReview, ErpReviewEntry } from '@cgs/engine-client';
-import { count, isolate, reviewCommitButton, reviewMessage, statusText } from './messages';
+import { isolate } from './messages';
+import type { ErpTexts } from './texts';
 
 export type ReviewFilter = 'all' | 'invalid' | 'conflicts' | 'hidden' | 'formulas';
 
-const FILTERS: { name: ReviewFilter; text: string; keep: (entry: ErpReviewEntry) => boolean }[] = [
-  { name: 'all', text: 'All', keep: () => true },
-  { name: 'invalid', text: 'Invalid', keep: (entry) => entry.invalid },
-  { name: 'conflicts', text: 'Conflicts', keep: (entry) => entry.conflict },
-  { name: 'hidden', text: 'In hidden rows', keep: (entry) => entry.hidden },
-  { name: 'formulas', text: 'Formulas', keep: (entry) => entry.state === 'formula' },
+const FILTERS: {
+  name: ReviewFilter;
+  text: (t: ErpTexts) => string;
+  keep: (entry: ErpReviewEntry) => boolean;
+}[] = [
+  { name: 'all', text: (t) => t.FILTER_ALL, keep: () => true },
+  { name: 'invalid', text: (t) => t.FILTER_INVALID, keep: (entry) => entry.invalid },
+  { name: 'conflicts', text: (t) => t.FILTER_CONFLICTS, keep: (entry) => entry.conflict },
+  { name: 'hidden', text: (t) => t.FILTER_HIDDEN, keep: (entry) => entry.hidden },
+  { name: 'formulas', text: (t) => t.FILTER_FORMULAS, keep: (entry) => entry.state === 'formula' },
 ];
 
 const keyOf = (entry: ErpReviewEntry) => `${entry.row}:${entry.col}`;
+/** `CgGrid` reports a selected row by its key's typed token, `string:3:4` for `3:4`. */
+const fromToken = (token: string) => token.replace(/^string:/, '');
 
 export interface ReviewChangesDialogProps {
   open: boolean;
   review: ErpReview | null;
   /** The entity's English noun, such as `vendors`. */
   noun: string;
-  rightToLeft: boolean;
+  /** The ERP texts in the session's language. */
+  t: ErpTexts;
   busy: boolean;
   /** Whether a commit can be sent now: connected, with changes. */
   canCommit: boolean;
@@ -42,7 +50,8 @@ export interface ReviewChangesDialogProps {
 }
 
 export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
-  const { open, review, noun, rightToLeft, busy, canCommit, onClose, onGoTo, onDiscard } = props;
+  const { open, review, noun, t, busy, canCommit, onClose, onGoTo, onDiscard } = props;
+  const rightToLeft = t.dir === 'rtl';
   const [filter, setFilter] = useState<ReviewFilter>('all');
   const [selected, setSelected] = useState<string[]>([]);
   const entries = useMemo(() => review?.entries ?? [], [review]);
@@ -61,35 +70,47 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
       {
         type: 'text',
         fieldId: 'record',
-        title: 'Record',
+        title: t.COLUMN_RECORD,
         width: 190,
         accessor: (entry) => (entry.name ? `${entry.key} · ${isolate(entry.name)}` : entry.key),
       },
-      { type: 'text', fieldId: 'label', title: 'Field', width: 130, accessor: (e) => e.label },
+      {
+        type: 'text',
+        fieldId: 'label',
+        title: t.COLUMN_FIELD,
+        width: 130,
+        accessor: (e) => e.label,
+      },
       {
         type: 'text',
         fieldId: 'original',
-        title: 'Original',
+        title: t.COLUMN_ORIGINAL,
         width: 130,
         accessor: (entry) => (entry.original === undefined ? '' : isolate(entry.original)),
       },
       {
         type: 'text',
         fieldId: 'now',
-        title: 'New',
+        title: t.COLUMN_NEW,
         width: 130,
         accessor: (entry) => (entry.now === undefined ? '' : isolate(entry.now)),
       },
-      { type: 'text', fieldId: 'status', title: 'Status', width: 110, accessor: statusText },
+      {
+        type: 'text',
+        fieldId: 'status',
+        title: t.COLUMN_STATUS,
+        width: 110,
+        accessor: (entry) => t.statusText(entry),
+      },
       {
         type: 'text',
         fieldId: 'message',
-        title: 'Message',
+        title: t.COLUMN_MESSAGE,
         width: 300,
-        accessor: (entry) => reviewMessage(entry, noun),
+        accessor: (entry) => t.reviewMessage(entry, noun),
       },
     ],
-    [noun],
+    [noun, t],
   );
 
   const counts = review?.counts;
@@ -97,7 +118,7 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
   const records = counts?.changedRecords ?? 0;
   const filterItems = FILTERS.map((f) => ({
     name: f.name,
-    text: `${f.text} (${count(entries.filter(f.keep).length)})`,
+    text: `${f.text(t)} (${t.count(entries.filter(f.keep).length)})`,
   }));
   const first = chosen[0] ?? (shown.length === 1 ? shown[0] : undefined);
 
@@ -107,7 +128,7 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
-      headerText="Review Changes"
+      headerText={t.REVIEW_TITLE}
       width={1080}
       allowDrag
       allowResize
@@ -116,7 +137,7 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
         <div className="cgs-dialog-column cgs-erp-review" dir={rightToLeft ? 'rtl' : 'ltr'}>
           <CgButtonGroup
             data-testid="erp-review-filters"
-            ariaLabel="Show"
+            ariaLabel={t.FILTERS_LABEL}
             selectionMode="single"
             selectedName={filter}
             onSelectedNameChange={(name) => {
@@ -133,17 +154,17 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
             columns={columns}
             keySelector={keyOf}
             selectionMode="checkbox"
-            onSelectionChange={(details) => setSelected([...details.selectedKeys])}
+            onSelectionChange={(details) => setSelected(details.selectedKeys.map(fromToken))}
             onRowActivate={(entry) => onGoTo(entry)}
             height={360}
             stickyHeader
             direction={rightToLeft ? 'rtl' : 'ltr'}
-            renderEmpty={() => <p className="cgs-dialog-message">Nothing to show here.</p>}
+            renderEmpty={() => <p className="cgs-dialog-message">{t.NOTHING_HERE}</p>}
           />
         </div>
       )}
       renderFooter={() => (
-        <div className="cgs-dialog-actions">
+        <div className="cgs-dialog-actions" dir={t.dir}>
           <CgButton
             data-testid="erp-review-go"
             disabled={!first}
@@ -151,7 +172,7 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
               if (first) onGoTo(first);
             }}
           >
-            Go to Cell
+            {t.GO_TO_CELL}
           </CgButton>
           <CgButton
             data-testid="erp-review-discard"
@@ -161,7 +182,7 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
               setSelected([]);
             }}
           >
-            Discard Selected
+            {t.DISCARD_CHOSEN}
           </CgButton>
           <span className="cgs-dialog-spacer" />
           <CgButton
@@ -170,10 +191,10 @@ export function ReviewChangesDialog(props: ReviewChangesDialogProps) {
             disabled={busy || !canCommit || changed === 0}
             onClick={props.onCommit}
           >
-            {reviewCommitButton(changed, records, noun)}
+            {t.reviewCommitButton(changed, records, noun)}
           </CgButton>
           <CgButton data-testid="erp-review-close" onClick={onClose}>
-            Close
+            {t.CLOSE}
           </CgButton>
         </div>
       )}

@@ -1,8 +1,9 @@
 // ERP data in the browser, against the mock ERP on its own origin (playwright.config.ts starts it
 // on 127.0.0.1:4180, the sheet's preview on :4173). The page opens a launch link as Cash Gear ERP's
 // button would, so the handoff, CORS, cross-origin isolation and the identity guard run as they
-// will in production. Phase 15's read-only slice comes first, then Phase 16's editing.
-import { expect, test, type Page } from '@playwright/test';
+// will in production. Phase 15's read-only slice comes first, then Phase 16's editing, Phase 17's
+// commits, and Phase 18's merge, Resolve, Reconnect, CommitStatus, recovery and Arabic.
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { readZip } from '../fixtures/workbooks.mjs';
 import { expectGolden, FONT_OVERRIDE, waitForGrid } from './helpers.mjs';
 
@@ -257,8 +258,8 @@ test('opens every active vendor in English, and keeps each key with its record t
   });
   await page.getByTestId('ribbon').getByRole('tab', { name: 'ERP Data', exact: true }).click();
   await page.getByTestId('ribbon').getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByTestId('engine-status')).toContainText(
-    `Refreshed ${expected.length.toLocaleString('en-US')} vendors · 1 changed`,
+  await expect(page.getByTestId('engine-status')).toHaveText(
+    `Refreshed ${expected.length.toLocaleString('en-US')} vendors. 1 changed in Cash Gear ERP.`,
   );
   const after = await records(filter);
   await expectRecords(page, after);
@@ -280,7 +281,8 @@ test('opens in Arabic, right to left, with the ERP user’s headings', async ({ 
   const expected = await records(filter);
   expect(expected.map((r) => r.key)).toEqual(['V-1001', 'V-1006']);
   await launch(page, (await ticket(filter, 'ar')).url);
-  await bound(page, 'Vendors · 2 · Sara @ Kit');
+  // The badge in the ERP user's language (Phase 18).
+  await bound(page, 'الموردون · 2 · Sara @ Kit');
   const { headings } = await rows(page);
   expect(headings.slice(0, 4)).toEqual(['الحساب', 'الاسم', 'المجموعة', 'الجوال']);
   expect(await page.evaluate(() => window.cgsTest.grid()!.rightToLeft)).toBe(true);
@@ -537,7 +539,10 @@ test.describe('editing ERP data', () => {
     test(`draws cell states, in ${name}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: theme });
       await launch(page, (await ticket({ search: 'noor' }, language)).url);
-      await bound(page, 'Vendors · 2 · Sara @ Kit');
+      await bound(
+        page,
+        language === 'ar' ? 'الموردون · 2 · Sara @ Kit' : 'Vendors · 2 · Sara @ Kit',
+      );
       // Modified, invalid (a required name emptied, and an unknown group) and a formula.
       for (const command of [
         { kind: 'input', sheet: 0, row: 2, col: 2, text: 'Al Noor Trading Co' },
@@ -550,7 +555,11 @@ test.describe('editing ERP data', () => {
       }
       await expect
         .poll(async () => plain(await page.getByTestId('erp-status').textContent()))
-        .toBe('Vendors · 2 · 4 changed · 2 invalid · 1 formula · Sara @ Kit');
+        .toBe(
+          language === 'ar'
+            ? 'الموردون · 2 · معدّلة: 4 · غير صالحة: 2 · صيغ: 1 · Sara @ Kit'
+            : 'Vendors · 2 · 4 changed · 2 invalid · 1 formula · Sara @ Kit',
+        );
       // The selection away from the states, so that it covers none of them.
       await select(page, 9, 9);
       await waitForGrid(page, theme);
@@ -681,6 +690,7 @@ test.describe('committing ERP data', () => {
       invalid: 0,
       formulas: 0,
       conflicts: 0,
+      gone: 0,
     });
     // Committed fields show a green bar until they change; undo is cleared.
     await select(page, 9, 9);
@@ -726,7 +736,7 @@ test.describe('committing ERP data', () => {
     await commitAll(page);
     await page.getByTestId('erp-commit-send').click();
     await expect(page.getByTestId('erp-commit-status')).toHaveText(
-      "1 vendor was changed in Cash Gear ERP since you opened it, so nothing was saved. Its cells are marked. Discard your changes to it, or Refresh to take Cash Gear ERP's values, then commit again.",
+      '1 vendor was changed in Cash Gear ERP since you opened it, so nothing was saved. 1 vendor has fields you both changed: choose Resolve Conflicts, then commit again.',
       { timeout: 30_000 },
     );
     await page.getByTestId('erp-commit-close').click();
@@ -743,7 +753,7 @@ test.describe('committing ERP data', () => {
     // Commit waits until the conflict is dealt with.
     await commitAll(page);
     await expect(page.getByTestId('erp-commit-refused-text')).toHaveText(
-      "1 vendor was changed in Cash Gear ERP since you opened it. Discard your changes to it, or Refresh to take Cash Gear ERP's values, then commit.",
+      '1 vendor has fields you and Cash Gear ERP both changed. Choose Resolve Conflicts, then commit.',
     );
     await page.getByTestId('erp-commit-refused-close').click();
     expect(await mockState()).toEqual(edited);
@@ -775,7 +785,7 @@ test.describe('committing ERP data', () => {
     await commitAll(page);
     await page.getByTestId('erp-commit-send').click();
     await expect(page.getByTestId('erp-commit-status')).toHaveText(
-      "Cash Gear ERP didn't answer, so it isn't known whether the changes were saved. Try again sends the same commit, which Cash Gear ERP saves only once.",
+      "Cash Gear ERP didn't answer, so it isn't known whether the changes were saved. Try again asks Cash Gear ERP first, and sends the same commit only if it wasn't saved.",
       { timeout: 60_000 },
     );
     expect((await mockState()).writes).toBe(start.writes + 2);
@@ -787,11 +797,15 @@ test.describe('committing ERP data', () => {
       ),
     );
     expect(held).toBe('Wait until the commit to Cash Gear ERP finishes.');
+    // Try again asks CommitStatus first, which finds the commit saved: no Commit goes again,
+    // as one that did would fail now.
     await mock('fault', { clear: true });
+    await mock('fault', { match: 'VendorSheet/Commit$', status: 500, times: 0 });
     await page.getByTestId('erp-commit-retry').click();
     await expect(status(page)).toHaveText('Committed 2 changes to 2 vendors.', {
       timeout: 30_000,
     });
+    await mock('fault', { clear: true });
     const end = await mockState();
     expect(end.writes).toBe(start.writes + 2);
     expect(end.commits).toBe(start.commits + 1);
@@ -864,5 +878,467 @@ test.describe('committing ERP data', () => {
       );
     await page.getByTestId('erp-commit-cancel').click();
     expect(await mockState()).toEqual(start);
+  });
+});
+
+// Phase 18: the three-way merge, Resolve Conflicts, sessions, Reconnect, CommitStatus, recovery
+// and the Arabic catalogue, against the mock's store as the oracle (plan G, "Phase 18").
+
+/** A session for a company's editor, as Redeem answers it, for handing over by hand. */
+async function redeemed(key: string): Promise<Record<string, unknown>> {
+  const response = await fetch(`${MOCK}/api/system/SheetLaunch/CreateTicket`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+    body: JSON.stringify({ entity: 'vendors', filter: null, language: 'en' }),
+  });
+  const { ticket: value } = (await response.json()) as { ticket: string };
+  return (await (
+    await fetch(`${MOCK}/api/sheet/Session/Redeem`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: SHEET_ORIGIN },
+      body: JSON.stringify({ ticket: value }),
+    })
+  ).json()) as Record<string, unknown>;
+}
+
+/** Whether the ERP still takes a session's token. */
+async function sessionOpen(token: string): Promise<boolean> {
+  const response = await fetch(`${MOCK}/api/payable/VendorSheet/Schema`, {
+    headers: { Origin: SHEET_ORIGIN, 'X-Sheet-Session': token },
+  });
+  return response.status === 200;
+}
+
+const badgeOf = async (page: Page) => plain(await page.getByTestId('erp-status').textContent());
+
+async function refresh(page: Page) {
+  await erpTab(page);
+  await page.getByTestId('ribbon').getByRole('button', { name: 'Refresh', exact: true }).click();
+}
+
+/** A second tab of the sheet, opened as Cash Gear ERP's button opens one. */
+async function launchTab(context: BrowserContext, url: string) {
+  const tab = await context.newPage();
+  await tab.addInitScript(FONT_OVERRIDE);
+  await tab.goto(url);
+  return tab;
+}
+
+/** The launch tab hands its session to the waiting one, says so, and closes if it may. */
+async function handedOver(tab: Page) {
+  await expect
+    .poll(
+      async () =>
+        tab.isClosed() ||
+        (await tab
+          .getByTestId('erp-load-text')
+          .textContent()
+          .catch(() => '')) ===
+          'This connection went to the sheet that was waiting for it. You can close this tab.',
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+  if (!tab.isClosed()) await tab.close();
+}
+
+test.describe('conflicts, refresh, sessions and recovery', () => {
+  const FILTER = { search: 'V-100' };
+  const COL = { name: 1, group: 2, mobile: 3, pay: 5, address: 6 };
+
+  test('a concurrent edit conflicts, Resolve keeps one field and takes another, and the commit saves it', async ({
+    page,
+  }) => {
+    const before = await records(FILTER);
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 2, COL.mobile, '01022222222');
+    await typeInto(page, 4, COL.pay, 'NET60');
+    await typeInto(page, 3, COL.address, '3 Mine St');
+    // Elsewhere in the ERP: Omar changes the same two fields to other values, and Mona another
+    // field of the third record.
+    await mock('edit', { company: 'Kit', key: 'V-1002', values: { mobile: '0133' }, by: 'omar' });
+    expect(before[3]!.values['payMethod']).toBe('CASH');
+    await mock('edit', {
+      company: 'Kit',
+      key: 'V-1004',
+      values: { payMethod: 'NET30' },
+      by: 'omar',
+    });
+    await mock('edit', {
+      company: 'Kit',
+      key: 'V-1003',
+      values: { vendorName: 'Theirs' },
+      by: 'mona',
+    });
+    const edited = await mockState();
+    await refresh(page);
+    await expect(status(page)).toHaveText(
+      'Refreshed 8 vendors. 3 changed in Cash Gear ERP: 1 merged with your changes, 2 in conflict.',
+      { timeout: 30_000 },
+    );
+    await expect
+      .poll(() => badgeOf(page))
+      .toBe('Vendors · 8 · 3 changed · 2 conflicts · Sara @ Kit');
+    // Mona's name shows in the sheet, rebased under the address still pending.
+    await expect.poll(() => cellText(page, 4, 2)).toBe('Theirs');
+    await expect.poll(() => cellText(page, 4, 7)).toBe('3 Mine St');
+    // Commit waits, and offers Resolve.
+    await commitAll(page);
+    await expect(page.getByTestId('erp-commit-refused-text')).toHaveText(
+      '2 vendors have fields you and Cash Gear ERP both changed. Choose Resolve Conflicts, then commit.',
+    );
+    await page.getByTestId('erp-commit-refused-resolve').click();
+    const dialog = page.getByTestId('erp-resolve');
+    await expect(dialog).toBeVisible();
+    await expect(page.getByTestId('erp-resolve-intro')).toHaveText(
+      '2 vendors changed in Cash Gear ERP since you loaded them, in fields you changed too.',
+    );
+    const grid = page.getByTestId('erp-resolve-grid');
+    await expect(grid).toContainText('01022222222');
+    await expect(grid).toContainText('0133');
+    await expect(grid).toContainText('omar');
+    // Keep mine for the mobile, take the ERP's pay method.
+    await grid
+      .getByRole('row', { name: /V-1002/ })
+      .getByRole('checkbox')
+      .check();
+    await page.getByTestId('erp-resolve-mine').click();
+    await expect(status(page)).toHaveText(
+      'Resolved 1 field. 1 vendor is ready to commit. 1 vendor still has conflicts.',
+    );
+    await grid
+      .getByRole('row', { name: /V-1004/ })
+      .getByRole('checkbox')
+      .check();
+    await page.getByTestId('erp-resolve-erp').click();
+    await expect(status(page)).toHaveText('Resolved 1 field. 1 vendor is ready to commit.');
+    await expect(page.getByTestId('erp-resolve-intro')).toHaveText('No conflicts are left.');
+    await page.getByTestId('erp-resolve-close').click();
+    await expect.poll(() => cellText(page, 5, 6)).toBe('NET30');
+    await expect.poll(() => badgeOf(page)).toBe('Vendors · 8 · 2 changed · Sara @ Kit');
+    expect(await mockState()).toEqual(edited);
+    // The commit saves mine over Omar's mobile, keeps Mona's name and Omar's pay method.
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(status(page)).toHaveText('Committed 2 changes to 2 vendors.', { timeout: 30_000 });
+    expect((await mockState()).writes).toBe(edited.writes + 2);
+    expect(await mockVendor('V-1002')).toMatchObject({ mobile: '01022222222' });
+    expect(await mockVendor('V-1003')).toMatchObject({
+      vendorName: 'Theirs',
+      address: '3 Mine St',
+    });
+    expect(await mockVendor('V-1004')).toMatchObject({ payMethod: 'NET30' });
+    const after = await records(FILTER);
+    await expectRecords(page, after);
+    expect(after.map((r) => r.values['vendorName'])).toEqual(
+      before.map((r) => (r.key === 'V-1003' ? 'Theirs' : r.values['vendorName'])),
+    );
+  });
+
+  test('non-overlapping concurrent edits rebase without a conflict, and Next Conflict has none', async ({
+    page,
+  }) => {
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 1, COL.address, '1 Mine St');
+    await typeInto(page, 6, COL.mobile, '01066666666');
+    await mock('edit', { company: 'Kit', key: 'V-1001', values: { mobile: '0111' }, by: 'omar' });
+    await mock('edit', {
+      company: 'Kit',
+      key: 'V-1006',
+      values: { address: 'Their St' },
+      by: 'mona',
+    });
+    // The 409 merges what it carries: the commit is refused, both records rebase, nothing clashes.
+    const edited = await mockState();
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(page.getByTestId('erp-commit-status')).toHaveText(
+      '2 vendors were changed in Cash Gear ERP since you opened them, so nothing was saved. 2 vendors merged with your changes: commit again to send them.',
+      { timeout: 30_000 },
+    );
+    await page.getByTestId('erp-commit-close').click();
+    expect(await mockState()).toEqual(edited);
+    await expect.poll(() => badgeOf(page)).toBe('Vendors · 8 · 2 changed · Sara @ Kit');
+    await expect.poll(() => cellText(page, 2, 4)).toBe('0111');
+    await expect.poll(() => cellText(page, 7, 7)).toBe('Their St');
+    await erpTab(page);
+    await expect(
+      page.getByTestId('ribbon').getByRole('button', { name: 'Next Conflict', exact: true }),
+    ).toBeDisabled();
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(status(page)).toHaveText('Committed 2 changes to 2 vendors.', { timeout: 30_000 });
+    expect(await mockVendor('V-1001')).toMatchObject({ mobile: '0111', address: '1 Mine St' });
+    expect(await mockVendor('V-1006')).toMatchObject({
+      mobile: '01066666666',
+      address: 'Their St',
+    });
+    // Review's Discard Selected puts back the field chosen by its checkbox.
+    await typeInto(page, 7, COL.name, 'To discard');
+    await expect.poll(async () => (await counts(page)).changed).toBe(1);
+    await page
+      .getByTestId('ribbon')
+      .getByRole('button', { name: 'Review Changes', exact: true })
+      .click();
+    await page
+      .getByTestId('erp-review-grid')
+      .getByRole('row', { name: /V-1007/ })
+      .getByRole('checkbox')
+      .check();
+    await page.getByTestId('erp-review-discard').click();
+    await expect.poll(async () => (await counts(page)).changed).toBe(0);
+    await page.getByTestId('erp-review-close').click();
+  });
+
+  test('a 401 during a commit, then Reconnect, asks CommitStatus and writes nothing twice', async ({
+    page,
+    context,
+  }) => {
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 1, COL.mobile, '01011111111');
+    await typeInto(page, 2, COL.address, '2 Nile St');
+    const start = await mockState();
+    // The commit lands but its answer is lost, and the session has ended by the next request.
+    await mock('fault', { match: 'VendorSheet/Commit$', drop: 'after', times: 1 });
+    await mock('fault', { match: 'VendorSheet/Commit$', status: 401, times: 0 });
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(page.getByTestId('erp-commit-status')).toHaveText(
+      'Your Cash Gear ERP session has ended, so it isn’t known whether the changes were saved. Choose Reconnect: the sheet then asks Cash Gear ERP before it sends them again.',
+      { timeout: 60_000 },
+    );
+    expect((await mockState()).writes).toBe(start.writes + 2);
+    await expect
+      .poll(() => badgeOf(page))
+      .toBe('Vendors · 8 · 2 changed · Session ended · Sara @ Kit');
+    // From now on a Commit would fail: only CommitStatus can find out.
+    await mock('fault', { clear: true });
+    await mock('fault', { match: 'VendorSheet/Commit$', status: 500, times: 0 });
+    await page.getByTestId('erp-commit-reconnect').click();
+    await expect(page.getByTestId('erp-reconnect-text')).toHaveText(
+      "Open Cash Gear ERP's vendors list and choose Edit in Cash Gear Sheet. The new tab hands its connection to this sheet and closes, and this sheet then refreshes. Your changes stay here meanwhile.",
+    );
+    await handedOver(await launchTab(context, (await ticket(FILTER)).url));
+    await expect(page.getByTestId('erp-reconnect')).toBeHidden({ timeout: 30_000 });
+    await expect.poll(() => counts(page), { timeout: 30_000 }).toMatchObject({ changed: 0 });
+    await expect.poll(() => badgeOf(page)).toBe('Vendors · 8 · Sara @ Kit');
+    const end = await mockState();
+    expect(end.writes).toBe(start.writes + 2);
+    expect(end.commits).toBe(start.commits + 1);
+    expect(await mockVendor('V-1001')).toMatchObject({ mobile: '01011111111' });
+    await mock('fault', { clear: true });
+    // The new session works: an edit commits.
+    await typeInto(page, 3, COL.mobile, '01033333333');
+    await commitAll(page);
+    await page.getByTestId('erp-commit-send').click();
+    await expect(status(page)).toHaveText('Committed 1 change to 1 vendor.', { timeout: 30_000 });
+  });
+
+  test('a session handed over for another company is refused, and a launch for it opens its own sheet', async ({
+    page,
+    context,
+  }) => {
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 1, COL.mobile, '01011111111');
+    // The session ends: the ERP's clock passes its idle time, and Refresh meets the 401.
+    await mock('clock', { advanceMs: 31 * 60_000 });
+    await refresh(page);
+    await expect(status(page)).toHaveText(
+      'Your Cash Gear ERP session has ended. Your changes stay in this sheet: choose Reconnect to carry on.',
+      { timeout: 30_000 },
+    );
+    await page
+      .getByTestId('ribbon')
+      .getByRole('button', { name: 'Reconnect', exact: true })
+      .click();
+    await expect(page.getByTestId('erp-reconnect-status')).toHaveText('Waiting for Cash Gear ERP…');
+    // Another tab of this origin hands Dot's session to the tab waiting for Kit's.
+    const dot = await redeemed('mock-dot-editor');
+    const forger = await context.newPage();
+    await forger.goto(`${SHEET_ORIGIN}/`);
+    const reply = await forger.evaluate(async (session) => {
+      const channel = new BroadcastChannel('cgs-erp-reconnect');
+      const heard: { type: string; tab?: string }[] = [];
+      channel.onmessage = (event) => heard.push(event.data as { type: string; tab?: string });
+      const scope = { company: 'Kit', userId: 'u17', entity: 'vendors' };
+      channel.postMessage({ type: 'waiting?', ask: 'forged', scope });
+      for (let i = 0; i < 50 && !heard.some((m) => m.type === 'waiting'); i++)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      const waiting = heard.find((m) => m.type === 'waiting');
+      if (!waiting) return 'no tab waited';
+      channel.postMessage({ type: 'handover', ask: 'forged', tab: waiting.tab, session });
+      for (let i = 0; i < 100 && !heard.some((m) => m.type !== 'waiting'); i++)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      return heard.find((m) => m.type !== 'waiting')?.type ?? 'no answer';
+    }, dot);
+    expect(reply).toBe('refused');
+    await expect
+      .poll(async () => plain(await status(page).textContent()))
+      .toBe(
+        'A connection for another company, user or list was refused: this sheet holds vendors of Kit for Sara.',
+      );
+    await expect
+      .poll(() => badgeOf(page))
+      .toBe('Vendors · 8 · 1 changed · Session ended · Sara @ Kit');
+    // The refused session was ended, so nothing can use it.
+    await expect.poll(() => sessionOpen(String(dot['token']))).toBe(false);
+    // A real launch for Dot isn't offered to the Kit tab: it opens its own sheet.
+    const dotLaunch = await fetch(`${MOCK}/api/system/SheetLaunch/CreateTicket`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'mock-dot-editor' },
+      body: JSON.stringify({ entity: 'vendors', filter: { search: 'V-100' }, language: 'en' }),
+    });
+    const dotTab = await launchTab(context, ((await dotLaunch.json()) as { url: string }).url);
+    await expect
+      .poll(async () => plain(await dotTab.getByTestId('erp-status').textContent()), {
+        timeout: 60_000,
+      })
+      .toMatch(/^Vendors · \d+ · Karim @ Dot$/);
+    await expect
+      .poll(() => badgeOf(page))
+      .toBe('Vendors · 8 · 1 changed · Session ended · Sara @ Kit');
+    await dotTab.close();
+    await forger.close();
+  });
+
+  test('a page that ends with changes leaves a draft that recovers disconnected and never commits by itself', async ({
+    page,
+    context,
+  }) => {
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 1, COL.name, 'Al Noor Recovered');
+    await typeInto(page, 2, COL.mobile, '01022222222');
+    await page.evaluate(() => window.cgsTest.settled());
+    const start = await mockState();
+    // The page ends without a word: no commit, no save.
+    await page.close({ runBeforeUnload: false });
+
+    const again = await context.newPage();
+    again.on('pageerror', (error) => {
+      throw error;
+    });
+    await again.addInitScript(FONT_OVERRIDE);
+    await again.goto(`${SHEET_ORIGIN}/`);
+    const offer = again.getByTestId('recover');
+    await expect(offer).toBeVisible({ timeout: 30_000 });
+    await expect(again.getByTestId('recover-text')).toContainText(
+      "has changes to Cash Gear ERP's vendors that weren't committed when its session ended. They open disconnected",
+    );
+    await offer.getByRole('button', { name: 'Recover', exact: true }).click();
+    await expect
+      .poll(async () => plain(await again.getByTestId('erp-status').textContent()), {
+        timeout: 60_000,
+      })
+      .toBe('Vendors · 8 · 2 changed · Disconnected · Sara @ Kit');
+    await expect.poll(() => cellText(again, 2, 2)).toBe('Al Noor Recovered');
+    await expect.poll(() => cellText(again, 3, 4)).toBe('01022222222');
+    await erpTab(again);
+    await expect(
+      again.getByTestId('ribbon').getByRole('button', { name: 'Commit▾', exact: true }),
+    ).toBeDisabled();
+    expect(await mockState()).toEqual(start);
+    // A launch for the same company, user and entity reconnects it; it refreshes, and still
+    // sends nothing by itself.
+    await handedOver(await launchTab(context, (await ticket(FILTER)).url));
+    await expect
+      .poll(async () => plain(await again.getByTestId('erp-status').textContent()), {
+        timeout: 30_000,
+      })
+      .toBe('Vendors · 8 · 2 changed · Sara @ Kit');
+    await expect(again.getByTestId('engine-status')).toHaveText(
+      'Refreshed 8 vendors. Nothing changed in Cash Gear ERP.',
+      { timeout: 30_000 },
+    );
+    await again.waitForTimeout(1500);
+    expect(await mockState()).toEqual(start);
+    // Committed by hand, it saves.
+    await commitAll(again);
+    await again.getByTestId('erp-commit-send').click();
+    await expect(again.getByTestId('engine-status')).toHaveText(
+      'Committed 2 changes to 2 vendors.',
+      { timeout: 30_000 },
+    );
+    expect((await mockState()).writes).toBe(start.writes + 2);
+  });
+
+  test('a launch with no tab waiting offers a matching draft, which recovers into its session', async ({
+    page,
+    context,
+  }) => {
+    await launch(page, (await ticket(FILTER)).url);
+    await bound(page, 'Vendors · 8 · Sara @ Kit');
+    await typeInto(page, 5, COL.address, '5 Draft St');
+    await page.evaluate(() => window.cgsTest.settled());
+    await page.close({ runBeforeUnload: false });
+    await mock('edit', { company: 'Kit', key: 'V-1005', values: { mobile: '0155' }, by: 'omar' });
+    const start = await mockState();
+    const tab = await launchTab(context, (await ticket(FILTER)).url);
+    await expect
+      .poll(async () => plain(await tab.getByTestId('erp-draft-text').textContent()), {
+        timeout: 30_000,
+      })
+      .toBe(
+        'You have changes to Vendors – Kit from a session that ended before they were committed. Recover them into this connection, which then refreshes, or open the data afresh.',
+      );
+    await tab.getByTestId('erp-draft-recover').click();
+    await expect
+      .poll(async () => plain(await tab.getByTestId('erp-status').textContent()), {
+        timeout: 60_000,
+      })
+      .toBe('Vendors · 8 · 1 changed · Sara @ Kit');
+    await expect(tab.getByTestId('engine-status')).toHaveText(
+      'Refreshed 8 vendors. 1 changed in Cash Gear ERP: 1 merged with your changes.',
+      { timeout: 30_000 },
+    );
+    await expect.poll(() => cellText(tab, 6, 7)).toBe('5 Draft St');
+    await expect.poll(() => cellText(tab, 6, 4)).toBe('0155');
+    expect(await mockState()).toEqual(start);
+    await tab.close();
+  });
+
+  test('Arabic sessions word the ERP tab, the badge and Resolve in Arabic, right to left', async ({
+    page,
+  }) => {
+    await launch(page, (await ticket(FILTER, 'ar')).url);
+    await bound(page, 'الموردون · 8 · Sara @ Kit');
+    await typeInto(page, 2, COL.mobile, '01022222222');
+    await typeInto(page, 3, COL.address, '3 Mine St');
+    await mock('edit', { company: 'Kit', key: 'V-1002', values: { mobile: '0133' }, by: 'omar' });
+    await mock('edit', { company: 'Kit', key: 'V-1004', values: { taxFile: '0099' }, by: 'mona' });
+    const tab = page.getByTestId('ribbon').getByRole('tab', { name: 'بيانات ERP', exact: true });
+    await tab.click();
+    await page.getByTestId('ribbon').getByRole('button', { name: 'تحديث', exact: true }).click();
+    await expect(status(page)).toHaveText(
+      'تم تحديث 8 موردين. عُدّل 2 في Cash Gear ERP: 1 في تعارض.',
+      { timeout: 30_000 },
+    );
+    await expect
+      .poll(() => badgeOf(page))
+      .toBe('الموردون · 8 · معدّلة: 2 · تعارضات: 1 · Sara @ Kit');
+    await select(page, 9, 9);
+    await waitForGrid(page);
+    await expectGolden(page, 'erp-merge-rtl', 0.002, { fromRight: true });
+    await page
+      .getByTestId('ribbon')
+      .getByRole('button', { name: 'حل التعارضات', exact: true })
+      .click();
+    await expect(page.getByTestId('erp-resolve-intro')).toHaveText(
+      'عُدّل مورد واحد في Cash Gear ERP منذ تحميلها، في حقول عدّلتها أنت أيضًا.',
+    );
+    expect(
+      await page
+        .getByTestId('erp-resolve')
+        .locator('[dir="rtl"]')
+        .first()
+        .evaluate((element) => getComputedStyle(element).direction),
+    ).toBe('rtl');
+    await page.getByTestId('erp-resolve-all-mine').click();
+    await expect(status(page)).toHaveText('تم حل حقل واحد. مورد واحد جاهز للاعتماد.');
+    await page.getByTestId('erp-resolve-close').click();
+    await expect.poll(() => badgeOf(page)).toBe('الموردون · 8 · معدّلة: 2 · Sara @ Kit');
   });
 });

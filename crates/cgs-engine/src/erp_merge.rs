@@ -106,6 +106,45 @@ struct Draft {
     missing: Vec<i64>,
 }
 
+/// The fields that say who last changed a record and when, where the entity has them by the
+/// ERP's own names (`modifiedBy`, `modifiedDate`), so a conflict a refresh finds can say so as a
+/// 409's does.
+fn audit_fields(binding: &Binding) -> (Option<usize>, Option<usize>) {
+    (
+        binding.field_index("modifiedBy"),
+        binding
+            .field_index("modifiedDate")
+            .or_else(|| binding.field_index("modifiedAt")),
+    )
+}
+
+/// A date-time serial as the wall-clock `YYYY-MM-DDTHH:MM:SS` it shows.
+fn serial_text(serial: f64) -> String {
+    let seconds = ((serial - serial.floor()) * 86_400.0).round() as i64;
+    let (day, seconds) = if seconds >= 86_400 {
+        (serial.floor() + 1.0, 0)
+    } else {
+        (serial.floor(), seconds)
+    };
+    format!(
+        "{}T{:02}:{:02}:{:02}",
+        cgs_bind::state::date_text(day),
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
+fn with_audit(mut record: ServerRecord, (by, at): (Option<usize>, Option<usize>)) -> ServerRecord {
+    if let Some(Some(CellValue::Text(text))) = by.and_then(|field| record.values.get(field)) {
+        record.modified_by = Some(text.clone());
+    }
+    if let Some(Some(CellValue::Number(serial))) = at.and_then(|field| record.values.get(field)) {
+        record.modified_at = Some(serial_text(*serial));
+    }
+    record
+}
+
 fn cell_of_content(content: &Content) -> Option<CellValue> {
     Some(match content {
         Content::Empty => CellValue::Empty,
@@ -210,10 +249,16 @@ impl Session {
     /// Merges a refresh's records: every bound record the ERP still has, found by id.
     pub(crate) fn refresh_records(&mut self, staging: cgs_bind::Staging) -> Result<String, String> {
         let as_of = staging.as_of.clone();
+        let audit = self
+            .bindings
+            .0
+            .first()
+            .map(audit_fields)
+            .unwrap_or_default();
         let records = staging
             .records
             .into_iter()
-            .map(ServerRecord::from)
+            .map(|record| with_audit(ServerRecord::from(record), audit))
             .collect();
         let (counts, journal, missing) = self.erp_merge(records, true)?;
         if let Some(as_of) = &as_of {
@@ -243,7 +288,11 @@ impl Session {
             .0
             .first()
             .ok_or_else(|| "This workbook has no ERP data.".to_string())?;
-        let records = server_records_of_json(&journal["records"], binding.fields.len())?;
+        let audit = audit_fields(binding);
+        let records = server_records_of_json(&journal["records"], binding.fields.len())?
+            .into_iter()
+            .map(|record| with_audit(record, audit))
+            .collect();
         let missing: Vec<i64> = serde_json::from_value(journal["missing"].clone())
             .map_err(|error| error.to_string())?;
         // The records it left out merged to nothing then, so they would merge to nothing now.
@@ -556,5 +605,20 @@ impl Engine {
             .as_mut()
             .ok_or_else(|| "No workbook is open.".to_string())?
             .erp_resolve(json)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::serial_text;
+
+    #[test]
+    fn date_time_serials_read_as_their_wall_clock() {
+        // 2026-10-30 08:12.
+        assert_eq!(
+            serial_text(46325.0 + (8.0 * 3600.0 + 12.0 * 60.0) / 86400.0),
+            "2026-10-30T08:12:00"
+        );
+        assert_eq!(serial_text(46_325.999_999_9), "2026-10-31T00:00:00");
     }
 }

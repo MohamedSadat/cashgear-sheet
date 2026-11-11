@@ -61,6 +61,8 @@ export const CELL_ERP_CONFLICT = 1 << 12;
 export const CELL_ERP_COMMITTED = 1 << 13;
 /** ERP data: the heading of a read-only column, which carries a lock. */
 export const CELL_ERP_LOCK = 1 << 14;
+/** ERP data: the record isn't in Cash Gear ERP any more (Phase 18), on every cell of its row. */
+export const CELL_ERP_GONE = 1 << 15;
 
 export const FONT_BOLD = 1;
 export const FONT_ITALIC = 2;

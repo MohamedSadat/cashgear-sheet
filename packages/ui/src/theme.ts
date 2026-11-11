@@ -127,7 +127,8 @@ function fontOverride() {
  * ERP cell states, as chosen from the mock-up (decisions, 2026-11-10, Phase 16): amber for edits,
  * which shows against a table's blue bands, red for invalid, violet for formulas and a faint wash
  * for read-only; Phase 17's orange hatch with a "!" for conflicts and green bar for committed
- * fields. The tile worker picks the light set on a pale fill in dark mode too.
+ * fields; Phase 18's grey hatch over records Cash Gear ERP no longer has. The tile worker picks the
+ * light set on a pale fill in dark mode too.
  */
 export const ERP_STATE_COLORS: { light: ErpStateColors; dark: ErpStateColors } = {
   light: {
@@ -139,6 +140,7 @@ export const ERP_STATE_COLORS: { light: ErpStateColors; dark: ErpStateColors } =
     conflict: '#e04f16',
     conflictHatch: 'rgba(224, 79, 22, 0.35)',
     committed: '#079455',
+    goneHatch: 'rgba(102, 112, 133, 0.4)',
   },
   dark: {
     modified: '#f5a524',
@@ -149,6 +151,7 @@ export const ERP_STATE_COLORS: { light: ErpStateColors; dark: ErpStateColors } =
     conflict: '#f38744',
     conflictHatch: 'rgba(243, 135, 68, 0.4)',
     committed: '#47cd89',
+    goneHatch: 'rgba(152, 162, 179, 0.45)',
   },
 };
 

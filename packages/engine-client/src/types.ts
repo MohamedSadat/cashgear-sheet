@@ -40,6 +40,8 @@ export interface ErpStateColors {
   conflictHatch: string;
   /** Committed (Phase 17): the bar on the leading edge. */
   committed: string;
+  /** Not in ERP (Phase 18): the hatch over every cell of the record's row. */
+  goneHatch: string;
 }
 
 /** One cell to measure for a row or column to fit. */
@@ -877,7 +879,16 @@ export type Question =
   | { kind: 'erpChanges'; visible?: boolean }
   | { kind: 'erpReview' }
   | { kind: 'erpCell'; sheet: number; row: number; col: number }
-  | { kind: 'erpNextError'; sheet: number; row: number; col: number; back?: boolean }
+  | {
+      kind: 'erpNextError';
+      sheet: number;
+      row: number;
+      col: number;
+      back?: boolean;
+      /** Next Conflict rather than Next Error. */
+      conflict?: boolean;
+    }
+  | { kind: 'erpConflicts' }
   | { kind: 'noteAt'; sheet: number; row: number; col: number }
   | { kind: 'linkAt'; sheet: number; row: number; col: number }
   | { kind: 'notes'; sheet: number }
@@ -909,6 +920,7 @@ export interface Answers {
   erpReview: ErpReview | null;
   erpCell: ErpCellInfo | null;
   erpNextError: { row: number; col: number } | null;
+  erpConflicts: ErpConflicts | null;
   noteAt: NoteInfo | null;
   linkAt: LinkInfo | null;
   notes: {
@@ -1270,6 +1282,40 @@ export interface Recoverable {
   edits: number;
   /** When its last edit was made, in ms since 1970. */
   time: number;
+  /**
+   * A bound workbook's draft (Phase 18): whose ERP data it holds. Offered only while something
+   * in it waited on the ERP, and it opens disconnected.
+   */
+  erp?: {
+    company: string;
+    userId: string;
+    userName: string;
+    entity: string;
+    label: string;
+    labelEn: string;
+    language: string;
+  };
+}
+
+/** Whether the open bound workbook keeps a recovery draft: `dropped` past its cap. */
+export type ErpDraftState = 'none' | 'kept' | 'dropped';
+
+/** A commit whose outcome isn't known, as the draft keeps it so CommitStatus is asked first. */
+export interface ErpPendingCommit {
+  commitId: string;
+  /** `payloadKey` of what was sent. */
+  key: string;
+  /** The records as sent, which applying a stored answer needs. */
+  sent: unknown[];
+  changes: number;
+  records: number;
+}
+
+/** What a recovered draft's replay found. */
+export interface ErpRecovered {
+  /** Its bind or an ERP step couldn't be replayed, so nothing of it was kept. */
+  failed: boolean;
+  pendingCommit: ErpPendingCommit | null;
 }
 
 /** What a save did. See `SaveReport` in `crates/cgs-xlsx/src/save.rs`. */
@@ -1751,8 +1797,19 @@ export interface EngineApi {
   /** Binds the staged records into the open, new workbook. `session` is Redeem's answer as
    * JSON, without its token. */
   erpBind(session: string): Promise<ErpBinding>;
-  /** Replaces the bound records with the staged refresh. */
+  /** Merges the staged refresh with the bound records, three ways (Phase 18). */
   erpRefresh(): Promise<ErpRefreshSummary>;
+  /**
+   * Resolve Conflicts, as JSON `{choices: [{key, field, take}]}` or `{all}`, `take` and `all`
+   * being `mine` or `erp`.
+   */
+  erpResolve(json: string): Promise<ErpResolved>;
+  /** Waits for a recovered draft's replay, or null when the workbook opened wasn't one. */
+  erpRecovered(): Promise<ErpRecovered | null>;
+  /** Whether the bound workbook keeps a recovery draft. */
+  erpDraftState(): Promise<ErpDraftState>;
+  /** Journals a commit sent whose outcome isn't known yet, or null once it is. */
+  erpNoteCommit(pending: ErpPendingCommit | null): Promise<void>;
   /** Leaves nothing to undo from setting ERP data up. */
   erpSettle(): Promise<void>;
   /** Holds every write to the bound table while a commit is in flight, or lets them go. */
@@ -1840,6 +1897,8 @@ export interface ErpCounts {
   formulas: number;
   /** Records in conflict with Cash Gear ERP (Phase 17). */
   conflicts: number;
+  /** Records the last refresh didn't find in Cash Gear ERP (Phase 18). */
+  gone: number;
 }
 
 /** A wire value, as the contract sends it. */
@@ -1884,7 +1943,7 @@ export interface ErpCellInfo {
   editable: boolean;
   reason?: string;
   key?: string;
-  state?: 'formula' | 'conflict' | 'invalid' | 'modified' | 'committed';
+  state?: 'formula' | 'conflict' | 'invalid' | 'modified' | 'committed' | 'gone';
   original?: string;
   now?: string;
   rule?: ErpRuleInfo;
@@ -1921,7 +1980,7 @@ export interface ErpReviewEntry {
   label: string;
   original?: string;
   now?: string;
-  state: 'formula' | 'conflict' | 'invalid' | 'modified';
+  state: 'formula' | 'conflict' | 'invalid' | 'modified' | 'gone';
   invalid: boolean;
   conflict: boolean;
   /** In a row a filter or the user hid. */
@@ -1942,7 +2001,10 @@ export interface ErpMarkSummary {
   /** Fields that took an error. */
   errors: number;
   errorRecords: number;
+  /** Records left in conflict once a 409 was merged. */
   conflicts: number;
+  /** Records a 409 named that merged with the sheet's changes, and so took the ERP's version. */
+  merged: number;
   /** Errors no cell can show: batch errors, or ones for what wasn't sent. */
   unplaced: { key?: string; field?: string; code: string; message: string }[];
 }
@@ -1956,16 +2018,55 @@ export interface ErpCommitApplied {
   kept: number;
 }
 
-/** What a refresh changed. */
+/** What a refresh's three-way merge did (Phase 18). */
 export interface ErpRefreshSummary {
   /** Records the ERP sent back. */
   updated: number;
-  /** Records whose cells changed. */
+  /** Of those, records the ERP changed since the sheet read them. */
   changed: number;
+  /** Records with changes in the sheet that merged without a clash. */
+  merged: number;
+  /** Records left in conflict. */
+  conflicts: number;
   /** Records whose key the ERP changed. */
   renamed: number;
   /** Records no longer in the ERP. */
   missing: number;
+}
+
+/** What Resolve Conflicts did. */
+export interface ErpResolved {
+  /** Fields resolved. */
+  fields: number;
+  /** Records that took the ERP's version, with nothing left in conflict. */
+  records: number;
+  /** Records still in conflict. */
+  left: number;
+}
+
+/** One clashing field, for the Resolve Conflicts dialog. */
+export interface ErpConflictEntry {
+  key: string;
+  name?: string;
+  row: number;
+  col: number;
+  field: string;
+  label: string;
+  original?: string;
+  mine?: string;
+  erp?: string;
+  /** The ERP's answer carried the field, so Take ERP's can write it. */
+  known: boolean;
+  by?: string;
+  at?: string;
+  hidden: boolean;
+}
+
+/** What `erpConflicts` answers. */
+export interface ErpConflicts {
+  entries: ErpConflictEntry[];
+  /** Records in conflict. */
+  records: number;
 }
 
 /** The engine worker, as the tile worker sees it over their `MessageChannel`. */

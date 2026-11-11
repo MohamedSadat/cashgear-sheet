@@ -20,6 +20,10 @@ import type {
   ErpMarkSummary,
   ErpPageInfo,
   ErpRefreshSummary,
+  ErpResolved,
+  ErpRecovered,
+  ErpDraftState,
+  ErpPendingCommit,
   FileSource,
   FindQuery,
   FitOptions,
@@ -135,6 +139,10 @@ export interface EngineClient {
   erpCancel(): Promise<void>;
   erpBind(session: string): Promise<ErpBinding>;
   erpRefresh(): Promise<ErpRefreshSummary>;
+  erpResolve(json: string): Promise<ErpResolved>;
+  erpRecovered(): Promise<ErpRecovered | null>;
+  erpDraftState(): Promise<ErpDraftState>;
+  erpNoteCommit(pending: ErpPendingCommit | null): Promise<void>;
   erpSettle(): Promise<void>;
   erpFreeze(on: boolean): Promise<void>;
   erpSetStates(json: string): Promise<ErpMarkSummary>;
@@ -330,6 +338,10 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     erpCancel: () => engine.erpCancel(),
     erpBind: (session) => engine.erpBind(session),
     erpRefresh: () => engine.erpRefresh(),
+    erpResolve: (json) => engine.erpResolve(json),
+    erpRecovered: () => engine.erpRecovered(),
+    erpDraftState: () => engine.erpDraftState(),
+    erpNoteCommit: (pending) => engine.erpNoteCommit(pending),
     erpSettle: () => engine.erpSettle(),
     erpFreeze: (on) => engine.erpFreeze(on),
     erpSetStates: (json) => engine.erpSetStates(json),
