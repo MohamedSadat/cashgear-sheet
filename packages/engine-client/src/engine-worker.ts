@@ -19,6 +19,7 @@ import type {
   ErpBinding,
   ErpCommitApplied,
   ErpDraftState,
+  ErpMemory,
   ErpMarkSummary,
   ErpPageInfo,
   ErpPendingCommit,
@@ -83,6 +84,17 @@ let erpBound = false;
  * or for want of room, when closing the tab asks first instead.
  */
 let erpDraft: ErpDraftState = 'none';
+/**
+ * Lines journalled between binding and the draft's start, which waits until the bound sheet is
+ * showing (Phase 19, plan B.6), written after its base in the order they came. Null when no
+ * draft is waiting to start.
+ */
+let erpHeldLines: string[] | null = null;
+/**
+ * Set once the binding settled: from then on, the first edit or ERP step starts the draft before
+ * it runs, so a change never waits in memory for the timer.
+ */
+let erpDraftArmed = false;
 /** What the journal last said of the binding: whether anything waits on the ERP. */
 let erpPendingMark = false;
 /** A commit whose outcome isn't known yet, journalled so a recovered draft asks about it. */
@@ -178,6 +190,10 @@ function appendJournal(entry: unknown) {
 
 /** Appends one line of JSON text. A bound workbook's draft past its cap is dropped instead. */
 function appendLine(text: string) {
+  if (erpHeldLines) {
+    erpHeldLines.push(text);
+    return;
+  }
   const copy = working;
   if (!copy?.journal) return;
   try {
@@ -273,6 +289,8 @@ async function readRecoverable(
 /** The bound workbook keeps no recovery draft from here on: its cap was passed, or the disk full. */
 function dropErpDraft() {
   erpDraft = 'dropped';
+  erpHeldLines = null;
+  erpDraftArmed = false;
   releaseWorkingCopy();
 }
 
@@ -344,6 +362,28 @@ async function startErpDraft(wasm: Engine) {
   writeErpBase(wasm);
 }
 
+/** A new binding's draft on its way to the disk, which edits and ERP steps wait for. */
+let erpDraftStarting: Promise<ErpDraftState> | null = null;
+
+/**
+ * Starts a new binding's draft, then writes what was journalled since the bind after its base.
+ * Lines keep being held until the base is written, and nothing that journals runs meanwhile.
+ */
+function startHeldDraft(wasm: Engine): Promise<ErpDraftState> {
+  if (!erpBound || !erpHeldLines) return Promise.resolve(erpDraft);
+  erpDraftArmed = false;
+  erpDraftStarting ??= (async () => {
+    await startErpDraft(wasm);
+    const held = erpHeldLines ?? [];
+    erpHeldLines = null;
+    if (erpDraft === 'kept') for (const line of held) appendLine(line);
+    return erpDraft;
+  })().finally(() => {
+    erpDraftStarting = null;
+  });
+  return erpDraftStarting;
+}
+
 /** Notes in the draft whether anything waits on the ERP, which is when it's worth offering back. */
 function noteErpPending(wasm: Engine) {
   if (!erpBound || erpDraft !== 'kept') return;
@@ -364,6 +404,8 @@ function afterErpStep(wasm: Engine, line: string) {
 function resetErp() {
   erpBound = false;
   erpDraft = 'none';
+  erpHeldLines = null;
+  erpDraftArmed = false;
   erpPendingMark = false;
   erpCommitPending = null;
   erpRecovering = undefined;
@@ -1203,10 +1245,15 @@ const api: EngineApi = {
     const wasm = await ensureEngine();
     const binding = JSON.parse(wasm.erp_bind(session)) as ErpBinding;
     erpBound = true;
-    // The capped draft a crash comes back from, on the device only; never a ticket or a token.
-    await startErpDraft(wasm);
+    // The capped draft a crash comes back from, on the device only, never a ticket or a token.
+    // It starts with `erpStartDraft` once the sheet shows; what comes before is held for it.
+    erpHeldLines = [];
+    erpDraftArmed = false;
     afterChange(wasm);
     return binding;
+  },
+  async erpStartDraft() {
+    return startHeldDraft(await ensureEngine());
   },
   async erpRefresh() {
     const wasm = await ensureEngine();
@@ -1225,6 +1272,7 @@ const api: EngineApi = {
   },
   async erpSettle() {
     (await ensureEngine()).erp_settle();
+    if (erpHeldLines) erpDraftArmed = true;
   },
   async erpFreeze(on) {
     (await ensureEngine()).erp_freeze(on);
@@ -1244,6 +1292,9 @@ const api: EngineApi = {
     afterErpStep(wasm, `{"a":${json}}`);
     afterChange(wasm);
     return applied;
+  },
+  async erpMemory() {
+    return JSON.parse((await ensureEngine()).erp_memory()) as ErpMemory | null;
   },
   async binding() {
     return JSON.parse((await ensureEngine()).binding_json()) as ErpBinding | null;
@@ -1280,6 +1331,16 @@ const WAITS_FOR_SAVE = new Set([
   'commitSaved',
 ]);
 
+/** What a binding's draft must have started for: edits, and ERP steps that it journals. */
+const STARTS_ERP_DRAFT = new Set([
+  'command',
+  'erpRefresh',
+  'erpResolve',
+  'erpSetStates',
+  'erpApplyCommit',
+  'erpNoteCommit',
+]);
+
 function guarded<T extends object>(target: T): T {
   const wrapped: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(target)) {
@@ -1288,9 +1349,12 @@ function guarded<T extends object>(target: T): T {
       continue;
     }
     const waits = WAITS_FOR_SAVE.has(name);
+    const starts = STARTS_ERP_DRAFT.has(name);
     wrapped[name] = async (...args: unknown[]) => {
       if (waits) await afterSave();
       if (trapped) throw new Error(OUT_OF_MEMORY);
+      if (starts && erpDraftArmed && engine) await startHeldDraft(await engine);
+      else if (starts && erpDraftStarting) await erpDraftStarting;
       try {
         return await (value as (...args: unknown[]) => unknown).apply(target, args);
       } catch (error) {

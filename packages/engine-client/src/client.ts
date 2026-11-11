@@ -23,6 +23,7 @@ import type {
   ErpResolved,
   ErpRecovered,
   ErpDraftState,
+  ErpMemory,
   ErpPendingCommit,
   FileSource,
   FindQuery,
@@ -70,6 +71,11 @@ export interface EngineClient {
   command(command: Command): Promise<Applied>;
   /** Fits rows of a sheet from another program's file, for how it looks here. */
   fitOpeningRows(sheet: number): Promise<void>;
+  /**
+   * Readies the tile worker's fonts for a new workbook's text, plain and bold, before its first
+   * tiles: a launch does it while the records download (Phase 19).
+   */
+  warmText(samples: string[], scale?: number): Promise<void>;
   /** Fits columns to what they hold. */
   autoFitColumns(
     sheet: number,
@@ -142,12 +148,14 @@ export interface EngineClient {
   erpResolve(json: string): Promise<ErpResolved>;
   erpRecovered(): Promise<ErpRecovered | null>;
   erpDraftState(): Promise<ErpDraftState>;
+  erpStartDraft(): Promise<ErpDraftState>;
   erpNoteCommit(pending: ErpPendingCommit | null): Promise<void>;
   erpSettle(): Promise<void>;
   erpFreeze(on: boolean): Promise<void>;
   erpSetStates(json: string): Promise<ErpMarkSummary>;
   erpApplyCommit(json: string): Promise<ErpCommitApplied>;
   binding(): Promise<ErpBinding | null>;
+  erpMemory(): Promise<ErpMemory | null>;
   bindingIds(): Promise<number[]>;
   drawTile(request: TileRequest): Promise<TileImage>;
   dispose(): void;
@@ -283,6 +291,10 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
       const fitted = await tiles.fitRows(rows, measuringPalette());
       await engine.command({ kind: 'fitRows', rows: fitted, quiet: true });
     },
+    async warmText(samples, scale = globalThis.devicePixelRatio || 1) {
+      // A new workbook's normal font, as the engine's blank workbook has it.
+      await tiles.warm('Calibri', 11, samples, measuringPalette(), scale);
+    },
     async autoFitColumns(sheet, first, last, options = {}) {
       const cells = await engine.colFits(sheet, first, last, options.keep);
       if (!cells.length) return null;
@@ -341,12 +353,14 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     erpResolve: (json) => engine.erpResolve(json),
     erpRecovered: () => engine.erpRecovered(),
     erpDraftState: () => engine.erpDraftState(),
+    erpStartDraft: () => engine.erpStartDraft(),
     erpNoteCommit: (pending) => engine.erpNoteCommit(pending),
     erpSettle: () => engine.erpSettle(),
     erpFreeze: (on) => engine.erpFreeze(on),
     erpSetStates: (json) => engine.erpSetStates(json),
     erpApplyCommit: (json) => engine.erpApplyCommit(json),
     binding: () => engine.binding(),
+    erpMemory: () => engine.erpMemory(),
     bindingIds: () => engine.bindingIds(),
     async drawTile(request) {
       lastPalette = request.palette;

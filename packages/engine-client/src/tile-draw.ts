@@ -158,6 +158,13 @@ export function cssColor(rgba: number): string {
 
 const hasAlpha = (rgba: number) => (rgba & 0xff) !== 0;
 
+/** Neighbouring cells of one row with one colour, from `left` to `right` in device pixels. */
+interface Run {
+  color: string;
+  left: number;
+  right: number;
+}
+
 /** Whether an `0xRRGGBBAA` fill is pale, by its luma. */
 const isLight = (rgba: number) =>
   (((rgba >>> 24) & 0xff) * 299 + ((rgba >>> 16) & 0xff) * 587 + ((rgba >>> 8) & 0xff) * 114) /
@@ -333,6 +340,10 @@ class Painter {
   }
 
   drawBackground() {
+    if (!this.edges) {
+      this.drawBackgroundRuns();
+      return;
+    }
     const { context, block, palette, xs, ys } = this;
     const pixel = Math.max(1, Math.round(this.scale));
     context.fillStyle = palette.background;
@@ -369,6 +380,115 @@ class Painter {
         }
       }
     }
+  }
+
+  /**
+   * The screen's background, as `drawBackground` draws a page's, with each row's neighbouring cells
+   * of one fill, or one tint, filled as one rectangle, and its gridlines after its tints: setting a
+   * fill and drawing it cell by cell cost most of a table's tile on a software canvas (Phase 19).
+   * Cells never overlap and their edges are whole pixels, so the picture is the same.
+   */
+  private drawBackgroundRuns() {
+    const { context, block, palette, xs, ys } = this;
+    const pixel = Math.max(1, Math.round(this.scale));
+    context.fillStyle = palette.background;
+    context.fillRect(0, 0, xs[block.cols]!, ys[block.rows]!);
+    const grid = palette.showGrid !== false;
+    const fills: Run = { color: '', left: 0, right: 0 };
+    const tints: Run = { color: '', left: 0, right: 0 };
+    const bottoms: Run = { color: '', left: 0, right: 0 };
+    // A row's gridlines: each cell's right one, and its bottom ones as runs (from, to).
+    const verticals: number[] = [];
+    const horizontals: number[] = [];
+    for (let row = 0; row < block.rows; row++) {
+      const top = ys[row]!;
+      const height = ys[row + 1]! - top;
+      if (!height) continue;
+      const flushFill = () => this.fillRun(fills, top, height);
+      const flushTint = () => this.fillRun(tints, top, height);
+      for (let col = 0; col < block.cols; col++) {
+        const left = xs[col]!;
+        const width = xs[col + 1]! - left;
+        if (!width) continue;
+        const { fill, flags, style } = this.cell(row, col);
+        const pattern = this.styleOf(style).pattern;
+        const tint = this.tintColor(flags, fill);
+        if (pattern) {
+          context.fillStyle = hasAlpha(fill) ? cssColor(fill) : palette.background;
+          context.fillRect(left, top, width, height);
+          this.fillPattern(pattern, this.styleOf(style).patternColor, left, top, width, height);
+          if (tint) {
+            context.fillStyle = tint;
+            context.fillRect(left, top, width, height);
+          }
+          continue;
+        }
+        if (hasAlpha(fill)) {
+          const color = cssColor(fill);
+          if (fills.color !== color || fills.right !== left) {
+            flushFill();
+            fills.color = color;
+            fills.left = left;
+          }
+          fills.right = left + width;
+        } else if (grid) {
+          if (!(flags & CELL_NO_RIGHT_GRID)) {
+            verticals.push(this.rtl ? left : left + width - pixel);
+          }
+          if (!(flags & CELL_NO_BOTTOM_GRID)) {
+            if (bottoms.color === '' || bottoms.right !== left) {
+              if (bottoms.color) horizontals.push(bottoms.left, bottoms.right);
+              bottoms.color = 'grid';
+              bottoms.left = left;
+            }
+            bottoms.right = left + width;
+          }
+        }
+        if (tint) {
+          if (tints.color !== tint || tints.right !== left) {
+            flushTint();
+            tints.color = tint;
+            tints.left = left;
+          }
+          tints.right = left + width;
+        }
+      }
+      flushFill();
+      flushTint();
+      if (bottoms.color) horizontals.push(bottoms.left, bottoms.right);
+      bottoms.color = '';
+      if (verticals.length || horizontals.length) {
+        context.fillStyle = palette.gridline;
+        for (const x of verticals) context.fillRect(x, top, pixel, height);
+        for (let at = 0; at < horizontals.length; at += 2) {
+          const from = horizontals[at]!;
+          context.fillRect(from, top + height - pixel, horizontals[at + 1]! - from, pixel);
+        }
+        verticals.length = 0;
+        horizontals.length = 0;
+      }
+    }
+  }
+
+  /** Fills a run of one row's cells, and starts the next. */
+  private fillRun(run: Run, top: number, height: number) {
+    if (!run.color || run.right <= run.left) {
+      run.color = '';
+      return;
+    }
+    this.context.fillStyle = run.color;
+    this.context.fillRect(run.left, top, run.right - run.left, height);
+    run.color = '';
+  }
+
+  /** The colour a cell's ERP state tints it with, as `tint` lays it on. */
+  private tintColor(flags: number, fill: number): string | null {
+    if (!(flags & (CELL_ERP_MODIFIED | CELL_ERP_READ_ONLY | CELL_ERP_GONE))) return null;
+    const colors = this.erpColors(fill);
+    if (!colors) return null;
+    return flags & CELL_ERP_MODIFIED && !(flags & CELL_ERP_GONE)
+      ? colors.modifiedTint
+      : colors.readOnly;
   }
 
   /**

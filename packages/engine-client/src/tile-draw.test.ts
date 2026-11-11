@@ -120,6 +120,36 @@ describe('drawTile', () => {
     expect(rects).not.toContainEqual(['#dddddd', 63, 0, 1, 20]);
   });
 
+  it('fills neighbouring cells of one fill as one rectangle, and runs bottom gridlines', () => {
+    const { rects } = draw({
+      rowPx: [20, 20],
+      colPx: [64, 64, 64, 64],
+      cells: [
+        { fill: 0xd9e1f2ff },
+        { fill: 0xd9e1f2ff },
+        { fill: 0xd9e1f2ff },
+        { fill: 0xff0000ff },
+        {},
+        {},
+        {},
+        {},
+      ],
+    });
+    expect(rects.filter(([color]) => color === '#d9e1f2ff')).toEqual([
+      ['#d9e1f2ff', 0, 0, 192, 20],
+    ]);
+    expect(rects).toContainEqual(['#ff0000ff', 192, 0, 64, 20]);
+    // The second row's cells keep their right gridlines; their bottom ones are one line.
+    const grid = rects.filter(([color, , y]) => color === '#dddddd' && y >= 20);
+    expect(grid).toEqual([
+      ['#dddddd', 63, 20, 1, 20],
+      ['#dddddd', 127, 20, 1, 20],
+      ['#dddddd', 191, 20, 1, 20],
+      ['#dddddd', 255, 20, 1, 20],
+      ['#dddddd', 0, 39, 256, 1],
+    ]);
+  });
+
   it('leaves out gridlines a sheet turned off, and those inside a merged area', () => {
     const recording = recorder();
     drawTile(
@@ -390,7 +420,8 @@ describe('ERP cell states', () => {
 
   it('tints, bars and rings cells on their leading edge', () => {
     const rects = drawn(states, {});
-    expect(rects).toContainEqual(['amber-tint', 0, 0, 64, 20]);
+    // Neighbouring cells of one tint are tinted as one rectangle on screen.
+    expect(rects).toContainEqual(['amber-tint', 0, 0, 128, 20]);
     expect(rects).toContainEqual(['amber', 0, 0, 3, 19]);
     expect(rects).toContainEqual(['amber', 64, 0, 3, 19]);
     expect(rects).toContainEqual(['stroke red', 65, 1, 61, 17]);

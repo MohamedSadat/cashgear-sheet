@@ -4,7 +4,7 @@
 import { expose, transfer, wrap, type Remote } from 'comlink';
 import { carlitoFaces } from './fonts';
 import { fitColumns, fitRows } from './fit';
-import { drawTile, tileEdges } from './tile-draw';
+import { drawTile, fontStack, tileEdges } from './tile-draw';
 import type { EngineTilePort, TileWorkerApi } from './types';
 import { decodeViewBlock, hashBytes, TILE_NOT_READY } from './view-block';
 
@@ -41,6 +41,21 @@ const api: TileWorkerApi = {
   async fitColumns(cells, palette, room) {
     await fontsReady;
     return fitColumns(measuring(), cells, palette, room);
+  },
+  async warm(font, size, samples, palette, scale) {
+    await fontsReady;
+    const canvas = new OffscreenCanvas(512, 64);
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const px = (((size * 96) / 72) * scale).toFixed(2) + 'px ';
+    for (const weight of ['', 'bold ']) {
+      context.font = weight + px + fontStack(font, palette);
+      context.measureText('Mg');
+      for (const text of samples) {
+        context.measureText(text);
+        context.fillText(text, 0, 32);
+      }
+    }
   },
   async draw({ sheet, firstRow, firstCol, scale, palette }) {
     if (!engine) throw new Error('The tile worker is not connected to the engine.');

@@ -1300,6 +1300,15 @@ export interface Recoverable {
 /** Whether the open bound workbook keeps a recovery draft: `dropped` past its cap. */
 export type ErpDraftState = 'none' | 'kept' | 'dropped';
 
+/** What a binding keeps in memory, in bytes, with wasm32's sizes: `Binding::memory` in Rust. */
+export interface ErpMemory {
+  editableValues: number;
+  /** The editable values as loaded, their text included. */
+  originalsBytes: number;
+  /** All the binding keeps per record: originals, keys, ids, versions and its maps' slots. */
+  bindingBytes: number;
+}
+
 /** A commit whose outcome isn't known, as the draft keeps it so CommitStatus is asked first. */
 export interface ErpPendingCommit {
   commitId: string;
@@ -1808,6 +1817,11 @@ export interface EngineApi {
   erpRecovered(): Promise<ErpRecovered | null>;
   /** Whether the bound workbook keeps a recovery draft. */
   erpDraftState(): Promise<ErpDraftState>;
+  /**
+   * Starts a new binding's recovery draft, once its sheet shows: what was journalled since the
+   * bind follows its base. Answers whether the draft is kept.
+   */
+  erpStartDraft(): Promise<ErpDraftState>;
   /** Journals a commit sent whose outcome isn't known yet, or null once it is. */
   erpNoteCommit(pending: ErpPendingCommit | null): Promise<void>;
   /** Leaves nothing to undo from setting ERP data up. */
@@ -1827,6 +1841,8 @@ export interface EngineApi {
   erpApplyCommit(json: string): Promise<ErpCommitApplied>;
   /** The open workbook's ERP binding, or null. */
   binding(): Promise<ErpBinding | null>;
+  /** What the binding keeps in memory, for `bench/erp-speed.mjs` (plan B.6). */
+  erpMemory(): Promise<ErpMemory | null>;
   /** The bound records' ERP ids, ascending, for a refresh. */
   bindingIds(): Promise<number[]>;
 }
@@ -2089,4 +2105,15 @@ export interface TileWorkerApi {
   fitRows(rows: RowFit[], palette: TilePalette): Promise<[number, number, number][]>;
   /** Each column's width, as [column, pixels]. */
   fitColumns(cells: ColFit[], palette: TilePalette, room?: FitRoom): Promise<[number, number][]>;
+  /**
+   * Readies a font, plain and bold, at a scale, by measuring and drawing `samples` with it: the
+   * first text drawn in a font costs its loading and shaping (Phase 19).
+   */
+  warm(
+    font: string,
+    size: number,
+    samples: string[],
+    palette: TilePalette,
+    scale: number,
+  ): Promise<void>;
 }
