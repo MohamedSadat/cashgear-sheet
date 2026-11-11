@@ -954,6 +954,7 @@ The plan's acceptance also asks that no commit path writes without a version: ev
 - A 400 cleared the sent records' conflict marks, though the ERP checks versions only once a commit has no errors: a Validate that found another error would hide a conflict. Conflicts are now kept through a 400, with a Rust test and an e2e step.
 - Track E2 found that the database's own COMMIT can fail with its outcome unknown, answered as a 500. The sheet treats a 500 on Commit as it treats no answer: writes stay held and Try again sends the same commit. The contract says so.
 - Chrome sends a POST again by itself when its kept-alive connection drops before an answer, so a mock fault counted by `times` ran out before the sheet's own retries did. The mock's faults can now be cleared (`{clear: true}`), and the lost-answer test drops every answer until it clears them.
+- CI failed the PWA's Open with test in Chrome from the 1.8.0 commit on, while it passed on this machine and at `0bd0889` on CI. Bisecting on CI showed it passed alone and first in the job, and failed after the PWA spec's install test; Windows started the app's launcher, but Chrome 156 showed no question, no window and logged nothing, and the same launch 90 seconds later opened the workbook. A launch that comes as soon as the registration shows can go unanswered. The test now waits for the launcher Chrome writes and chooses Open with again every 20 seconds until Chrome asks, up to four times, still requiring the app to open the workbook: CI needed two launches. On failure it attaches what the browser's windows show.
 
 **Delivered**
 
@@ -975,6 +976,7 @@ The plan's acceptance also asks that no commit path writes without a version: ev
 - In the browser pane, on the release build against the mock: the confirmation, a commit, a 409, and at 200% the green Committed bars, the hatched conflict with its "!", a red Invalid border and the badge "Vendors · 8 · 2 changed · 1 invalid · 1 conflict · Sara @ Kit"; the Review dialog with its filters' counts.
 - `pnpm desktop:build` and `pnpm desktop:smoke`: the desktop app builds, and its smoke run passes in WebView2 157 (goldens within tolerance, overwrite and Save As, recent files, the theme kept).
 - Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.8.0 everywhere and its changelog notes. Release WASM: 4,644,030 bytes gzipped, of the 5,000,000 budget.
+- CI on `main` at `fb4be81`: both jobs green, **320 of 320** in Chrome and Edge. `phase-17` and `v1.8.0` were pushed on that commit once it was.
 - Not run again: `bench/run-edit-fuzz.mjs`, `bench/run-excel-matrix.mjs` and the speed benches. Nothing they cover changed: saving and normal sheets are untouched, and on bound sheets the tiles read two more flag bits and the content rule one more flag.
 
 **Known gaps**

@@ -206,6 +206,8 @@ Found in Phase 17:
 - The mock's `/__mock/fault` appends faults and takes the first that matches; one with `times: 0` lasts until `/__mock/reset`. A lost answer for a commit needs `times: 4`: the request and the HTTP layer's three retries.
 - Python here writes `\r\n` in text mode, and some docs check out with CRLF. Read with universal newlines and write with `newline=''`, or Prettier and diffs see every line changed. Git normalises on commit (`eol=lf`).
 - The Bash tool can refuse a heredoc whose text holds apostrophes ("unexpected EOF while looking for matching"). Write the script with the Write tool and run it.
+- On CI's Chrome 156, an Open with that comes as soon as an installed app's registration shows can go unanswered: no question, no window, nothing in Chrome's log. `pwa.spec.ts` waits for the launcher and chooses Open with again until Chrome asks. To see what a CI browser shows, attach `windowTexts` (UI Automation), since the app's window isn't a page of the test's context.
+- To bisect a CI-only e2e failure, a temporary step before `pnpm test:e2e` can run a few specs with `--output` of its own (and add that folder to the artifact). Take it out again before tagging.
 
 Carried over from CashGear Video, where they were measured:
 
