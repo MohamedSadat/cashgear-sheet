@@ -26,7 +26,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 15: Read-only ERP slice | Done 2026-11-09 | `v1.6.0` |
 | Phase 16: Editing and change tracking | Done 2026-11-10 | `v1.7.0` |
 | Phase 17: Validate, review and commit | Done 2026-11-10 | `v1.8.0` |
-| Phase 18: Conflicts, refresh, sessions and recovery | Done 2026-11-11 | `v1.9.0` |
+| Phase 18: Conflicts, refresh, sessions and recovery | Done 2026-11-11, with your sign-off on the Arabic texts | `v1.9.0` |
 | Phase 19: ERP hardening | Not started | `v1.10.0` |
 | Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only. E1 done 2026-11-09: tickets, sessions, Schema and Query in UnifiedAPI, and the hidden button in `ERPClient_React`. E2 done 2026-11-10: Commit with dry runs, RowVersion, idempotency and audit. E3 done 2026-11-11: Renew, End and CommitStatus, and Kit turned on | |
 
@@ -1004,6 +1004,8 @@ Concurrent ERP edits, long sessions and crashes are handled, the ERP texts speak
 
 The plan's tests also ask for every C/O/S case with key renames and records gone (the property test above), a reconnect token for another company refused and Arabic goldens (the e2e above), all in Chrome and Edge with the existing suites unchanged (below).
 
+**The Arabic texts.** All 182 texts of the catalogue, with sample counts and names, beside their English on a private review page (https://claude.ai/artifact/Bm1Tj5rqHE5is86CgKLpXA). You signed them off as written on 2026-11-11.
+
 **Found and fixed on the way**
 
 - `CgGrid` reports selected rows by typed key tokens (`string:3:4`), so Phase 17's Review dialog never matched them and Discard Selected stayed off. Both dialogs read the tokens now, with an e2e step.
@@ -1033,11 +1035,11 @@ The plan's tests also ask for every C/O/S case with key renames and records gone
 - The draft's size: the compact bind payload takes about 182 bytes a vendor on the mock's data, so a sheet at the 10,000-record cap takes about 1.7 MiB of the 16 MiB.
 - `pnpm desktop:build` and `pnpm desktop:smoke`: the desktop app builds, and its smoke run passes in WebView2 157 (goldens within tolerance, overwrite and Save As, recent files, the theme kept).
 - Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.9.0 everywhere and its changelog notes. Release WASM: 4,677,139 bytes gzipped, of the 5,000,000 budget.
+- CI on `main` at `8847e52`: both jobs green, **334 of 334** in Chrome and Edge with no retries. `phase-18` and `v1.9.0` were pushed on that commit once it was, and the release workflow drafts 1.9.0.
 - Not run again: `bench/run-edit-fuzz.mjs`, `bench/run-excel-matrix.mjs` and the speed benches. Nothing they cover changed: saving and normal sheets are untouched, and on bound sheets the tiles read one more flag bit.
 
 **Known gaps**
 
-- The Arabic texts await your marks on the review page before the tag.
 - Desktop still has no ERP launch until Phase 19's deep link; a draft recovered there has nothing to reconnect to.
 - Open Afresh on a launch's draft offer leaves the draft, which is offered again next time; its prompt at start can discard it.
 - Edits outside the ERP data made before a draft restarts (after everything was committed, discarded, refreshed or resolved) aren't in the restarted draft.
