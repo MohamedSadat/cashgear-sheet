@@ -4,6 +4,40 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [1.9.0] - 2026-11-11
+
+ERP data now copes with other people's edits, long sessions and crashes, speaks Arabic to Arabic
+ERP users, and Cash Gear ERP's "Edit in Cash Gear Sheet" button is turned on for Kit. Normal
+workbooks are unchanged.
+
+- **Refresh merges** what Cash Gear ERP holds now with your changes, field by field: a field only
+  the ERP changed takes its value, one only you changed stays yours, and one you both changed
+  differently is a conflict. Records keep the ERP's old version while they're in conflict, so
+  nothing you send can overwrite a change you haven't seen. The status bar says how many changed,
+  merged and conflict. A record no longer in the ERP is hatched grey as Not in ERP and left out
+  of commits.
+- **A commit refused because someone changed a record** merges the same way: records that don't
+  clash are ready to commit again at once.
+- **Resolve Conflicts** lists every field you and the ERP both changed, with the original, yours
+  and the ERP's now and who changed it. Keep Mine or Take ERP's for the fields you select, or for
+  all of them; **Next Conflict** goes through them on the sheet.
+- **Sessions** renew while you work, so they end only after 30 idle minutes or 10 hours, and end
+  when the tab closes. When one ends, your changes stay in the sheet and **Reconnect** waits for
+  your next "Edit in Cash Gear Sheet": the new tab hands its connection over and closes. A
+  connection for another company or user is refused.
+- **A commit whose answer was lost** is looked up with Cash Gear ERP before anything sends it
+  again, after Try again or a Reconnect, so it's never saved twice.
+- **Recovery:** a bound sheet keeps a recovery copy of its changes on this device, up to 16 MB. After
+  a crash it's offered back, opens disconnected and never commits by itself; reconnect, then
+  commit.
+- **Arabic:** the ERP Data tab, its dialogs, the status badge, hover details and messages are in
+  Arabic for Arabic ERP users, right to left.
+- Discard Selected in Review Changes now discards the fields its checkboxes select.
+- **Cash Gear ERP:** UnifiedAPI's session Renew and End and the commit lookup, CommitStatus; Kit is
+  listed in `SheetLaunch:Companies` (Track E3, in the ERP's repository). Run
+  `Create_SheetSessions.sql` in CGService and `Add_VendorsRowVersion.sql` and
+  `Create_SheetCommit.sql` in ASTDataTest before deploying UnifiedAPI there.
+
 ## [1.8.0] - 2026-11-10
 
 Changes to Cash Gear ERP's vendors now reach the ERP: they can be validated, reviewed and

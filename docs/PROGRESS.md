@@ -25,10 +25,10 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 14: ERP contract and mock | Done 2026-11-09, with your sign-off on the contract and the rollout plan | `v1.5.0` |
 | Phase 15: Read-only ERP slice | Done 2026-11-09 | `v1.6.0` |
 | Phase 16: Editing and change tracking | Done 2026-11-10 | `v1.7.0` |
-| Phase 17: Validate, review and commit | Not started | `v1.8.0` |
-| Phase 18: Conflicts, refresh, sessions and recovery | Not started | `v1.9.0` |
+| Phase 17: Validate, review and commit | Done 2026-11-10 | `v1.8.0` |
+| Phase 18: Conflicts, refresh, sessions and recovery | Done 2026-11-11 | `v1.9.0` |
 | Phase 19: ERP hardening | Not started | `v1.10.0` |
-| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only. E1 done 2026-11-09: tickets, sessions, Schema and Query in UnifiedAPI, and the hidden button in `ERPClient_React` | |
+| Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only. E1 done 2026-11-09: tickets, sessions, Schema and Query in UnifiedAPI, and the hidden button in `ERPClient_React`. E2 done 2026-11-10: Commit with dry runs, RowVersion, idempotency and audit. E3 done 2026-11-11: Renew, End and CommitStatus, and Kit turned on | |
 
 ## Planning
 
@@ -990,3 +990,56 @@ The plan's acceptance also asks that no commit path writes without a version: ev
 - The Review dialog opens 1,080 pixels wide and scrolls in a narrower window.
 - Binding speed still misses B.6 (Phase 15's 0.70 s and 2.56 s), carried to Phase 19.
 - Outside this phase: the 2 `ShipOrderPartnerListTests` failures in the ERP repo (`no such column: s.DueDate`, from its commit `129d0dcb`).
+
+## Phase 18: Conflicts, refresh, sessions and recovery
+
+Concurrent ERP edits, long sessions and crashes are handled, the ERP texts speak Arabic to Arabic ERP users, and Cash Gear ERP's button is turned on for Kit. Done on 2026-11-11. Answers and defaults are in `docs/decisions.md` (2026-11-11, Phase 18): sessions of 30 minutes idle and 10 hours, renewed after input at most every 5 minutes; a 16 MB recovery draft; the Arabic reviewed on a page before the tag; Kit turned on; Resolve Conflicts as a dialog with three values; Reconnect that waits for the next launch; and the user's `[Timestamp]` left alone.
+
+**Exit criteria**
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| A property test of the merge | Pass | `crates/cgs-engine/tests/erp_merge.rs`, `random_merges_keep_every_record_and_never_let_a_stale_value_through`: 90 seeded rounds over 240 records, each of sheet edits (values, values typed back, formulas), edits in the ERP aimed mostly at records the sheet changed (other values, the same value the sheet typed, empty values, renamed keys, records deleted and restored, Modified by), sorts, then a Refresh, a commit the oracle ERP checks by version (all of it when every version is current, else a 409 for the stale ones, which the engine merges), Resolve (Keep All Mine, Take All ERP's, or chosen fields) or Discard. An oracle applies plan B.3 item 8 by itself. After every step: each key once in its row with its id and the version the oracle expects, every tracked cell as the oracle says, the read-only Modified by as the ERP last sent it, the badge's conflicts, records gone and changed fields, and the safety property: no record the changeset would send at the ERP's current version leaves a field unsent that differs from the ERP's value, or sends one `from` anything but the ERP's value. Every case is reached (take 52,935, keep 2,491, converged 95, clash 74, renamed keys 46, records gone 221, records merged from a 409 16, fields resolved 44, records committed 280). **Proving it:** three faults put in one at a time were each caught: a record adopting the ERP's version despite a clash (round 0's refresh), a clash taking the ERP's value over the sheet's change (a cell check), and a gone record left in the changeset. Also `a_recovery_draft_replays_to_the_state_it_left`: a draft's bind payload, edits, a refresh delta and a resolve replayed on a new engine give the same cells, ids, versions and counts, and a draft of another format is refused. 6 more tests in `cgs-bind` (every merge case, renames, gone records, 409s with fields the ERP left out, Keep Mine adopting the version, the draft format) and one in `cgs-engine` (a refresh conflict's author and time) |
+| e2e: concurrent edits conflict and resolve; 401 during a commit writes nothing twice; a recovered draft never commits by itself | Pass | `tests/e2e/erp.spec.ts`, "conflicts, refresh, sessions and recovery", 7 tests, ****14 of 14**** in Chrome and Edge against the mock on its own origin. **Conflict and resolve:** two fields typed in two vendors clash with Omar's edits and a third vendor's name is changed by Mona; Refresh says "Refreshed 8 vendors. 3 changed in Cash Gear ERP: 1 merged with your changes, 2 in conflict.", Mona's name shows under the pending address, Commit waits and offers Resolve, the dialog lists both fields with original, mine, the ERP's and "omar", Keep Mine and Take ERP's each by checkbox, then a commit saves mine over Omar's mobile, Omar's pay method and Mona's name together, 2 writes. **Rebase without conflict:** edits to other fields than the ERP's give a 409 whose merge leaves nothing in conflict ("2 vendors merged with your changes: commit again to send them."), and the next commit keeps both sides; Review's Discard Selected by checkbox. **401:** the commit lands, its answer is lost and every resend gets 401; the panel says the outcome isn't known and offers Reconnect, with every later Commit faulted to 500; a launch in a second tab hands its session over and closes, CommitStatus finds the commit and its result is applied: still 2 writes and 1 commit, and an edit then commits in the new session. **Another company:** a session handed over for Dot by a forged message is refused, its token ended in the ERP, and a real Dot launch opens its own sheet while the Kit tab still waits. **Recovery:** a page closed without a word leaves a draft offered at the next start, which opens "Disconnected" with both changes and Commit off; nothing is written; a launch reconnects it and it refreshes, still writing nothing until committed by hand. **Launch offer:** a launch with no tab waiting offers the matching draft, which recovers into its session and merges an ERP edit made meanwhile. **Arabic:** the tab, Refresh's report, the badge and Resolve in Arabic, the dialog right to left, and the right-to-left golden `erp-merge-rtl`. The full suite: ****334 of 334**** in Chrome and Edge |
+
+The plan's tests also ask for every C/O/S case with key renames and records gone (the property test above), a reconnect token for another company refused and Arabic goldens (the e2e above), all in Chrome and Edge with the existing suites unchanged (below).
+
+**Found and fixed on the way**
+
+- `CgGrid` reports selected rows by typed key tokens (`string:3:4`), so Phase 17's Review dialog never matched them and Discard Selected stayed off. Both dialogs read the tokens now, with an e2e step.
+- A refresh's conflicts said nothing of who changed the record, since Query carries no author: they take the entity's own Modified by and Modified fields, as a 409's do.
+- A conflict whose clashing field was typed back to its original left the record in conflict with nothing marked: the clashing fields now stay marked until resolved, since the ERP holds another value there.
+- A tab taking a handed-over session closed its channel before saying so; it now closes itself after answering.
+- The commit and contract suites compared the mock's whole state, its clock's `now` included, which ticked over a second in a slow run: they compare what was written.
+
+**Delivered**
+
+- `cgs-bind`: `merge` (the per-field case and merged originals), `Binding::plan_merge` and `apply_merge` (versions, conflict marks with the ERP's version, values and author, renamed keys moving their marks, records gone), `conflict_records`, `conflict_record`, `set_original`, the Gone state and count, and `draft` (the versioned compact records).
+- `cgs-engine` (`erp_merge.rs`): Refresh, 409s and Resolve through one merge that clears undo; `erpConflicts` and Next Conflict; tile flag bit 15 for Not in ERP; `erp_draft`, `erp_restore`, `erp_replay_refresh`, `erp_pending`.
+- `@cgs/erp-connector`: Renew after input, End, `handover`/`adopt`, `commitStatus`, and `reconnect.ts` (`offerHandover`, `waitForHandover`, scope checks).
+- `@cgs/engine-client`: the bound workbook's recovery draft in the worker (16 MB, restarted when nothing waits, replayed exactly or dropped), its types, and the grey hatch for Not in ERP.
+- `@cgs/ui`: the en/ar catalogue (`messages.ts`, `messages-ar.ts`, `texts.ts`), the Resolve Conflicts dialog, Next Conflict, Reconnect, CommitStatus before any resend, the draft offers at start and on launch, and the engine's refusals in the session's language.
+- The mock refuses a CommitStatus id that isn't a UUID, as UnifiedAPI does; the contract notes Phase 18's rules.
+
+**Track E3.** Built by a fork of this session in `D:\CashGear\Projects\CashGear` and checked here (the commits on `origin/main`, the user's `VendorModel.cs` and `CommissionStatementPDF.cs` still uncommitted and untouched).
+- `main`, pushed `f8424eee..65699ea1`: Renew and End (`6d15ca9a`), CommitStatus (`3ae97295`), Kit in `SheetLaunch:Companies` with test hosts keeping their own list (`a6fbe284`), tests and `SheetContractRun.md` at E3 (`65699ea1`).
+- `CashGear.UnifiedAPI.Tests`: **71 passed, 14 skipped** on SQLite; with LocalDB **84 passed, 1 failed**: `UpdateEx_today_overwrites…`, which fails the same before E3 because the user's uncommitted `[Timestamp]` makes `UpdateEx` refuse the racing write, as the rollout plan wants. The whole solution builds.
+- The contract suite against UnifiedAPI on LocalDB at `ERP_TEST_STAGE=E3`, all five keys, every connection string checked as LocalDB first: **44 passed, 14 skipped, 0 failed**; the skipped cases need the mock's clock or faults, which the xUnit tests cover.
+
+**What else was checked**
+
+- Unit tests: 306 in Vitest (15 new) and 722 in Rust (9 new). Clippy is clean natively and for WASM; `cargo fmt`, typecheck, lint and format checks are clean.
+- Saving: `pnpm test:save`, 11 fixtures: an unedited save is identical in all 11, 49 of 49 entries checked after edits match, and 3,786 of 3,786 cells match, as in Phase 17.
+- The draft's size: the compact bind payload takes about 182 bytes a vendor on the mock's data, so a sheet at the 10,000-record cap takes about 1.7 MiB of the 16 MiB.
+- `pnpm desktop:build` and `pnpm desktop:smoke`: the desktop app builds, and its smoke run passes in WebView2 157 (goldens within tolerance, overwrite and Save As, recent files, the theme kept).
+- Licences: `pnpm deny` (licences and sources ok), the npm check over 154 packages, and both gates refusing the GPL fixture. `pnpm release:check` finds 1.9.0 everywhere and its changelog notes. Release WASM: 4,677,139 bytes gzipped, of the 5,000,000 budget.
+- Not run again: `bench/run-edit-fuzz.mjs`, `bench/run-excel-matrix.mjs` and the speed benches. Nothing they cover changed: saving and normal sheets are untouched, and on bound sheets the tiles read one more flag bit.
+
+**Known gaps**
+
+- The Arabic texts await your marks on the review page before the tag.
+- Desktop still has no ERP launch until Phase 19's deep link; a draft recovered there has nothing to reconnect to.
+- Open Afresh on a launch's draft offer leaves the draft, which is offered again next time; its prompt at start can discard it.
+- Edits outside the ERP data made before a draft restarts (after everything was committed, discarded, refreshed or resolved) aren't in the restarted draft.
+- Binding speed still misses B.6 (Phase 15's 0.70 s and 2.56 s), carried to Phase 19.
+- Before UnifiedAPI with E3 is deployed to ASTDataTest: `Create_SheetSessions.sql` (CGService), `Add_VendorsRowVersion.sql` and `Create_SheetCommit.sql`. `[Timestamp]` on `VendorModel` is still yours to commit.

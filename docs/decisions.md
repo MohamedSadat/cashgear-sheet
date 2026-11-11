@@ -915,3 +915,18 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | A draft that can't be replayed | "This ERP connection can't be recovered. Open the vendors again from Cash Gear ERP." The draft is removed and nothing is replayed onto the wrong state |
 | Arabic sessions | The ERP Data tab's labels, dialogs, badge, hover details and messages come from the catalogue in the session's language; the dialogs take `direction="rtl"`. The rest of the app stays English. Arabic names in English lines keep their isolates |
 | Track E3 | Renew slides the idle expiry by 30 minutes, never past the maximum; End ends the session at once with 204; CommitStatus answers by `(company, commitId)` with View, as the contract says. Tests on SQLite and opt-in LocalDB only, then the contract suite at `ERP_TEST_STAGE=E3` against UnifiedAPI on LocalDB |
+
+**Defaults picked during the phase (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Who changed a record a refresh finds in conflict | Taken from the entity's own `modifiedBy` and `modifiedDate` fields, since Query carries no author; a 409 names them itself |
+| A clashing field typed back to its original | Stays marked as a conflict until resolved, since the ERP holds another value there; the conflict ends without resolving only when the record has no changes at all, and the next refresh merges it |
+| Numbers in Arabic texts | Latin digits with Latin grouping (`1,240`), as the ERP's own lists show them; counts take Arabic's plural forms. Vendors have their own words (مورد، موردان، موردين، موردًا); another entity counts records (سجل) until it has its own |
+| The Arabic for Commit | اعتماد ("Commit to Cash Gear ERP": الاعتماد في Cash Gear ERP), apart from the workbook's own Save (حفظ) |
+| The badge's name for the data | In the session's language: الموردون for an Arabic session |
+| Ribbon icons | Resolve Conflicts and the Conflicts group use `cells-merge`, Next Conflict `error-check`, Reconnect `link`; the icon set has no warning icon |
+| A recovered draft and Reconnect | A draft recovered at start waits for a launch at once, with no Reconnect click, since reconnecting is all it can do |
+| The tab that hands its session over | Says the connection went to the waiting sheet and closes itself; a browser that keeps it open leaves that message |
+| Open Afresh on a launch's draft offer | Leaves the draft, which is offered again; the prompt at start can discard it |
+| CommitStatus with an id that isn't a UUID | 400 `request.invalid`, in UnifiedAPI (Track E3) and now the mock, as Commit refuses one |

@@ -209,6 +209,19 @@ Found in Phase 17:
 - On CI's Chrome 156, an Open with that comes as soon as an installed app's registration shows can go unanswered: no question, no window, nothing in Chrome's log. `pwa.spec.ts` waits for the launcher and chooses Open with again until Chrome asks. To see what a CI browser shows, attach `windowTexts` (UI Automation), since the app's window isn't a page of the test's context.
 - To bisect a CI-only e2e failure, a temporary step before `pnpm test:e2e` can run a few specs with `--output` of its own (and add that folder to the artifact). Take it out again before tagging.
 
+Found in Phase 18:
+
+- Refresh, a 409 and Resolve are one merge (`cgs-bind/src/merge.rs`, `Binding::plan_merge` and `apply_merge`, driven by `Session::erp_merge` in `cgs-engine/src/erp_merge.rs`). A record adopts the ERP's version only when no field clashes and the answer carried every field; anything new that replaces originals or versions must go through it, or a stale draft can pass the version check. `tests/erp_merge.rs` holds the oracle.
+- A conflict mark keeps its clashing fields marked even when typed back to their originals, since the ERP holds another value there; the mark goes only when the record has no changes at all, keeping its old version until the next refresh.
+- A refresh's conflicts take who and when from the entity's own `modifiedBy` and `modifiedDate` fields, since Query carries no author; a 409 carries them itself.
+- `CgGrid`'s `onSelectionChange` gives typed key tokens (`string:3:4` for the key `3:4`), not the keys `keySelector` returned. Phase 17's Discard Selected never matched them.
+- A bound workbook's recovery draft (`engine-worker.ts`) journals the bind payload (`{"b":…}`), commands, and each ERP step with its input (`r` refresh deltas, `s` marks, `a` commit results, `v` resolves), plus `p` (something waits on the ERP) and `q` (a commit's outcome unknown). Replay must be exact: an ERP step that fails drops the draft. A draft restarts from `erp_draft()` whenever nothing waits after an ERP step, and is offered only while `p` is 1 or `q` is set.
+- A tab waiting on `BroadcastChannel` must answer before closing its channel: `waitForHandover` closes itself after replying `taken`.
+- `Intl.PluralRules('ar')` picks the form by the last two digits: 1,240 is `many` (`موردًا`), 100 is `other`.
+- `pnpm build:wasm --release` spends about 17 minutes in binaryen. For e2e iterations `node scripts/build-wasm.mjs --release --profiling` skips it (never ship that build); run the full `pnpm build` before the standing checks.
+- Playwright's `page.close({ runBeforeUnload: false })` leaves a page's OPFS draft for the next page of the same context, which is how the recovery e2e kills a page.
+- A mock fault list answers the first match: `drop: 'after', times: 1` then `status: 401, times: 0` on `VendorSheet/Commit$` gives a commit that landed with a 401 on every resend, Chrome's own included.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.
