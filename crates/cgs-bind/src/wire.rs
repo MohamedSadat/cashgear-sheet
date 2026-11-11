@@ -2,21 +2,56 @@
 //! so no record object is ever built on the main thread. Pages are checked as they arrive and kept
 //! in `Staging` until the binding takes them.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::base64::decode_version;
 use crate::schema::BoundField;
-use crate::value::{cell_value, CellValue};
+use crate::value::{cell_value_owned, CellValue};
 
 /// A value on the wire; `null` is `None` around it.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WireValue {
     Bool(bool),
     Number(f64),
     Text(String),
+}
+
+/// Read straight from the JSON token, rather than as serde's `untagged` reads it, which buffers
+/// every value and tries each kind in turn: that cost most of a page's parse (Phase 19).
+impl<'de> Deserialize<'de> for WireValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Wire;
+        impl<'de> Visitor<'de> for Wire {
+            type Value = WireValue;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a boolean, a number or a string")
+            }
+            fn visit_bool<E: de::Error>(self, v: bool) -> Result<WireValue, E> {
+                Ok(WireValue::Bool(v))
+            }
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<WireValue, E> {
+                Ok(WireValue::Number(v as f64))
+            }
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<WireValue, E> {
+                Ok(WireValue::Number(v as f64))
+            }
+            fn visit_f64<E: de::Error>(self, v: f64) -> Result<WireValue, E> {
+                Ok(WireValue::Number(v))
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<WireValue, E> {
+                Ok(WireValue::Text(v.to_string()))
+            }
+            fn visit_string<E: de::Error>(self, v: String) -> Result<WireValue, E> {
+                Ok(WireValue::Text(v))
+            }
+        }
+        deserializer.deserialize_any(Wire)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -34,6 +69,110 @@ pub struct Page {
     pub next_after_id: Option<i64>,
     pub total: u32,
     pub as_of: String,
+}
+
+/// A record's values by field name, as a record's values are looked up.
+trait RecordValues {
+    fn count(&self) -> usize;
+    /// Takes a field's value out: `Some(None)` for `null`, `None` when the field isn't there.
+    fn take(&mut self, name: &str, at: usize) -> Option<Option<WireValue>>;
+}
+
+impl RecordValues for HashMap<String, Option<WireValue>> {
+    fn count(&self) -> usize {
+        HashMap::len(self)
+    }
+    fn take(&mut self, name: &str, _at: usize) -> Option<Option<WireValue>> {
+        self.remove(name)
+    }
+}
+
+/// A page's values in the order they came, with names borrowed from the page's bytes where
+/// they have no escapes: no map is built per record. They usually come in the schema's order,
+/// so a field is looked for at its own place first.
+struct PageValues<'de>(Vec<(Cow<'de, str>, Option<Option<WireValue>>)>);
+
+impl RecordValues for PageValues<'_> {
+    fn count(&self) -> usize {
+        self.0.len()
+    }
+    fn take(&mut self, name: &str, at: usize) -> Option<Option<WireValue>> {
+        let found = match self.0.get(at) {
+            Some((key, Some(_))) if key == name => Some(at),
+            _ => self
+                .0
+                .iter()
+                .position(|(key, value)| key == name && value.is_some()),
+        };
+        found.and_then(|index| self.0[index].1.take())
+    }
+}
+
+/// A field name, borrowed from the page's bytes unless it has escapes.
+struct Name<'a>(Cow<'a, str>);
+
+impl<'de: 'a, 'a> Deserialize<'de> for Name<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Text<'a>(std::marker::PhantomData<&'a ()>);
+        impl<'de: 'a, 'a> Visitor<'de> for Text<'a> {
+            type Value = Name<'a>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a field name")
+            }
+            fn visit_borrowed_str<E: de::Error>(self, v: &'de str) -> Result<Name<'a>, E> {
+                Ok(Name(Cow::Borrowed(v)))
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Name<'a>, E> {
+                Ok(Name(Cow::Owned(v.to_string())))
+            }
+            fn visit_string<E: de::Error>(self, v: String) -> Result<Name<'a>, E> {
+                Ok(Name(Cow::Owned(v)))
+            }
+        }
+        deserializer.deserialize_str(Text(std::marker::PhantomData))
+    }
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for PageValues<'a> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Values<'a>(std::marker::PhantomData<&'a ()>);
+        impl<'de: 'a, 'a> Visitor<'de> for Values<'a> {
+            type Value = PageValues<'a>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a record's values")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<PageValues<'a>, A::Error> {
+                let mut list = Vec::with_capacity(map.size_hint().unwrap_or(24));
+                while let Some(Name(key)) = map.next_key::<Name<'a>>()? {
+                    let value: Option<WireValue> = map.next_value()?;
+                    list.push((key, Some(value)));
+                }
+                Ok(PageValues(list))
+            }
+        }
+        deserializer.deserialize_map(Values(std::marker::PhantomData))
+    }
+}
+
+#[derive(Deserialize)]
+struct PageRecord<'a> {
+    id: i64,
+    #[serde(borrow)]
+    key: Cow<'a, str>,
+    #[serde(borrow)]
+    version: Cow<'a, str>,
+    #[serde(borrow)]
+    values: PageValues<'a>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BorrowedPage<'a> {
+    #[serde(borrow)]
+    records: Vec<PageRecord<'a>>,
+    next_after_id: Option<i64>,
+    total: u32,
+    as_of: String,
 }
 
 /// What a page added, for the load panel and the next request.
@@ -106,7 +245,7 @@ impl Staging {
         if self.done {
             return Err("The ERP sent another page after the last one.".to_string());
         }
-        let page: Page = serde_json::from_slice(bytes)
+        let page: BorrowedPage = serde_json::from_slice(bytes)
             .map_err(|error| format!("The ERP sent a page the sheet can't read: {error}"))?;
         if self.total.is_none() && page.total > self.max_records {
             return Err(too_many(page.total, self.max_records, &self.noun));
@@ -118,7 +257,14 @@ impl Staging {
                 return Err("The ERP sent records out of id order.".to_string());
             }
             last = record.id;
-            let staged = self.read(record)?;
+            let staged = read_values(
+                &self.fields,
+                self.key_index,
+                record.id,
+                record.key.into_owned(),
+                &record.version,
+                record.values,
+            )?;
             if !self.keys.insert(staged.key.clone()) {
                 return Err(format!("The ERP sent {} twice.", staged.key));
             }
@@ -143,10 +289,6 @@ impl Staging {
             total: page.total,
         })
     }
-
-    fn read(&self, record: WireRecord) -> Result<StagedRecord, String> {
-        read_record(&self.fields, self.key_index, record)
-    }
 }
 
 /// A record as the ERP sends it, read against a binding's fields: its values in column order,
@@ -160,14 +302,26 @@ pub fn read_record(
         id,
         key,
         version,
-        mut values,
+        values,
     } = record;
+    read_values(fields, key_index, id, key, &version, values)
+}
+
+/// A record's parts read against a binding's fields, wherever its values came from.
+fn read_values(
+    fields: &[BoundField],
+    key_index: usize,
+    id: i64,
+    key: String,
+    version: &str,
+    mut values: impl RecordValues,
+) -> Result<StagedRecord, String> {
     if id <= 0 || key.is_empty() {
         return Err("The ERP sent a record without its id or key.".to_string());
     }
-    let version = decode_version(&version)
+    let version = decode_version(version)
         .ok_or_else(|| format!("The ERP sent {key} without a version the sheet can read."))?;
-    if values.len() != fields.len() {
+    if values.count() != fields.len() {
         return Err(format!(
             "The ERP sent {key} with other fields than its schema's."
         ));
@@ -175,11 +329,11 @@ pub fn read_record(
     let mut cells = Vec::with_capacity(fields.len());
     for (index, field) in fields.iter().enumerate() {
         let wire = values
-            .remove(&field.name)
+            .take(&field.name, index)
             .ok_or_else(|| format!("The ERP sent {key} without {}.", field.label))?;
-        let cell = cell_value(&field.kind, wire.as_ref())
+        let cell = cell_value_owned(&field.kind, wire)
             .map_err(|problem| format!("{key}'s {} {}.", field.label, problem.describe()))?;
-        if index == key_index && cell != CellValue::Text(key.clone()) {
+        if index == key_index && !matches!(&cell, CellValue::Text(text) if *text == key) {
             return Err(format!(
                 "The ERP sent {key} with another key in its values."
             ));

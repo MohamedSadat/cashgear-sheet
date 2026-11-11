@@ -18,7 +18,8 @@ pub mod value;
 pub mod wire;
 
 pub use binding::{
-    Binding, Bindings, MergeCounts, MergePlan, RecordMerge, RecordMeta, ServerRecord, SessionInfo,
+    Binding, BindingMemory, Bindings, MergeCounts, MergePlan, RecordMerge, RecordMeta,
+    ServerRecord, SessionInfo,
 };
 pub use guard::{check_writes, Content, Refusal, TableArea};
 pub use marks::{ApiConflict, ApiError, ConflictMark, MarkSummary, Marks, SentRecord, ServerError};

@@ -53,6 +53,15 @@ pub struct RecordMeta {
     pub originals: Box<[CellValue]>,
 }
 
+/// What a binding keeps in memory: see `Binding::memory`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingMemory {
+    pub editable_values: usize,
+    pub originals_bytes: usize,
+    pub binding_bytes: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Binding {
     /// The model's table id, which moving rows or columns doesn't change.
@@ -161,6 +170,48 @@ impl Binding {
 
     pub fn len(&self) -> usize {
         self.records.len()
+    }
+
+    /// What the binding keeps in memory for its records, as plan B.6 budgets it (at most 64 bytes
+    /// an editable value): the editable values' count, the originals' bytes, and the bytes of
+    /// all it keeps per record (originals, keys, ids and versions, and both maps' slots).
+    /// Counted with this build's own sizes, so in WASM they are wasm32's, and with what an
+    /// allocator adds to each allocation.
+    pub fn memory(&self) -> BindingMemory {
+        use std::mem::size_of;
+        // dlmalloc's chunk header, and its 8-byte rounding.
+        let heap = |bytes: usize| {
+            if bytes == 0 {
+                0
+            } else {
+                bytes.next_multiple_of(8) + 8
+            }
+        };
+        let text = |value: &CellValue| match value {
+            CellValue::Text(text) => heap(text.capacity()),
+            _ => 0,
+        };
+        let mut values = 0;
+        let mut originals = 0;
+        let mut keys = 0;
+        for (key, meta) in &self.records {
+            values += meta.originals.len();
+            originals += heap(size_of::<CellValue>() * meta.originals.len());
+            originals += meta.originals.iter().map(text).sum::<usize>();
+            keys += heap(key.capacity());
+        }
+        for key in self.keys_by_id.values() {
+            keys += heap(key.capacity());
+        }
+        // hashbrown keeps a control byte a slot, and its slots at most 7/8 full.
+        let slots = |map_len: usize, entry: usize| map_len * (entry + 1) * 8 / 7;
+        let maps = slots(self.records.len(), size_of::<(String, RecordMeta)>())
+            + slots(self.keys_by_id.len(), size_of::<(i64, String)>());
+        BindingMemory {
+            editable_values: values,
+            originals_bytes: originals,
+            binding_bytes: originals + keys + maps,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -919,6 +970,17 @@ mod tests {
         );
         assert_eq!(binding.version_text("V-2").as_deref(), Some("AAAAAAAAB9E="));
         assert_eq!(binding.ids(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn memory_counts_every_original_and_its_text() {
+        let binding = bound();
+        let memory = binding.memory();
+        assert_eq!(memory.editable_values, 6);
+        // Each record's slots, and each short text's 8 bytes and header, at the least.
+        let slots = std::mem::size_of::<CellValue>() * 2;
+        assert!(memory.originals_bytes >= 3 * (slots.next_multiple_of(8) + 8 + 2 * 16));
+        assert!(memory.binding_bytes > memory.originals_bytes);
     }
 
     const V2: [u8; 8] = [0, 0, 0, 0, 0, 0, 9, 9];

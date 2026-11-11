@@ -38,6 +38,36 @@ impl ValueError {
 pub const MAX_DIGITS: usize = 15;
 
 pub fn cell_value(kind: &FieldKind, wire: Option<&WireValue>) -> Result<CellValue, ValueError> {
+    match (kind, wire) {
+        (FieldKind::Text | FieldKind::Lookup(_), Some(WireValue::Text(text))) => {
+            Ok(if text.is_empty() {
+                CellValue::Empty
+            } else {
+                CellValue::Text(text.clone())
+            })
+        }
+        (_, wire) => cell_value_of(kind, wire),
+    }
+}
+
+/// As `cell_value`, taking the value, so that text moves into the cell rather than being copied.
+pub fn cell_value_owned(
+    kind: &FieldKind,
+    wire: Option<WireValue>,
+) -> Result<CellValue, ValueError> {
+    match (kind, wire) {
+        (FieldKind::Text | FieldKind::Lookup(_), Some(WireValue::Text(text))) => {
+            Ok(if text.is_empty() {
+                CellValue::Empty
+            } else {
+                CellValue::Text(text)
+            })
+        }
+        (_, wire) => cell_value_of(kind, wire.as_ref()),
+    }
+}
+
+fn cell_value_of(kind: &FieldKind, wire: Option<&WireValue>) -> Result<CellValue, ValueError> {
     let Some(wire) = wire else {
         return Ok(CellValue::Empty);
     };
