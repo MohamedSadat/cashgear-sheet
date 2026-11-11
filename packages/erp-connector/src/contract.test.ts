@@ -188,8 +188,17 @@ async function control(route: string, body?: unknown): Promise<unknown> {
 }
 
 const advance = (ms: number) => control('clock', { advanceMs: ms });
-const mockState = async (company = 'Kit') =>
-  (await control(`state?company=${company}`)) as { writes: number; commits: number; audit: number };
+/** What the mock has written, without its clock, which may tick between two reads. */
+const mockState = async (company = 'Kit') => {
+  const { now, ...state } = (await control(`state?company=${company}`)) as {
+    now: string;
+    writes: number;
+    commits: number;
+    audit: number;
+  };
+  void now;
+  return state;
+};
 
 // ---------------------------------------------------------------------------------------------
 // Flow

@@ -52,9 +52,17 @@ async function records(s: ErpSession, keys: string[]): Promise<QueryResponse['re
   });
 }
 
+/** What the mock has written, without its clock, which may tick between two reads. */
 async function state() {
   const response = await fetch(`${base}/__mock/state?company=Kit`);
-  return (await response.json()) as { writes: number; commits: number; audit: number };
+  const { now, ...written } = (await response.json()) as {
+    now: string;
+    writes: number;
+    commits: number;
+    audit: number;
+  };
+  void now;
+  return written;
 }
 
 async function vendor(key: string) {
