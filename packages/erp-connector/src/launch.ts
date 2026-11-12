@@ -27,12 +27,14 @@ const TICKET = /^[A-Za-z0-9_-]{43}$/;
 /**
  * Reads `#launch=<ticket>` and removes the fragment from the address bar and the current history
  * entry, whether or not the ticket is well formed. `/erp` becomes `/`, the app's own page.
+ * `/cloud` is Cash Gear Workspace's launch, which `@cgs/workspace-connector` reads.
  */
 export function readErpLaunch(
   location: LaunchLocation,
   history: LaunchHistory,
   apiBase: string,
 ): ErpLaunch | null {
+  if (/^\/cloud\/?$/i.test(location.pathname)) return null;
   const fragment = location.hash.replace(/^#/, '');
   const parameters = new URLSearchParams(fragment);
   const ticket = parameters.get('launch');

@@ -105,6 +105,16 @@ describe('the launch fragment', () => {
     expect(other.calls).toEqual([]);
   });
 
+  it('leaves Cash Gear Workspace’s /cloud launch to its own reader', () => {
+    const h = history();
+    for (const pathname of ['/cloud', '/Cloud/']) {
+      expect(readErpLaunch({ hash: `#launch=${ticketText}`, pathname, search: '' }, h, 'x')).toBe(
+        null,
+      );
+    }
+    expect(h.calls).toEqual([]);
+  });
+
   it('never takes the ERP’s origin from the link', () => {
     expect(erpApiBase('https://sheet.cashgearerp.com')).toBe('https://api.cashgearerp.com');
     expect(erpApiBase('http://127.0.0.1:4173')).toBe('http://127.0.0.1:4180');
