@@ -25,6 +25,12 @@ export interface OpenedFile {
   nativeId?: string;
   /** Never saved: a new workbook, which has nowhere to save to yet. */
   isNew?: boolean;
+  /**
+   * A workbook with no bytes yet, which the shell makes blank in this direction and opens as new,
+   * ignoring `source`: Cash Gear Workspace's new workbook, whose first save makes its first
+   * version.
+   */
+  blank?: 'ltr' | 'rtl';
 }
 
 /** Somewhere a save can go, with permission already given. */

@@ -89,7 +89,7 @@ export const EN: CloudTexts = {
   failedText(reason) {
     switch (reason) {
       case 'ticket':
-        return 'This link has expired or has already been used. Open the workbook again from Cash Gear Workspace.';
+        return 'This link has expired or was already used. Go back to Cash Gear Workspace and choose Open in Cash Gear Sheet again.';
       case 'origin':
         return 'This site can’t connect to Cash Gear Workspace.';
       case 'denied':
@@ -195,7 +195,7 @@ export const AR: CloudTexts = {
   failedText(reason) {
     switch (reason) {
       case 'ticket':
-        return 'انتهت صلاحية هذا الرابط أو استُخدم من قبل. افتح المصنف مرة أخرى من Cash Gear Workspace.';
+        return 'انتهت صلاحية هذا الرابط أو استُخدم من قبل. ارجع إلى Cash Gear Workspace واختر «فتح في Cash Gear Sheet» مرة أخرى.';
       case 'origin':
         return 'لا يمكن لهذا الموقع الاتصال بـ Cash Gear Workspace.';
       case 'denied':

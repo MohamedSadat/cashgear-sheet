@@ -81,6 +81,17 @@ export function useCloudTools({
     };
   }, [cloud]);
 
+  // The window's title names Workspace's workbook, as ERP data's names its data.
+  const titled = 'name' in status && status.kind !== 'opening' ? status.name : null;
+  useEffect(() => {
+    if (!titled) return;
+    const before = document.title;
+    document.title = `${titled} – CashGear Sheet`;
+    return () => {
+      document.title = before;
+    };
+  }, [titled]);
+
   const onSaveError = useCallback(
     (error: unknown) => {
       if (!cloud || !isCloudSaveError(error)) return false;

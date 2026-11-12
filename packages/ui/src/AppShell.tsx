@@ -634,6 +634,16 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const openFile = useCallback(
     async (file: OpenedFile) => {
       const engine = clientRef.current;
+      if (engine && file.blank) {
+        const bytes = await engine.blankWorkbook(file.blank === 'rtl');
+        await openBook({
+          ...file,
+          source: { kind: 'blob', blob: new Blob([bytes as BlobPart]) },
+          isNew: true,
+          blank: undefined,
+        });
+        return;
+      }
       if (!engine || !/\.csv$/i.test(file.name)) {
         await openBook(file);
         return;
