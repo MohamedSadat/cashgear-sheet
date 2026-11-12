@@ -1,0 +1,12 @@
+{
+  "name": "@cgs/workspace-connector",
+  "version": "1.10.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}
