@@ -874,6 +874,13 @@ body {
   background: var(--cg-color-focus);
 }
 
+/* A workbook from Cash Gear Workspace: its badge and Reconnect or Stop Waiting beside it. */
+.cgs-cloud-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .cgs-update-status {
   border: none;
   background: none;

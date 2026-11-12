@@ -116,6 +116,82 @@ export interface SheetPlatform {
   askFontAccess?(): void;
   /** Opens a print dialog on what the page shows for printing: the system's on the desktop. */
   print(): Promise<void>;
+  /**
+   * A workbook from Cash Gear Workspace, when this tab was opened by its "Open in Cash Gear
+   * Sheet" (the web's `/cloud` route, Track S1). `launchFile` then opens it, and `saveTarget`
+   * saves new versions of it there.
+   */
+  cloud?: CloudWorkbook;
+}
+
+/** What a Workspace workbook's connection is doing, for its badge and dialogs. */
+export type CloudStatus =
+  /** Redeeming the launch and reading the workbook. */
+  | { kind: 'opening'; name: string | null; received: number; total: number | null }
+  /** Open: saves go to Workspace when `access` is `edit`. `savedAt` is this tab's last save. */
+  | { kind: 'open'; name: string; access: 'edit' | 'view'; savedAt: number | null }
+  /** The launch opened nothing, for `reason`. */
+  | { kind: 'failed'; reason: CloudReason }
+  /** The session ended with the workbook open: its edits stay, and Save offers Reconnect. */
+  | { kind: 'ended'; name: string }
+  /** Waiting for the next launch of this workbook to hand its session over. */
+  | { kind: 'waiting'; name: string }
+  /** This tab gave its session to a tab that was waiting for it. */
+  | { kind: 'handedOver'; name: string }
+  /** Another workbook replaced Workspace's in this tab, and its session ended. */
+  | { kind: 'closed' };
+
+/** Why a Workspace request failed, as the shell words it. */
+export type CloudReason =
+  | 'ticket'
+  | 'session'
+  | 'origin'
+  | 'denied'
+  | 'gone'
+  | 'conflict'
+  | 'tooLarge'
+  | 'invalid'
+  | 'busy'
+  | 'server'
+  | 'readUrl'
+  | 'network'
+  | 'contract'
+  | 'cancelled'
+  /** A tab waiting for this workbook refused the session handed to it. */
+  | 'handoverRefused';
+
+/**
+ * A save to Workspace that didn't go: thrown by `saveTarget` (a view-only or ended session) and by
+ * a cloud target's `write`. `current` names the version that made a save stale.
+ */
+export interface CloudSaveError extends Error {
+  readonly name: 'CloudSaveError';
+  readonly reason: CloudReason;
+  readonly current?: { savedBy: string; savedAt: string };
+  /** Whether it came from Save a copy's target. */
+  readonly copy: boolean;
+}
+
+export const isCloudSaveError = (error: unknown): error is CloudSaveError =>
+  error instanceof Error && error.name === 'CloudSaveError';
+
+/** A Cash Gear Workspace workbook's connection, which the web's cloud platform provides. */
+export interface CloudWorkbook {
+  /** The Workspace user's language for the cloud texts (the browser's until Redeem answers). */
+  language(): 'en' | 'ar';
+  status(): CloudStatus;
+  onStatus(listener: (status: CloudStatus) => void): () => void;
+  /** The user did something in the tab: renews the session at most every 5 minutes. */
+  touch(): void;
+  /** Whether a file is Workspace's workbook. */
+  owns(file: OpenedFile): boolean;
+  /** The workbook's newest version, read again, for Reload. Rejects with a `CloudSaveError`. */
+  reload(): Promise<OpenedFile>;
+  /** Where Save a copy writes: a new workbook beside this one in Workspace. */
+  copyTarget(): SaveTarget;
+  /** Waits for the next launch of this workbook to hand its session over. */
+  reconnect(): void;
+  stopWaiting(): void;
 }
 
 /** An installed font's bytes, and which face in a collection. */

@@ -110,6 +110,7 @@ import { PROTECTED_MESSAGE, useProtectTools } from './sheets/useProtectTools';
 import type { EntitySchema, SessionInfo } from '@cgs/erp-connector';
 import { isErpRefusal, READ_ONLY_MESSAGE } from './erp/messages';
 import { useErpTools } from './erp/useErpTools';
+import { useCloudTools } from './cloud/useCloudTools';
 
 const themeChoices = [
   { name: 'system', text: 'System' },
@@ -345,6 +346,9 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
   const protectedRef = useRef(false);
   const workingRef = useRef<WorkingCopy | null>(null);
   const savingRef = useRef(false);
+  // Takes a save's failure when it is a Cash Gear Workspace one (`useCloudTools`), which shows
+  // what to do about it; anything else is reported as it always was.
+  const cloudErrorRef = useRef<(error: unknown) => boolean>(() => false);
   const untitled = useRef(0);
   const controller = useRef<GridController | null>(null);
   const openToken = useRef(0);
@@ -704,7 +708,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       try {
         await job;
       } catch (error) {
-        report(error);
+        if (!cloudErrorRef.current(error)) report(error);
       } finally {
         savingRef.current = false;
         setSaving(false);
@@ -737,9 +741,19 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       if (target) await writeTo(target);
       else await saveAs();
     } catch (error) {
-      report(error);
+      if (!cloudErrorRef.current(error)) report(error);
     }
   }, [platform, report, saveAs, writeTo]);
+
+  // A workbook from Cash Gear Workspace: its badge, panels and save dialogs (Track S1).
+  const cloudTools = useCloudTools({
+    cloud: platform.cloud,
+    fileName,
+    openFile,
+    writeTo,
+    saveAs,
+  });
+  cloudErrorRef.current = cloudTools.onSaveError;
 
   /** Asks the engine what the active cell holds, for the formula bar. */
   const refreshCell = useCallback(() => {
@@ -2701,6 +2715,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
             ),
           },
           ...(erpTools.badge ? [{ key: 'erp', content: erpTools.badge }] : []),
+          ...(cloudTools.badge ? [{ key: 'cloud', content: cloudTools.badge }] : []),
           ...(circular.length
             ? [
                 {
@@ -2897,6 +2912,7 @@ export function AppShell({ platform, theme, version = 'development' }: AppShellP
       )}
       {dataTools.overlays}
       {erpTools.overlays}
+      {cloudTools.overlays}
       {pivotTools.overlays}
       {chartTools.overlays}
       {printTools.overlays}
