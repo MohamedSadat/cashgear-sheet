@@ -971,3 +971,37 @@ The chart review against Excel: nine charts and a chart sheet drawn by Excel 201
 | The security review's lows (an independent read of both sides) | Fixed now: the connector refuses redirects (L5), workbook links open only `http`, `https` and `mailto` (I5), the web gets a content security policy with `nosniff` (L1), and taking a company off `SheetLaunch:Companies` ends its sessions at once (L3, ERP repo `658f4d68`). Left as known gaps: Query reads a company's whole Vendors table each page and the data routes aren't rate-limited (L2), key and company deactivation lag up to `KeyCheckSeconds` (60 s), and a ticket works in any browser it reaches (L4) |
 | The web's content security policy | Everything from the app itself, WebAssembly compiled (`wasm-unsafe-eval`), inline styles, never framed, `form-action 'none'`, and the ERP API the only other origin it connects to. One module (`apps/web/src/csp.ts`) feeds the preview and is checked against `staticwebapp.config.json`, so every browser test runs under it |
 | Connection Info's new row | "Last failed request": the status (or no answer), the time, and the reference (the correlation id), in English and Arabic: آخر طلب لم ينجح، لم يصل رد، الرد، الساعة، المرجع. These texts weren't in the catalogue you signed off, so they're part of this phase's sign-off |
+
+## 2026-11-12: Track S1 and S2
+
+Cash Gear Workspace (`D:\CashGear\Projects\cashgear-workspace`) keeps workbooks as documents of their own and opens them here by a launch ticket (its `docs/INTEGRATIONS.md`, "Cash Gear Sheet"). Its Q15, answered on 2026-11-12, starts Track S1 and S2 now, built against a mock of its sheet-session routes, which its Phase 5 builds for real. The wire as built is `workspace-contract.md`.
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| How a save reaches Workspace | The xlsx is the body of `POST /api/v1/sheet-sessions/workbook/versions`, with `If-Match` on the ETag: 201 with the new version and its ETag, 412 when stale. Workspace caps the size (413 `limit.size`, 100 MB proposed) and writes the blob itself |
+| Where "Save a copy" goes, after a stale save or with view access | Beside the original in Workspace: `POST /api/v1/sheet-sessions/workbook/copies` with the bytes makes "<name> (copy)", and the tab's session moves to the copy. If Workspace refuses (403), the sheet offers this device instead |
+| The cloud texts' languages | English and Arabic, by the Workspace user's language, which Redeem returns, with the terms the ERP catalogue uses, published side by side for your sign-off. The rest of the app stays English |
+| Whether Track S1 and S2 is a release | No release of its own: Track S in `PROGRESS.md`, pushed to `main`, so the live site gets a `/cloud` route that does nothing until Workspace's API is deployed. It goes out in the next release's notes |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Which Workspace API the sheet trusts | One origin, from the build and never from the link: `VITE_WORKSPACE_API_URL` when a build names one, else `https://workspace-api.cashgearerp.com` (Workspace's live API), and the mock (`http://127.0.0.1:4280`) for a page served from localhost, as the ERP's is chosen |
+| Blob Storage in the live site's CSP | Workspace's storage account by its exact origin once it exists, not `*.blob.core.windows.net`. Until then `connect-src` adds only Workspace's API, so the live site can't read a workbook yet; the preview allows the mock's blob server |
+| Where the code lives | `@cgs/workspace-connector` (the contract, launch, HTTP, session and handover; no React), `apps/web/src/platform/cloud.ts` (the third `SheetPlatform`: the web platform with Workspace's open and save) and `packages/ui/src/cloud` (the badge, dialogs and texts). The mock is `tests/workspace-mock`, in the ERP mock's style |
+| The launch | `https://sheet.cashgearerp.com/cloud#launch=<ticket>`, read before the app renders. The fragment leaves the address bar and history at once and `/cloud` becomes `/`, as `/erp` does. A ticket is 256 bits in base64url, 43 characters, as the ERP's. The ERP's launch reader leaves `/cloud` alone |
+| View access | The workbook opens and can be edited, with "View only" on its badge. Save offers "Save a copy" (in Workspace) or Cancel; Save As still saves to the device |
+| A session that ends with changes unsaved | Reconnect, as for ERP data: the tab waits for the next "Open in Cash Gear Sheet" of the same workbook, by the same user, from the same API, whose tab hands its session over in memory (`BroadcastChannel` `cgs-cloud-reconnect`) and closes. The edits stay, and the next save still sends the ETag this tab had |
+| Renew and End | Renew at most every 5 minutes after input in the tab, as ERP data does; the session's own timer ends it at its idle (30 minutes) or longest (10 hours) expiry. End is sent, `keepalive`, when the tab closes (`pagehide`) and when another workbook replaces the Workspace one in the tab. A tab that handed its session over never ends it |
+| The token | In memory only, a private field of the session. It leaves only as `X-Workspace-File-Session` and in a handover to another tab of this origin: never in a URL, storage, a draft, a log or an error |
+| Reading the bytes | `GET …/workbook` gives a fresh signed URL each time, which the sheet reads with credentials omitted and redirects refused. A refused or expired URL is asked for again once |
+| A save whose answer was lost | Sent again, as reads are. A 412 whose current version has the SHA-256 of the bytes sent is the earlier attempt having landed, and counts as saved. A copy isn't sent again after no answer, as Redeem isn't |
+| A workbook with no version yet (Workspace's "Create a new workbook") | `GET …/workbook` answers `readUrl` and `etag` null. The sheet opens a blank workbook (right to left for an Arabic session), and its first save sends `If-None-Match: *` instead of `If-Match` |
+| The stale-save dialog | Says who saved and when, from the 412's body, and offers "Save a copy", "Reload" (asks first when there are changes, then opens the newest version) and "Cancel" |
+| Error codes | Workspace's own where they exist (`request.invalid`, `access.denied`, `not.found`, `version.conflict`, `limit.size`, `limit.rate`, `server.error`), plus `ticket.invalid` and `session.expired` (401), `origin.denied` (403, checked before the ticket), `workbook.gone` (410: trashed or deleted) and `version.required` (428: a save without `If-Match` or `If-None-Match`) |
+| The language before Redeem answers | The browser's: Arabic when `navigator.language` starts with `ar`, so a refused launch speaks the user's language |
+| Recovery | A Workspace workbook's working copy and recovery draft stay on the device as any web workbook's do. A recovered one opens as a device workbook, since it has no session |
+| Desktop | Web only. The desktop app gets Workspace's launch with the deep link (`desktop-deep-link.md`) |

@@ -157,6 +157,18 @@ This runs in the ERP repo alongside Phases 14 to 19, in the stages each phase na
 | E3 | Phase 18 | Renew, End and CommitStatus; the button turned on per company |
 | E4 | Phase 19 | CORS narrowed, rate limits |
 
+## Track S: Cash Gear Workspace's workbooks, in this repo
+
+Cash Gear Workspace (`D:\CashGear\Projects\cashgear-workspace`) keeps workbooks as documents of their own, embeds them in its pages and opens them here (its `docs/INTEGRATIONS.md`, "Cash Gear Sheet"). Its Track S is built in this repo, alongside the phases, to this repo's rules; Workspace's side is built there. S1 and S2 started on 2026-11-12 (decisions), against a mock of Workspace's sheet-session routes, which Workspace's Phase 5 builds. The wire is `workspace-contract.md`.
+
+| Stage | Work |
+| --- | --- |
+| S1 | A cloud `SheetPlatform`: open by launch ticket, read by signed URL, save a new version with `If-Match`, save a copy, renew and end the session, Reconnect |
+| S2 | The `/cloud` launch route, as `/erp` |
+| S3 | The `/embed` route: read-only load, one range, the `sheet-embed.1` handshake, `resize`, `error` |
+| S4 | `requestPreview` (a PNG of the current view) and chart views |
+| S5 | A contract suite both repos run against a mock |
+
 ## Phases
 
 ### Phase 0: Scaffold, toolchain, CI
