@@ -1,4 +1,15 @@
 export function zip(entries: [string, string | Buffer][]): Buffer;
+/** Builds a workbook from sheets of rows: `[row, [[column, value, style?]...], attributes?]`. */
+export function workbook(
+  sheets: {
+    name: string;
+    rows: unknown[];
+    xml?: { before?: string; after?: string };
+    drawings?: unknown;
+    state?: string;
+  }[],
+  options?: { styles?: string; theme?: string; active?: number; strings?: string[] },
+): Buffer;
 export function arabicBook(): Buffer;
 export function formattingBook(): Buffer;
 export function defaultStyledBook(): Buffer;

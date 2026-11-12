@@ -49,5 +49,13 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       timeout: 30000,
     },
+    // The mock Workspace for tests/e2e/cloud.spec.ts: its API, and its Blob Storage one port up.
+    {
+      command:
+        'node tests/workspace-mock/server.mjs --port 4280 --blob-port 4281 --sheet-url http://127.0.0.1:4173',
+      url: 'http://127.0.0.1:4280/__mock/state',
+      reuseExistingServer: !process.env.CI,
+      timeout: 30000,
+    },
   ],
 });
