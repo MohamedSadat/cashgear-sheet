@@ -29,6 +29,7 @@ What is done, and the evidence for it. The plan is in `PLAN.md`, and decisions a
 | Phase 18: Conflicts, refresh, sessions and recovery | Done 2026-11-11, with your sign-off on the Arabic texts | `v1.9.0` |
 | Phase 19: ERP hardening | In progress 2026-11-11: B.6's targets met and the checks green; the tenant runs and your sign-off wait on the test tenant's setup | `v1.10.0` |
 | Track E: the ERP side, in `D:\CashGear\Projects\CashGear` | E0 done 2026-11-09: the contract reviewed against UnifiedAPI's code, read-only. E1 done 2026-11-09: tickets, sessions, Schema and Query in UnifiedAPI, and the hidden button in `ERPClient_React`. E2 done 2026-11-10: Commit with dry runs, RowVersion, idempotency and audit. E3 done 2026-11-11: Renew, End and CommitStatus, and Kit turned on. E4 done 2026-11-11: CORS narrowed to the live sheet, rate limits, a log line per request, API keys out of the logs, the per-company switch ending sessions, Dot turned on, and the test vendors' seed | |
+| Track S: Cash Gear Workspace's workbooks, in this repo | S1 and S2 done 2026-11-13: a cloud `SheetPlatform` and the `/cloud` launch, built against a mock of Workspace's sheet-session routes, which Workspace's Phase 5 builds. The Arabic texts wait on your sign-off. S3 to S5 not started | |
 
 ## Planning
 
@@ -1116,3 +1117,40 @@ ERP data is ready to turn on per company against the real API: binding meets pla
 - Binding's first paint waits on one tile worker drawing two tiles in turn; a second tile worker is the next lever.
 - Desktop still has no ERP launch until the deep link is built.
 
+## Track S1 and S2: Cash Gear Workspace's workbooks
+
+Cash Gear Workspace opens its workbooks here: "Open in Cash Gear Sheet" starts a tab at `/cloud#launch=<ticket>`, which redeems the ticket for a file session, reads the workbook by signed URL and saves new versions with `If-Match`. Started 2026-11-12, built against a mock of Workspace's sheet-session routes, which Workspace's Phase 5 builds (Workspace's Q15). Answers and defaults are in `docs/decisions.md` (2026-11-12, Track S1 and S2): the bytes as the save's body, copies beside the original in Workspace, English and Arabic texts, and no release of its own. The wire is `docs/workspace-contract.md`.
+
+**Exit criteria** (Workspace's `docs/INTEGRATIONS.md`, Track S, and the brief it started from)
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| S2: `/cloud#launch=<ticket>` is read before the app renders, cut from the address bar and history at once, then redeemed at a Workspace API the build names, never the link | Pass | `launch.test.ts` (5 cases: the fragment cleared for good and bad tickets, other paths untouched, the API from the build, the mock only for a localhost page); `connector.test.ts` (the ERP's reader leaves `/cloud` alone); e2e "opens a Workspace workbook from a launch": the address is `/` with one history entry after the start page, the ticket used, the page cross-origin isolated |
+| S1: a cloud `SheetPlatform` opens by ticket, reads by signed URL, and saves a new version with `If-Match` on the ETag | Pass | `apps/web/src/platform/cloud.ts`; `session.test.ts` (reads by a fresh signed URL and asks again once when Blob Storage refuses it; saves with `If-Match`, each from the last ETag); e2e "saves new versions with If-Match": two saves, `If-Match` the seed's ETag then the first save's, and the saved bytes hold the edit and the recalculated total |
+| A stale ETag gets 412 and the user is offered "save a copy" or "reload" | Pass | e2e: a version saved by someone else meanwhile shows "A newer version was saved", naming who and when; Save a Copy makes "Budget 2027 (copy)" with the changes and the tab goes on saving to it; Reload opens the newer version and discards the changes, and the next save goes from it. Unit: the 412's `current`, and a lost answer's resend counted as saved once by its SHA-256 |
+| The session is renewed while open (30 minutes idle, 10 hours at most) and ended on close | Pass | Unit: Renew at most every 5 minutes after input, sliding the idle expiry; a session idle for 30 minutes ends here without a request; a 401 ends it; End once, with `keepalive`. e2e: closing the tab ends the session in the mock; a session that ended keeps the edits, Reconnect takes the next launch's session over `BroadcastChannel`, and the tab saves from the version it had |
+| The token lives in memory only, never in `localStorage` or a file | Pass | The token is a private field of `WorkspaceSession`; unit: it isn't in the session's JSON, values or text, and a failed request's error never carries it. e2e: after opening and a first edit (working copy and draft), the token is in none of `localStorage`, `sessionStorage`, cookies, the history entry, the address, IndexedDB's names or any OPFS file |
+| Tested (unit and e2e against the mock), pushed to `main`, CI green | See below | 40 new unit tests (359 in all); `cloud.spec.ts` 10 of 10 in Chrome and Edge |
+| The Arabic texts | Waiting for your sign-off | 52 lines side by side: https://claude.ai/artifact/QXzBrrLgLpatoJF9RsRAFX (private) |
+
+**What else was checked**
+
+- View access: the badge says View only, Save offers Save a Copy, and a copy Workspace refuses offers this device instead (e2e). A workbook with no version opens blank and its first save sends `If-None-Match: *` (unit and e2e). An Arabic session words the badge and dialogs in Arabic, right to left (e2e). A used or expired link opens nothing and says why (e2e).
+- The content security policy: every cloud test runs under the preview's, and none reports a violation; `csp.spec.ts` and `erp.spec.ts` pass in Chrome and Edge with the wider `connect-src` (72 of 72 with `cloud.spec.ts`), so ERP data is unchanged.
+- Typecheck, lint and format checks are clean, and the npm licence check passes over 154 packages. No Rust changed.
+
+**Delivered**
+
+- `@cgs/workspace-connector`: the contract's types and guards, the `/cloud` launch and the API's origin, HTTP with ProblemDetails, retries and no redirects, the file session (Redeem, Renew, End, read, versions, copies) and Reconnect's handover.
+- `tests/workspace-mock`: Workspace's sheet-session routes on 4280 and a signed-URL Blob Storage on 4281, with a clock, faults, levels, someone else's saves, trash and copies (`pnpm workspace:mock`). Playwright starts it.
+- `@cgs/ui`: the platform's `cloud` facet, `useCloudTools` (the badge, the opening and reconnect panel, and the save dialogs), the cloud texts in English and Arabic, and a blank workbook for an `OpenedFile` that asks for one.
+- `apps/web`: `platform/cloud.ts`, the third `SheetPlatform`, chosen in `main.tsx` for a `/cloud` launch; `connect-src` adds `https://workspace-api.cashgearerp.com`, and the preview's the mock's two origins.
+- `@cgs/erp-connector`: its launch reader leaves `/cloud` alone.
+- Docs: `workspace-contract.md`, `DEPLOYMENT.md`'s Workspace section, `PLAN.md`'s Track S, CLAUDE.md's notes.
+
+**Known gaps**
+
+- Workspace's routes don't exist yet: the live site's `/cloud` does nothing until Workspace's Phase 5 deploys them. Its Blob Storage's origin joins the live `connect-src` once the account exists, and the account's CORS must allow the sheet's origin (`DEPLOYMENT.md`).
+- Desktop: no Workspace launch until the deep link.
+- If Phase 19's `v1.10.0` is tagged after these commits, it carries this track's code too; the changelog's Unreleased section lists it.
+- Track S3 to S5 (the embed, previews and charts, a contract suite both repos run) aren't started.

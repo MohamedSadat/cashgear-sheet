@@ -97,3 +97,32 @@ the wire is `erp-contract.md`, and the ERP side is Track E in `D:\CashGear\Proje
 user and correlation id, and never a token, ticket, key or body. 403s, 429s and failures log at
 Warning or above, which reaches the Windows Event Log. The sheet's Connection Info shows the last
 failed request's reference, the same correlation id, so a user can quote it.
+
+## Cash Gear Workspace's workbooks
+
+Workbooks that Cash Gear Workspace keeps open here from its "Open in Cash Gear Sheet" (Track S1
+and S2): `https://sheet.cashgearerp.com/cloud#launch=<ticket>`. The wire is
+`workspace-contract.md`; Workspace's side is its Phase 5, in `D:\CashGear\Projects\cashgear-workspace`.
+
+**The sheet**
+- **The API's origin** comes from the build, never the link: `VITE_WORKSPACE_API_URL` when a build
+  names one, else `https://workspace-api.cashgearerp.com` for every page not on localhost (the
+  mock, `http://127.0.0.1:4280`, for one that is). The Azure workflow names none.
+- **Headers:** `connect-src` lists Workspace's API (`apps/web/src/csp.ts`, `LIVE_APIS`, which
+  `csp.test.ts` checks against `staticwebapp.config.json`). Workbooks are read from Workspace's
+  Blob Storage by signed URL, so its account's exact origin
+  (`https://<account>.blob.core.windows.net`) goes into both once the account exists; until then
+  the live sheet can't read a Workspace workbook. Nothing else changes: the reads and saves are
+  CORS requests, which COEP `require-corp` allows.
+- **The desktop app** has no Workspace launch until the deep link (`desktop-deep-link.md`).
+
+**What Workspace's deployment needs for the sheet**
+- Its sheet-session routes (`/api/v1/sheet-sessions/*`) allow `https://sheet.cashgearerp.com`
+  only, without credentials, with the headers in `workspace-contract.md`; Redeem refuses any
+  other `Origin` with 403 `origin.denied`.
+- Its storage account's CORS rule allows `GET` from `https://sheet.cashgearerp.com`, so the
+  signed read URLs can be read from the sheet's cross-origin isolated page.
+- Its launch route opens `https://sheet.cashgearerp.com/cloud#launch=<ticket>`.
+
+**The mock:** `pnpm workspace:mock` (its API on 4280, its Blob Storage on 4281). Playwright starts
+it for `tests/e2e/cloud.spec.ts`.

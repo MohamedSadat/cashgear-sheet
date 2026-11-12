@@ -4,6 +4,18 @@ Every release of CashGear Sheet, newest first. Versions follow semantic versioni
 across the app, its crates and its packages. The release workflow takes each release's notes from
 its section here.
 
+## [Unreleased]
+
+Not released yet: these lines go into the next release's section.
+
+- **Cash Gear Workspace's workbooks (Track S1 and S2):** Workspace's "Open in Cash Gear Sheet"
+  opens a workbook at `/cloud`, and Save sends it back as a new version. A version saved by
+  someone else meanwhile offers Save a Copy (a new workbook beside it in Workspace) or Reload;
+  view access offers Save a Copy; a session that ends keeps the changes, and Reconnect takes the
+  next launch's session. The texts are in English and Arabic, by the Workspace user's language.
+  It does nothing until Workspace's API is deployed. The web app may now reach
+  `https://workspace-api.cashgearerp.com`.
+
 ## [1.10.0] - 2026-11-11
 
 ERP data is ready to turn on per company: it opens several times faster, Cash Gear ERP's side is

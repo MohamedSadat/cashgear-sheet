@@ -35,6 +35,7 @@ See "Architecture" in `docs/PLAN.md`.
 - `crates/`: `cgs-model`, `cgs-calc`, `cgs-numfmt`, `cgs-refs`, `cgs-xlsx`, `cgs-pivot`, `cgs-engine`, `cgs-wasm` (the only JS-facing API) and `cgs-native` (desktop only).
 - `apps/web`: Vite PWA. `apps/desktop/src-tauri`: Tauri 2 shell, left out of `default-members`.
 - `packages/ui`: React shell and canvas grid, on `@cashgear/ui`. `packages/engine-client`: workers, comlink client and tile cache.
+- `packages/erp-connector` and `packages/workspace-connector`: the sheet's side of Cash Gear ERP's and Cash Gear Workspace's contracts (`docs/erp-contract.md`, `docs/workspace-contract.md`), with their mocks in `tests/erp-mock` and `tests/workspace-mock`. `apps/web/src/platform/cloud.ts` is the third `SheetPlatform`, for Workspace's workbooks (Track S).
 
 Browser-only Rust dependencies sit under `cfg(target_arch = "wasm32")`.
 
@@ -237,6 +238,15 @@ Found in Phase 19:
 - The live API counts 20 launches a minute per client address. The contract suite opens a session in nearly every case, so on a real server it waits out 429s; `pnpm erp:tenant` gives it a 300 s timeout per test.
 - Playwright's `keyboard.type` sends characters that aren't on the keyboard, such as Arabic, without keydown events, so the grid never starts editing. Type ASCII, or use `cgsTest.command`.
 - FusionCache logs its cache keys at Information, so UnifiedAPI's API-key cache key is now the key's SHA-256 (Track E4). Never put a secret in a cache key there.
+
+Found in Track S1 and S2:
+
+- `docs/workspace-contract.md` is Cash Gear Workspace's contract: change it, `packages/workspace-connector/src/contract.ts` and `tests/workspace-mock` together, as the ERP's three.
+- `readErpLaunch` used to take a `#launch=` fragment off any path, so it would have used up Workspace's ticket on `/cloud`. It now leaves `/cloud` alone; a new launch route must be left out of it too.
+- A save's 412 whose `current.sha256` is the bytes just sent is the sheet's own save landing after a lost answer, and counts as saved. A test of a real conflict must save different bytes from the version someone else saved.
+- The mock Workspace's Blob Storage is a second origin, one port above its API (4281). Every mock origin the page reaches must be in `MOCK_APIS` (`apps/web/src/csp.ts`), or the preview's CSP refuses it.
+- An ordinary workbook doesn't set the page's title; ERP data and Workspace's workbooks set their own (`– CashGear Sheet`).
+- Playwright's `page.close({ runBeforeUnload: true })` fires `pagehide`, so a cloud tab's End reaches the mock.
 
 Carried over from CashGear Video, where they were measured:
 
