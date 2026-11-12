@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { serviceWorker } from './pwa';
-import { contentSecurityPolicy, LIVE_API, MOCK_APIS } from './src/csp';
+import { contentSecurityPolicy, LIVE_APIS, MOCK_APIS } from './src/csp';
 
 // One version for the whole app, from the root package.json (scripts/release-check.mjs).
 const { version } = JSON.parse(
@@ -17,16 +17,14 @@ const headers = {
   'Cross-Origin-Resource-Policy': 'same-origin',
 };
 // The preview, which the browser tests run against, sends the live site's content security
-// policy, with the mock ERP and a build's own ERP API among the origins it may reach. The dev
-// server sends none, since its hot reload needs more.
-const configuredApi = process.env.VITE_ERP_API_URL?.replace(/\/+$/, '');
+// policy, with the mocks and a build's own ERP and Workspace APIs among the origins it may reach.
+// The dev server sends none, since its hot reload needs more.
+const configured = [process.env.VITE_ERP_API_URL, process.env.VITE_WORKSPACE_API_URL]
+  .filter((url): url is string => Boolean(url))
+  .map((url) => new URL(url).origin);
 const previewHeaders = {
   ...headers,
-  'Content-Security-Policy': contentSecurityPolicy([
-    LIVE_API,
-    ...MOCK_APIS,
-    ...(configuredApi ? [new URL(configuredApi).origin] : []),
-  ]),
+  'Content-Security-Policy': contentSecurityPolicy([...LIVE_APIS, ...MOCK_APIS, ...configured]),
   'X-Content-Type-Options': 'nosniff',
 };
 export default defineConfig({

@@ -3,7 +3,7 @@
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Embedder-Policy": "require-corp",
     "Cross-Origin-Resource-Policy": "same-origin",
-    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' blob: data: https://api.cashgearerp.com; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' blob: data: https://api.cashgearerp.com https://workspace-api.cashgearerp.com; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff"
   },
   "mimeTypes": {

@@ -214,6 +214,9 @@ importers:
       '@cgs/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@cgs/workspace-connector':
+        specifier: workspace:*
+        version: link:../../packages/workspace-connector
       '@tauri-apps/api':
         specifier: 2.12.4
         version: 2.12.4
@@ -275,6 +278,8 @@ importers:
       vite:
         specifier: 8.3.5
         version: 8.3.5(@types/node@24.19.2)
+
+  packages/workspace-connector: {}
 
 packages:
 
