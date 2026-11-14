@@ -1,0 +1,77 @@
+/* `/embed`: one range or chart filling the frame, scrolling past its size (Track S3). */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--cg-surface);
+  color: var(--cg-text);
+  font-family: var(--cg-font-family);
+}
+
+#root,
+.cgs-embed {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.cgs-embed-range,
+.cgs-embed-scroll,
+.cgs-embed-chart {
+  position: absolute;
+  inset: 0;
+}
+
+.cgs-embed-scroll,
+.cgs-embed-chart {
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.cgs-embed-scroll[hidden],
+.cgs-embed-chart[hidden] {
+  display: none;
+}
+
+.cgs-embed-content {
+  position: relative;
+}
+
+.cgs-embed-canvas {
+  position: sticky;
+  top: 0;
+  inset-inline-start: 0;
+  display: block;
+}
+
+.cgs-embed-chart-box {
+  position: relative;
+}
+
+.cgs-embed-unreadable {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 1px dashed var(--cg-border);
+  color: var(--cg-text-secondary);
+  font-size: 12px;
+}
+
+/* For screen readers only: the canvas is a picture of these cells. */
+.cgs-embed-cells {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.cgs-embed-alone {
+  padding: 24px;
+  font-size: 14px;
+}
