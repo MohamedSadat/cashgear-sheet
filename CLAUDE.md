@@ -258,6 +258,7 @@ Found in Track S3 to S5:
 - A `ResizeObserver` can fire while an answer is being made; `resize` waits until the answer is sent, or it arrives before the `loaded` it belongs to.
 - `pnpm notices` writes the About box's notices; a web build without it (`pnpm --filter @cgs/web build`) fails `pwa.spec.ts`'s About case. Run the script through pnpm.
 - `tests/embed-parent` holds 4273, Workspace's e2e port, and Playwright never reuses it: stop Workspace's e2e stack before Sheet's suite, or the run fails at once.
+- Workspace's server writes workbooks with DocumentFormat.OpenXml, which puts every SpreadsheetML element under `x:`. `openXmlCopy` in `tests/fixtures/workbooks.mjs` makes such a copy of any fixture; the save check, `embed.spec.ts` and `cloud.spec.ts` run one.
 
 Carried over from CashGear Video, where they were measured:
 

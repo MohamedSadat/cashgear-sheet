@@ -1180,6 +1180,7 @@ Cash Gear Workspace shows a workbook's range or chart live in its pages through 
 - The live views and pictures were looked at: a range in light and dark, a chart, a right-to-left sheet with column A on the right, and the PNGs, light while the frame was dark, at the asked density.
 - `csp.spec.ts`, `cloud.spec.ts`, `open.spec.ts` and `pwa.spec.ts` pass with the build's second page and the per-path policies (the PWA install case once on a retry, as before).
 - The engine: `print.rs`'s tests pass with its used range shared with the embed's, and clippy is clean.
+- Workbooks as DocumentFormat.OpenXml writes them, every element under `x:` (Cash Gear Workspace's exports, asked about on 2026-11-14): `/embed` answers the same `loaded` and draws the same pixels as for the unprefixed file, `/cloud` opens one and saves an edit into it under its own prefix (e2e), and the save check passes with `openxml.xlsx` among its 12 fixtures.
 - Typecheck, lint and format checks are clean; 416 unit tests before the vectors, then 705.
 
 **Delivered**
