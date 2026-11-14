@@ -41,6 +41,21 @@
       }
     },
     {
+      "route": "/embed",
+      "rewrite": "/embed.html",
+      "headers": {
+        "Cache-Control": "no-cache",
+        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' blob: data: https://api.cashgearerp.com https://workspace-api.cashgearerp.com; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors https://workspace.cashgearerp.com tauri://localhost http://tauri.localhost"
+      }
+    },
+    {
+      "route": "/embed.html",
+      "headers": {
+        "Cache-Control": "no-cache",
+        "Content-Security-Policy": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' blob: data: https://api.cashgearerp.com https://workspace-api.cashgearerp.com; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors https://workspace.cashgearerp.com tauri://localhost http://tauri.localhost"
+      }
+    },
+    {
       "route": "/assets/*",
       "headers": {
         "Cache-Control": "public, max-age=31536000, immutable"
