@@ -317,3 +317,22 @@ fn text_running_into_empty_cells_prints_with_them() {
         1
     );
 }
+
+/// What a view of a sheet shows when it names no range (Track S3): the cells holding values,
+/// fills and borders, from the first of them rather than from A1, and nothing on an empty sheet.
+#[test]
+fn the_used_range_starts_at_the_first_cell_used() {
+    let body = r#"<sheetData><row r="3"><c r="C3"><v>1</v></c></row><row r="7"><c r="B7" s="1"/><c r="E7"><v>2</v></c></row></sheetData>"#;
+    let styles = r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf/><xf fillId="2" applyFill="1"/></cellXfs></styleSheet>"#;
+    let engine = opened(with_styles(book(body), styles));
+    let ask = |sheet: u32| -> Value {
+        let question = format!(r#"{{"kind":"usedRange","sheet":{sheet}}}"#);
+        serde_json::from_str(&engine.query(&question).unwrap()).unwrap()
+    };
+    // The filled blank at B7 counts, as printing counts it.
+    assert_eq!(
+        ask(0),
+        serde_json::json!({ "top": 3, "left": 2, "bottom": 7, "right": 5 })
+    );
+    assert_eq!(ask(1), Value::Null);
+}

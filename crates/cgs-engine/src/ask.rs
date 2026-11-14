@@ -76,6 +76,10 @@ enum Question {
     LinkAt { sheet: u32, row: u32, col: u32 },
     /// A sheet's notes, in order.
     Notes { sheet: u32 },
+    /// The cells a view of the sheet shows when it names none (Track S3): from the first to the
+    /// last holding a value, a fill or a border, or reached by overflowing text; nothing on an
+    /// empty sheet.
+    UsedRange { sheet: u32 },
     /// The Cell Styles gallery.
     CellStyles,
     /// A named style's format and what it includes, for Modify Cell Style.
@@ -314,6 +318,12 @@ impl Session {
             Question::NoteAt { sheet, row, col } => self.note_json(sheet, row, col),
             Question::LinkAt { sheet, row, col } => self.link_json(sheet, row, col),
             Question::Notes { sheet } => self.notes_list(sheet),
+            Question::UsedRange { sheet } => match self.used_range(sheet) {
+                Some(r) => {
+                    json!({ "top": r.top, "left": r.left, "bottom": r.bottom, "right": r.right })
+                }
+                None => Value::Null,
+            },
             Question::CellStyles => self.cell_styles_json(),
             Question::StyleFormat { name } => self.style_format_json(&name),
             Question::PivotDataFormula {

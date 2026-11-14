@@ -488,6 +488,24 @@ impl Session {
     /// fill or a border, or any drawing's, and the empty cells text overflows into, as Excel
     /// prints them.
     pub(crate) fn print_range(&self, sheet: u32) -> Option<Rect> {
+        self.content_bounds(sheet, true).map(|b| Rect {
+            top: 1,
+            left: 1,
+            bottom: b.bottom,
+            right: b.right,
+        })
+    }
+
+    /// The used range a view of the sheet shows (Track S3, `range: null`): from the first to the
+    /// last cell holding a value, a fill or a border, or reached by overflowing text, as printing
+    /// counts them, but not from A1 and without drawings.
+    pub(crate) fn used_range(&self, sheet: u32) -> Option<Rect> {
+        self.content_bounds(sheet, false)
+    }
+
+    /// The smallest area holding every cell with a value, a fill or a border, the empty cells
+    /// text overflows into, and with `drawings`, every drawing that prints.
+    fn content_bounds(&self, sheet: u32, drawings: bool) -> Option<Rect> {
         use cgs_calc::{CalcEngine, CalcValue, CellSink, SheetRect};
         let info = self.book.sheets.get(sheet as usize)?;
         let mut bounds: Option<Rect> = None;
@@ -639,7 +657,11 @@ impl Session {
                 take(row, reach.min(next).max(col));
             }
         }
-        for drawing in info.drawings.iter().filter(|d| !d.hidden && d.prints) {
+        for drawing in info
+            .drawings
+            .iter()
+            .filter(|d| drawings && !d.hidden && d.prints)
+        {
             if let Anchor::TwoCell { from, to } = drawing.anchor {
                 take(from.row, from.col);
                 take(to.row, to.col);
@@ -654,12 +676,7 @@ impl Session {
             take(top, left);
             take(bottom, right);
         }
-        bounds.map(|b| Rect {
-            top: 1,
-            left: 1,
-            bottom: b.bottom,
-            right: b.right,
-        })
+        bounds
     }
 
     /// The layout of a sheet's pages, or nothing to print.
