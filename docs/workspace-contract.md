@@ -10,6 +10,11 @@ the reference for the routes Workspace's Phase 5 builds in `D:\CashGear\Projects
   `packages/workspace-connector/src/session.test.ts` runs the sheet's side against it in
   `pnpm test`. A suite both repos run is Track S5.
 - Workspace drew the first version in its `docs/INTEGRATIONS.md` ("Opening the full editor").
+- The embed's contract, `sheet-embed.1`, is Workspace's own (its `docs/INTEGRATIONS.md`, "Contract
+  `sheet-embed.1`"). The sheet's side is `packages/ui/src/embed`, run against Workspace's vectors
+  (`tests/contracts`) and a Workspace page in `tests/e2e/embed.spec.ts` (Track S3 to S5).
+- `src/contract.test.ts` is this contract's suite for any server: the mock by default, Workspace's
+  API with `WORKSPACE_API_URL` and `WORKSPACE_LAUNCHER_URL` (`DEPLOYMENT.md`).
   The answers and defaults that fixed the rest are in `decisions.md` (2026-11-12, Track S1 and S2).
 
 Contract version: `sheet-session.1`, 2026-11-12.

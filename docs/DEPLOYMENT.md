@@ -126,3 +126,57 @@ and S2): `https://sheet.cashgearerp.com/cloud#launch=<ticket>`. The wire is
 
 **The mock:** `pnpm workspace:mock` (its API on 4280, its Blob Storage on 4281). Playwright starts
 it for `tests/e2e/cloud.spec.ts`.
+
+### The embed (Track S3 to S5)
+
+Workspace's pages frame `https://sheet.cashgearerp.com/embed` (`sheet-embed.1`, Workspace's
+`docs/INTEGRATIONS.md`), sandboxed (`allow-scripts allow-same-origin`), with no referrer.
+
+- **Headers:** `/embed` (rewritten to `/embed.html`) and `/embed.html` get the site's policy with
+  `frame-ancestors https://workspace.cashgearerp.com tauri://localhost http://tauri.localhost`;
+  every other path keeps `frame-ancestors 'none'` (`staticwebapp.config.json`'s routes, checked by
+  `csp.test.ts`). COOP, COEP and CORP stay as everywhere: in a frame from a parent with no COEP the
+  page isn't cross-origin isolated, and the engine runs without shared memory.
+- **What it reads:** the signed URL in `init.source`, so Workspace's storage account's exact origin
+  must be in `connect-src` (as for `/cloud`), and its CORS rule must allow `GET` from the sheet.
+- **What it keeps:** nothing. The engine starts with `inMemoryOnly`, the page registers no service
+  worker, and the installed app's worker answers `/embed` offline with `embed.html`.
+- **The desktop app** isn't involved: Workspace's desktop frames the web page.
+
+### Running the sheet locally against Workspace's development stack
+
+For Workspace's end-to-end tests against the real `/embed` and `/cloud`. Workspace's stack
+(`pnpm dev:server` there) serves its API on `http://127.0.0.1:5280` and Azurite's Blob Storage on
+`http://127.0.0.1:10000`; its web app is on `5273` (dev) or `4273` (e2e).
+
+1. Once: `pnpm install` and `pnpm setup:wasm`.
+2. Build with Workspace's API named, so `/cloud` redeems there, not at the mock:
+
+   ```bash
+   VITE_WORKSPACE_API_URL=http://127.0.0.1:5280 pnpm build
+   ```
+
+   In PowerShell: `$env:VITE_WORKSPACE_API_URL='http://127.0.0.1:5280'; pnpm build`. `pnpm build`
+   spends about 17 minutes in binaryen; for runs that only need the pages,
+   `node scripts/build-wasm.mjs --release --profiling`, then
+   `pnpm --filter @cgs/web build` and `pnpm notices` (never ship that build).
+3. Serve it, naming the API and Azurite for the preview's `connect-src`:
+
+   ```bash
+   VITE_WORKSPACE_API_URL=http://127.0.0.1:5280 VITE_WORKSPACE_BLOB_URL=http://127.0.0.1:10000 pnpm preview
+   ```
+
+   The sheet is then on `http://127.0.0.1:4173` (fixed port): `http://127.0.0.1:4173/embed` and
+   `http://127.0.0.1:4173/cloud#launch=<ticket>`. Its `/embed` may be framed by
+   `http://127.0.0.1:5273`, `http://127.0.0.1:4273`, `http://localhost:5273` and
+   `http://localhost:4273`, and takes `init` from them, because the page itself is served locally.
+
+What Workspace's side needs: its `{sheet}` origin `http://127.0.0.1:4173`, in `frame-src`; its
+sheet-session routes' CORS allowing `http://127.0.0.1:4173` (and `http://localhost:4173`) without
+credentials; Azurite's CORS allowing `GET` from the same.
+
+**The suites:** `pnpm workspace:contract` runs `sheet-session.1`'s suite against the mock, or with
+`WORKSPACE_API_URL=http://127.0.0.1:5280` and `WORKSPACE_LAUNCHER_URL` (Workspace's test launcher,
+which answers `POST {user, workbook}` with `{ticket}`) against Workspace's API. `tests/e2e/embed.spec.ts`
+runs in `pnpm test:e2e` with its stand-in parent on `127.0.0.1:4273` and `4274`
+(`pnpm embed:parent`), so it can't run while Workspace's e2e stack holds 4273.

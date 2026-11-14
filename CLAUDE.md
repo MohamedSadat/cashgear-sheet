@@ -248,6 +248,17 @@ Found in Track S1 and S2:
 - An ordinary workbook doesn't set the page's title; ERP data and Workspace's workbooks set their own (`– CashGear Sheet`).
 - Playwright's `page.close({ runBeforeUnload: true })` fires `pagehide`, so a cloud tab's End reaches the mock.
 
+Found in Track S3 to S5:
+
+- `/embed` is Workspace's frame (`sheet-embed.1`, `packages/ui/src/embed`), a second page of the build (`apps/web/embed.html`) that never starts the editor. Its validators are as strict as Workspace's: a field the contract doesn't name fails the message. `tests/contracts/sheet-embed-vectors.json` is Workspace's file, copied with its commit; change neither by hand.
+- workspace.cashgearerp.com and sheet.cashgearerp.com are one site, so a framed `/embed` shares the sheet's storage and its service worker. The embed's engine starts `inMemoryOnly`, or its start sweeps other tabs' working copies.
+- Vite's preview sets `preview.headers` as each file is served, over any earlier middleware's. Headers that differ by path (`/embed`'s `frame-ancestors`) are set by `pagePolicies` in `vite.config.ts`, never in `preview.headers`.
+- The build's entries are named `main` and `embed`, so its scripts are `main-*.js`, `embed-*.js` and a shared chunk, not `index-*.js`.
+- Headless Chrome hides scrollbars (`--hide-scrollbars`), so a frame never needs room for one. `embed.spec.ts` turns them back on with `test.use({ launchOptions })`, which Playwright allows only at a file's top level.
+- A `ResizeObserver` can fire while an answer is being made; `resize` waits until the answer is sent, or it arrives before the `loaded` it belongs to.
+- `pnpm notices` writes the About box's notices; a web build without it (`pnpm --filter @cgs/web build`) fails `pwa.spec.ts`'s About case. Run the script through pnpm.
+- `tests/embed-parent` holds 4273, Workspace's e2e port, and Playwright never reuses it: stop Workspace's e2e stack before Sheet's suite, or the run fails at once.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

@@ -159,7 +159,7 @@ This runs in the ERP repo alongside Phases 14 to 19, in the stages each phase na
 
 ## Track S: Cash Gear Workspace's workbooks, in this repo
 
-Cash Gear Workspace (`D:\CashGear\Projects\cashgear-workspace`) keeps workbooks as documents of their own, embeds them in its pages and opens them here (its `docs/INTEGRATIONS.md`, "Cash Gear Sheet"). Its Track S is built in this repo, alongside the phases, to this repo's rules; Workspace's side is built there. S1 and S2 started on 2026-11-12 (decisions), against a mock of Workspace's sheet-session routes, which Workspace's Phase 5 builds. The wire is `workspace-contract.md`.
+Cash Gear Workspace (`D:\CashGear\Projects\cashgear-workspace`) keeps workbooks as documents of their own, embeds them in its pages and opens them here (its `docs/INTEGRATIONS.md`, "Cash Gear Sheet"). Its Track S is built in this repo, alongside the phases, to this repo's rules; Workspace's side is built there. S1 and S2 started on 2026-11-12 (decisions), against a mock of Workspace's sheet-session routes, which Workspace's Phase 5 builds. The wire is `workspace-contract.md`. S3 to S5 started on 2026-11-14 in a session of their own, to Workspace's contract `sheet-embed.1` (its `docs/INTEGRATIONS.md`), while Workspace's Phase 5 builds its side; `DEPLOYMENT.md` says how to run the sheet against Workspace's development stack.
 
 | Stage | Work |
 | --- | --- |
