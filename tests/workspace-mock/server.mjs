@@ -89,7 +89,8 @@ export function budgetBook() {
   ]);
 }
 
-const MAX_JSON = 1024 * 1024;
+/** A control body: someone else's version can be a large test workbook, in base64. */
+const MAX_JSON = 32 * 1024 * 1024;
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -657,6 +658,20 @@ export class MockWorkspace {
       case 'copies':
         this.copiesAllowed = body.allowed !== false;
         return ok();
+      case 'content': {
+        // What Workspace's `GET /api/v1/workbooks/{id}/content` gives its page for the embed
+        // (Track S3): a signed URL for the current version, on the clock like every other.
+        const book = bookOf(body.workbook ?? ctx.url.searchParams.get('workbook') ?? 'budget');
+        if (!book) return bad('Unknown workbook.');
+        const version = this.current(book);
+        if (!version) return ok({ readUrl: null, etag: null, size: null, versionId: null });
+        return ok({
+          readUrl: this.readUrl(version),
+          etag: etagOf(version),
+          size: version.bytes.length,
+          versionId: version.id,
+        });
+      }
       case 'bytes': {
         const book = bookOf(ctx.url.searchParams.get('workbook') ?? 'budget');
         const version = book && this.current(book);

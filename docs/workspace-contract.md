@@ -237,6 +237,7 @@ already running.
 | `POST /__mock/clock` | `{advanceMs}`: moves the mock's clock for tickets, sessions and signatures |
 | `POST /__mock/fault` | `{match, status?, code?, retryAfter?, times?, drop?, latencyMs?}`, as the ERP mock's: `match` is a regular expression over the path (`workbook$`, `versions$`, `^blobs/`) |
 | `GET /__mock/bytes?workbook=` | The current version's bytes |
+| `POST /__mock/content` | `{workbook}`: what Workspace's `GET /api/v1/workbooks/{id}/content` gives its page for the embed, `{readUrl, etag, size, versionId}`, signed on the mock's clock (Track S3) |
 | `GET /__mock/state` | Counts, saves with their preconditions, tickets, sessions and workbooks, with no tokens |
 
 Users and workbooks are named `editor`, `viewer`, `other` and `arabic`, `budget` and `empty`, or

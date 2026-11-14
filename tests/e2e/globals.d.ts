@@ -68,3 +68,29 @@ interface Window {
     }): Promise<{ bytes: Uint8Array; pages: number }>;
   };
 }
+
+/** The stand-in for Workspace's page in tests/embed-parent/parent.js (Track S5). */
+interface Window {
+  cgsParent: {
+    state: {
+      sheet: string;
+      loads: number;
+      ready: { origin: string; data: unknown }[];
+      stray: { origin?: string; port?: boolean; data: unknown }[];
+      messages: (Record<string, unknown> & { type: string })[];
+      spare: unknown[];
+    };
+    open(options: {
+      sheet: string;
+      path?: string;
+      sandbox?: string;
+      width?: number;
+      height?: number;
+    }): void;
+    openOther(url: string): Promise<void>;
+    init(message: unknown, options?: { origin?: string; spare?: boolean }): void;
+    send(message: unknown): void;
+    post(message: unknown, ports?: number): void;
+    resize(width: number, height: number): void;
+  };
+}

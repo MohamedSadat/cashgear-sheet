@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Another frame</title>
+  </head>
+  <body>
+    <script>
+      // A frame beside the embed, from an origin Workspace doesn't have, that tries to start it:
+      // the embed takes `init` only from its own parent.
+      window.rogue = { answers: [] };
+      window.rogue.tryInit = (init, sheetOrigin) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (event) => window.rogue.answers.push(event.data);
+        const embed = window.parent.frames[0];
+        embed.postMessage(init, sheetOrigin, [channel.port2]);
+      };
+    </script>
+  </body>
+</html>

@@ -57,5 +57,14 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
       timeout: 30000,
     },
+    // Workspace's page for tests/e2e/embed.spec.ts, on Workspace's test origin (4273), and an
+    // origin Workspace doesn't have (4274). Never reused: Workspace's own e2e stack serves 4273
+    // too, and the embed suite must not drive that instead.
+    {
+      command: 'node tests/embed-parent/server.mjs --port 4273 --other-port 4274',
+      url: 'http://127.0.0.1:4273/__parent/state',
+      reuseExistingServer: false,
+      timeout: 30000,
+    },
   ],
 });
