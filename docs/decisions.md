@@ -1005,3 +1005,33 @@ Cash Gear Workspace (`D:\CashGear\Projects\cashgear-workspace`) keeps workbooks 
 | The language before Redeem answers | The browser's: Arabic when `navigator.language` starts with `ar`, so a refused launch speaks the user's language |
 | Recovery | A Workspace workbook's working copy and recovery draft stay on the device as any web workbook's do. A recovered one opens as a device workbook, since it has no session |
 | Desktop | Web only. The desktop app gets Workspace's launch with the deep link (`desktop-deep-link.md`) |
+
+## 2026-11-14: Track S3 to S5
+
+Cash Gear Workspace embeds its workbooks in pages through Sheet's `/embed`, by its contract `sheet-embed.1` (its `docs/INTEGRATIONS.md`, "Contract `sheet-embed.1`", at Workspace's `99aef32`). On 2026-11-14 Workspace's Phase 5 chose to have Track S3 to S5 built now, in a session of their own here, while Workspace builds its side against its own mock embed. Limits agreed there: 20 MB a workbook, 5,000 cells a range. Where the contract leaves something open, Sheet's reading went to Workspace's session before building (the readings below).
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Whether a range view draws the charts and pictures over it | Cells only. Charts are embedded as chart views |
+| Whether the frame offers its own "Open in Cash Gear Sheet" (`openRequested`) | No: Workspace's block has the button |
+| What a reader can do in the frame | Scroll only. Screen readers get the cells' text |
+| The previews' colours | The file's own, as printed and saved, whatever the theme: Workspace stores one picture per view for every reader |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Where the code lives | `apps/web/embed.html` and `src/embed.tsx`, a second page of the web build that never starts the editor; `packages/ui/src/embed` (the handshake, the view, previews and texts, no editing); the contract's types and validators in `packages/ui/src/embed/contract.ts` |
+| Headers | `/embed` and `/embed.html` get `frame-ancestors` with Workspace's origins (live `https://workspace.cashgearerp.com`, `tauri://localhost`, `http://tauri.localhost`; the preview adds `http://127.0.0.1:5273`, `http://127.0.0.1:4273`, `http://localhost:5273`, `http://localhost:4273`). Every other header is the rest of the site's, which keeps `frame-ancestors 'none'` |
+| The used range (`range: null`) | From the first to the last cell holding a value, a fill or a border, or reached by overflowing text: the printed area, without drawings, and not from A1. An empty sheet is `A1` |
+| Cutting it to 5,000 cells | Keeps the top-left corner: every column when there are at most 50, else `max(50, floor(5000 / rows))` of them, then the rows that fit; `capped: true` |
+| `sheets` and `charts` | Visible worksheets in tab order; charts on them and each visible chart sheet's chart. A chart's `id` is its name in the file (`Chart 1`), with ` (2)` after a repeat on one sheet; its `title` is its title text, else its name |
+| Sheet names | Matched without case, as Excel's are; answers spell them as the workbook does |
+| How a view is drawn | At 100%, no headings, no selection, no frozen panes; gridlines as the sheet says; a right-to-left sheet mirrored as in the editor. `size` is that, at most 100,000 each way; the frame scrolls past its own size |
+| Previews | `maxWidth` and `maxHeight` are CSS pixels; the picture is the view from its leading corner, cut to fit, not scaled. `width` and `height` are what it shows; its density is `scale`, lowered until the PNG is at most 2 MB |
+| `locale` and `direction` | The frame's texts, `lang` and `dir`. Numbers and dates show as the file's formats say, in the browser's conventions, as in the editor |
+| The workbook in the frame | Read in memory only: no working copy, draft or recovery, nothing written to the device, no service worker registered by the frame |
+| Validation | As Workspace's validators have it: a message, or any object in it, with a field the contract doesn't name is refused; ETags and URLs are visible ASCII; a drawn view's range is written top-left first. An `init` that fails validation doesn't count as the one `init`; one with another `contract` does. Port messages are handled one at a time, in order. A `requestPreview` after an `error` answers that code |
+| The real API's suite | `WORKSPACE_API_URL` points `workspace-connector`'s `sheet-session.1` suite at a real API, with tickets from `WORKSPACE_LAUNCHER_URL` (the mock's `/__mock/launch` shape); cases that need the mock's controls are skipped there |
