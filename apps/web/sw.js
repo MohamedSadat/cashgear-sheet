@@ -8,7 +8,9 @@
 // - Pages come from the network first, so a new build shows at once, and from the cache offline.
 //   Cached responses keep their cross-origin isolation headers, which the engine's shared memory
 //   needs.
-// - Workbooks never pass through it: they are the user's files, read from the device.
+// - Workbooks never pass through it: they are the user's files, read from the device, or a
+//   Workspace workbook's signed URL, read from Blob Storage.
+// - `/embed` (Workspace's frame) falls back to its own page offline, never to the app's.
 
 /** Cached when the worker installs. */
 const shell = self.__SHELL__;
@@ -56,7 +58,9 @@ async function page(request) {
   try {
     return await fetch(request);
   } catch (error) {
-    const cached = await caches.match('/', { cacheName: shellCache });
+    // `/embed`, Workspace's frame, is a page of its own, with headers of its own (Track S3).
+    const embed = /^\/embed(\.html)?$/i.test(new URL(request.url).pathname);
+    const cached = await caches.match(embed ? '/embed.html' : '/', { cacheName: shellCache });
     if (cached) return cached;
     throw error;
   }
