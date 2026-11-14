@@ -10,6 +10,7 @@ import {
   formattingBook,
   macroBook,
   movingPartsBook,
+  openXmlCopy,
   prefixedBook,
   pivotBook,
   printBook,
@@ -31,6 +32,8 @@ for (const [name, bytes] of Object.entries({
   'structures.xlsx': structuresBook(),
   'moving-parts.xlsx': movingPartsBook(),
   'prefixed.xlsx': prefixedBook(),
+  // As DocumentFormat.OpenXml writes a workbook, as Cash Gear Workspace's exports are.
+  'openxml.xlsx': openXmlCopy(formattingBook()),
   'print.xlsx': printBook(),
   'rtl.xlsx': rightToLeftBook(),
   'rtl-print.xlsx': rightToLeftCopy(printBook()),

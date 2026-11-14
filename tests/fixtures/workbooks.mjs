@@ -1118,6 +1118,29 @@ export function readZip(bytes) {
 }
 
 /**
+ * A copy of a workbook this file wrote as DocumentFormat.OpenXml writes one, as Cash Gear
+ * Workspace's server does for the workbooks it exports from a database view: every SpreadsheetML
+ * element under the prefix `x` (`<x:workbook>`, `<x:sheetData>`, `<x:row>`, `<x:c>`), declared on
+ * each part's root in place of a default namespace. Other prefixes stay as they are.
+ */
+export function openXmlCopy(bytes) {
+  const declared = `xmlns="${MAIN}"`;
+  return zip(
+    readZip(bytes).map(([name, content]) => {
+      if (!/\.xml$/.test(name)) return [name, content];
+      const xml = content.toString('utf8');
+      if (!xml.includes(declared)) return [name, content];
+      // A second default namespace inside would put its elements under the wrong prefix.
+      if (xml.split('xmlns="').length !== 2) throw new Error(`${name} has two default namespaces.`);
+      const prefixed = xml
+        .replace(declared, `xmlns:x="${MAIN}"`)
+        .replace(/<(\/?)([A-Za-z_][\w.-]*)(?=[\s/>])/g, '<$1x:$2');
+      return [name, prefixed];
+    }),
+  );
+}
+
+/**
  * A copy of a workbook this file wrote with every worksheet right to left, as Sheet Right-to-Left
  * in Excel leaves it: `rightToLeft="1"` on each sheet's first view.
  */
