@@ -6,7 +6,13 @@
 // the contract's validator.
 import { expect, test, type Frame, type Page } from '@playwright/test';
 import { PNG } from 'pngjs';
-import { formattingBook, manyRowsBook, rightToLeftCopy, workbook } from '../fixtures/workbooks.mjs';
+import {
+  formattingBook,
+  manyRowsBook,
+  openXmlCopy,
+  rightToLeftCopy,
+  workbook,
+} from '../fixtures/workbooks.mjs';
 import { CONTRACT, parseEmbedMessage } from '../../packages/ui/src/embed/contract';
 import { FONT_OVERRIDE } from './helpers.mjs';
 
@@ -383,6 +389,43 @@ test('a right-to-left sheet draws mirrored, column A on the right', async ({ pag
   // A1:E1 are filled and F1 isn't: F is at the left.
   expect(isLight(pixel(png, 4, Math.floor(png.height / 2)))).toBe(true);
   expect(isLight(pixel(png, png.width - 4, Math.floor(png.height / 2)))).toBe(false);
+});
+
+test('a workbook DocumentFormat.OpenXml wrote, every element prefixed, shows as the same file does', async ({
+  page,
+}) => {
+  // Cash Gear Workspace's server exports database views this way: `<x:worksheet>`, `<x:row>`, `<x:c>`.
+  const views = [
+    { kind: 'range', sheet: null, range: null },
+    { kind: 'chart', sheet: null, chartId: 'Sales chart' },
+  ];
+  const seen: { loaded: Message[]; pictures: Buffer[] }[] = [];
+  for (const bytes of [formattingBook(), openXmlCopy(formattingBook())]) {
+    const source = await hosted(bytes);
+    const { frame } = await started(page, initOf(source, { view: views[0] }));
+    const loaded = [await last(page, 1)];
+    await expect(frame.locator('.cgs-embed-cells td').first()).toHaveText('Header one');
+    const pictures: Buffer[] = [];
+    await send(page, { type: 'requestPreview', id: 'p1', maxWidth: 800, maxHeight: 600, scale: 1 });
+    pictures.push(
+      Buffer.from(((await last(page, 2)).bytes as { $bytes: string }).$bytes, 'base64'),
+    );
+    await send(page, { type: 'setView', view: views[1] });
+    loaded.push(await last(page, 3));
+    await send(page, { type: 'requestPreview', id: 'p2', maxWidth: 800, maxHeight: 600, scale: 1 });
+    pictures.push(
+      Buffer.from(((await last(page, 4)).bytes as { $bytes: string }).$bytes, 'base64'),
+    );
+    // Each version has its own ETag; everything else must be the same.
+    seen.push({ loaded: loaded.map((message) => ({ ...message, etag: '' })), pictures });
+  }
+  const [plain, prefixed] = seen;
+  expect(prefixed!.loaded).toEqual(plain!.loaded);
+  expect(prefixed!.loaded[0]).toMatchObject({ type: 'loaded', view: { sheet: 'Formats' } });
+  // Pixel for pixel: the range and the chart.
+  for (const [at, picture] of prefixed!.pictures.entries()) {
+    expect(PNG.sync.read(picture).data.equals(PNG.sync.read(plain!.pictures[at]!).data)).toBe(true);
+  }
 });
 
 test('the source’s errors: forbidden, unavailable, too large, not a workbook', async ({ page }) => {

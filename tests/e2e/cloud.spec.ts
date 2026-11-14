@@ -4,7 +4,8 @@
 // Gear Sheet" would, so the fragment's handling, CORS, the signed URL, cross-origin isolation and
 // the content security policy run as they will in production.
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
-import { readZip, workbook } from '../fixtures/workbooks.mjs';
+import { openXmlCopy, readZip, workbook } from '../fixtures/workbooks.mjs';
+import { budgetBook } from '../workspace-mock/server.mjs';
 import { FONT_OVERRIDE, waitForGrid } from './helpers.mjs';
 
 const MOCK = 'http://127.0.0.1:4280';
@@ -173,6 +174,40 @@ test('saves new versions with If-Match, each from the version before', async ({ 
   expect(saves.map((s) => s.ifMatch)).toEqual([first, saved.etag]);
   expect(await savedCell(saved.id, 'B4')).toBe('1000');
   expect(seen).toEqual([]);
+});
+
+test('opens and saves a workbook DocumentFormat.OpenXml wrote, every element prefixed', async ({
+  page,
+}) => {
+  // As Cash Gear Workspace's server writes a workbook it exports from a database view.
+  const source = openXmlCopy(Buffer.from(budgetBook()));
+  await mock('version', { workbook: 'budget', user: 'other', bytes: source.toString('base64') });
+  const { url } = await launchUrl();
+  await open(page, url);
+  await opened(page, BUDGET);
+  expect(await page.evaluate(() => window.cgsTest.cellText(4, 2))).toBe('1500');
+  await page.evaluate(() => window.cgsTest.edit(0, 2, 2, { number: 999 }));
+  await page.keyboard.press('Control+s');
+  await expect.poll(() => badgeOf(page)).toMatch(/^Budget 2027 – Cash Gear Workspace · Saved \d/);
+  const saved = await book('Budget 2027');
+  const bytes = Buffer.from(
+    await (await fetch(`${MOCK}/__mock/bytes?workbook=${saved.id}`)).arrayBuffer(),
+  );
+  const parts = new Map(readZip(bytes).map(([name, data]) => [name, data]));
+  const sheet = parts.get('xl/worksheets/sheet1.xml')!.toString('utf8');
+  // The sheet keeps its prefix, with the edit and the new total in it. The workbook gains only
+  // the request to calculate on opening, under the file's own prefix, and the styles are the
+  // source's, byte for byte.
+  expect(sheet).toMatch(/^<\?xml[^>]*\?><x:worksheet /);
+  expect(sheet).toMatch(/<x:c r="B2"[^>]*><x:v>999<\/x:v><\/x:c>/);
+  expect(sheet).toMatch(/<x:c r="B4"[^>]*><x:f>[^<]*<\/x:f><x:v>1299<\/x:v><\/x:c>/);
+  const before = new Map(readZip(source).map(([name, data]) => [name, data.toString('utf8')]));
+  expect(parts.get('xl/workbook.xml')!.toString('utf8')).toBe(
+    before
+      .get('xl/workbook.xml')!
+      .replace('</x:workbook>', '<x:calcPr fullCalcOnLoad="1"/></x:workbook>'),
+  );
+  expect(parts.get('xl/styles.xml')!.toString('utf8')).toBe(before.get('xl/styles.xml'));
 });
 
 test('a newer version saved meanwhile offers Save a Copy, which keeps the changes beside it', async ({
