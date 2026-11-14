@@ -23,6 +23,8 @@
     "erp:mock": "node tests/erp-mock/server.mjs",
     "erp:tenant": "node scripts/erp-tenant.mjs",
     "workspace:mock": "node tests/workspace-mock/server.mjs",
+    "workspace:contract": "vitest run packages/workspace-connector/src/contract.test.ts",
+    "embed:parent": "node tests/embed-parent/server.mjs",
     "desktop:build": "pnpm build && pnpm --filter @cgs/desktop build",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:installer": "node scripts/desktop-installer.mjs",
