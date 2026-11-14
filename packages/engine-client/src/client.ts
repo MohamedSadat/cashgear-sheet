@@ -15,6 +15,7 @@ import type {
   PivotInfo,
   EngineApi,
   EngineInfo,
+  EngineOptions,
   ErpBinding,
   ErpCommitApplied,
   ErpMarkSummary,
@@ -47,7 +48,7 @@ import { decodeViewBlock, type ViewBlock } from './view-block';
 
 export interface EngineClient {
   /** Starts the engine and connects the tile worker to it. */
-  init(): Promise<EngineInfo>;
+  init(options?: EngineOptions): Promise<EngineInfo>;
   /** Proves this page and the engine share memory (needs cross-origin isolation). */
   checkSharedMemory(): Promise<boolean>;
   setLocale(locale: LocaleData): Promise<void>;
@@ -254,9 +255,9 @@ export function createEngineClient(onError: (message: string) => void): EngineCl
     tiles.attachEngine(transfer(channel.port2, [channel.port2])),
   ]);
   return {
-    async init() {
+    async init(options) {
       await connected;
-      return engine.init();
+      return engine.init(options);
     },
     async checkSharedMemory() {
       if (typeof SharedArrayBuffer !== 'function' || !crossOriginIsolated) return false;

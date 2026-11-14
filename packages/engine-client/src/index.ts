@@ -119,6 +119,7 @@ export type {
   ChartView,
   DrawingBox,
   EngineInfo,
+  EngineOptions,
   FileSource,
   FindQuery,
   FormatChange,

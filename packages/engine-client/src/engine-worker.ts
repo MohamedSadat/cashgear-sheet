@@ -115,6 +115,9 @@ async function afterSave() {
   while (saving) await saving.catch(() => undefined);
 }
 
+/** Nothing goes on the device: Workspace's read-only embed (`EngineOptions`). */
+let inMemoryOnly = false;
+
 function ensureEngine() {
   engine ??= initWasm({ module_or_path: new URL('./pkg/cgs_wasm_bg.wasm', import.meta.url) }).then(
     (exports) => {
@@ -122,7 +125,8 @@ function ensureEngine() {
       const wasm = new Engine();
       wasm.set_today(todaySerial());
       // Not awaited: a slow disk mustn't hold up the first file.
-      void sweepWorkingCopies();
+      if (inMemoryOnly) recoverables = [];
+      else void sweepWorkingCopies();
       return wasm;
     },
   );
@@ -854,7 +858,9 @@ const tilePort: EngineTilePort = {
 };
 
 const api: EngineApi = {
-  async init() {
+  async init(options) {
+    // Said before the engine starts, so it never looks at the device.
+    if (options?.inMemoryOnly && !engine) inMemoryOnly = true;
     await ensureEngine();
     return { version: version() };
   },
@@ -924,6 +930,7 @@ const api: EngineApi = {
   },
   async protectSource(given) {
     const wasm = await ensureEngine();
+    if (inMemoryOnly) return false;
     if (erpBound) return false;
     if (given) {
       const { read, size } = reader(given);

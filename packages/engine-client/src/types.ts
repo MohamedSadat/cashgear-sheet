@@ -107,6 +107,14 @@ export interface EngineInfo {
   version: string;
 }
 
+export interface EngineOptions {
+  /**
+   * Keeps nothing on the device: no working copy, journal or recovery, and other tabs' left
+   * copies are neither looked at nor swept. For Workspace's read-only embed (Track S3).
+   */
+  inMemoryOnly?: boolean;
+}
+
 /** A file to open, which the engine worker reads a slice at a time. */
 export type FileSource =
   | { kind: 'blob'; blob: Blob }
@@ -892,6 +900,8 @@ export type Question =
   | { kind: 'noteAt'; sheet: number; row: number; col: number }
   | { kind: 'linkAt'; sheet: number; row: number; col: number }
   | { kind: 'notes'; sheet: number }
+  /** The cells a view of the sheet shows when it names none (Track S3), or null when empty. */
+  | { kind: 'usedRange'; sheet: number }
   | { kind: 'cellStyles' }
   | { kind: 'styleFormat'; name: string }
   | { kind: 'pivotDataFormula'; sheet: number; row: number; col: number; from: number }
@@ -923,6 +933,7 @@ export interface Answers {
   erpConflicts: ErpConflicts | null;
   noteAt: NoteInfo | null;
   linkAt: LinkInfo | null;
+  usedRange: CellArea | null;
   notes: {
     row: number;
     col: number;
@@ -1680,7 +1691,7 @@ export interface CellText {
 
 /** The engine worker, as the main thread sees it. */
 export interface EngineApi {
-  init(): Promise<EngineInfo>;
+  init(options?: EngineOptions): Promise<EngineInfo>;
   /** Connects the tile worker, which then reads tiles from this port. */
   attachTileWorker(port: MessagePort): void;
   /** Writes `value` into `buffer`, to prove the page and the worker share memory. */
