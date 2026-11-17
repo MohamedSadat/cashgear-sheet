@@ -3,13 +3,29 @@ import { createRoot } from 'react-dom/client';
 import { isTauri } from '@tauri-apps/api/core';
 import { AppShell, ThemeController } from '@cgs/ui';
 import { cloudLaunch, cloudPlatform } from './platform/cloud';
-import { desktopPlatform, openPathForTest, saveTargetForTest } from './platform/desktop';
+import {
+  closeWindow,
+  desktopPlatform,
+  followDocumentTitle,
+  openPathForTest,
+  saveTargetForTest,
+  workspaceLaunch,
+} from './platform/desktop';
 import { webPlatform } from './platform/web';
 
 const desktop = isTauri();
 // A tab Cash Gear Workspace's "Open in Cash Gear Sheet" started (`/cloud#launch=…`) opens and saves
-// that workbook there (Track S1 and S2); every other web tab works with files.
-const platform = desktop ? desktopPlatform : cloudLaunch ? cloudPlatform(cloudLaunch) : webPlatform;
+// that workbook there (Track S1 and S2), and so does a desktop window its link opened (Track S6);
+// every other tab or window works with files.
+const desktopLaunch = desktop ? await workspaceLaunch().catch(() => null) : null;
+const platform = desktop
+  ? desktopLaunch
+    ? cloudPlatform(desktopLaunch, desktopPlatform, { close: closeWindow })
+    : desktopPlatform
+  : cloudLaunch
+    ? cloudPlatform(cloudLaunch)
+    : webPlatform;
+if (desktop) followDocumentTitle();
 // Set before the first render, so the page never flashes the wrong theme.
 const theme = new ThemeController(platform);
 if (desktop) {

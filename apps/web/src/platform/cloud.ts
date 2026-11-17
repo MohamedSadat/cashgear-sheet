@@ -84,6 +84,17 @@ class CloudRef {
   ) {}
 }
 
+/** Where the connection lives: a browser tab, or a desktop window (Track S6). */
+export interface CloudHost {
+  /** Closes the tab or window, after its session went to another one waiting for it. */
+  close(): void;
+}
+
+const browserTab: CloudHost = { close: () => window.close() };
+
+/** How long a closing desktop window waits for Workspace to answer End. */
+const END_WAIT_MS = 3000;
+
 const browserLanguage = (): 'en' | 'ar' =>
   typeof navigator !== 'undefined' && /^ar\b/i.test(navigator.language) ? 'ar' : 'en';
 
@@ -93,6 +104,7 @@ const browserLanguage = (): 'en' | 'ar' =>
  */
 class CloudConnection implements CloudWorkbook {
   readonly #launch: CloudLaunch;
+  readonly #host: CloudHost;
   #session: WorkspaceSession | null = null;
   #status: CloudStatus = { kind: 'opening', name: null, received: 0, total: null };
   readonly #listeners = new Set<(status: CloudStatus) => void>();
@@ -102,10 +114,11 @@ class CloudConnection implements CloudWorkbook {
   #savedAt: number | null = null;
   #opened = false;
 
-  constructor(launch: CloudLaunch) {
+  constructor(launch: CloudLaunch, host: CloudHost) {
     this.#launch = launch;
+    this.#host = host;
     // The tab closing ends the session in Workspace, unless it was handed to another tab.
-    window.addEventListener('pagehide', () => this.#session?.end());
+    window.addEventListener('pagehide', () => void this.#session?.end());
   }
 
   language() {
@@ -175,7 +188,7 @@ class CloudConnection implements CloudWorkbook {
       session.giveAway();
       this.#session = null;
       this.#set({ kind: 'handedOver', name: session.workbook.name });
-      window.close();
+      this.#host.close();
       return null;
     }
     try {
@@ -184,10 +197,24 @@ class CloudConnection implements CloudWorkbook {
       return file;
     } catch (error) {
       this.#set({ kind: 'failed', reason: failure(error).reason });
-      session.end();
+      void session.end();
       this.#session = null;
       return null;
     }
+  }
+
+  /**
+   * The desktop window is closing, its user having agreed: ends the session in Workspace first,
+   * waiting a little for the answer, since a WebView that goes doesn't promise to send a
+   * `keepalive` request. A session handed to another window isn't this one's to end.
+   */
+  async closing() {
+    const session = this.#session;
+    if (!session) return;
+    await Promise.race([
+      session.end(),
+      new Promise<void>((resolve) => setTimeout(resolve, END_WAIT_MS)),
+    ]);
   }
 
   /** The workbook's current version as a file the shell opens. */
@@ -324,7 +351,7 @@ class CloudConnection implements CloudWorkbook {
     this.#stopWaiting?.();
     this.#stopWaiting = null;
     this.#stopWatching?.();
-    this.#session?.end();
+    void this.#session?.end();
     this.#session = null;
     this.#set({ kind: 'closed' });
   }
@@ -332,16 +359,28 @@ class CloudConnection implements CloudWorkbook {
 
 /**
  * The third platform (Track S1): the web platform, opening and saving one workbook of Cash Gear
- * Workspace's in place of a file, for a tab its "Open in Cash Gear Sheet" started.
+ * Workspace's in place of a file, for a tab its "Open in Cash Gear Sheet" started. On the desktop
+ * (Track S6) it wraps the desktop platform the same way, for a window a Workspace link opened.
  */
 export function cloudPlatform(
   launch: CloudLaunch,
   base: SheetPlatform = webPlatform,
+  host: CloudHost = browserTab,
 ): SheetPlatform {
-  const cloud = new CloudConnection(launch);
+  const cloud = new CloudConnection(launch, host);
+  const onCloseRequested = base.onCloseRequested;
   return {
     ...base,
     cloud,
+    // A desktop window ends its session once its user agrees to close it.
+    ...(onCloseRequested && {
+      onCloseRequested: (ask: () => Promise<boolean>) =>
+        onCloseRequested(async () => {
+          if (!(await ask())) return false;
+          await cloud.closing();
+          return true;
+        }),
+    }),
     // The workbook comes from Workspace; the web's launch queue has nothing for this tab.
     launchFile: () => cloud.open(),
     async saveTarget(file) {

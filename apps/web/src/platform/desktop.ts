@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { desktopCloudLaunch, workspaceApiBase, type CloudLaunch } from '@cgs/workspace-connector';
 import type {
   NativeInfo,
   OpenedFile,
@@ -134,4 +135,45 @@ export async function openPathForTest(path: string): Promise<OpenedFile> {
 export async function saveTargetForTest(path: string): Promise<SaveTarget> {
   await invoke('allow_save_path', { path });
   return pathTarget(path);
+}
+
+/**
+ * The Cash Gear Workspace launch this window was opened for (Track S6), or null. The native side
+ * checked the link the system gave it and kept its ticket for this window, which takes it once,
+ * so a reload opens no workbook. The API is the build's, as on the web, or the mock's in a test
+ * run the native side was started for.
+ */
+export async function workspaceLaunch(): Promise<CloudLaunch | null> {
+  const ticket = await invoke<string | null>('workspace_launch');
+  if (ticket === null) return null;
+  const testApi = await invoke<string | null>('workspace_test_api');
+  return desktopCloudLaunch(
+    ticket,
+    testApi ?? workspaceApiBase(window.location.origin, import.meta.env.VITE_WORKSPACE_API_URL),
+  );
+}
+
+/** Closes this window without asking, as a tab whose session went to another window does. */
+export const closeWindow = () => void getCurrentWindow().destroy();
+
+/**
+ * Keeps the window's title the page's, so windows tell their workbooks apart in the taskbar: a
+ * Workspace workbook's is "Budget 2027 – CashGear Sheet", as the web's tab is.
+ */
+export function followDocumentTitle() {
+  let shown = '';
+  const follow = () => {
+    const title = document.title;
+    if (!title || title === shown) return;
+    shown = title;
+    getCurrentWindow()
+      .setTitle(title)
+      .catch(() => undefined);
+  };
+  new MutationObserver(follow).observe(document.head, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+  follow();
 }
