@@ -251,6 +251,36 @@ function checkRegistered(exe) {
   )?.[1];
   if (command?.trim() !== expected)
     throw new Error(`${scheme}: links open with ${command}, not ${expected}.`);
+  // And the system says so, asked as Workspace's desktop app asks before it offers the link.
+  if (schemeHandler() !== expected)
+    throw new Error(`Windows says ${scheme} opens with ${schemeHandler()}, not ${expected}.`);
+}
+
+/**
+ * What Windows runs for a link of the scheme, asked as Cash Gear Workspace's desktop app asks
+ * whether Sheet's desktop app is there: `AssocQueryStringW(ASSOCF_IS_PROTOCOL |
+ * ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_COMMAND, <scheme>, "open")`, which reads HKCU's and HKLM's
+ * classes. `null` when nothing handles it.
+ */
+function schemeHandler() {
+  const answer = windowsPowerShell(`
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class CgsAssoc {
+  [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+  public static extern int AssocQueryStringW(uint flags, int what, string assoc, string extra, StringBuilder output, ref uint size);
+  public static string Command(string scheme) {
+    uint size = 2048;
+    var output = new StringBuilder(2048);
+    int result = AssocQueryStringW(0x1000 | 0x400, 1, scheme, "open", output, ref size);
+    return result == 0 ? output.ToString() : "";
+  }
+}
+"@
+[CgsAssoc]::Command('${scheme}')`);
+  return answer || null;
 }
 
 /**
@@ -601,6 +631,8 @@ try {
   const leftKeys = leftBehind().filter((item) => item !== publisherKey && !kept.includes(item));
   if (leftKeys.length) throw new Error('The uninstaller left: ' + leftKeys.join(', '));
   if (keyDump(capabilities)) throw new Error('The uninstaller left the Default apps capabilities.');
+  if (schemeHandler() !== null)
+    throw new Error(`Windows still opens ${scheme} links with ${schemeHandler()}.`);
   if (usersOwn() !== usersOwnBefore)
     throw new Error("The user's own keys for these file types changed.");
   results.steps.uninstallSeconds = (Date.now() - step) / 1000;
