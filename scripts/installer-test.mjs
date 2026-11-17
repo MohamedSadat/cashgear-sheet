@@ -4,13 +4,16 @@
 // second as an update on 127.0.0.1, then:
 //   1. installs the first silently into a folder of its own, and checks that its programs are
 //      signed with the certificate, that the notices are beside it, and that it is registered
-//      for .xlsx, .xlsm, .xltx, .xltm and .csv;
+//      for .xlsx, .xlsm, .xltx, .xltm and .csv and for its link scheme (Track S6);
 //   2. opens an .xlsx through the shell as a double-click does once the app is the type's
-//      default: Windows runs the ProgID's open command, and the app shows the workbook;
+//      default: Windows runs the ProgID's open command, and the app shows the workbook; then
+//      opens Cash Gear Workspace's link through the shell, as Workspace's desktop app does, cold
+//      and while the app runs, against the mock of Workspace's routes;
 //   3. starts it, has the status bar offer the update, and installs it from the Update dialog;
 //   4. checks that the app the installer starts again is the new version, still registered;
-//   5. uninstalls it silently and checks that nothing is left behind, and that the user's own
-//      keys for those file types are exactly as they were.
+//   5. uninstalls it silently and checks that nothing is left behind, the scheme's key included,
+//      and that the user's own keys for those file types and a real install's scheme are exactly
+//      as they were.
 // The test builds install as a product of their own, so they can run beside a real install of
 // CashGear Sheet and never touch its registry keys, ProgIDs, shortcuts or data.
 // Needs the WebView2 Runtime and the Windows SDK (signtool).
@@ -33,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { chromium } from '@playwright/test';
 import { defaultStyledBook } from '../tests/fixtures/workbooks.mjs';
+import { startMockWorkspace } from '../tests/workspace-mock/server.mjs';
 import { pnpmCommand, root, run, windowsPowerShell } from './lib.mjs';
 import { makeTestCertificate } from './test-certificate.mjs';
 
@@ -41,6 +45,8 @@ const product = 'CGS Installer Test';
 // ProgIDs are made from it (hooks.nsh), and a ProgID has no hyphens.
 const identifier = 'com.cashgear.sheet.installertest';
 const extensions = ['xlsx', 'xlsm', 'xltx', 'xltm', 'csv'];
+// Its own link scheme, so it never takes a real install's `cashgear-sheet` (Track S6).
+const scheme = 'cashgear-sheet-installertest';
 const feedPort = 47812;
 const started = Date.now();
 const log = (line) => console.log(`[${((Date.now() - started) / 1000).toFixed(0)} s] ${line}`);
@@ -67,6 +73,7 @@ const publisherKey = `HKCU\\Software\\${product}`;
 const capabilities = `${publisherKey}\\${product}\\Capabilities`;
 const classes = 'HKCU\\Software\\Classes';
 const progIds = extensions.map((ext) => `${classes}\\${identifier}.${ext}`);
+const schemeKey = `${classes}\\${scheme}`;
 const registeredApps = 'HKCU\\Software\\RegisteredApplications';
 const desktop = windowsPowerShell("[Environment]::GetFolderPath('Desktop')");
 const shortcuts = [
@@ -97,6 +104,7 @@ const usersOwn = () =>
   [
     ...extensions.map((ext) => `${classes}\\.${ext}`),
     ...extensions.map((ext) => `${classes}\\com.cashgear.sheet.${ext}`),
+    `${classes}\\cashgear-sheet`,
     'HKCU\\Software\\CashGear\\CashGear Sheet',
     `${uninstallRoot}\\CashGear Sheet`,
   ]
@@ -108,7 +116,9 @@ const usersOwnBefore = usersOwn();
 
 /** What an install under the test's name has left on this machine. */
 const leftBehind = () => [
-  ...[uninstallKey, publisherKey, ...progIds].filter((key) => reg(['query', key]).status === 0),
+  ...[uninstallKey, publisherKey, ...progIds, schemeKey].filter(
+    (key) => reg(['query', key]).status === 0,
+  ),
   ...(reg(['query', registeredApps, '/v', product]).status === 0
     ? [`${registeredApps} ${product}`]
     : []),
@@ -167,7 +177,7 @@ async function removeInstall() {
       120_000,
     ).catch((error) => log(error.message));
   }
-  for (const key of [uninstallKey, publisherKey, ...progIds]) reg(['delete', key, '/f']);
+  for (const key of [uninstallKey, publisherKey, ...progIds, schemeKey]) reg(['delete', key, '/f']);
   reg(['delete', registeredApps, '/v', product, '/f']);
   for (const ext of extensions) {
     reg(['delete', `${classes}\\.${ext}\\OpenWithProgids`, '/v', `${identifier}.${ext}`, '/f']);
@@ -233,12 +243,22 @@ function checkRegistered(exe) {
   }
   if (reg(['query', registeredApps, '/v', product]).status !== 0)
     throw new Error('The app is not in Default apps.');
+  // The link scheme: a URL protocol whose open command passes the link as the only argument.
+  if (reg(['query', schemeKey, '/v', 'URL Protocol']).status !== 0)
+    throw new Error(`${scheme} is not registered as a URL protocol.`);
+  const command = reg(['query', `${schemeKey}\\shell\\open\\command`, '/ve']).stdout.match(
+    /REG_SZ\s+(.+)/,
+  )?.[1];
+  if (command?.trim() !== expected)
+    throw new Error(`${scheme}: links open with ${command}, not ${expected}.`);
 }
 
 /**
  * Opens a file as Explorer does for a double-click once the app is the type's default: through
  * ShellExecuteEx with the type's ProgID, so Windows reads the open command from the registry and
  * runs it. The user's default for .xlsx stays theirs, so that is how the test can pick the app.
+ * With no `ext`, `file` is a link, opened as Workspace's desktop app opens one: Windows finds its
+ * scheme's open command.
  */
 function shellOpen(file, ext, env) {
   const script = `
@@ -258,13 +278,15 @@ public static class CgsShell {
   public static int Open(string file, string progId) {
     var info = new Info();
     info.cbSize = Marshal.SizeOf(info);
-    info.fMask = 0x00000001 | 0x00000400; // SEE_MASK_CLASSNAME, SEE_MASK_FLAG_NO_UI
-    info.lpVerb = "open"; info.lpFile = file; info.lpClass = progId; info.nShow = 1;
+    // SEE_MASK_CLASSNAME with a ProgID, and SEE_MASK_FLAG_NO_UI.
+    info.fMask = (progId.Length > 0 ? 0x00000001u : 0u) | 0x00000400u;
+    info.lpVerb = "open"; info.lpFile = file; info.nShow = 1;
+    if (progId.Length > 0) info.lpClass = progId;
     return ShellExecuteEx(ref info) ? 0 : Marshal.GetLastWin32Error();
   }
 }
 "@
-[CgsShell]::Open('${file.replace(/'/g, "''")}', '${identifier}.${ext}')`;
+[CgsShell]::Open('${file.replace(/'/g, "''")}', '${ext ? `${identifier}.${ext}` : ''}')`;
   const childEnv = { ...env };
   for (const name of Object.keys(childEnv))
     if (name.toLowerCase() === 'psmodulepath') delete childEnv[name];
@@ -283,6 +305,7 @@ const hostedRunner =
   process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
 let policySet = false;
 let server;
+let workspace;
 try {
   await removeInstall();
   await removeKilledRuns();
@@ -316,6 +339,7 @@ try {
     ...process.env,
     CGS_TEST_PRODUCT: product,
     CGS_TEST_IDENTIFIER: identifier,
+    CGS_TEST_SCHEME: scheme,
     CGS_SIGN_PFX: certificate.pfx,
     CGS_SIGN_PASSWORD: certificate.password,
     CGS_SIGN_TIMESTAMP: '0',
@@ -399,7 +423,10 @@ try {
     throw new Error('The install lacks its third-party notices.');
   checkRegistered(appExe());
   results.steps.registeredTypes = extensions.map((ext) => '.' + ext);
-  log(`Installed: ${results.signedFiles} programs, all signed, registered for its file types`);
+  results.steps.registeredScheme = scheme;
+  log(
+    `Installed: ${results.signedFiles} programs, all signed, registered for its file types and ${scheme}:`,
+  );
 
   const port = await freePort();
   const profile = join(work, 'webview2');
@@ -448,6 +475,64 @@ try {
   log('A double-clicked workbook opened in the app');
   await browser.close().catch(() => {});
   stopApp();
+
+  // 2b. Cash Gear Workspace's link through the shell (Track S6), against the mock of its routes,
+  // which the test-only variables name: cold, then while the app runs.
+  workspace = await startMockWorkspace();
+  const linkEnv = {
+    ...appEnv,
+    CGS_WORKSPACE_API: workspace.url,
+    CGS_WORKSPACE_BLOB: workspace.blobUrl,
+  };
+  const workspaceLink = async (workbook) => {
+    const response = await fetch(`${workspace.url}/__mock/launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: 'editor', workbook, target: 'desktop' }),
+    });
+    const { url } = await response.json();
+    // Workspace's link, in the test product's scheme.
+    return url.replace(/^cashgear-sheet:/, `${scheme}:`);
+  };
+  const badge = (on) =>
+    on
+      .getByTestId('cloud-badge')
+      .textContent({ timeout: 1000 })
+      .then(
+        (text) => (text ?? '').replace(/[\u2066-\u2069]/g, ''),
+        () => '',
+      );
+  step = Date.now();
+  shellOpen(await workspaceLink('budget'), null, linkEnv);
+  ({ browser, page } = await attach(port));
+  await until(
+    'the linked workbook to open',
+    async () => (await badge(page)) === 'Budget 2027 – Cash Gear Workspace',
+    60_000,
+  );
+  const b4 = await page.evaluate(() => window.cgsTest.cellText(4, 2));
+  if (b4 !== '1500') throw new Error(`The linked workbook shows ${b4} in B4.`);
+  const opening = browser.contexts()[0].waitForEvent('page', { timeout: 60_000 });
+  shellOpen(await workspaceLink('empty'), null, linkEnv);
+  const second = await opening;
+  await until(
+    'the second link to open in a window of its own',
+    async () => (await badge(second)) === 'New workbook – Cash Gear Workspace',
+    60_000,
+  );
+  const redeemed = (await (await fetch(`${workspace.url}/__mock/state`)).json()).tickets;
+  if (redeemed.length !== 2 || !redeemed.every((t) => t.used && t.target === 'desktop'))
+    throw new Error('The links were not both redeemed: ' + JSON.stringify(redeemed));
+  results.steps.workspaceLink = {
+    seconds: (Date.now() - step) / 1000,
+    b4,
+    windows: browser.contexts()[0].pages().length,
+  };
+  log('Workspace links opened through the shell, cold and while the app ran');
+  await browser.close().catch(() => {});
+  stopApp();
+  await workspace.close();
+  workspace = undefined;
 
   // 3. Start it, and update it from the Update dialog the status bar offers.
   const start = () =>
@@ -525,6 +610,7 @@ try {
   console.log(JSON.stringify(results, null, 2));
 } finally {
   server?.close();
+  await workspace?.close();
   if (policySet) reg(['delete', policyKey, '/v', policyName, '/f', '/reg:64']);
   await removeInstall().catch((error) => log(`Removing the install failed: ${error.message}`));
   await forceRemove(work).catch((error) =>

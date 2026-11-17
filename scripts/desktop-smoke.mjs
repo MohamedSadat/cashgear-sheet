@@ -2,7 +2,9 @@
 // and checks the same things the browser specs check: real workbooks read through the
 // desktop's file protocol, the same golden images as the web in both themes, a CashGear
 // control, cross-origin isolation and shared memory. It also checks the native command,
-// the window's own theme, and that the choice survives a restart.
+// the window's own theme, and that the choice survives a restart. Then Cash Gear Workspace's
+// link (Track S6) against the mock of its routes: the app started for a link, a link while it
+// runs, Reconnect across windows, End on close, and neither the ticket nor the token left on disk.
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -17,7 +19,8 @@ import {
   readZip,
   structuresBook,
 } from '../tests/fixtures/workbooks.mjs';
-import { root } from './lib.mjs';
+import { startMockWorkspace } from '../tests/workspace-mock/server.mjs';
+import { root, windowsPowerShell } from './lib.mjs';
 
 const appVersion = JSON.parse(
   await readFile(join(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
@@ -86,20 +89,25 @@ if (hostedRunner) {
 /** What the app's CSP refused, from the console of every launch. The smoke fails on any. */
 const policyViolations = [];
 
+/** What every launch's process gets, plus `extra`. */
+const appEnv = (extra = {}) => ({
+  ...process.env,
+  WEBVIEW2_USER_DATA_FOLDER: profile,
+  WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments,
+  CGS_DESKTOP_SMOKE: profile,
+  ...extra,
+});
+const exe = join(root, 'target/release/cgs-desktop.exe');
+
 /**
  * Starts the desktop app and attaches to its WebView2. Launches share the profile. `args` are
- * what Explorer passes: a double-clicked workbook's path.
+ * what Explorer passes: a double-clicked workbook's path, or a link the system starts it for.
  */
-async function launch(args = []) {
-  const child = spawn(join(root, 'target/release/cgs-desktop.exe'), args, {
+async function launch(args = [], extraEnv = {}) {
+  const child = spawn(exe, args, {
     cwd: root,
     windowsHide: true,
-    env: {
-      ...process.env,
-      WEBVIEW2_USER_DATA_FOLDER: profile,
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments,
-      CGS_DESKTOP_SMOKE: profile,
-    },
+    env: appEnv(extraEnv),
     stdio: 'inherit',
   });
   let launchError;
@@ -146,11 +154,13 @@ async function launch(args = []) {
   return { child, browser, page };
 }
 
-/** Kills the app and waits for WebView2's processes to let go of the profile. */
+/** Kills the app, unless it has gone already, and waits for WebView2 to let go of the profile. */
 async function kill(app) {
-  const exited = new Promise((resolve) => app.child.once('exit', resolve));
-  app.child.kill();
-  await exited;
+  if (app.child.exitCode === null && app.child.signalCode === null) {
+    const exited = new Promise((resolve) => app.child.once('exit', resolve));
+    app.child.kill();
+    await exited;
+  }
   await app.browser.close().catch(() => {});
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
@@ -182,6 +192,255 @@ async function openPath(page, path) {
     const file = await window.cgsOpenPath(path);
     await window.cgsTest.open(file);
   }, path);
+}
+
+/**
+ * Sends WM_CLOSE to this app's windows whose titles start with `prefix`, as their close button
+ * does, and says how many there were.
+ */
+function closeWindows(pid, prefix) {
+  const script = `
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class CgsWindows {
+  public delegate bool EnumProc(IntPtr hwnd, IntPtr data);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc proc, IntPtr data);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+  public static int Close(uint pid, string prefix) {
+    int closed = 0;
+    EnumWindows(delegate (IntPtr hwnd, IntPtr data) {
+      uint owner;
+      GetWindowThreadProcessId(hwnd, out owner);
+      if (owner != pid || !IsWindowVisible(hwnd)) return true;
+      var text = new StringBuilder(512);
+      GetWindowText(hwnd, text, 512);
+      if (text.ToString().StartsWith(prefix)) {
+        PostMessage(hwnd, 0x0010, IntPtr.Zero, IntPtr.Zero);
+        closed++;
+      }
+      return true;
+    }, IntPtr.Zero);
+    return closed;
+  }
+}
+"@
+[CgsWindows]::Close(${pid}, '${prefix.replace(/'/g, "''")}')`;
+  return Number(windowsPowerShell(script));
+}
+
+/** The files under `folder` that hold any of `secrets`, as UTF-8 or as UTF-16. */
+async function filesHolding(folder, secrets) {
+  const found = [];
+  const needles = secrets.flatMap((secret) => [
+    Buffer.from(secret, 'utf8'),
+    Buffer.from(secret, 'utf16le'),
+  ]);
+  const walk = async (path) => {
+    for (const entry of await readdir(path, { withFileTypes: true }).catch(() => [])) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) await walk(child);
+      else {
+        const bytes = await readFile(child).catch(() => null);
+        if (bytes && needles.some((needle) => bytes.includes(needle))) found.push(child);
+      }
+    }
+  };
+  await walk(folder);
+  return found;
+}
+
+/**
+ * Cash Gear Workspace's "Open in Cash Gear Sheet" on the desktop (Track S6), against the mock of
+ * its routes in this process. The app runs as shipped, from its WebView's own origin, with the
+ * mock's origins named by the test-only variables.
+ */
+async function workspaceLinks() {
+  const workspace = await startMockWorkspace();
+  const tokens = [];
+  const origins = new Set();
+  // The tokens the mock gives out, to look for afterwards, and the origins redeems came from.
+  const redeem = workspace.mock.redeem.bind(workspace.mock);
+  workspace.mock.redeem = (ctx) => {
+    origins.add(ctx.origin);
+    const reply = redeem(ctx);
+    if (reply.status === 200) tokens.push(reply.body.token);
+    return reply;
+  };
+  const extra = { CGS_WORKSPACE_API: workspace.url, CGS_WORKSPACE_BLOB: workspace.blobUrl };
+  const mock = async (route, body = {}) => {
+    const response = await fetch(`${workspace.url}/__mock/${route}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (response.status >= 300) throw new Error(`The mock refused ${route}: ${response.status}`);
+    return response.status === 204 ? null : response.json();
+  };
+  const state = async () => (await fetch(`${workspace.url}/__mock/state`)).json();
+  const tickets = [];
+  const link = async (workbook) => {
+    const answer = await mock('launch', { user: 'editor', workbook, target: 'desktop' });
+    if (answer.url !== `cashgear-sheet://workspace/launch#ticket=${answer.ticket}`)
+      throw new Error('The mock gave another link: ' + answer.url);
+    tickets.push(answer.ticket);
+    return answer.url;
+  };
+  // The badge puts isolates around names.
+  const plain = (text) => (text ?? '').replace(/[⁦-⁩]/g, '');
+  const badge = (page) =>
+    page
+      .getByTestId('cloud-badge')
+      .textContent({ timeout: 1000 })
+      .then(plain, () => '');
+  const title = (page) =>
+    page.evaluate(() => window.__TAURI_INTERNALS__.invoke('plugin:window|title', {}));
+  const budget = 'Budget 2027 – Cash Gear Workspace';
+  const empty = 'New workbook – Cash Gear Workspace';
+  /** Starts the app for a link while it runs: that process hands the link over and exits. */
+  const forward = async (text) => {
+    const child = spawn(exe, [text], { cwd: root, windowsHide: true, env: appEnv(extra) });
+    const code = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('A forwarding app did not exit')), 30000);
+      child.once('exit', (exitCode) => {
+        clearTimeout(timer);
+        resolve(exitCode);
+      });
+    });
+    if (code !== 0) throw new Error('A forwarding app exited with ' + code);
+  };
+  const found = {};
+  let running;
+  try {
+    // A malformed link opens the app with nothing in it.
+    running = await launch(['cashgear-sheet://workspace/launch#ticket=short'], extra);
+    await expect(running.page.getByTestId('engine-status')).toHaveText('Ready', {
+      timeout: 30000,
+    });
+    await running.page.waitForTimeout(1000);
+    if (await badge(running.page)) throw new Error('A malformed link opened a workbook.');
+    await kill(running);
+    running = undefined;
+
+    // Started for a link: the app redeems its ticket from its own origin and opens the workbook.
+    const seedEtag = (await state()).workbooks.find((w) => w.name === 'Budget 2027').etag;
+    running = await launch([await link('budget')], extra);
+    const first = running.page;
+    await expect.poll(() => badge(first), { timeout: 60000 }).toBe(budget);
+    found.cold = {
+      b4: await first.evaluate(() => window.cgsTest.cellText(4, 2)),
+      crossOriginIsolated: await first.evaluate(() => crossOriginIsolated),
+    };
+    await expect.poll(() => title(first)).toBe('Budget 2027 – CashGear Sheet');
+    found.cold.title = await title(first);
+    if (found.cold.b4 !== '1500') throw new Error('The launched workbook shows ' + found.cold.b4);
+    if (!found.cold.crossOriginIsolated) throw new Error('The window is not cross-origin isolated');
+    if (await first.evaluate(() => window.__TAURI_INTERNALS__.invoke('workspace_launch', {})))
+      throw new Error('The ticket was offered twice.');
+
+    // Saving: a new version with If-Match on the version it read.
+    await first.evaluate(() => window.cgsTest.edit(0, 2, 2, { number: 999 }));
+    await first.keyboard.press('Control+s');
+    await expect.poll(() => badge(first), { timeout: 30000 }).toMatch(/· Saved \d/);
+    let { saves } = await state();
+    if (saves.length !== 1 || saves[0].ifMatch !== seedEtag)
+      throw new Error('The save was not made from the version read: ' + JSON.stringify(saves));
+    const savedEtag = (await state()).workbooks.find((w) => w.name === 'Budget 2027').etag;
+
+    // While it runs: another link opens a window of its own in the same app.
+    const context = running.browser.contexts()[0];
+    let opening = context.waitForEvent('page', { timeout: 60000 });
+    await forward(await link('empty'));
+    const second = await opening;
+    await expect.poll(() => badge(second), { timeout: 60000 }).toBe(empty);
+    await expect.poll(() => title(second)).toBe('New workbook – CashGear Sheet');
+    found.whileRunning = { windows: context.pages().length, title: await title(second) };
+    await second.evaluate(() => window.cgsTest.edit(0, 1, 1, { text: 'first' }));
+    await second.keyboard.press('Control+s');
+    await expect.poll(async () => (await state()).saves.length, { timeout: 30000 }).toBe(2);
+    ({ saves } = await state());
+    if (saves[1].ifNoneMatch !== '*')
+      throw new Error('The first save of an empty workbook: ' + JSON.stringify(saves[1]));
+
+    // A malformed link while it runs opens nothing.
+    const before = context.pages().length;
+    await forward('cashgear-sheet://workspace/launch#ticket=' + 'A'.repeat(42));
+    await first.waitForTimeout(2000);
+    if (context.pages().length !== before) throw new Error('A malformed link opened a window.');
+
+    // Reconnect across windows: the session ends with edits unsaved, the window waits, and the
+    // next link's window hands its session over and closes.
+    await first.evaluate(() => window.cgsTest.edit(0, 3, 2, { number: 1 }));
+    await mock('clock', { advanceMs: 31 * 60_000 });
+    await first.keyboard.press('Control+s');
+    await expect(first.getByTestId('cloud-dialog')).toContainText(
+      'Your Cash Gear Workspace session has ended',
+      { timeout: 30000 },
+    );
+    await first.getByTestId('cloud-dialog-reconnect').click();
+    await expect.poll(() => badge(first)).toBe('Waiting for Cash Gear Workspace…');
+    await first.getByTestId('cloud-panel-close').click();
+    opening = context.waitForEvent('page', { timeout: 60000 });
+    await forward(await link('budget'));
+    const third = await opening;
+    await expect.poll(() => third.isClosed(), { timeout: 60000 }).toBe(true);
+    // Open again, still showing when it last saved.
+    await expect
+      .poll(() => badge(first), { timeout: 30000 })
+      .toMatch(/^Budget 2027 – Cash Gear Workspace · Saved \d/);
+    await first.keyboard.press('Control+s');
+    await expect.poll(async () => (await state()).saves.length, { timeout: 30000 }).toBe(3);
+    ({ saves } = await state());
+    if (saves[2].ifMatch !== savedEtag)
+      throw new Error('The reconnected save was not from the version it had.');
+    found.reconnect = { handedOver: true, windows: context.pages().length };
+
+    // Closing a window ends its session in Workspace first, and the app goes with its last.
+    const open = (await state()).sessions.filter((s) => !s.ended).length;
+    if (closeWindows(running.child.pid, 'Budget 2027') !== 1)
+      throw new Error('The workbook’s window was not found by its title.');
+    await expect
+      .poll(async () => (await state()).sessions.filter((s) => !s.ended).length, {
+        timeout: 15000,
+      })
+      .toBe(open - 1);
+    found.endedOnClose = true;
+    closeWindows(running.child.pid, 'New workbook');
+    const exited = await Promise.race([
+      new Promise((resolve) => running.child.once('exit', () => resolve(true))),
+      new Promise((resolve) => setTimeout(() => resolve(false), 20000)),
+    ]);
+    if (!exited) throw new Error('The app did not exit with its last window.');
+    await kill(running).catch(() => {});
+    running = undefined;
+
+    found.redeemOrigins = [...origins];
+    if (found.redeemOrigins.join() !== 'http://tauri.localhost')
+      throw new Error('Redeems came from ' + found.redeemOrigins.join(', '));
+    // Neither a ticket nor a token anywhere in the app's data or WebView2's profile, nor in the
+    // user's registry (exported once, which takes seconds where a search per secret takes a
+    // minute or more).
+    const secrets = [...tickets, ...tokens];
+    if (tickets.length !== 3 || tokens.length !== 3)
+      throw new Error(`Expected three tickets and tokens, not ${tickets.length}, ${tokens.length}`);
+    const left = await filesHolding(profile, secrets);
+    if (left.length) throw new Error('A ticket or token is on disk: ' + left.join(', '));
+    const hive = join(fixtures, 'hkcu.reg');
+    const exported = spawnSync('reg.exe', ['export', 'HKCU', hive, '/y'], { windowsHide: true });
+    if (exported.status !== 0) throw new Error('Could not export the user’s registry.');
+    const inRegistry = await filesHolding(fixtures, secrets);
+    await rm(hive, { force: true });
+    if (inRegistry.length) throw new Error('A ticket or token is in the user’s registry.');
+    found.secretsLookedFor = { tickets: tickets.length, tokens: tokens.length, found: 0 };
+    return found;
+  } finally {
+    if (running) await kill(running).catch(() => {});
+    await workspace.close();
+  }
 }
 
 const fixtures = await mkdtemp(join(tmpdir(), 'cgs-smoke-books-'));
@@ -370,6 +629,10 @@ try {
   await page.getByRole('radio', { name: 'System' }).click();
   await expect.poll(() => windowTheme(page), { timeout: 10000 }).toBe(system);
   results.backToSystem = system;
+
+  await kill(app);
+  app = undefined;
+  results.workspace = await workspaceLinks();
 
   if (policyViolations.length)
     throw new Error('The CSP refused: ' + [...new Set(policyViolations)].join(' | '));
