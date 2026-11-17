@@ -1195,3 +1195,42 @@ Cash Gear Workspace shows a workbook's range or chart live in its pages through 
 
 - The live `/embed`, like `/cloud`, can't read a workbook until Workspace's storage account's origin is in the live `connect-src`.
 - Range views draw cells only (your choice); charts and pictures over a range don't show in it.
+
+## Track S6: Workspace's launch in the desktop app
+
+On a computer with the sheet's desktop app, Cash Gear Workspace's desktop app opens "Open in Cash Gear Sheet" in it: it hands the system `cashgear-sheet://workspace/launch#ticket=<ticket>`, and the app redeems the ticket from its WebView's origin and opens the workbook through the same `sheet-session.1` file session as `/cloud` (Workspace's `docs/INTEGRATIONS.md`, "Opening Sheet's desktop app (Track S6, Phase 9)"). Started 2026-11-17 in a session of its own, while Workspace's Phase 9 builds its half. Answers and defaults are in `docs/decisions.md` (2026-11-17, Track S6): a link that comes while the app runs opens in a window of its own, and no release of its own. The wire is `docs/workspace-contract.md`, "The desktop app's launch".
+
+**Exit criteria** (the brief Workspace's Phase 9 started this track with)
+
+| Criterion | Result | Evidence |
+| --- | --- | --- |
+| The `cashgear-sheet` scheme registered by the installer under `HKCU\Software\Classes` and removed by the uninstaller | Pass | `pnpm desktop:installer-test` on 2026-11-17: the test product's scheme (`cashgear-sheet-installertest`) is a URL protocol whose open command is `"<install>\cgs-desktop.exe" "%1"` after install and after the update to 1.10.1; after a silent uninstall its key is gone, and the user's own keys are exactly as before, a real install's `cashgear-sheet` key among them (absent on this machine) |
+| The link taken cold and while running | Pass | Desktop smoke: started for a link, the shipped build opens Budget 2027 (B4 1500, cross-origin isolated, titled "Budget 2027 – CashGear Sheet"); a second link while it runs starts a process that exits 0 and the workbook opens in a second window of the same app. Installer test: both, through `ShellExecuteEx` on the link, as Workspace's desktop app opens it |
+| The link's exact shape | Pass | `cgs_native::link` (4 tests): the scheme in any case, then exactly `workspace/launch#ticket=` and 43 base64url characters as the only argument; 26 other shapes refused (query, port, user, trailing slash, dot segments, escapes, other or repeated fields, `erp/…` paths), and tickets of the wrong length or with any of 7 characters outside base64url. Smoke: a malformed link opens a blank app cold and nothing while running. `desktopCloudLaunch` checks the ticket again in the page |
+| Redeems at Workspace's API from the WebView's origin, then opens, saves and ends the session | Pass | Smoke against Sheet's mock (`CGS_WORKSPACE_API` and `CGS_WORKSPACE_BLOB`, honoured only under `CGS_DESKTOP_SMOKE`): every redeem came from `http://tauri.localhost`; Save sends `If-Match` on the version read, the empty workbook's first save `If-None-Match: *`; Reconnect works between windows (the third link's window hands its session to the waiting one and closes, and its save goes from the version it had); closing a window with `WM_CLOSE` ends its session before it goes, and the app exits with its last window |
+| The ticket and the token never on disk, in a log or the registry | Pass | Smoke: after the run, none of its 3 tickets and 3 tokens, as UTF-8 or UTF-16, is in any file of the WebView2 profile or the app's data, nor in an export of the user's whole registry. The native side never prints or writes a ticket, and `Ticket`'s `Debug` hides it |
+| Sheet's mock and contract suite know the desktop target | Pass | `/__mock/launch` takes `target: "desktop"`; `contract.test.ts` gains 4 cases (the link, redeem and read from both desktop origins, preflight, a ticket spent by the other target's origin, an origin on neither list), which skip against a launcher without desktop links |
+| Sheet's checks green, pushed to `main` | Pass | CI on `73cc18e` ([run 43999690589](https://github.com/MohamedSadat/cashgear-sheet/actions/runs/43999690589)): licence gates, then the build and every standing check on Windows, with 715 unit tests, the whole e2e suite **390 of 390** in Chrome and Edge, and the desktop smoke, its Workspace run included (3 tickets and 3 tokens, none found). `pnpm desktop:installer-test`, which the release workflow runs, passed here twice on 2026-11-17, the second time also asking `AssocQueryStringW` as Workspace's desktop app does: the install's command after install and update, nothing after the uninstall. A build for Workspace's development stack (`pnpm desktop:installer` with `VITE_WORKSPACE_API_URL` and `VITE_WORKSPACE_BLOB_URL`) serves `connect-src` with both origins added |
+
+**What else was checked**
+
+- `cloud.spec.ts`, `csp.spec.ts` and `embed.spec.ts`: 54 of 54 in Chrome and Edge, so the web's `/cloud` and `/embed` are unchanged.
+- The desktop smoke's earlier checks are unchanged: goldens, saving, the recent list, the theme, a double-clicked workbook.
+- Locally: `cargo fmt`, both clippy runs, `cargo test --workspace`, typecheck, lint, format, 715 unit tests (10 new), `pnpm deny` (`tauri-plugin-single-instance` is Apache-2.0 OR MIT; its new lockfile entries are Linux-only).
+
+**Delivered**
+
+- `cgs-native`: `link` (the link's parser and `Ticket`) and `csp` (the test runs' `connect-src`).
+- `apps/desktop/src-tauri`: `workspace.rs` (the scheme from the config, tickets per window, new windows for forwarded links, `workspace_launch` and `workspace_test_api`); `tauri-plugin-single-instance` for link processes; the scheme in `plugins.deep-link.desktop.schemes`; `connect-src` adds `https://workspace-api.cashgearerp.com`; capabilities for `workspace-*` windows and window titles.
+- `@cgs/workspace-connector`: `desktopCloudLaunch`, `isTicket`, and an End that can be awaited.
+- `apps/web`: a desktop window a link opened uses `cloudPlatform` over the desktop platform, ends its session before closing and destroys itself after a handover; desktop titles follow the page's.
+- `tests/workspace-mock`: the desktop target and origins. `scripts`: the smoke's Workspace run, the installer test's links and scheme, `desktop-config.mjs` for a desktop build against another Workspace.
+- Docs: `decisions.md`, `workspace-contract.md`, `desktop-deep-link.md`, `DEPLOYMENT.md` (installing a desktop build against Workspace's development stack), `PLAN.md`'s Track S, the changelog's Unreleased line, CLAUDE.md's notes.
+
+**Known gaps**
+
+- Workspace's half (its launch route's desktop target, the desktop origins on redeem and CORS, and its desktop app finding the scheme and opening the link) is its Phase 9. Until it is deployed, nothing sends the app a desktop link.
+- Like the web, the live desktop app can't read a workbook until Workspace's storage account's exact origin is in `connect-src`.
+- As with every Windows link, the ticket is on the process's command line while the process runs; it is one use and 120 s, and spent within seconds.
+- No macOS build: the configured scheme gives one `CFBundleURLTypes`, and it would add tauri-plugin-deep-link for Apple Events.
+- The installed app takes links only from the next release on (v1.10.0 or later); an older install has no scheme, so Workspace opens the web app.
