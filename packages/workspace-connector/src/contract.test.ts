@@ -10,6 +10,8 @@
 // `POST {user, workbook, access?, language?}` with `{ticket}` as the mock's `/__mock/launch` does.
 // `user` is `editor`, `viewer` (view access) or `other`; `workbook` is `budget` (one version at
 // least, which the suite adds to) or `empty` (a workbook with no version, new for each launch).
+// With `target: "desktop"` it answers `{ticket, url}` with Workspace's desktop link (Track S6);
+// the desktop cases skip against a launcher that doesn't.
 // WORKSPACE_TEST_ORIGIN is the sheet origin the suite sends (http://localhost:4173 unless set).
 // Cases that need the mock's clock skip elsewhere. The suite saves versions and copies, so it
 // refuses a server that isn't on this machine unless WORKSPACE_ALLOW_WRITES=1.
@@ -41,6 +43,8 @@ const external = env.WORKSPACE_API_URL?.replace(/\/+$/, '');
 const onMock = !external || env.WORKSPACE_IS_MOCK === '1';
 const ORIGIN = env.WORKSPACE_TEST_ORIGIN ?? 'http://localhost:4173';
 const STRANGER = 'https://evil.example';
+/** The desktop app's WebView origins, Windows' and macOS's (Track S6). */
+const DESKTOP_ORIGINS = ['http://tauri.localhost', 'tauri://localhost'];
 
 let base = external ?? '';
 let launcher = env.WORKSPACE_LAUNCHER_URL ?? '';
@@ -75,17 +79,26 @@ beforeEach(async () => {
 
 type User = 'editor' | 'viewer' | 'other';
 
-/** A ticket, as Workspace's "Open in Cash Gear Sheet" gives one. */
-async function launch(user: User = 'editor', book: 'budget' | 'empty' = 'budget') {
+/** A ticket and its link, as Workspace's "Open in Cash Gear Sheet" gives them. */
+async function launchLink(
+  user: User = 'editor',
+  book: 'budget' | 'empty' = 'budget',
+  target?: 'desktop',
+) {
   const response = await fetch(launcher, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user, workbook: book }),
+    body: JSON.stringify({ user, workbook: book, ...(target && { target }) }),
   });
   expect(response.status, 'the launcher').toBe(200);
-  const answer = (await response.json()) as { ticket: string };
+  const answer = (await response.json()) as { ticket: string; url?: string };
   expect(answer.ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  return answer.ticket;
+  return answer;
+}
+
+/** A ticket, as Workspace's "Open in Cash Gear Sheet" gives one. */
+async function launch(user: User = 'editor', book: 'budget' | 'empty' = 'budget') {
+  return (await launchLink(user, book)).ticket;
 }
 
 interface Call {
@@ -189,6 +202,96 @@ describe('Redeem', () => {
       body: JSON.stringify({ advanceMs: 121_000 }),
     });
     await problem(await call('POST', ROUTES.redeem, { json: { ticket } }), 401, 'ticket.invalid');
+  });
+});
+
+describe('The desktop app’s launch (Track S6)', () => {
+  /** A desktop launch's ticket, or a skip where the launcher doesn't make them. */
+  async function desktopTicket(skip: () => void) {
+    const { ticket, url } = await launchLink('editor', 'budget', 'desktop');
+    if (url === undefined || !url.startsWith('cashgear-sheet:')) skip();
+    expect(url).toBe(`cashgear-sheet://workspace/launch#ticket=${ticket}`);
+    return ticket;
+  }
+
+  it('is the cashgear-sheet link, redeemed from the desktop’s origins', async (context) => {
+    for (const origin of DESKTOP_ORIGINS) {
+      const ticket = await desktopTicket(() => context.skip());
+      const response = await call('POST', ROUTES.redeem, { json: { ticket }, origin });
+      expect(response.status, origin).toBe(200);
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe(origin);
+      const session = readFileSession(await response.json());
+      // Everything after Redeem is the web's, from the desktop's origin.
+      const read = await call('GET', ROUTES.workbook, { session: session.token, origin });
+      expect(read.status).toBe(200);
+      expect(read.headers.get('Access-Control-Allow-Origin')).toBe(origin);
+      const found = readWorkbookResponse(await read.json());
+      const blob = await fetch(found.readUrl!, {
+        headers: { Origin: origin },
+        credentials: 'omit',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
+      });
+      expect(blob.status).toBe(200);
+      expect(blob.headers.get('Access-Control-Allow-Origin')).toBe(origin);
+      expect((await call('POST', ROUTES.end, { session: session.token, origin })).status).toBe(204);
+    }
+  });
+
+  it('lets the desktop’s origins through CORS preflight', async () => {
+    for (const origin of DESKTOP_ORIGINS) {
+      const response = await fetch(`${base}/${ROUTES.versions}`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: origin,
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type,if-match,x-workspace-file-session',
+        },
+      });
+      expect(response.status).toBeLessThan(300);
+      expect(response.headers.get('Access-Control-Allow-Origin')).toBe(origin);
+      const allowed = (response.headers.get('Access-Control-Allow-Headers') ?? '').toLowerCase();
+      for (const header of ['content-type', 'if-match', 'x-workspace-file-session']) {
+        expect(allowed).toContain(header);
+      }
+    }
+  });
+
+  it('redeems a ticket only from its own target’s origins; the other uses it up', async (context) => {
+    const desktop = await desktopTicket(() => context.skip());
+    await problem(
+      await call('POST', ROUTES.redeem, { json: { ticket: desktop } }),
+      401,
+      'ticket.invalid',
+    );
+    await problem(
+      await call('POST', ROUTES.redeem, { json: { ticket: desktop }, origin: DESKTOP_ORIGINS[0] }),
+      401,
+      'ticket.invalid',
+    );
+    const web = await launch();
+    await problem(
+      await call('POST', ROUTES.redeem, { json: { ticket: web }, origin: DESKTOP_ORIGINS[0] }),
+      401,
+      'ticket.invalid',
+    );
+    await problem(
+      await call('POST', ROUTES.redeem, { json: { ticket: web } }),
+      401,
+      'ticket.invalid',
+    );
+  });
+
+  it('still refuses an origin on neither list before it looks at a desktop ticket', async (context) => {
+    const ticket = await desktopTicket(() => context.skip());
+    await problem(
+      await call('POST', ROUTES.redeem, { json: { ticket }, origin: 'http://evil.localhost' }),
+      403,
+      'origin.denied',
+    );
+    expect(
+      (await call('POST', ROUTES.redeem, { json: { ticket }, origin: DESKTOP_ORIGINS[0] })).status,
+    ).toBe(200);
   });
 });
 

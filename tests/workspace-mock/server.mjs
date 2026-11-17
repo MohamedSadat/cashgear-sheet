@@ -10,6 +10,10 @@
 //
 //   node tests/workspace-mock/server.mjs [--port 4280] [--blob-port 4281] [--host 127.0.0.1]
 //     [--sheet-url http://127.0.0.1:4173]
+//
+// As Workspace's Phase 9 has it, a launch is for the web (`/cloud#launch=…`) or for Sheet's
+// desktop app (`cashgear-sheet://workspace/launch#ticket=…`, Track S6), and its ticket is redeemed
+// only from that target's origins.
 
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -34,6 +38,12 @@ export const DEFAULT_ORIGINS = [
   'http://127.0.0.1:5173',
   'https://sheet.cashgearerp.com',
 ];
+
+/** The desktop app's WebView origins (Windows, macOS): the only ones a desktop ticket redeems from. */
+export const DESKTOP_ORIGINS = ['http://tauri.localhost', 'tauri://localhost'];
+
+/** The scheme Workspace's desktop launch link uses. */
+export const DESKTOP_SCHEME = 'cashgear-sheet';
 
 export const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -133,10 +143,12 @@ class Reply {
 export class MockWorkspace {
   constructor({
     origins = DEFAULT_ORIGINS,
+    desktopOrigins = DESKTOP_ORIGINS,
     sheetUrl = 'http://127.0.0.1:4173',
     blobUrl = '',
   } = {}) {
     this.origins = new Set(origins);
+    this.desktopOrigins = new Set(desktopOrigins);
     this.sheetUrl = sheetUrl.replace(/\/+$/, '');
     this.blobUrl = blobUrl.replace(/\/+$/, '');
     this.signingKey = randomBytes(32);
@@ -217,7 +229,8 @@ export class MockWorkspace {
 
   cors(req, res, { methods, headers, expose }) {
     const origin = req.headers.origin;
-    const allowed = typeof origin === 'string' && this.origins.has(origin);
+    const allowed =
+      typeof origin === 'string' && (this.origins.has(origin) || this.desktopOrigins.has(origin));
     res.setHeader('Vary', 'Origin');
     if (allowed) {
       res.setHeader('Access-Control-Allow-Origin', origin);
@@ -389,6 +402,12 @@ export class MockWorkspace {
     const now = this.now();
     if (!row || row.used || now >= row.expiresAt) return this.problem(ctx, 401, 'ticket.invalid');
     row.used = true;
+    // A ticket is for the web or the desktop, and redeems only from that target's origins. One
+    // of the other target is used up and answered as an unknown one is.
+    const fromDesktop = this.desktopOrigins.has(ctx.origin);
+    if (fromDesktop !== (row.target === 'desktop')) {
+      return this.problem(ctx, 401, 'ticket.invalid');
+    }
     const book = this.workbooks.get(row.workbookId);
     if (!book || book.trashed) return this.problem(ctx, 410, 'workbook.gone');
     const level = this.level(book, row.userId);
@@ -614,6 +633,8 @@ export class MockWorkspace {
         if (!user || !book) return bad('Unknown user or workbook.');
         const level = this.level(book, user.id);
         if (level === 'none') return new Reply(403, { message: 'No access.' });
+        const target = body.target ?? 'web';
+        if (target !== 'web' && target !== 'desktop') return bad('target is web or desktop.');
         const ticket = randomBytes(32).toString('base64url');
         const expiresAt = this.now() + LIMITS.ticketMs;
         this.tickets.set(sha256(ticket), {
@@ -621,13 +642,17 @@ export class MockWorkspace {
           workbookId: book.id,
           access: body.access === 'view' || level === 'view' ? 'view' : 'edit',
           language: body.language ?? user.language,
+          target,
           expiresAt,
           used: false,
         });
         return ok({
           ticket,
           expiresAt: iso(expiresAt),
-          url: `${this.sheetUrl}/cloud#launch=${ticket}`,
+          url:
+            target === 'desktop'
+              ? `${DESKTOP_SCHEME}://workspace/launch#ticket=${ticket}`
+              : `${this.sheetUrl}/cloud#launch=${ticket}`,
         });
       }
       case 'version': {
@@ -686,6 +711,7 @@ export class MockWorkspace {
           tickets: [...this.tickets.values()].map((t) => ({
             used: t.used,
             workbookId: t.workbookId,
+            ...(t.target === 'desktop' && { target: t.target }),
           })),
           sessions: [...this.sessions.values()].map((s) => ({
             userId: s.userId,
@@ -777,10 +803,11 @@ export async function startMockWorkspace({
   blobPort = 0,
   host = '127.0.0.1',
   origins,
+  desktopOrigins,
   sheetUrl,
 } = {}) {
   const shown = host === '0.0.0.0' ? '127.0.0.1' : host;
-  const mock = new MockWorkspace({ origins, sheetUrl });
+  const mock = new MockWorkspace({ origins, desktopOrigins, sheetUrl });
   const fail = (res, error) => {
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'application/problem+json' });

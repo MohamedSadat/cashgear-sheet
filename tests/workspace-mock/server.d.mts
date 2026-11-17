@@ -4,8 +4,10 @@ export interface MockWorkspaceOptions {
   /** Blob Storage's port. 0, the default, picks a free one. */
   blobPort?: number;
   host?: string;
-  /** Origins allowed to redeem tickets and read answers. */
+  /** Origins allowed to redeem web tickets and read answers. */
   origins?: string[];
+  /** The desktop app's origins, the only ones a desktop ticket redeems from (Track S6). */
+  desktopOrigins?: string[];
   /** Where launch URLs point, without the `/cloud` path. */
   sheetUrl?: string;
 }
@@ -31,6 +33,8 @@ export const LIMITS: {
   readonly maxBytes: number;
 };
 export const DEFAULT_ORIGINS: readonly string[];
+export const DESKTOP_ORIGINS: readonly string[];
+export const DESKTOP_SCHEME: string;
 export const XLSX_TYPE: string;
 export const USERS: Readonly<
   Record<
