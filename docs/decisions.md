@@ -1035,3 +1035,29 @@ Cash Gear Workspace embeds its workbooks in pages through Sheet's `/embed`, by i
 | The workbook in the frame | Read in memory only: no working copy, draft or recovery, nothing written to the device, no service worker registered by the frame |
 | Validation | As Workspace's validators have it: a message, or any object in it, with a field the contract doesn't name is refused; ETags and URLs are visible ASCII; a drawn view's range is written top-left first. An `init` that fails validation doesn't count as the one `init`; one with another `contract` does. Port messages are handled one at a time, in order. A `requestPreview` after an `error` answers that code |
 | The real API's suite | `WORKSPACE_API_URL` points `workspace-connector`'s `sheet-session.1` suite at a real API, with tickets from `WORKSPACE_LAUNCHER_URL` (the mock's `/__mock/launch` shape); cases that need the mock's controls are skipped there |
+
+## 2026-11-17: Track S6
+
+Cash Gear Workspace's Phase 9 opens Sheet's desktop app from its own desktop app. It hands the system `cashgear-sheet://workspace/launch#ticket=<ticket>` (its `docs/INTEGRATIONS.md`, "Opening Sheet's desktop app (Track S6, Phase 9)"), and from the redeem on everything is `sheet-session.1` as `/cloud` has it. On 2026-11-17 you agreed to have Track S6 built now, in a session of its own here, while Workspace builds its half.
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Where a link opens while the app runs | In a new window of the app that took the first link, as the web opens a tab. Reconnect hands a new launch's session to the window waiting for that workbook, as tabs do. Double-clicked files keep a process of their own, as since Phase 9 |
+| Whether Track S6 is a release | No release of its own: Track S in `PROGRESS.md`, pushed to `main`, and shipped with the next release, whose changelog lists it |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| One instance | Only a process the system starts for a link registers `tauri-plugin-single-instance`. The first holds it and takes every later link: the process started for one hands it over in memory (`WM_COPYDATA`) and exits. A process started for a file or from the Start menu takes no links, and a link that comes while no process holds them starts one that does |
+| The scheme's registration | `plugins.deep-link.desktop.schemes` in `tauri.conf.json`, tauri-plugin-deep-link's configuration. Tauri's NSIS template writes `HKCU\Software\Classes\cashgear-sheet` from it (a per-user install), and its uninstaller deletes that key only when its open command is this install's. The installer test's product registers a scheme of its own, `cashgear-sheet-installertest`, so it never touches a real install's |
+| tauri-plugin-deep-link's runtime | Not added. On Windows the link is the process's only argument and the sheet checks the raw text itself, where the plugin would parse and normalise it and keep the newest link for the life of the process. A macOS build adds the plugin, since links come there as Apple Events, and the same configuration gives it `CFBundleURLTypes`. There's no macOS build yet |
+| The link's shape | Exactly `<scheme>://workspace/launch#ticket=<43 base64url characters>` as the only argument: the scheme in any case, the rest as written, with no query, port, user, trailing slash, escapes or other fragment fields. Anything else opens nothing. `erp/…` paths are refused until the ERP's launch is built (`desktop-deep-link.md`), which reuses this plumbing |
+| The ticket in the app | Checked in Rust (`cgs_native::link`), held in memory for the window it opens until that window's page takes it once (`workspace_launch`), or until the window goes; one no window asked for goes 120 s after it came. A page that asks late still gets it, so Workspace's refusal explains an expired link. Its `Debug` hides it, and nothing prints or writes it. It still reaches the process on its command line, as every Windows link does, and a forwarding process exits at once |
+| Which Workspace API | As on the web: `VITE_WORKSPACE_API_URL` when the build names one, else `https://workspace-api.cashgearerp.com`, never the link. The desktop's `connect-src` adds Workspace's live API; its storage account joins it by exact origin once it exists, as on the web. `pnpm desktop:installer` adds `VITE_WORKSPACE_API_URL` and `VITE_WORKSPACE_BLOB_URL` to `connect-src` when they're set, for a build against Workspace's development stack |
+| The mock in the desktop tests | Under `CGS_DESKTOP_SMOKE` only, the variable the smoke's other test-only commands need, `CGS_WORKSPACE_API` and `CGS_WORKSPACE_BLOB` name an API and a storage origin that the app adds to `connect-src` as it starts. The smoke and the installer test run the shipped build against the mock that way |
+| End on close | A window that closes ends its session before it goes, after the unsaved-changes question, waiting at most 3 s for Workspace's answer: a closing WebView doesn't promise to send `pagehide`'s `keepalive` request. A window that handed its session to a waiting one closes without ending it |
+| Telling windows apart | A desktop window's title follows its page's, so a Workspace workbook's window is "Budget 2027 – CashGear Sheet" in the taskbar, as the web's tab is |
+| The mock | Learns Workspace's Phase 9: `/__mock/launch` takes `target: "desktop"` and answers the `cashgear-sheet://` link. A desktop ticket is redeemed only from `http://tauri.localhost` or `tauri://localhost`, a web ticket only from a web origin, and a ticket of the other target is used up and answered 401 `ticket.invalid`. CORS lets the desktop origins in. The contract suite gains those cases |

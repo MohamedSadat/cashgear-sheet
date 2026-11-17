@@ -168,6 +168,7 @@ Cash Gear Workspace (`D:\CashGear\Projects\cashgear-workspace`) keeps workbooks 
 | S3 | The `/embed` route: read-only load, one range, the `sheet-embed.1` handshake, `resize`, `error` |
 | S4 | `requestPreview` (a PNG of the current view) and chart views |
 | S5 | A contract suite both repos run against a mock |
+| S6 | The desktop app takes Workspace's launch by its deep link, `cashgear-sheet://workspace/launch#ticket=…`, and opens the workbook through the same file session (started 2026-11-17, for Workspace's Phase 9) |
 
 ## Phases
 

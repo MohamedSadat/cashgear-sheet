@@ -180,3 +180,36 @@ credentials; Azurite's CORS allowing `GET` from the same.
 which answers `POST {user, workbook}` with `{ticket}`) against Workspace's API. `tests/e2e/embed.spec.ts`
 runs in `pnpm test:e2e` with its stand-in parent on `127.0.0.1:4273` and `4274`
 (`pnpm embed:parent`), so it can't run while Workspace's e2e stack holds 4273.
+
+### The desktop app against Workspace's development stack (Track S6)
+
+For Workspace's acceptance of "Open in Cash Gear Sheet" on the desktop: an installed desktop app
+that takes Workspace's `cashgear-sheet://workspace/launch#ticket=…` link and talks to Workspace's
+API on `http://127.0.0.1:5280` and Azurite on `http://127.0.0.1:10000`. Needs the Rust toolchain,
+the WebView2 Runtime and `pnpm setup:wasm`; signing is skipped when `CGS_SIGN_PFX` isn't set.
+
+1. Build the web app with Workspace's API named, and then the installer with the same two
+   variables, which join the desktop's `connect-src`. In PowerShell:
+
+   ```powershell
+   $env:VITE_WORKSPACE_API_URL = 'http://127.0.0.1:5280'
+   $env:VITE_WORKSPACE_BLOB_URL = 'http://127.0.0.1:10000'
+   pnpm build
+   pnpm desktop:installer
+   ```
+
+   The installer is `target\release\bundle\nsis\CashGear Sheet_<version>_x64-setup.exe`
+   (`<version>` is `tauri.conf.json`'s). For the pages only, `node scripts/build-wasm.mjs --release
+   --profiling`, `pnpm --filter @cgs/web build` and `pnpm notices` stand in for `pnpm build`.
+2. Run it (or `"CashGear Sheet_<version>_x64-setup.exe" /S` for a silent install). It installs for
+   the current user and registers `cashgear-sheet` under `HKCU\Software\Classes`, with the open
+   command `"<install folder>\cgs-desktop.exe" "%1"`; `AssocQueryStringW` then finds it.
+   Uninstalling (Settings > Apps, or `uninstall.exe /S` in the install folder) removes that key.
+3. Workspace's API must accept a desktop ticket from `http://tauri.localhost` and let it through
+   CORS on `/api/v1/sheet-sessions/*`, and Azurite's CORS must allow `GET` from it.
+
+Such a build reaches only that stack, never Workspace's live API. A machine with this build
+installed sends every `cashgear-sheet` link to it until it is uninstalled or a real release is
+installed over it. `pnpm desktop:smoke` and `pnpm desktop:installer-test` run the shipped build
+against Sheet's own mock instead (the test-only `CGS_WORKSPACE_API` and `CGS_WORKSPACE_BLOB`,
+honoured only under `CGS_DESKTOP_SMOKE`).

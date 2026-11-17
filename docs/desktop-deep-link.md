@@ -1,8 +1,16 @@
 # Opening ERP data in the desktop app: design
 
 Written in Phase 19 (plan B.4), to be built in a later phase. Until then the desktop app opens
-normal workbooks only. Its WebView may already reach `https://api.cashgearerp.com`
-(`connect-src`), and Cash Gear ERP's API doesn't allow the desktop's origin yet.
+normal workbooks and Cash Gear Workspace's, but not ERP data. Its WebView may already reach
+`https://api.cashgearerp.com` (`connect-src`), and Cash Gear ERP's API doesn't allow the desktop's
+origin yet.
+
+**Built since, for Cash Gear Workspace (Track S6, `workspace-contract.md`):** the `cashgear-sheet`
+scheme, registered by the installer under `HKCU\Software\Classes` and removed by the uninstaller;
+`tauri-plugin-single-instance` for the processes the system starts for links; the link's parser
+(`cgs_native::link`, which refuses `erp/…` paths for now); and tickets held per window until its
+page takes them (`apps/desktop/src-tauri/src/workspace.rs`). The ERP's launch below adds its paths
+and its PKCE flow to that plumbing. Workspace's own launch has no PKCE: its contract explains why.
 
 ## What has to hold
 
@@ -77,15 +85,17 @@ chose.
   ticket.
 
 **The sheet**
-- `tauri-plugin-deep-link` and `tauri-plugin-single-instance`. The installer's
-  `windows/hooks.nsh` registers `cashgear-sheet` under `HKCU\Software\Classes`, as it registers
-  the file types, and the uninstaller removes exactly that key.
+- Built in Track S6: the scheme, registered under `HKCU\Software\Classes` and removed by the
+  uninstaller, and `tauri-plugin-single-instance`. The ERP's `erp/start` and `erp/launch` paths
+  join `cgs_native::link`, and the process holding a flow's verifier is the one that takes links,
+  so step 4's link reaches it.
 - `DesktopPlatform.erpLaunch()` takes the launch from step 4, after checking its `state` and
   timing, then forgets it.
 - `erp-connector`: the verifier and challenge (Web Crypto), and `codeVerifier` on Redeem.
 - Reconnect: on the desktop, a new flow's session goes to the window whose binding it matches, as
-  `BroadcastChannel` does on the web. Windows are processes of their own, so the hand-over goes
-  through the Rust side, in memory.
+  `BroadcastChannel` does on the web. Links open their windows in the one process that takes
+  links, whose pages share one WebView2 profile, so `BroadcastChannel` reaches them as it does
+  Workspace's (Track S6).
 - Tests: unit tests of the challenge and `state`; a desktop smoke run against the mock, whose
   `CreateTicket` and `Redeem` learn PKCE; and `pnpm desktop:installer-test` checking that the
   scheme is registered and then removed.

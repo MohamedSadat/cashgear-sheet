@@ -15,6 +15,13 @@ Not released yet: these lines go into the next release's section.
   next launch's session. The texts are in English and Arabic, by the Workspace user's language.
   It does nothing until Workspace's API is deployed. The web app may now reach
   `https://workspace-api.cashgearerp.com`.
+- **Workspace's workbooks on the desktop (Track S6):** on a computer with the desktop app,
+  Workspace's desktop app opens "Open in Cash Gear Sheet" in it by the
+  `cashgear-sheet://workspace/launch` link, which the installer registers for the user and the
+  uninstaller removes. A link that comes while the app runs opens in a window of its own. Opening,
+  saving, Save a Copy, Reload and Reconnect work as at `/cloud`, and closing the window ends the
+  session. Windows' titles now name their workbooks. The desktop app may now reach
+  `https://workspace-api.cashgearerp.com`.
 
 ## [1.10.0] - 2026-11-11
 

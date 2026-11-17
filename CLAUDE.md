@@ -260,6 +260,18 @@ Found in Track S3 to S5:
 - `tests/embed-parent` holds 4273, Workspace's e2e port, and Playwright never reuses it: stop Workspace's e2e stack before Sheet's suite, or the run fails at once.
 - Workspace's server writes workbooks with DocumentFormat.OpenXml, which puts every SpreadsheetML element under `x:`. `openXmlCopy` in `tests/fixtures/workbooks.mjs` makes such a copy of any fixture; the save check, `embed.spec.ts` and `cloud.spec.ts` run one.
 
+Found in Track S6:
+
+- Only a process started for a link registers `tauri-plugin-single-instance` (`apps/desktop/src-tauri/src/workspace.rs`). A second instance hands its arguments to the first over `WM_COPYDATA` and exits, so registering it everywhere would send double-clicked files to the first process too.
+- The single-instance callback runs inside a window procedure, where Tauri warns that building a webview deadlocks on Windows. `forwarded` builds the new window from another thread.
+- The link's scheme is `plugins.deep-link.desktop.schemes` in `tauri.conf.json`, without the deep-link crate: Tauri's NSIS template writes `HKCU\Software\Classes\<scheme>` from it, and its uninstaller deletes the key only when the open command is that install's. The app reads the same setting (`workspace::scheme`). The installer test's product registers `cashgear-sheet-installertest`.
+- Tauri reads the CSP from its config each time it serves an HTML asset, so `context.config_mut()` before `run` changes it. That is how the smoke's mock origins get in (`CGS_WORKSPACE_API` and `CGS_WORKSPACE_BLOB`, only under `CGS_DESKTOP_SMOKE`).
+- A window opened in the running process is a new page on the same CDP connection (`context.waitForEvent('page')`), and its pages share one WebView2 profile, so `BroadcastChannel` (Reconnect) reaches them.
+- The desktop window's title doesn't follow `document.title` on its own; `followDocumentTitle` sets it, which the smoke uses to find a window for `WM_CLOSE`.
+- A child process that has exited never emits `exit` again: the smoke's `kill()` checks `exitCode` first, or it waits for ever.
+- `reg query HKCU /f <text> /s /d` takes about 75 s here; `reg export HKCU` takes about 5 s (39 MB), so the smoke searches one export for every ticket and token.
+- Git Bash turns `reg.exe`'s `/f`-style switches into paths ("Invalid syntax"). Run `reg.exe` from PowerShell or Node.
+
 Carried over from CashGear Video, where they were measured:
 
 - WebView2 never asks Tauri for the script of a worker started by a worker, so such a worker never loads on desktop. Start workers from the main thread, or copy `nested-worker.ts`.

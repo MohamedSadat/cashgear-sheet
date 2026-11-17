@@ -36,8 +36,60 @@ Contract version: `sheet-session.1`, 2026-11-12.
 **Which API the sheet trusts.** One origin, from the sheet's build, never from the link:
 `VITE_WORKSPACE_API_URL` when the build names one, else `https://workspace-api.cashgearerp.com`,
 and the mock (`http://127.0.0.1:4280`) for a page served from localhost. A link can't point the
-sheet at another server. The desktop app has no Workspace launch until its deep link
-(`desktop-deep-link.md`).
+sheet at another server. The desktop app trusts the same, from its own origins (below).
+
+## The desktop app's launch (Track S6)
+
+Added by Workspace's Phase 9 (its `docs/INTEGRATIONS.md`, "Opening Sheet's desktop app"). On a
+computer where the sheet's desktop app is installed, "Open in Cash Gear Sheet" in Workspace's
+desktop app opens it there; otherwise the web app, as above.
+
+1. Workspace's desktop app asks the system whether anything handles `cashgear-sheet` (Windows'
+   `AssocQueryStringW`, macOS's `LSCopyDefaultApplicationURLForURL`), and never starts a program
+   to find out.
+2. Its launch route, `POST /api/v1/workbooks/{id}/launch` with `{target: "desktop"}`, issues the
+   same ticket as the web's, recording its target, and answers
+   `{url: "cashgear-sheet://workspace/launch#ticket=<ticket>", expiresAt}`.
+3. Workspace hands the link to the system (`ShellExecuteW`), never logs or keeps it and never
+   opens it in a browser. Windows runs the scheme's open command, `"cgs-desktop.exe" "%1"`.
+4. The sheet's desktop app takes the link as its only argument, cold or while it runs, and checks
+   its shape exactly: the scheme in any case, then `workspace/launch#ticket=` and 43 base64url
+   characters, nothing else. It redeems `{ticket}` from its WebView's origin,
+   `http://tauri.localhost` on Windows (`tauri://localhost` on macOS), at the API its build names.
+   From there the file session is this document's, unchanged.
+
+What changes on Workspace's side:
+
+- A desktop ticket redeems only from an origin on `Sheet__DesktopOrigins` (`http://tauri.localhost`
+  and `tauri://localhost`), a web ticket only from one on `Sheet__Origins`. The origin is checked
+  before the ticket, as before; a ticket of the other target is used up and answered 401
+  `ticket.invalid`, as an unknown one is.
+- CORS for `/api/v1/sheet-sessions/*` allows the desktop origins too. Blob Storage's rule already
+  allows `GET` and `HEAD` from them.
+- No PKCE, unlike the ERP's design (`desktop-deep-link.md`): a program that registers
+  `cashgear-sheet` under `HKCU` to receive the ticket can already read Workspace's own sign-in,
+  so the ticket gives it nothing more. It stays one use and 120 seconds, in the fragment.
+
+On the sheet's side:
+
+- **One instance.** A process the system starts for a link holds the app's one instance for
+  links (`tauri-plugin-single-instance`). A link that comes while it runs starts a process that
+  hands its link over in memory and exits, and the link opens in a window of its own. Windows
+  started for files, or from the Start menu, take no links.
+- **The ticket** stays in the native side's memory for the window it opens until that window's
+  page takes it once, or goes with the window (or 120 s on, if no page asked for it). It is never printed, logged or
+  written to a file or the registry. As with any Windows link, it is on the process's command line
+  while the process runs; a forwarding process exits at once.
+- **End** is sent when the window closes, after the unsaved-changes question, and the window
+  waits up to 3 s for the answer. Reconnect works between the app's windows as between tabs.
+- **The scheme** is registered by the installer under `HKCU\Software\Classes\cashgear-sheet`
+  (from `plugins.deep-link.desktop.schemes` in `tauri.conf.json`) and removed by the uninstaller
+  when its open command is that install's.
+- **The content security policy**'s `connect-src` names Workspace's live API, and its storage
+  account's exact origin once it exists, as the web's does.
+
+The mock learns the same: `/__mock/launch` takes `target: "desktop"`, and redeems and CORS follow
+the rules above.
 
 ## Routes
 
@@ -234,7 +286,7 @@ already running.
 | Route | What it does |
 | --- | --- |
 | `POST /__mock/reset` | Back to the seed: Budget 2027 (one version, by Omar Other; the viewer may only view it), New workbook (no version), the four users, copies allowed |
-| `POST /__mock/launch` | `{user, workbook, access?, language?}`: what Workspace's launch route does, giving `{ticket, expiresAt, url}` |
+| `POST /__mock/launch` | `{user, workbook, access?, language?, target?}`: what Workspace's launch route does, giving `{ticket, expiresAt, url}`. With `target: "desktop"`, `url` is `cashgear-sheet://workspace/launch#ticket=…` and the ticket redeems only from `http://tauri.localhost` or `tauri://localhost` (Track S6) |
 | `POST /__mock/version` | `{workbook, user, bytes?}`: someone else saves a version (base64 bytes, or the seed's) |
 | `POST /__mock/level` | `{workbook, user, level}`: `edit`, `view` or `none` |
 | `POST /__mock/trash` | `{workbook, trashed?}` |
