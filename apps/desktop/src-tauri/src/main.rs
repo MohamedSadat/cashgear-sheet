@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod updates;
+mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -379,7 +380,20 @@ fn process_runs(id: u32) -> bool {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let mut context = tauri::generate_context!();
+    let scheme = workspace::scheme(context.config());
+    let link = workspace::started_with(&scheme);
+    let test_api = workspace::TestApi::from_env().filter(|test| test.widen(context.config_mut()));
+    let mut builder = tauri::Builder::default();
+    if link.is_some() {
+        // Started for a link: the first such process takes every later link, which the process
+        // the system starts for it hands over before exiting (Track S6). It must come first, so
+        // a process that hands its link over does nothing else.
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            workspace::forwarded(app, args)
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(LaunchFile(Mutex::new(
@@ -387,6 +401,11 @@ fn main() {
                 .ok()
                 .and_then(|cwd| cgs_native::launch_path(std::env::args_os(), &cwd)),
         )))
+        .manage(workspace::Launches::new(
+            scheme.clone(),
+            link.and_then(|text| cgs_native::link::parse(&text, &scheme)),
+            test_api.map(|test| test.api),
+        ))
         .manage(FileRegistry::default())
         .manage(SaveStore::default())
         .setup(|app| {
@@ -416,9 +435,16 @@ fn main() {
                 responder.respond(response);
             });
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                window.state::<workspace::Launches>().forget(window.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             native_info,
             launch_file,
+            workspace::workspace_launch,
+            workspace::workspace_test_api,
             updates::update_check,
             updates::update_install,
             pick_file,
@@ -437,6 +463,6 @@ fn main() {
             system_font,
             system_print
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("the desktop app failed to start");
 }

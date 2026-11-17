@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window: core events, plus setting its theme. App commands need no permission.",
-  "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-theme", "core:window:allow-destroy"]
+  "description": "The app's windows (the first, and one for each Cash Gear Workspace link that comes while it runs): core events, plus setting their theme and title. App commands need no permission.",
+  "windows": ["main", "workspace-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "core:window:allow-set-title",
+    "core:window:allow-destroy"
+  ]
 }

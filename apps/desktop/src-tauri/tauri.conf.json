@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: ipc: http://ipc.localhost cgs-file: http://cgs-file.localhost https://api.cashgearerp.com",
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: ipc: http://ipc.localhost cgs-file: http://cgs-file.localhost https://api.cashgearerp.com https://workspace-api.cashgearerp.com",
       "headers": {
         "Cross-Origin-Opener-Policy": "same-origin",
         "Cross-Origin-Embedder-Policy": "require-corp",
@@ -46,6 +46,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["cashgear-sheet"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU3NkVFQzk3NDczOThEODYKUldTR2pUbEhsK3h1NTN4ZEFzL3FuZzBvWDVCT1Q3eU53SDk5V1pBRWVyeGttQ1dlR3JFNXp0VkgK",
       "endpoints": [
