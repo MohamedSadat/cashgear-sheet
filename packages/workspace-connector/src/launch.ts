@@ -24,6 +24,10 @@ export interface LaunchHistory {
 /** 256 bits in base64url without padding. */
 const TICKET = /^[A-Za-z0-9_-]{43}$/;
 
+/** Whether `text` has a ticket's shape: 43 characters of base64url. */
+export const isTicket = (text: unknown): text is string =>
+  typeof text === 'string' && TICKET.test(text);
+
 /** Whether a page's path is the cloud launch route, `/cloud`. */
 export const onCloudPath = (pathname: string): boolean => /^\/cloud\/?$/i.test(pathname);
 
@@ -41,7 +45,18 @@ export function readCloudLaunch(
   const parameters = new URLSearchParams(location.hash.replace(/^#/, ''));
   const ticket = parameters.get('launch');
   history.replaceState(history.state, '', `/${location.search}`);
-  if (ticket === null || !TICKET.test(ticket)) return null;
+  if (!isTicket(ticket)) return null;
+  return { ticket, apiBase: apiBase.replace(/\/+$/, '') };
+}
+
+/**
+ * The desktop app's launch (Track S6): Workspace hands the system
+ * `cashgear-sheet://workspace/launch#ticket=<ticket>`, the app's native side checks the link's
+ * shape and keeps the ticket for the window it opens, and that window's page takes it once. Its
+ * shape is checked again here. The API is the build's, as on the web, never the link's.
+ */
+export function desktopCloudLaunch(ticket: unknown, apiBase: string): CloudLaunch | null {
+  if (!isTicket(ticket)) return null;
   return { ticket, apiBase: apiBase.replace(/\/+$/, '') };
 }
 

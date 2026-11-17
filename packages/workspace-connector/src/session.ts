@@ -246,14 +246,20 @@ export class WorkspaceSession {
 
   /**
    * Ends the session in Workspace and here. Sent with `keepalive`, so it goes even as the page
-   * closes; its answer doesn't matter, since an unended session expires anyway.
+   * closes; its answer doesn't matter, since an unended session expires anyway. The promise
+   * settles when Workspace has answered or the request failed, for a desktop window that waits
+   * before it closes.
    */
-  end(): void {
-    if (this.#ended) return;
-    void this.#http
+  end(): Promise<void> {
+    if (this.#ended) return Promise.resolve();
+    const sent = this.#http
       .request('POST', ROUTES.end, { session: this.#token, keepalive: true, idempotent: false })
-      .catch(() => undefined);
+      .then(
+        () => undefined,
+        () => undefined,
+      );
     this.#end();
+    return sent;
   }
 
   /** Forgets the session here without ending it in Workspace: it was handed to another tab. */

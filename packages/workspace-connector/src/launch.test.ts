@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   LIVE_WORKSPACE_API,
   MOCK_WORKSPACE_API,
+  desktopCloudLaunch,
+  isTicket,
   onCloudPath,
   readCloudLaunch,
   workspaceApiBase,
@@ -78,5 +80,39 @@ describe('the Workspace API the sheet trusts', () => {
     expect(workspaceApiBase('http://localhost:5173')).toBe(MOCK_WORKSPACE_API);
     expect(workspaceApiBase('https://sheet.cashgearerp.com')).toBe(LIVE_WORKSPACE_API);
     expect(workspaceApiBase('https://localhost.evil.example')).toBe(LIVE_WORKSPACE_API);
+  });
+});
+
+describe('the desktop app’s launch (Track S6)', () => {
+  it('takes the ticket the native side kept for this window, with the build’s API', () => {
+    expect(desktopCloudLaunch(TICKET, 'https://workspace-api.cashgearerp.com/')).toEqual({
+      ticket: TICKET,
+      apiBase: 'https://workspace-api.cashgearerp.com',
+    });
+  });
+
+  it('checks the ticket’s shape again, whatever the native side sent', () => {
+    for (const ticket of [
+      null,
+      undefined,
+      '',
+      42,
+      {},
+      TICKET + 'a',
+      TICKET.slice(1),
+      `${TICKET.slice(1)}=`,
+    ]) {
+      expect(desktopCloudLaunch(ticket, LIVE_WORKSPACE_API)).toBeNull();
+      expect(isTicket(ticket)).toBe(false);
+    }
+    expect(isTicket(TICKET)).toBe(true);
+  });
+
+  it('trusts Workspace’s live API from the desktop’s own origins unless the build names one', () => {
+    expect(workspaceApiBase('http://tauri.localhost')).toBe(LIVE_WORKSPACE_API);
+    expect(workspaceApiBase('tauri://localhost')).toBe(LIVE_WORKSPACE_API);
+    expect(workspaceApiBase('http://tauri.localhost', 'http://127.0.0.1:5280')).toBe(
+      'http://127.0.0.1:5280',
+    );
   });
 });
