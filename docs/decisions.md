@@ -1086,11 +1086,13 @@ A workbook opened from Cash Gear Workspace showed TableStyleMedium2 in dark mode
 | Question | Answer |
 | --- | --- |
 | Tables' fills in dark mode | Darkened on screen. This replaces "fills stay as stored" for a table's or pivot table's own style; a cell's own fill still stays as stored |
+| Tables' lines in dark mode | Darkened too (asked the same day, after seeing the fills) |
 
 **Defaults picked (say if any should change)**
 
 | Choice | Default |
 | --- | --- |
 | The rule | As charts' neutral colours (Phase 7): a style's fill made from the text or background theme colour keeps its lightness as a share of the way from the screen's text to its background, and an accent lightened by a tint goes that share of the way to the screen's background instead of to white. Medium 2's stripe becomes `#262F3F` on `#1E1E1E`. Accents as they are (the blue header), darker accents and stated colours stay as stored. Display only: nothing reaches the file (`table_style::dark_look`) |
-| What it covers | Fills only. A style's borders and text colours keep the existing dark-mode rules (contrast against the background they're drawn on), and the table style gallery's previews stay Excel's light colours |
+| What it covers | The style's fills and lines. Its text colours keep the existing dark-mode rules (contrast against the background they're drawn on), and the table style gallery's previews stay Excel's light colours |
+| How dark a line goes | Darkened by the fills' rule, but no further than 3:1 against the sheet's background (`MIN_CONTRAST`, 2026-11-02's rule for every line): one darkened past it is brought back towards its accent, or the screen's text for a neutral line, just far enough. So Medium 2's light-blue lines become the darkest blue that still shows, and the contrast rule, which would push a fainter line up to 4.5:1, leaves them alone (`table_style::dark_line`) |
 | Dark styles | Dark 1 to 11 fill with darker text colours, which now become lighter greys on a dark screen, the mirror of how they look on a light one; their white text is then made dark where it wouldn't read, by the existing contrast rule |

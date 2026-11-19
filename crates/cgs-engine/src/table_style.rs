@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use cgs_model::color::to_hls;
+use cgs_model::color::{contrast, to_hls, MIN_CONTRAST};
 use cgs_model::{
     Color, ColorKind, ColorSpace, DarkColors, Dxf, DxfFill, Line, LineStyle, Pattern, StyleTable,
     Table, TableElement, TableStyleDef, TableStyleElement, ThemePalette,
@@ -334,8 +334,35 @@ fn dark_fill(color: Color, colors: &ColorSpace, dark: DarkColors) -> Color {
     }
 }
 
-/// A look's fills as a dark screen shows them (`dark_fill`), before `exact_look`. Only the table's
-/// own style changes: a cell's own fill, which the look lies under, stays as stored.
+/// A table style's line colour on a dark screen: darkened as a fill is (`dark_fill`), but no
+/// further than the line keeps `MIN_CONTRAST` with the screen's background, which dark mode asks of
+/// every line. A line darkened past it is brought back towards the accent it was made from, or the
+/// screen's text for a neutral one, only as far as that.
+fn dark_line(color: Color, colors: &ColorSpace, dark: DarkColors) -> Color {
+    let darkened = dark_fill(color, colors, dark);
+    let (ColorKind::Theme(index), ColorKind::Rgb(rgb)) = (color.kind, darkened.kind) else {
+        return color;
+    };
+    if contrast(rgb, dark.background) >= MIN_CONTRAST {
+        return darkened;
+    }
+    let toward = if index < 2 {
+        dark.text
+    } else {
+        match colors.resolve(Color { tint: 0.0, ..color }, None) {
+            Some(accent) => accent,
+            None => return color,
+        }
+    };
+    (1..=100)
+        .map(|step| crate::charts::mix(rgb, toward, f64::from(step) / 100.0))
+        .find(|&mixed| contrast(mixed, dark.background) >= MIN_CONTRAST)
+        .map_or(color, Color::rgb)
+}
+
+/// A look's fills and lines as a dark screen shows them (`dark_fill`, `dark_line`), before
+/// `exact_look`. Only the table's own style changes: a cell's own fill and lines, which the look
+/// lies under, stay as stored.
 pub fn dark_look(mut look: Dxf, colors: &ColorSpace, dark: Option<DarkColors>) -> Dxf {
     let Some(dark) = dark else {
         return look;
@@ -343,6 +370,20 @@ pub fn dark_look(mut look: Dxf, colors: &ColorSpace, dark: Option<DarkColors>) -
     if let Some(fill) = look.fill.as_mut() {
         fill.color = dark_fill(fill.color, colors, dark);
         fill.pattern_color = dark_fill(fill.pattern_color, colors, dark);
+    }
+    let border = &mut look.border;
+    for line in [
+        &mut border.left,
+        &mut border.right,
+        &mut border.top,
+        &mut border.bottom,
+        &mut border.vertical,
+        &mut border.horizontal,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        line.color = dark_line(line.color, colors, dark);
     }
     look
 }
@@ -459,6 +500,47 @@ mod tests {
             2,
         );
         assert_eq!(dark_look(look.clone(), &colors, None), look);
+    }
+
+    #[test]
+    fn a_dark_screen_darkens_a_tables_lines_as_far_as_they_still_show() {
+        let colors = ColorSpace::default();
+        let dark = DarkColors {
+            background: 0x1E1E1E,
+            text: 0xE6E6E6,
+        };
+        let styles = StyleTable::default();
+        let style = find(&styles, "TableStyleMedium2").unwrap();
+        // The thin line between two of Medium 2's rows, accent 1 lighter.
+        let line = cell_look(&sales(), style, 3, 2).border.top.unwrap().color;
+        assert_eq!(line.kind, ColorKind::Theme(4));
+        assert!(line.tint > 0.0);
+        let light = colors.resolve(line, None).unwrap();
+        let ColorKind::Rgb(shown) = dark_line(line, &colors, dark).kind else {
+            panic!("a colour");
+        };
+        // Darker than it is on a light screen, and still a line dark mode leaves alone.
+        let on_dark = contrast(shown, dark.background);
+        assert!(on_dark >= MIN_CONTRAST, "{shown:06X}: {on_dark}");
+        assert!(on_dark < contrast(light, dark.background), "{shown:06X}");
+        assert_eq!(
+            cgs_model::color::ensure_contrast(shown, dark.background),
+            shown
+        );
+        // The whole look takes it, on every side the style draws.
+        let look = dark_look(cell_look(&sales(), style, 3, 2), &colors, Some(dark));
+        assert_eq!(look.border.top.unwrap().color, Color::rgb(shown));
+        // A black line, as Light 1's, is the screen's text, as dark mode already drew it.
+        let black = Color {
+            kind: ColorKind::Theme(1),
+            tint: 0.0,
+        };
+        assert_eq!(dark_line(black, &colors, dark), Color::rgb(0xE6E6E6));
+        // A stated colour stays as stored, for the contrast rule to look after.
+        assert_eq!(
+            dark_line(Color::rgb(0x333333), &colors, dark),
+            Color::rgb(0x333333)
+        );
     }
 
     #[test]
