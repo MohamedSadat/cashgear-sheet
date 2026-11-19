@@ -1061,3 +1061,18 @@ Cash Gear Workspace's Phase 9 opens Sheet's desktop app from its own desktop app
 | End on close | A window that closes ends its session before it goes, after the unsaved-changes question, waiting at most 3 s for Workspace's answer: a closing WebView doesn't promise to send `pagehide`'s `keepalive` request. A window that handed its session to a waiting one closes without ending it |
 | Telling windows apart | A desktop window's title follows its page's, so a Workspace workbook's window is "Budget 2027 – CashGear Sheet" in the taskbar, as the web's tab is |
 | The mock | Learns Workspace's Phase 9: `/__mock/launch` takes `target: "desktop"` and answers the `cashgear-sheet://` link. A desktop ticket is redeemed only from `http://tauri.localhost` or `tauri://localhost`, a web ticket only from a web origin, and a ticket of the other target is used up and answered 401 `ticket.invalid`. CORS lets the desktop origins in. The contract suite gains those cases |
+
+## 2026-11-19: Workspace's storage account in the CSP
+
+Workspace's live storage account exists: its signed read URLs point at
+`https://cashgearworkspace.blob.core.windows.net`, and its CORS rule already allows `GET` from
+`https://sheet.cashgearerp.com`, `http://tauri.localhost` and `tauri://localhost`. Without its origin
+in `connect-src` the browser refused every workbook read, and "Open in Cash Gear Sheet" ended with
+"Cash Gear Workspace can't be reached". You asked for the fix on 2026-11-19.
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| Which origin | The account's exact origin, `LIVE_WORKSPACE_BLOB` in `apps/web/src/csp.ts`, not `https://*.blob.core.windows.net`, which would let the page reach any Azure storage account |
+| Where | In `LIVE_APIS`, so the live site's policy, `/embed`'s, the preview's and the desktop's (`tauri.conf.json`) all name it, as Workspace's API is named |

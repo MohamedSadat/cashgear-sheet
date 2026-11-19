@@ -108,12 +108,13 @@ and S2): `https://sheet.cashgearerp.com/cloud#launch=<ticket>`. The wire is
 - **The API's origin** comes from the build, never the link: `VITE_WORKSPACE_API_URL` when a build
   names one, else `https://workspace-api.cashgearerp.com` for every page not on localhost (the
   mock, `http://127.0.0.1:4280`, for one that is). The Azure workflow names none.
-- **Headers:** `connect-src` lists Workspace's API (`apps/web/src/csp.ts`, `LIVE_APIS`, which
-  `csp.test.ts` checks against `staticwebapp.config.json`). Workbooks are read from Workspace's
-  Blob Storage by signed URL, so its account's exact origin
-  (`https://<account>.blob.core.windows.net`) goes into both once the account exists; until then
-  the live sheet can't read a Workspace workbook. Nothing else changes: the reads and saves are
-  CORS requests, which COEP `require-corp` allows.
+- **Headers:** `connect-src` lists Workspace's API and, since workbooks are read from Workspace's
+  Blob Storage by signed URL, its account's exact origin,
+  `https://cashgearworkspace.blob.core.windows.net` (`apps/web/src/csp.ts`, `LIVE_APIS`, which
+  `csp.test.ts` checks against `staticwebapp.config.json`). If Workspace moves to another storage
+  account, its origin changes here too, or every workbook fails to open with "Cash Gear Workspace
+  can't be reached". Nothing else changes: the reads and saves are CORS requests, which COEP
+  `require-corp` allows.
 - **The desktop app** has no Workspace launch until the deep link (`desktop-deep-link.md`).
 
 **What Workspace's deployment needs for the sheet**

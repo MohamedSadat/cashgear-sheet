@@ -1,6 +1,7 @@
 // The desktop's content security policy (apps/desktop/src-tauri/tauri.conf.json): the ERP
 // connector may reach Cash Gear ERP's API (Phase 19, plan B.4), and a window a Workspace link
-// opened reaches Cash Gear Workspace's (Track S6), and nothing else off the device. A build for
+// opened reaches Cash Gear Workspace's and its storage account (Track S6), and nothing else off the
+// device. A build for
 // Workspace's development stack adds that stack's origins (scripts/desktop-config.mjs).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -25,10 +26,11 @@ const remote = (sources) =>
   );
 
 describe('the desktop CSP', () => {
-  it('reaches Cash Gear ERP’s and Cash Gear Workspace’s APIs, as the live web does, and nothing else', () => {
+  it('reaches Cash Gear ERP’s and Cash Gear Workspace’s APIs and Workspace’s storage, as the live web does, and nothing else', () => {
     expect(remote(directives['connect-src'])).toEqual([
       'https://api.cashgearerp.com',
       'https://workspace-api.cashgearerp.com',
+      'https://cashgearworkspace.blob.core.windows.net',
     ]);
     expect(remote(directives['connect-src'])).toEqual(LIVE_APIS);
   });

@@ -1,8 +1,8 @@
 // The web app's content security policy (Phase 19's security review): scripts, styles, workers
 // and fonts from the app itself, WebAssembly compiled, never framed, and Cash Gear ERP's and Cash
-// Gear Workspace's APIs the only other origins it reaches (Track S1). Workspace's Blob Storage
-// joins them by its exact origin once its account exists (decisions, 2026-11-12). `/embed` alone
-// may be framed, by Workspace's origins only (Track S3).
+// Gear Workspace's APIs and Workspace's Blob Storage, by its account's exact origin, the only other
+// origins it reaches (Track S1; decisions, 2026-11-12 and 2026-11-19). `/embed` alone may be
+// framed, by Workspace's origins only (Track S3).
 // public/staticwebapp.config.json carries it for the live site, and `pnpm preview` sends it too,
 // with the mocks' origins, so the browser tests run under it. The desktop's is in
 // apps/desktop/src-tauri/tauri.conf.json.
@@ -13,8 +13,14 @@ export const LIVE_API = 'https://api.cashgearerp.com';
 /** Cash Gear Workspace's API the live sheet opens workbooks from (`workspaceApiBase`). */
 export const LIVE_WORKSPACE_API = 'https://workspace-api.cashgearerp.com';
 
+/**
+ * Cash Gear Workspace's storage account, where its signed read URLs (`readUrl`, `init.source`)
+ * point: the sheet reads a workbook's bytes from it.
+ */
+export const LIVE_WORKSPACE_BLOB = 'https://cashgearworkspace.blob.core.windows.net';
+
 /** Every other origin the live sheet reaches. */
-export const LIVE_APIS = [LIVE_API, LIVE_WORKSPACE_API];
+export const LIVE_APIS = [LIVE_API, LIVE_WORKSPACE_API, LIVE_WORKSPACE_BLOB];
 
 /**
  * The mocks the preview's browser tests talk to: the ERP (`pnpm erp:mock`), and Workspace's API

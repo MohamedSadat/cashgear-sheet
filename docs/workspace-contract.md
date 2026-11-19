@@ -85,8 +85,8 @@ On the sheet's side:
 - **The scheme** is registered by the installer under `HKCU\Software\Classes\cashgear-sheet`
   (from `plugins.deep-link.desktop.schemes` in `tauri.conf.json`) and removed by the uninstaller
   when its open command is that install's.
-- **The content security policy**'s `connect-src` names Workspace's live API, and its storage
-  account's exact origin once it exists, as the web's does.
+- **The content security policy**'s `connect-src` names Workspace's live API and its storage
+  account's exact origin (`https://cashgearworkspace.blob.core.windows.net`), as the web's does.
 
 The mock learns the same: `/__mock/launch` takes `target: "desktop"`, and redeems and CORS follow
 the rules above.
@@ -238,9 +238,10 @@ expired signature, 403 or 404).
 - **CORS on Blob Storage:** the storage account's CORS rule allows `GET` from the sheet's origins
   (as above), so the sheet's cross-origin isolated page (COEP `require-corp`) can read the answer.
 - **The sheet's CSP:** `connect-src` names the storage account's origin exactly
-  (`https://<account>.blob.core.windows.net`, or Azurite's in development). Until Workspace's
-  account exists the live sheet lists only Workspace's API, so it can't read a workbook yet; the
-  account's origin goes into `apps/web/src/csp.ts` and `staticwebapp.config.json` when it does.
+  (`https://cashgearworkspace.blob.core.windows.net` live, Azurite's in development), in
+  `apps/web/src/csp.ts` (`LIVE_WORKSPACE_BLOB`), `staticwebapp.config.json` and the desktop's
+  `tauri.conf.json`. Without it the browser refuses the read before it leaves, and the sheet
+  says Workspace can't be reached.
 - The mock's blob server is one port above its API (`http://127.0.0.1:4281`), and refuses an
   expired or wrong signature with 403 `AuthenticationFailed`, as Azure does.
 
