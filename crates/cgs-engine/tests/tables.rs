@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use cgs_calc::{CalcValue, CellSink, Rect, SheetRect};
-use cgs_engine::{Area, Command, Engine, LoadPhase};
+use cgs_engine::{Area, Command, Engine, LoadPhase, Screen};
 
 fn opened() -> Engine {
     let mut engine = Engine::new();
@@ -115,6 +115,56 @@ fn sales() -> Engine {
         r#"{"kind":"renameTable","table":"Table1","name":"Sales"}"#,
     );
     engine
+}
+
+/// The fill a tile draws for a cell of the first tile (rows and columns from 1), as RGBA.
+fn tile_fill(engine: &mut Engine, row: u32, col: u32, screen: Screen) -> u32 {
+    use cgs_engine::view_block::{CELL_BYTES, HEADER_BYTES};
+    let bytes = engine.view_block(0, 0, 0, screen).into_bytes();
+    let u16_at = |at: usize| usize::from(u16::from_le_bytes([bytes[at], bytes[at + 1]]));
+    let (rows, cols) = (u16_at(6), u16_at(8));
+    let sizes = HEADER_BYTES + (rows + cols) * 2;
+    let sizes = sizes + (4 - sizes % 4) % 4;
+    let at = sizes + ((row as usize - 1) * cols + col as usize - 1) * CELL_BYTES + 8;
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+const LIGHT: Screen = Screen {
+    dark: false,
+    background: 0xFFFFFF,
+    text: 0x000000,
+};
+const DARK: Screen = Screen {
+    dark: true,
+    background: 0x1E1E1E,
+    text: 0xE6E6E6,
+};
+
+#[test]
+fn in_dark_mode_a_tables_pale_stripes_darken_and_its_own_fills_stay() {
+    let mut engine = sales();
+    // The header is accent 1 in both themes.
+    assert_eq!(tile_fill(&mut engine, 1, 8, LIGHT), 0x4472C4FF);
+    assert_eq!(tile_fill(&mut engine, 1, 8, DARK), 0x4472C4FF);
+    // The first stripe is Excel's pale blue on a light screen, and a dark blue on a dark one.
+    assert_eq!(tile_fill(&mut engine, 2, 8, LIGHT), 0xD9E1F2FF);
+    assert_eq!(tile_fill(&mut engine, 2, 8, DARK), 0x262F3FFF);
+    // The row between stripes has no fill in either.
+    assert_eq!(
+        tile_fill(&mut engine, 3, 8, DARK),
+        tile_fill(&mut engine, 3, 1, DARK)
+    );
+    // A cell's own fill lies over the table's and stays as stored.
+    run(
+        &mut engine,
+        r#"{"kind":"format","sheet":0,"areas":[{"top":2,"left":9,"bottom":2,"right":9}],"change":{"fill":{"pattern":"solid","color":{"kind":"rgb","rgb":"FFFF00"}}}}"#,
+    );
+    assert_eq!(tile_fill(&mut engine, 2, 9, DARK), 0xFFFF00FF);
+    // Nothing reaches the file: the table still names its style, and no fill was written for it.
+    let mut bytes = Vec::new();
+    engine.save(&mut bytes).unwrap();
+    let reopened = reopened(bytes);
+    assert_eq!(table(&reopened, "Sales")["style"], "TableStyleMedium2");
 }
 
 #[test]

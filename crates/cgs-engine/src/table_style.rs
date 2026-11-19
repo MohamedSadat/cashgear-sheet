@@ -5,9 +5,10 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use cgs_model::color::to_hls;
 use cgs_model::{
-    Color, ColorKind, Dxf, DxfFill, Line, LineStyle, Pattern, StyleTable, Table, TableElement,
-    TableStyleDef, TableStyleElement, ThemePalette,
+    Color, ColorKind, ColorSpace, DarkColors, Dxf, DxfFill, Line, LineStyle, Pattern, StyleTable,
+    Table, TableElement, TableStyleDef, TableStyleElement, ThemePalette,
 };
 use serde_json::Value;
 
@@ -304,6 +305,48 @@ pub fn cell_look(table: &Table, style: &TableStyleDef, row: u32, col: u32) -> Dx
     look
 }
 
+/// A table style's fill colour on a dark screen, for display only. Colours made from the text and
+/// background theme colours keep their lightness as a share of the way from the screen's text to
+/// its background, as charts' do, and an accent lightened by a tint goes that share of the way to
+/// the screen's background instead of to white. Accents as they are, darker ones and stated
+/// colours stay as stored.
+fn dark_fill(color: Color, colors: &ColorSpace, dark: DarkColors) -> Color {
+    let ColorKind::Theme(index) = color.kind else {
+        return color;
+    };
+    let rgb = if index < 2 {
+        let Some(light) = colors.resolve(color, None) else {
+            return color;
+        };
+        let (_, lightness, _) = to_hls(light);
+        crate::charts::mix(dark.text, dark.background, lightness)
+    } else if color.tint > 0.0 {
+        let Some(accent) = colors.resolve(Color { tint: 0.0, ..color }, None) else {
+            return color;
+        };
+        crate::charts::mix(accent, dark.background, f64::from(color.tint))
+    } else {
+        return color;
+    };
+    Color {
+        kind: ColorKind::Rgb(rgb),
+        tint: 0.0,
+    }
+}
+
+/// A look's fills as a dark screen shows them (`dark_fill`), before `exact_look`. Only the table's
+/// own style changes: a cell's own fill, which the look lies under, stays as stored.
+pub fn dark_look(mut look: Dxf, colors: &ColorSpace, dark: Option<DarkColors>) -> Dxf {
+    let Some(dark) = dark else {
+        return look;
+    };
+    if let Some(fill) = look.fill.as_mut() {
+        fill.color = dark_fill(fill.color, colors, dark);
+        fill.pattern_color = dark_fill(fill.pattern_color, colors, dark);
+    }
+    look
+}
+
 /// A look with its built-in colours made exact for the workbook's theme.
 pub fn exact_look(mut look: Dxf, palette: &ThemePalette) -> Dxf {
     let fix = |color: &mut Color| *color = exact(*color, palette);
@@ -372,6 +415,50 @@ mod tests {
         assert!(inside.border.left.is_none());
         let edge = cell_look(&table, style, 3, 1);
         assert_eq!(edge.border.left.unwrap().style, LineStyle::Thin);
+    }
+
+    #[test]
+    fn a_dark_screen_darkens_pale_fills_and_keeps_the_rest() {
+        let colors = ColorSpace::default();
+        let dark = DarkColors {
+            background: 0x1E1E1E,
+            text: 0xE6E6E6,
+        };
+        let theme = |index: u8, tint: f32| Color {
+            kind: ColorKind::Theme(index),
+            tint,
+        };
+        // Medium 2's stripe, accent 1 lighter 80%, goes 80% of the way to the background.
+        assert_eq!(
+            dark_fill(theme(4, 0.8), &colors, dark).kind,
+            ColorKind::Rgb(0x262F3F)
+        );
+        // Light 1's stripe, text lighter 85%: a grey a little lighter than the background.
+        let ColorKind::Rgb(grey) = dark_fill(theme(1, 0.85), &colors, dark).kind else {
+            panic!("a colour");
+        };
+        assert!(grey > 0x1E1E1E && grey < 0x505050, "{grey:06X}");
+        // White is the background, black the text.
+        assert_eq!(
+            dark_fill(theme(0, 0.0), &colors, dark).kind,
+            ColorKind::Rgb(0x1E1E1E)
+        );
+        assert_eq!(
+            dark_fill(theme(1, 0.0), &colors, dark).kind,
+            ColorKind::Rgb(0xE6E6E6)
+        );
+        // An accent as it is, a darker one and a stated colour stay as stored.
+        for kept in [theme(4, 0.0), theme(4, -0.25), Color::rgb(0xFFFF00)] {
+            assert_eq!(dark_fill(kept, &colors, dark), kept);
+        }
+        // A light screen changes nothing.
+        let look = cell_look(
+            &sales(),
+            find(&StyleTable::default(), "TableStyleMedium2").unwrap(),
+            2,
+            2,
+        );
+        assert_eq!(dark_look(look.clone(), &colors, None), look);
     }
 
     #[test]

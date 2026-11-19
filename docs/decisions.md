@@ -1076,3 +1076,21 @@ in `connect-src` the browser refused every workbook read, and "Open in Cash Gear
 | --- | --- |
 | Which origin | The account's exact origin, `LIVE_WORKSPACE_BLOB` in `apps/web/src/csp.ts`, not `https://*.blob.core.windows.net`, which would let the page reach any Azure storage account |
 | Where | In `LIVE_APIS`, so the live site's policy, `/embed`'s, the preview's and the desktop's (`tauri.conf.json`) all name it, as Workspace's API is named |
+
+## 2026-11-19: Tables in dark mode
+
+A workbook opened from Cash Gear Workspace showed TableStyleMedium2 in dark mode as Excel's pale blue stripes (`#D9E1F2`) between dark rows, since fills stayed as stored (2026-11-02, Phase 2, "Explicit colours in dark mode"). You asked on 2026-11-19 for tables to darken instead.
+
+**Answered by you**
+
+| Question | Answer |
+| --- | --- |
+| Tables' fills in dark mode | Darkened on screen. This replaces "fills stay as stored" for a table's or pivot table's own style; a cell's own fill still stays as stored |
+
+**Defaults picked (say if any should change)**
+
+| Choice | Default |
+| --- | --- |
+| The rule | As charts' neutral colours (Phase 7): a style's fill made from the text or background theme colour keeps its lightness as a share of the way from the screen's text to its background, and an accent lightened by a tint goes that share of the way to the screen's background instead of to white. Medium 2's stripe becomes `#262F3F` on `#1E1E1E`. Accents as they are (the blue header), darker accents and stated colours stay as stored. Display only: nothing reaches the file (`table_style::dark_look`) |
+| What it covers | Fills only. A style's borders and text colours keep the existing dark-mode rules (contrast against the background they're drawn on), and the table style gallery's previews stay Excel's light colours |
+| Dark styles | Dark 1 to 11 fill with darker text colours, which now become lighter greys on a dark screen, the mirror of how they look on a light one; their white text is then made dark where it wouldn't read, by the existing contrast rule |

@@ -108,7 +108,8 @@ fn css(rgb: Rgb, alpha: f64) -> String {
     }
 }
 
-fn mix(from: Rgb, to: Rgb, share: f64) -> Rgb {
+/// `share` of the way from one colour to another, channel by channel.
+pub(crate) fn mix(from: Rgb, to: Rgb, share: f64) -> Rgb {
     let channel = |shift: u32| {
         let a = f64::from((from >> shift) & 0xFF);
         let b = f64::from((to >> shift) & 0xFF);

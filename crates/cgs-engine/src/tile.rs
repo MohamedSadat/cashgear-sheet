@@ -183,16 +183,24 @@ impl View<'_> {
     }
 }
 
-/// Which cells of an area take a made format, from the tables that cross it.
+/// Which cells of an area take a made format, from the tables that cross it. On a dark screen the
+/// styles' fills are darkened first (`table_style::dark_look`).
 fn table_looks(
     book: &Book,
     info: &SheetInfo,
     sheet: u32,
     area: (u32, u32, u32, u32),
     derived: &mut Derived,
+    screen: &Screen,
 ) -> HashMap<(u32, u32), u32> {
     let mut out = HashMap::new();
     let (top, left, bottom, right) = area;
+    let look_of = |look: cgs_model::Dxf| {
+        crate::table_style::exact_look(
+            crate::table_style::dark_look(look, &book.styles.colors, screen.dark_colors()),
+            &book.styles.colors.theme,
+        )
+    };
     for table in book.tables.iter().filter(|table| table.sheet == sheet) {
         let t = table.range;
         if t.top > bottom || t.bottom < top || t.left > right || t.right < left {
@@ -208,10 +216,7 @@ fn table_looks(
         };
         for row in t.top.max(top)..=t.bottom.min(bottom) {
             for col in t.left.max(left)..=t.right.min(right) {
-                let look = crate::table_style::exact_look(
-                    crate::table_style::cell_look(table, style, row, col),
-                    &book.styles.colors.theme,
-                );
+                let look = look_of(crate::table_style::cell_look(table, style, row, col));
                 if look.is_empty() {
                     continue;
                 }
@@ -240,10 +245,7 @@ fn table_looks(
         };
         for row in t.top.max(top)..=t.bottom.min(bottom) {
             for col in t.left.max(left)..=t.right.min(right) {
-                let look = crate::table_style::exact_look(
-                    crate::pivot_style::cell_look(table, style, row, col),
-                    &book.styles.colors.theme,
-                );
+                let look = look_of(crate::pivot_style::cell_look(table, style, row, col));
                 if look.is_empty() {
                     continue;
                 }
@@ -833,6 +835,7 @@ pub fn build_tile(
         sheet,
         (top, window_left, (bottom + 1).min(MAX_ROWS), window_right),
         &mut derived,
+        &screen,
     );
     // Conditional formats, laid over everything, with their bars and icons.
     let mut cf_marks: Vec<(u32, u32, MarkRecord)> = Vec::new();
